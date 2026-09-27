@@ -38,6 +38,7 @@ jobs:
           LDA_API_KEY: ${{ secrets.LDA_API_KEY }}
           QUIVER_API_KEY: ${{ secrets.QUIVER_API_KEY }}
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
           GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
           USE_TUNED_WEIGHTS: ${{ vars.USE_TUNED_WEIGHTS }}
