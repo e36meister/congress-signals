@@ -1,0 +1,60 @@
+name: Daily congress trade signals
+
+on:
+  schedule:
+    - cron: "43 10 * * *"      # every day at 10:43 UTC (6:43 AM New York time in summer)
+  workflow_dispatch: {}          # "Run workflow" button for a manual run
+
+concurrency:
+  group: daily-run
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install libraries
+        run: pip install -r requirements.txt
+
+      - name: Restore saved data
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: data-${{ github.run_id }}
+          restore-keys: data-
+
+      - name: Collect, score, backtest and update the dashboard
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
+          LDA_API_KEY: ${{ secrets.LDA_API_KEY }}
+          QUIVER_API_KEY: ${{ secrets.QUIVER_API_KEY }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          USE_TUNED_WEIGHTS: ${{ vars.USE_TUNED_WEIGHTS }}
+          TIME_BUDGET_MIN: "320"
+        run: python run_daily.py
+
+      - name: Save data for tomorrow (even if the run stopped early)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: data-${{ github.run_id }}
+
+      - name: Keep the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports
+          path: data/reports
+          retention-days: 14
