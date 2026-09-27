@@ -81,6 +81,19 @@ def log(*a):
     print(time.strftime("%H:%M:%S"), *a, flush=True)
 
 
+def chunked_map(fn, items, workers, cfg, chunk=None):
+    """Parallel map in small batches, stopping cleanly when a time-limited run is nearly out of time."""
+    items = list(items)
+    chunk = chunk or workers * 8
+    for i in range(0, len(items), chunk):
+        if out_of_time(cfg):
+            log("Time limit reached: stopping this step (progress is saved; the next run continues)")
+            return
+        with ThreadPoolExecutor(workers) as ex:
+            for res in ex.map(fn, items[i:i + chunk]):
+                yield res
+
+
 def _p(cfg, *parts):
     path = os.path.join(cfg["DATA_DIR"], *parts)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -299,10 +312,8 @@ def collect_house(cfg):
         tx.to_pickle(cache_tx)
         json.dump(sorted(done), open(cache_done, "w"))
 
-    with ThreadPoolExecutor(cfg["WORKERS"]) as ex:
-        futs = [ex.submit(work, r) for _, r in todo.iterrows()]
-        for f in as_completed(futs):
-            r, text = f.result()
+    if True:
+        for r, text in chunked_map(work, [r for _, r in todo.iterrows()], cfg["WORKERS"], cfg):
             done.add(str(r["DocID"]))
             n += 1
             if text:
@@ -434,9 +445,8 @@ def collect_senate(cfg):
             time.sleep(1.5 * (attempt + 1))
         return rep, None
 
-    with ThreadPoolExecutor(min(4, cfg["WORKERS"])) as ex:
-        for i, f in enumerate(as_completed([ex.submit(work, r) for r in todo]), 1):
-            rep, items = f.result()
+    if True:
+        for i, (rep, items) in enumerate(chunked_map(work, todo, min(4, cfg["WORKERS"]), cfg), 1):
             if items is None:
                 continue
             done.add(rep["link"])
@@ -449,6 +459,11 @@ def collect_senate(cfg):
                              "tx_raw": t["tx_raw"], "option": t["option"]})
             if i % 200 == 0:
                 log(f"Senate: {i}/{len(todo)} reports processed")
+                if rows:
+                    tx = pd.concat([tx, pd.DataFrame(rows)], ignore_index=True)
+                    rows = []
+                tx.to_pickle(cache_tx)
+                json.dump(sorted(done), open(cache_done, "w"))
     if rows:
         tx = pd.concat([tx, pd.DataFrame(rows)], ignore_index=True)
     tx.to_pickle(cache_tx)
@@ -807,9 +822,8 @@ def load_meta(cfg, tickers):
             return t, {"sector": None, "industry": None, "name": "", "type": None, "cap": None}
 
         todo = todo[:2500] if cfg.get("TIME_BUDGET_MIN") else todo
-        with ThreadPoolExecutor(min(4, cfg["WORKERS"])) as ex:
-            for i, f in enumerate(as_completed([ex.submit(get, t) for t in todo]), 1):
-                t, m = f.result()
+        if True:
+            for i, (t, m) in enumerate(chunked_map(get, todo, min(4, cfg["WORKERS"]), cfg), 1):
                 if m.get("name") or not isinstance(meta.get(t), dict):
                     meta[t] = m
                 if i % 300 == 0:
@@ -878,6 +892,8 @@ def collect_insiders(cfg):
     new_rows = []
     for y in range(start.year, today.year + 1):
         for q in range(1, 5):
+            if out_of_time(cfg):
+                break
             key = f"{y}q{q}"
             if key in done or pd.Timestamp(y, 3 * q, 1) < start - pd.Timedelta(days=90) or pd.Timestamp(y, 3 * q - 2, 1) > today:
                 continue
@@ -928,6 +944,8 @@ def recent_form4(cfg, tickers, days=120):
     rows = []
     log(f"Insiders (live): checking the latest SEC filings for {len(tickers)} recently traded stocks")
     for n_t, t in enumerate(tickers, 1):
+        if out_of_time(cfg):
+            break
         if n_t % 25 == 0:
             log(f"Insiders (live): {n_t}/{len(tickers)}")
         cik = cmap.get(t)
@@ -1002,11 +1020,8 @@ def collect_contracts(cfg, meta, tickers):
                 break
         return t, rows
 
-    with ThreadPoolExecutor(4) as ex:
-        for i, f in enumerate(as_completed([ex.submit(work, t) for t in todo]), 1):
-            t, rows = f.result()
-            if out_of_time(cfg):
-                break
+    if True:
+        for i, (t, rows) in enumerate(chunked_map(work, todo, 4, cfg), 1):
             if rows is not None:
                 cache[t] = {"fetched": dt.datetime.now().isoformat(), "rows": rows, "v": 3}
             if i % 100 == 0:
@@ -1201,6 +1216,8 @@ def collect_bills(cfg, bioguides):
             log(f"Bills: downloading sponsored/cosponsored bills for {len(todo)} members")
         cutoff = (pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=365)).strftime("%Y-%m-%d")
         for i, b in enumerate(todo, 1):
+            if out_of_time(cfg):
+                break
             rows, ok = [], True
             for kind, fld in (("sponsored-legislation", "sponsoredLegislation"),
                               ("cosponsored-legislation", "cosponsoredLegislation")):
@@ -1327,6 +1344,8 @@ def load_committee_history(cfg, current=None):
     dates = list(pd.date_range(start, pd.Timestamp.today(), freq="QS"))
     snaps = []
     for d in dates:
+        if out_of_time(cfg):
+            break
         key = d.strftime("%Y-%m-%d")
         rec = idx.get(key)
         if not rec:
@@ -2517,7 +2536,7 @@ def prepare(cfg):
     if step("USE_EMPLOYEE_DONATIONS"):
         data["employee_donations"] = collect_employee_donations(cfg, fecs)
     if step("USE_ANNUAL_DISCLOSURES"):
-        data["annual_fd"] = collect_annual_disclosures(cfg)
+        data["annual_fd"] = collect_annual_disclosures(cfg, set(tx["last_key"]))
     if step("USE_COMPANY_INFO"):
         data["sec_companies"] = load_sec_companies(cfg, enrich)
     if step("USE_HEARINGS"):
@@ -2656,7 +2675,7 @@ import zlib
 _RUN_START = time.time()
 
 
-def out_of_time(cfg, reserve_min=25):
+def out_of_time(cfg, reserve_min=60):
     """True when a time-limited run (GitHub) should stop collecting and save what it has."""
     budget = cfg.get("TIME_BUDGET_MIN")
     return bool(budget) and (time.time() - _RUN_START) / 60 > budget - reserve_min
@@ -2736,7 +2755,7 @@ def load_sec_companies(cfg, tickers):
 # ----------------------------------------------------------------------------
 # 2, 3, 4. Yearly financial disclosures: holdings, family jobs, positions, paid travel, gifts
 # ----------------------------------------------------------------------------
-def collect_annual_disclosures(cfg):
+def collect_annual_disclosures(cfg, traders=None):
     """Returns DataFrame: chamber, last_key, first, filed, holdings (set of tickers), text (compressed)."""
     cache = _p(cfg, "cache", "annual_fd.pkl")
     df = pd.read_pickle(cache) if os.path.exists(cache) else pd.DataFrame(
@@ -2760,6 +2779,8 @@ def collect_annual_disclosures(cfg):
                 continue
             idx = idx[idx["FilingType"].astype(str).str.upper().isin(["O", "A", "T"])]
             idx = idx[~idx["DocID"].astype(str).isin(done)]
+            if traders:     # only members who actually trade stocks
+                idx = idx[idx["Last"].astype(str).map(lambda s: name_key(s).split(" ")[-1] if name_key(s) else "").isin(traders)]
             if not len(idx):
                 continue
             log(f"Yearly disclosures: House {y}: {len(idx)} reports to read")
@@ -2772,13 +2793,17 @@ def collect_annual_disclosures(cfg):
                     if resp.status_code != 200:
                         return r, None
                     with pdfplumber.open(io.BytesIO(resp.content)) as pdf:
-                        return r, "\n".join((pg.extract_text() or "") for pg in pdf.pages[:40])
+                        return r, "\n".join((pg.extract_text() or "") for pg in pdf.pages[:20])
                 except Exception:
                     return r, None
 
-            with ThreadPoolExecutor(cfg["WORKERS"]) as ex:
-                for r, text in ex.map(work, [r for _, r in idx.iterrows()]):
+            if True:
+                for r, text in chunked_map(work, [r for _, r in idx.iterrows()], cfg["WORKERS"], cfg):
                     done.add(str(r["DocID"]))
+                    if len(done) % 200 == 0 and rows:
+                        df = pd.concat([df, pd.DataFrame(rows)], ignore_index=True)
+                        rows = []
+                        df.to_pickle(cache)
                     if not text:
                         continue
                     hold = {clean_ticker(m.group(1)) for m in HOUSE_ASSET.finditer(text) if m.group(1)}
@@ -3037,6 +3062,8 @@ def collect_votes(cfg, lis_map):
                        if lg is not None and (rv.findtext("vote") or "") in ("Yea", "Nay", "Aye", "No")]
                 votes[k] = {"date": date, "bill": _bill_id(md.findtext("legis-num"), cong), "ids": ids}
                 added += 1
+                if added % 500 == 0:
+                    pd.to_pickle(votes, cache_p)
             except Exception:
                 misses += 1
             n += 1
