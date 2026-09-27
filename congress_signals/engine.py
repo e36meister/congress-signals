@@ -17,7 +17,7 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) research-notebook
 
 DEFAULT_CONFIG = {
     "DATA_DIR": "./congress-trading",
-    "START_DATE": "2021-01-01",      # how far back to collect / backtest
+    "START_DATE": "2014-01-01",      # how far back to collect / backtest
     "HOLD_DAYS": 60,                 # trading days each pick is held (~3 months)
     "PICKS_PER_WEEK": 5,             # max new long picks each week
     "SHORTS_PER_WEEK": 2,            # max new short picks each week
@@ -29,6 +29,10 @@ DEFAULT_CONFIG = {
     "MAX_PICKS_PER_MEMBER_WEEK": 2,  # stop one very active member from filling every weekly slot
     "MAX_WATCHLIST_BUYS_PER_MEMBER": 3,
     "SKIP_LATE_FILINGS": True,       # trades disclosed after the 45-day deadline did worst; never pick them
+    "NET_SELL_FILTER": True,         # skip buys when more members are selling the stock than buying it
+    "COST_BPS": 10,                  # trading cost per buy or sell, in hundredths of a percent (10 = 0.10%)
+    "HOLDING_PERIODS": [5, 20, 60, 125, 250],   # tested in the report: 1 week to 1 year
+    "DEFENSE_PICKS_PER_WEEK": 2,
     "WATCHLIST_LOOKBACK_DAYS": 30,
     "CLUSTER_WINDOW_DAYS": 30,
     "TRACK_PRIOR_TRADES": 5,
@@ -40,6 +44,8 @@ DEFAULT_CONFIG = {
         "testified": 0.4, "closed_briefing": 0.5, "vote_sector": 0.3, "home_state": 0.2, "contract_in_state": 0.3,
         "speech": 0.3, "social_post": 0.2, "pre_event": 0.4, "committee_cluster": 0.5, "option": 0.4,
         "spouse": 0.1, "first_time": 0.2, "unusual_size": 0.4, "new_sector": 0.1, "late": -0.5,
+        "small_cap": 0.4, "proven_member": 0.8, "crowded": -0.3, "ex_member_lobbyist": 0.3,
+        "defense_power": 0.5, "dod_award_after_trade": 0.6, "dod_momentum": 0.4,
     },
     "SHORT_WEIGHTS": {
         "sell_track_record": 1.0, "sell_cluster": 0.8, "buy_pressure": -0.4, "committee": 0.5,
@@ -47,6 +53,7 @@ DEFAULT_CONFIG = {
         "full_sale": 0.3, "insider_selling": 0.4, "insider_buying": -0.4, "momentum": -0.3, "donations": 0.2,
         "option": 0.5, "testified": 0.3, "closed_briefing": 0.5, "vote_sector": 0.3, "pre_event": 0.4,
         "committee_cluster": 0.5, "first_time": 0.1, "unusual_size": 0.4, "spouse": 0.1, "late": 0.2,
+        "small_cap": 0.3, "proven_seller": 0.8, "defense_power": 0.4,
     },
     "USE_TUNED_WEIGHTS": False,      # True = use weights saved by the tuning step
     "TRAIN_TEST_SPLIT": "2024-01-01",
@@ -678,38 +685,40 @@ def _stooq_close(t, start):
 
 
 def load_prices(cfg, tickers, max_age_hours=12):
+    """Keeps a saved price table; downloads full history only for new tickers and just the last
+    couple of weeks for everything else."""
     cache = _p(cfg, "cache", "prices.pkl")
     tickers = sorted(set(tickers) | {"SPY"})
-    px = None
-    if os.path.exists(cache) and (time.time() - os.path.getmtime(cache)) / 3600 < max_age_hours:
-        px = pd.read_pickle(cache)
-        if "SPY" not in px.columns:
-            px = None                      # stale/broken cache: rebuild
+    start = (pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+    px = pd.read_pickle(cache) if os.path.exists(cache) else None
+    if px is not None and ("SPY" not in px.columns or px.index.min() > pd.Timestamp(start) + pd.Timedelta(days=30)):
+        log("Prices: saved table doesn't reach back to the start date; rebuilding")
+        px = None
     dead_path = _p(cfg, "cache", "no_price_tickers.json")
     dead = json.load(open(dead_path)) if os.path.exists(dead_path) else {}
-    dead = {t: d for t, d in dead.items() if _days_since(d) < 30}      # retry dead tickers monthly
+    dead = {t: d for t, d in dead.items() if _days_since(d) < 30}
     missing = tickers if px is None else [t for t in tickers if t not in px.columns]
     missing = [t for t in missing if t not in dead or t == "SPY"]
-    start = (pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+    frames = []
     if missing:
-        log(f"Prices: downloading {len(missing)} tickers (first run takes a few minutes)")
-        frames = []
-        spy = _yf_close(["SPY"], start)
-        if "SPY" not in spy.columns:
-            s = _stooq_close("SPY", pd.Timestamp(start))
-            spy = s.to_frame() if s is not None else pd.DataFrame()
-        if "SPY" not in spy.columns:
-            raise RuntimeError("Could not download SPY prices from Yahoo or Stooq. Run "
-                               "'!pip install -U yfinance', then Runtime > Restart session and try again.")
-        frames.append(spy)
+        log(f"Prices: downloading full history for {len(missing)} tickers")
+        if px is None or "SPY" in missing:
+            spy = _yf_close(["SPY"], start)
+            if "SPY" not in spy.columns:
+                s = _stooq_close("SPY", pd.Timestamp(start))
+                spy = s.to_frame() if s is not None else pd.DataFrame()
+            if "SPY" not in spy.columns:
+                raise RuntimeError("Could not download SPY prices from Yahoo or Stooq.")
+            frames.append(spy)
         rest = [t for t in missing if t != "SPY"]
         for i in range(0, len(rest), 50):
+            if out_of_time(cfg, 60):
+                break
             frames.append(_yf_close(rest[i:i + 50], start, tries=2))
             time.sleep(2)
-        got = set().union(*[set(f.columns) for f in frames])
+        got = set().union(*[set(f.columns) for f in frames]) if frames else set()
         retry = [t for t in rest if t not in got]
-        if retry:
-            log(f"Prices: retrying {len(retry)} tickers Yahoo missed (throttling or delisted)")
+        if retry and not out_of_time(cfg, 60):
             time.sleep(20)
             for i in range(0, len(retry), 25):
                 frames.append(_yf_close(retry[i:i + 25], start, tries=2))
@@ -717,24 +726,46 @@ def load_prices(cfg, tickers, max_age_hours=12):
             got = set().union(*[set(f.columns) for f in frames])
             still = [t for t in retry if t not in got][:300]
             if still:
-                log(f"Prices: trying Stooq for {len(still)} remaining tickers")
                 with ThreadPoolExecutor(4) as ex:
                     for s_ in ex.map(lambda t: _stooq_close(t, pd.Timestamp(start)), still):
                         if s_ is not None and len(s_):
                             frames.append(s_.to_frame())
-        new = pd.concat(frames, axis=1)
+            got = set().union(*[set(f.columns) for f in frames])
+        today = dt.date.today().isoformat()
+        dead.update({t: today for t in rest if t not in got})
+        json.dump(dead, open(dead_path, "w"))
+        log(f"Prices: got {len(got)}/{len(missing)} new tickers")
+    new = pd.concat(frames, axis=1) if frames else pd.DataFrame()
+    if len(new):
         new.index = pd.to_datetime(new.index)
         if getattr(new.index, "tz", None) is not None:
             new.index = new.index.tz_localize(None)
-        got = set(new.columns)
-        today = dt.date.today().isoformat()
-        dead.update({t: today for t in missing if t not in got})
-        json.dump(dead, open(dead_path, "w"))
-        log(f"Prices: got {len(got)}/{len(missing)} tickers; {len(missing) - len(got)} have no price data "
-            f"(delisted, acquired or renamed) and will be skipped for 30 days")
-        px = new if px is None else px.join(new[[c for c in new.columns if c not in px.columns]], how="outer")
-        px = px.loc[:, ~px.columns.duplicated()].sort_index().dropna(how="all", axis=1)
-        px.to_pickle(cache)
+        new = new.loc[:, ~new.columns.duplicated()]
+    if px is None:
+        px = new
+    elif len(new):
+        px = px.join(new[[c for c in new.columns if c not in px.columns]], how="outer")
+    # refresh recent days for tickers already on file
+    if px is not None and len(px) and (pd.Timestamp.today().normalize() - px.index.max()).days >= 1 \
+            and (time.time() - (os.path.getmtime(cache) if os.path.exists(cache) else 0)) / 3600 > max_age_hours / 4:
+        since = (px.index.max() - pd.Timedelta(days=14)).strftime("%Y-%m-%d")
+        cols = [c for c in px.columns if c not in dead]
+        upd = []
+        for i in range(0, len(cols), 200):
+            if out_of_time(cfg, 45):
+                break
+            upd.append(_yf_close(cols[i:i + 200], since, tries=2))
+            time.sleep(1)
+        upd = pd.concat(upd, axis=1) if upd else pd.DataFrame()
+        if len(upd):
+            upd.index = pd.to_datetime(upd.index)
+            if getattr(upd.index, "tz", None) is not None:
+                upd.index = upd.index.tz_localize(None)
+            upd = upd.loc[:, ~upd.columns.duplicated()]
+            px = upd.combine_first(px)
+            log(f"Prices: updated recent days for {upd.shape[1]} tickers")
+    px = px.loc[:, ~px.columns.duplicated()].sort_index().dropna(how="all", axis=1)
+    px.to_pickle(cache)
     log(f"Prices: {px.shape[1]} tickers, {px.index.min().date()} to {px.index.max().date()}")
     return px
 
@@ -747,7 +778,7 @@ def load_meta(cfg, tickers):
     import yfinance as yf
     cache = _p(cfg, "cache", "ticker_meta.json")
     meta = json.load(open(cache)) if os.path.exists(cache) else {}
-    todo = [t for t in set(tickers) if not isinstance(meta.get(t), dict)]
+    todo = [t for t in set(tickers) if not isinstance(meta.get(t), dict) or "cap" not in meta[t]]
     if todo:
         log(f"Company info: looking up {len(todo)} tickers")
 
@@ -756,15 +787,18 @@ def load_meta(cfg, tickers):
                 try:
                     i = yf.Ticker(t).info or {}
                     return t, {"sector": i.get("sector") or i.get("quoteType"), "industry": i.get("industry"),
-                               "name": i.get("longName") or i.get("shortName") or "", "type": i.get("quoteType")}
+                               "name": i.get("longName") or i.get("shortName") or "", "type": i.get("quoteType"),
+                               "cap": i.get("marketCap")}
                 except Exception:
                     time.sleep(2)
-            return t, {"sector": None, "industry": None, "name": "", "type": None}
+            return t, {"sector": None, "industry": None, "name": "", "type": None, "cap": None}
 
+        todo = todo[:2500] if cfg.get("TIME_BUDGET_MIN") else todo
         with ThreadPoolExecutor(min(4, cfg["WORKERS"])) as ex:
             for i, f in enumerate(as_completed([ex.submit(get, t) for t in todo]), 1):
                 t, m = f.result()
-                meta[t] = m
+                if m.get("name") or not isinstance(meta.get(t), dict):
+                    meta[t] = m
                 if i % 300 == 0:
                     json.dump(meta, open(cache, "w"))
                     log(f"Company info: {i}/{len(todo)}")
@@ -921,7 +955,7 @@ def collect_contracts(cfg, meta, tickers):
     cache, path = _cache_json(cfg, "contracts.json", {})
     start = (pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=200)).strftime("%Y-%m-%d")
     today = dt.date.today().isoformat()
-    todo = [t for t in tickers if (not _fresh(cache.get(t, {}).get("fetched", ""), 7) or cache.get(t, {}).get("v") != 2)
+    todo = [t for t in tickers if (not _fresh(cache.get(t, {}).get("fetched", ""), 7) or cache.get(t, {}).get("v") != 3)
             and company_key((meta.get(t) or {}).get("name"))]
     if todo:
         log(f"Contracts: checking {len(todo)} companies on USAspending.gov")
@@ -929,7 +963,8 @@ def collect_contracts(cfg, meta, tickers):
     def work(t):
         key = company_key(meta[t]["name"])
         rows = []
-        for page in (1, 2):
+        pages = 6 if is_defense(t, meta) else 2
+        for page in range(1, pages + 1):
             body = {"filters": {"recipient_search_text": [key], "award_type_codes": ["A", "B", "C", "D"],
                                 "time_period": [{"start_date": start, "end_date": today}]},
                     "fields": ["Action Date", "Transaction Amount", "Recipient Name", "Awarding Agency",
@@ -957,8 +992,10 @@ def collect_contracts(cfg, meta, tickers):
     with ThreadPoolExecutor(4) as ex:
         for i, f in enumerate(as_completed([ex.submit(work, t) for t in todo]), 1):
             t, rows = f.result()
+            if out_of_time(cfg):
+                break
             if rows is not None:
-                cache[t] = {"fetched": dt.datetime.now().isoformat(), "rows": rows, "v": 2}
+                cache[t] = {"fetched": dt.datetime.now().isoformat(), "rows": rows, "v": 3}
             if i % 100 == 0:
                 json.dump(cache, open(path, "w"))
                 log(f"Contracts: {i}/{len(todo)}")
@@ -967,9 +1004,11 @@ def collect_contracts(cfg, meta, tickers):
            for t, v in cache.items() for r in v.get("rows", [])]
     c = pd.DataFrame(out, columns=["ticker", "action_date", "amount", "agency", "pop_state"])
     c["action_date"] = pd.to_datetime(c["action_date"], errors="coerce")
-    # USAspending publishes Defense awards with a 90-day delay; others within ~2 weeks
+    # When the public learned of each award: the Defense Department announces every award of $7.5M+ on the
+    # day it is made (defense.gov); smaller defense awards reach USAspending after 90 days; others after ~2 weeks.
+    dod = c["agency"].str.contains("Defense", case=False, na=False)
     c["known_date"] = c["action_date"] + pd.to_timedelta(
-        np.where(c["agency"].str.contains("Defense", case=False, na=False), 90, 14), unit="D")
+        np.where(dod & (c["amount"] >= 7.5e6), 1, np.where(dod, 90, 14)), unit="D")
     log(f"Contracts: {c['ticker'].nunique()} companies with federal contracts")
     return c
 
@@ -1333,8 +1372,8 @@ def _entry_positions(px_index, dates):
     return np.searchsorted(px_index.values, pd.to_datetime(dates).values, side="right")
 
 
-def forward_returns(tx, px, hold):
-    """Return after entering the day after disclosure and holding `hold` trading days."""
+def forward_returns(tx, px, hold, cost=0.0):
+    """Return after entering the day after disclosure and holding `hold` trading days, minus trading costs."""
     idx = px.index
     n = len(idx)
     ent = _entry_positions(idx, tx["filed_date"])
@@ -1357,7 +1396,7 @@ def forward_returns(tx, px, hold):
     with np.errstate(invalid="ignore", divide="ignore"):
         r = p1 / p0 - 1
         sr = s1 / s0 - 1
-    res["ret"] = np.where(ok, r, np.nan)
+    res["ret"] = np.where(ok, r - 2 * cost, np.nan)
     res["spy_ret"] = np.where(ok, sr, np.nan)
     res["excess"] = res["ret"].astype(float) - res["spy_ret"].astype(float)
     res["closed"] = ok & (ext < n)
@@ -1413,7 +1452,7 @@ def compute_features(tx, px, data, cfg):
     hold = cfg["HOLD_DAYS"]
     K = cfg["TRACK_PRIOR_TRADES"]
     tx = tx.copy().reset_index(drop=True)
-    tx = tx.join(forward_returns(tx, px, hold))
+    tx = tx.join(forward_returns(tx, px, hold, cost=cfg.get("COST_BPS", 0) / 1e4))
 
     # member track records (buys, and sells for the short side)
     v, n = _member_track(tx, +1)
@@ -1595,6 +1634,7 @@ def compute_features(tx, px, data, cfg):
                 note[i] = f"{'sponsored' if sp else 'cosponsored'} {len(w)} {w['policy'].iloc[0]} bill(s)"
         tx["f_bills"], tx["bill_note"] = f, note
     tx = compute_connections(tx, data, cfg, mems)
+    tx = extra_features(tx, px, data, cfg, mems)
     return tx
 
 
@@ -1667,7 +1707,14 @@ def _why_buy(r):
                    ("f_spouse", lambda: "spouse or family account"),
                    ("f_first_time", lambda: "first time trading this stock"),
                    ("f_unusual_size", lambda: "3x their usual trade size"),
-                   ("f_late", lambda: f"filed late ({int(r['lag_days'])}d)")):
+                   ("f_late", lambda: f"filed late ({int(r['lag_days'])}d)"),
+                   ("f_proven_member", lambda: f"member's past buys beat the market consistently ({int(r['proven_n'])} trades)"),
+                   ("f_small_cap", lambda: "smaller company"),
+                   ("f_ex_member_lobbyist", lambda: "a former member of Congress lobbies for the company"),
+                   ("f_defense_power", lambda: "defense company, and the member sits on a defense committee"),
+                   ("f_dod_award_after_trade", lambda: "Defense Department award announced after the trade"),
+                   ("f_dod_momentum", lambda: f"defense awards rising (${r['dod_awards_180d']/1e6:,.0f}M in 6 months)"),
+                   ("f_crowded", lambda: "but the stock already jumped on disclosure day")):
         if r.get(f, 0) and r.get(f, 0) >= 0.5:
             b.append(txt())
     if r["f_size"] >= 0.4:
@@ -1733,8 +1780,9 @@ def _perf(daily):
             "Worst drawdown": (eq / eq.cummax() - 1).min()}, eq
 
 
-def _portfolio_slots(picks, px, idx, slots, idle="spy", sign=1):
-    """Each pick gets 1/slots of the money; money not in a pick sits in SPY (or cash)."""
+def _portfolio_slots(picks, px, idx, slots, idle="spy", sign=1, cost=0.0):
+    """Each pick gets 1/slots of the money; money not in a pick sits in SPY (or cash). Trading costs are
+    charged when a pick is bought and sold."""
     rets = px.pct_change(fill_method=None).reindex(idx)
     spy = rets["SPY"].fillna(0).values
     col = {c: i for i, c in enumerate(px.columns)}
@@ -1747,6 +1795,9 @@ def _portfolio_slots(picks, px, idx, slots, idle="spy", sign=1):
         b = idx.searchsorted(p.exit_date, side="right")
         acc[a:b] += sign * np.nan_to_num(R[a:b, col[p.ticker]])
         cnt[a:b] += 1
+        if cost and b > a:
+            acc[a] -= cost
+            acc[b - 1] -= cost
     over = cnt > slots                      # more open picks than slots: scale them down
     w = np.where(over, 1 / np.maximum(cnt, 1), 1 / slots)
     invested = np.minimum(cnt, slots) / slots
@@ -1769,7 +1820,8 @@ def _portfolio(picks, px, idx, sign=1):
     return pd.Series(np.where(cnt > 0, acc / np.maximum(cnt, 1), 0.0), index=idx)
 
 
-def _select(rows, score_col, pct, per_week, blocked=None, short=False, per_member=None, skip_late=False):
+def _select(rows, score_col, pct, per_week, blocked=None, short=False, per_member=None, skip_late=False,
+            net_sell=False):
     """Weekly picks: clears the percentile of all EARLIER scores, best first, no re-buying an open ticker,
     at most `per_member` picks per member each week, and (optionally) no trades filed past the 45-day deadline."""
     rows = rows.sort_values("filed_date")
@@ -1784,6 +1836,8 @@ def _select(rows, score_col, pct, per_week, blocked=None, short=False, per_membe
         cand = cand[cand[score_col] >= bar]
         if skip_late and "lag_days" in cand:
             cand = cand[cand["lag_days"] <= 45]
+        if net_sell and not short:
+            cand = cand[cand["n_sellers"] <= cand["n_buyers"]]
         taken, by_member = 0, {}
         for _, r in cand.iterrows():
             if taken >= per_week:
@@ -1841,7 +1895,11 @@ BUY_FACTORS = [("f_track_record", "Member track record"), ("f_cluster", "Cluster
                ("f_committee_cluster", "Committee colleague same trade"), ("f_option", "Options trade"),
                ("f_spouse", "Spouse or family account"), ("f_first_time", "First trade in this stock"),
                ("f_unusual_size", "Unusually large for them"), ("f_new_sector", "New industry for them"),
-               ("f_late", "Filed late"), ("score", "Overall buy score")]
+               ("f_late", "Filed late"), ("f_small_cap", "Smaller company"), ("f_proven_member", "Proven member (past record)"),
+               ("f_crowded", "Jumped on disclosure day"), ("f_ex_member_lobbyist", "Former member lobbies for company"),
+               ("f_defense_company", "Defense company"), ("f_defense_power", "Defense company + defense committee"),
+               ("f_dod_award_after_trade", "Defense award announced after trade"), ("f_dod_momentum", "Rising defense awards"),
+               ("score", "Overall buy score")]
 SHORT_FACTORS = [("f_sell_track_record", "Member sell track record"), ("f_sell_cluster", "Cluster selling"),
                  ("f_full_sale", "Sold entire position"), ("f_committee", "Committee relevance"),
                  ("f_subcommittee", "Subcommittee relevance"), ("f_committee_leader", "Chairs or leads that committee"),
@@ -1852,7 +1910,8 @@ SHORT_FACTORS = [("f_sell_track_record", "Member sell track record"), ("f_sell_c
                  ("f_vote_sector", "Voted on industry bill near sale"), ("f_pre_event", "Sold before company event"),
                  ("f_committee_cluster", "Committee colleague same trade"), ("f_first_time", "First sale of this stock"),
                  ("f_unusual_size", "Unusually large for them"), ("f_spouse", "Spouse or family account"),
-                 ("f_late", "Filed late"), ("short_score", "Overall short score")]
+                 ("f_late", "Filed late"), ("f_small_cap", "Smaller company"), ("f_proven_seller", "Proven seller (past record)"),
+                 ("f_defense_power", "Defense company + defense committee"), ("short_score", "Overall short score")]
 
 
 def _trade_stats(rows, sign):
@@ -1863,14 +1922,18 @@ def _trade_stats(rows, sign):
             "Beat SPY (%)": (y > 0).mean() * 100 if len(c) else np.nan,
             "Avg return per trade (%)": (sign * c["ret"]).mean() * 100 if len(c) else np.nan,
             "Avg vs SPY per trade (%)": y.mean() * 100 if len(c) else np.nan,
-            "Median vs SPY (%)": y.median() * 100 if len(c) else np.nan}
+            "Median vs SPY (%)": y.median() * 100 if len(c) else np.nan,
+            "Avg vs its industry (%)": (sign * c["excess_sector"]).mean() * 100 if len(c) and "excess_sector" in c else np.nan,
+            "Range low (%)": (y.mean() - 1.96 * y.std() / np.sqrt(len(y))) * 100 if len(c) > 1 else np.nan,
+            "Range high (%)": (y.mean() + 1.96 * y.std() / np.sqrt(len(y))) * 100 if len(c) > 1 else np.nan}
 
 
 def run_backtest(scored, px, cfg, since=None):
     all_buys = scored[(scored["tx_type"] == "buy") & scored["entry_px"].notna()]
     all_sells = scored[(scored["tx_type"] == "sell") & scored["entry_px"].notna()]
     longs, held = _select(all_buys, "score", cfg["PICK_PERCENTILE"], cfg["PICKS_PER_WEEK"],
-                          per_member=cfg.get("MAX_PICKS_PER_MEMBER_WEEK"), skip_late=cfg.get("SKIP_LATE_FILINGS"))
+                          per_member=cfg.get("MAX_PICKS_PER_MEMBER_WEEK"), skip_late=cfg.get("SKIP_LATE_FILINGS"),
+                          net_sell=cfg.get("NET_SELL_FILTER"))
     # shorts are still tested (so the report shows whether they would have worked) even when turned off
     shorts, _ = _select(all_sells, "short_score", cfg["SHORT_PERCENTILE"], cfg["SHORTS_PER_WEEK"] or 2, blocked=held,
                         short=True, per_member=cfg.get("MAX_PICKS_PER_MEMBER_WEEK"), skip_late=cfg.get("SKIP_LATE_FILINGS"))
@@ -1885,16 +1948,21 @@ def run_backtest(scored, px, cfg, since=None):
     slots_l = max(1, int(cfg["PICKS_PER_WEEK"] * cfg["HOLD_DAYS"] / 5))
     slots_s = max(1, int(cfg["SHORTS_PER_WEEK"] * cfg["HOLD_DAYS"] / 5))
     empty = pd.Series(0.0, index=idx)
-    ld, n_long = _portfolio_slots(longs, px, idx, slots_l, "spy") if len(longs) else (px["SPY"].pct_change(fill_method=None).reindex(idx), empty)
-    sd, _ = _portfolio_slots(shorts, px, idx, slots_s, "cash", sign=-1) if len(shorts) else (empty, empty)
+    cst = cfg.get("COST_BPS", 0) / 1e4
+    ld, n_long = _portfolio_slots(longs, px, idx, slots_l, "spy", cost=cst) if len(longs) else (px["SPY"].pct_change(fill_method=None).reindex(idx), empty)
+    sd, _ = _portfolio_slots(shorts, px, idx, slots_s, "cash", sign=-1, cost=cst) if len(shorts) else (empty, empty)
     a = cfg["SHORT_ALLOCATION"]
     series = {"Long picks": ld, "Short picks": sd,
               **({f"Long {100-a*100:.0f}% / short {a*100:.0f}%": (1 - a) * ld + a * sd} if cfg.get("ENABLE_SHORTS") else {}),
               "Copy every purchase": _portfolio(buys.drop_duplicates(["ticker", "filed_date"]), px, idx),
               "S&P 500 (SPY)": px["SPY"].pct_change(fill_method=None).reindex(idx)}
     perf, curves = {}, {}
+    spy_d = series["S&P 500 (SPY)"]
     for k, d in series.items():
         perf[k], curves[k] = _perf(d)
+        if k != "S&P 500 (SPY)":
+            ann, lo_, hi_ = excess_range(d.fillna(0), spy_d.fillna(0))
+            perf[k].update({"Per year vs S&P 500": ann, "Likely range low": lo_, "Likely range high": hi_})
 
     trade_stats = pd.DataFrame({"Long picks": _trade_stats(longs, 1) if len(longs) else {},
                                 "All disclosed purchases": _trade_stats(buys, 1),
@@ -1950,7 +2018,13 @@ def run_backtest(scored, px, cfg, since=None):
                     ("f_contract_in_state", "Contracts in member's state"), ("f_speech", "Floor speech mention"),
                     ("f_social_post", "Social post mention"), ("f_pre_event", "Before a company event"),
                     ("f_option", "Options trades"), ("f_spouse", "Spouse or family")) if f in scored}}
-    return {"longs": fmt_trades(longs, False), "shorts": fmt_trades(shorts, True), "perf": pd.DataFrame(perf),
+    extras = {}
+    if not cfg.get("_nested") and since is None:
+        pt, pv = persistence_table(scored)
+        extras = {"horizons": horizons_table(scored, px, cfg), "persistence": pt, "persistence_verdict": pv,
+                  "crowding": crowding_table(scored), "sizes": size_table(scored),
+                  "defense": defense_backtest(scored, px, cfg) if "is_defense" in scored else None}
+    return {**extras, "longs": fmt_trades(longs, False), "shorts": fmt_trades(shorts, True), "perf": pd.DataFrame(perf),
             "curves": pd.DataFrame(curves), "trade_stats": trade_stats,
             "buy_factors": _attribution(cb, BUY_FACTORS, 1), "short_factors": _attribution(cs, SHORT_FACTORS, -1),
             "lag": pd.DataFrame(lag), "stability": stab, "coverage": coverage, "since": since, "cfg": cfg,
@@ -2103,6 +2177,10 @@ def build_watchlist(scored, px, cfg, enrich_top=20):
             over = n[n >= cap].index
             buys.loc[over, "action"] = "watch"
             buys.loc[over, "why"] = buys.loc[over, "why"] + f"; this member already has {cap} buy picks"
+        if cfg.get("NET_SELL_FILTER"):
+            ns_ = (buys["n_sellers"] > buys["n_buyers"]) & (buys["action"] == "BUY")
+            buys.loc[ns_, "action"] = "mixed"
+            buys.loc[ns_, "why"] = buys.loc[ns_, "why"] + "; more members selling than buying, so not a buy"
         buys.loc[(buys["n_sellers"] >= 2) & (buys["action"] == "watch"), "action"] = "mixed"
     sells = ticker_level(recent[recent["tx_type"] == "sell"], "short_score", short=True)
     if len(sells):
@@ -2383,8 +2461,10 @@ they can't be backtested.</p></div>"""
 def prepare(cfg):
     global _RUN_START
     tx = collect_all(cfg)
-    px = load_prices(cfg, tx["ticker"].unique())
+    px = load_prices(cfg, list(tx["ticker"].unique()) + BENCHMARK_ETFS)
     tx = tx[tx["ticker"].isin(px.columns)].reset_index(drop=True)
+    if tx.empty:
+        raise RuntimeError("No trades have price data yet (price download was cut short); the next run continues.")
     meta = load_meta(cfg, tx["ticker"].unique())
     committees = load_committees(cfg)
     history = load_committee_history(cfg, committees)
@@ -2398,7 +2478,8 @@ def prepare(cfg):
         data["insiders"] = pd.concat([ins, live], ignore_index=True).drop_duplicates(
             ["ticker", "filed", "owner", "code"]) if len(live) else ins
     if step("USE_CONTRACTS"):
-        data["contracts"] = collect_contracts(cfg, meta, enrich)
+        defense = [t for t in tx["ticker"].unique() if is_defense(t, meta)]
+        data["contracts"] = collect_contracts(cfg, meta, list(dict.fromkeys(defense + enrich)))
     if step("USE_LOBBYING"):
         data["lobbying"] = collect_lobbying(cfg, meta, enrich)
     if step("USE_DONATIONS"):
@@ -2506,10 +2587,28 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
             "longs": _rows(L.sort_values("filed_date", ascending=False).head(500), _TRADE_COLS),
             "shorts": _rows(bt["shorts"].sort_values("filed_date", ascending=False).head(250), _TRADE_COLS),
         }
+        tbl = lambda df: [{k: _j(x) for k, x in r.items()} for r in df.to_dict("records")] if df is not None and len(df) else []
+        data["backtest"].update({"horizons": tbl(bt.get("horizons")), "persistence": tbl(bt.get("persistence")),
+                                 "persistence_verdict": bt.get("persistence_verdict") or {},
+                                 "crowding": tbl(bt.get("crowding")), "sizes": tbl(bt.get("sizes"))})
+        dbt = bt.get("defense")
+        if dbt is not None:
+            dperf, dts, DL = dbt["perf"], dbt["trade_stats"], dbt["longs"]
+            dwk = dbt["curves"].resample("W-FRI").last().dropna(how="all")
+            data["defense"] = {
+                "updated": now,
+                "perf": [{"name": c, **{k: _j(dperf.loc[k, c]) for k in dperf.index}} for c in dperf.columns],
+                "curve": {"dates": [d.strftime("%Y-%m-%d") for d in dwk.index],
+                          "series": {c: [_j((x - 1) * 100) for x in dwk[c].values] for c in dwk.columns}},
+                "trade_stats": [{"name": c, **{k: _j(dts.loc[k, c]) for k in dts.index}} for c in dts.columns],
+                "buy_factors": _rows(dbt["buy_factors"], {"signal": "Signal", "group": "Group", "n": "Trades",
+                                                          "avg": "Avg result vs SPY", "hit": "Worked (%)"}),
+                "n_longs": len(DL), "longs": _rows(DL.sort_values("filed_date", ascending=False).head(300), _TRADE_COLS)}
     if buys is not None or sells is not None:
         wcols = {"rank": "rank", "action": "action", "t": "ticker", "co": "company", "pct": "percentile",
                  "m": "members", "why": "why", "d": "filed_date", "move": "move_since_filing", "an": "analysts",
-                 "up": "target_upside_%", "earn": "next_earnings", "news": "news_7d", "sec": "sector"}
+                 "up": "target_upside_%", "earn": "next_earnings", "news": "news_7d", "sec": "sector",
+                 "nwm": "news_with_member", "def": "is_defense", "cap": "market_cap", "dodm": "dod_awards_180d"}
         data["watchlist"] = {
             "updated": now, "lookback": cfg["WATCHLIST_LOOKBACK_DAYS"],
             "buys": _rows(buys, dict(wcols, s="score")),
@@ -3365,3 +3464,327 @@ def compute_connections(tx, data, cfg, mems):
             pre[i] = 1.0
     tx["f_pre_event"] = pre
     return tx.drop(columns=["_ck"])
+
+
+# ############################################################################
+#  v4: company size, proven members, crowding, industry benchmarks, costs,
+#      holding periods, confidence ranges, former-member lobbyists, DEFENSE
+# ############################################################################
+SECTOR_ETF = {"Technology": "XLK", "Industrials": "XLI", "Financial Services": "XLF", "Healthcare": "XLV",
+              "Energy": "XLE", "Utilities": "XLU", "Basic Materials": "XLB", "Consumer Cyclical": "XLY",
+              "Consumer Defensive": "XLP", "Real Estate": "XLRE", "Communication Services": "XLC"}
+DEFENSE_ETF = "ITA"
+BENCHMARK_ETFS = sorted(set(SECTOR_ETF.values()) | {DEFENSE_ETF})
+# committees and subcommittees that oversee the military, its budget and intelligence
+DEFENSE_CIDS = {"HSAS", "SSAS", "HSAP02", "SSAP02", "HLIG", "SLIN", "HSHM", "SSGA"}
+DEFENSE_EXTRA = {"PLTR", "BAH", "SAIC", "CACI", "LDOS", "KTOS", "AVAV", "MRCY", "BWXT", "HII", "GD", "LMT", "NOC",
+                 "RTX", "LHX", "TDG", "HEI", "TXT", "CW", "PSN", "KBR", "V2X", "DRS", "AXON", "RKLB", "ONDS",
+                 "RCAT", "KRMN", "PKE", "DCO", "MOG-A", "ESLT", "BA", "GE", "HWM", "SPR", "ATRO", "VSAT", "IRDM",
+                 "BBAI", "PL", "RDW", "LUNR", "ASTS", "SWBI", "RGR", "AOUT", "NPK", "OSIS", "TGI", "HXL", "WWD"}
+EX_MEMBER_RE = re.compile(r"^(former\s+)?(u\.?\s?s\.?\s+)?(member of (the )?(u\.?\s?s\.?\s+)?(house|congress|senate)|"
+                          r"member,? (u\.?\s?s\.?\s+)?house|representative|senator|congressman|congresswoman)\b", re.I)
+
+
+def is_defense(t, meta, dod_share=None):
+    """Aerospace & defense companies, known defense contractors, and industrial companies that get most of
+    their federal contract money from the Defense Department (not tech giants that merely sell to it)."""
+    m = meta.get(t) or {}
+    ind = (m.get("industry") or "").lower()
+    if t in DEFENSE_EXTRA or "aerospace & defense" in ind:
+        return True
+    return bool(dod_share is not None and dod_share.get(t, 0) >= 0.6 and m.get("sector") == "Industrials"
+                and (m.get("cap") or 0) < 1e11)
+
+
+def dod_share_by_ticker(con):
+    if con is None or not len(con):
+        return {}
+    dod = con["agency"].str.contains("Defense", case=False, na=False)
+    tot = con.groupby("ticker")["amount"].sum()
+    d = con[dod].groupby("ticker")["amount"].sum()
+    big = tot[tot >= 5e7].index
+    return {t: float(d.get(t, 0) / tot[t]) for t in big}
+
+
+def _running_stats(tx, typ, sign, value_col="excess"):
+    """For each trade, n / mean / t-stat of the member's EARLIER closed trades of that type (public by filing)."""
+    done = tx[(tx["tx_type"] == typ) & tx["closed"] & tx[value_col].notna()]
+    n, mean, tstat = np.zeros(len(tx)), np.zeros(len(tx)), np.zeros(len(tx))
+    pos = {ix: i for i, ix in enumerate(tx.index)}
+    for (ch, lk), g in tx.groupby(["chamber", "last_key"]):
+        past = done[(done["chamber"] == ch) & (done["last_key"] == lk)].sort_values("exit_date")
+        if len(past) < 2:
+            continue
+        x = (sign * past[value_col]).clip(-1, 3).values
+        c1, c2 = np.concatenate([[0], np.cumsum(x)]), np.concatenate([[0], np.cumsum(x * x)])
+        k = np.searchsorted(past["exit_date"].values, g["filed_date"].values, side="left")
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mu = np.where(k > 0, c1[k] / np.maximum(k, 1), 0)
+            var = np.where(k > 1, (c2[k] - k * mu * mu) / np.maximum(k - 1, 1), np.nan)
+            t = np.where(k > 1, mu / np.sqrt(np.maximum(var, 1e-12) / k), 0)
+        ii = [pos[i] for i in g.index]
+        n[ii], mean[ii], tstat[ii] = k, mu, np.nan_to_num(t)
+    return n, mean, tstat
+
+
+def extra_features(tx, px, data, cfg, mems):
+    meta = data["meta"]
+    D = pd.Timedelta
+    # company size (today's market value; size rankings change slowly)
+    cap = tx["ticker"].map(lambda t: (meta.get(t) or {}).get("cap"))
+    tx["market_cap"] = cap
+    tx["f_small_cap"] = np.where(cap.isna(), 0.0, np.where(cap < 2e9, 1.0, np.where(cap < 1e10, 0.5, 0.0)))
+
+    # proven members: past picks beat the market by a statistically meaningful margin
+    n, mu, t = _running_stats(tx, "buy", 1)
+    tx["proven_n"], tx["proven_mean"], tx["proven_t"] = n, mu, t
+    # needs a real edge over the typical member (3%+ per trade), not just over the market, and enough trades
+    done = tx[(tx["tx_type"] == "buy") & tx["closed"] & tx["excess"].notna()].sort_values("exit_date")
+    if len(done):
+        c = np.concatenate([[0], np.cumsum(done["excess"].clip(-1, 3).values)])
+        k = np.searchsorted(done["exit_date"].values, tx["filed_date"].values, side="left")
+        mu = mu - np.where(k > 0, c[k] / np.maximum(k, 1), 0)
+    tx["f_proven_member"] = np.where((n >= 20) & (t >= 2.5) & (mu >= 0.03), 1.0,
+                                     np.where((n >= 12) & (t >= 2) & (mu >= 0.02), 0.5, 0.0))
+    n, mu, t = _running_stats(tx, "sell", -1)
+    done = tx[(tx["tx_type"] == "sell") & tx["closed"] & tx["excess"].notna()].sort_values("exit_date")
+    if len(done):
+        c = np.concatenate([[0], np.cumsum((-done["excess"]).clip(-1, 3).values)])
+        k = np.searchsorted(done["exit_date"].values, tx["filed_date"].values, side="left")
+        mu = mu - np.where(k > 0, c[k] / np.maximum(k, 1), 0)
+    tx["f_proven_seller"] = np.where((n >= 20) & (t >= 2.5) & (mu >= 0.03), 1.0,
+                                     np.where((n >= 12) & (t >= 2) & (mu >= 0.02), 0.5, 0.0))
+
+    # crowding: the stock jumped the day the trade was disclosed (copy-traders piling in)
+    idx = px.index
+    colmap = {c: i for i, c in enumerate(px.columns)}
+    ci = tx["ticker"].map(colmap)
+    pos = np.searchsorted(idx.values, tx["filed_date"].values, side="right") - 1
+    ok = ci.notna().values & (pos >= 1)
+    p_i, c_i = np.where(ok, pos, 1), np.where(ok, ci.fillna(0).astype(int), 0)
+    arr, spy = px.values, px["SPY"].values
+    with np.errstate(invalid="ignore", divide="ignore"):
+        jump = arr[p_i, c_i] / arr[p_i - 1, c_i] - spy[p_i] / spy[p_i - 1]
+    tx["disclosure_jump"] = np.where(ok, jump, np.nan)
+    tx["f_crowded"] = (np.nan_to_num(tx["disclosure_jump"]) > 0.03).astype(float)
+
+    # stock vs its own industry fund over the same holding period
+    etf = [DEFENSE_ETF if is_defense(tk, meta) else SECTOR_ETF.get(s) for tk, s in zip(tx["ticker"], tx["sector"])]
+    tx["benchmark_etf"] = etf
+    if not len(tx):
+        tx["sector_ret"] = tx["excess_sector"] = np.nan
+    ent = np.searchsorted(idx.values, tx["entry_date"].values, side="left")
+    ext = np.searchsorted(idx.values, tx["exit_date"].values, side="left")
+    ei = [colmap.get(e) for e in etf]
+    ok = np.array([e is not None for e in ei], dtype=bool) & tx["entry_date"].notna().values.astype(bool) & (ent < len(idx)) & (ext < len(idx))
+    ev = np.full(len(tx), np.nan)
+    for i in np.where(ok)[0]:
+        a, b = arr[ent[i], ei[i]], arr[ext[i], ei[i]]
+        if a and b and not np.isnan(a) and not np.isnan(b):
+            ev[i] = b / a - 1
+    tx["sector_ret"] = ev
+    tx["excess_sector"] = tx["ret"] - tx["sector_ret"]
+
+    # former members of Congress lobbying for the company (last 2 years)
+    lb = data.get("lobbying")
+    exm = np.zeros(len(tx))
+    if lb is not None and len(lb) and "covered" in lb:
+        lg = {k: v for k, v in lb.dropna(subset=["posted"]).groupby("ticker")}
+        for i, (tk, f) in enumerate(zip(tx["ticker"], tx["filed_date"])):
+            g = lg.get(tk)
+            if g is None:
+                continue
+            w = g[(g.posted <= f) & (g.posted > f - D(days=730))]
+            if any(EX_MEMBER_RE.match(part.strip()) for c in w.covered for part in (c or "").split("|")):
+                exm[i] = 1.0
+    tx["f_ex_member_lobbyist"] = exm
+
+    # ---------------- defense ----------------
+    con = data.get("contracts")
+    share = dod_share_by_ticker(con)
+    tx["is_defense"] = [is_defense(tk, meta, share) for tk in tx["ticker"]]
+    tx["f_defense_company"] = tx["is_defense"].astype(float)
+    cids = [set(m.get("cids") or []) if m else set() for m in mems]
+    tx["f_defense_power"] = [1.0 if (d and (c & DEFENSE_CIDS)) else 0.0 for d, c in zip(tx["is_defense"], cids)]
+    after, mom, recent = np.zeros(len(tx)), np.zeros(len(tx)), np.zeros(len(tx))
+    if con is not None and len(con):
+        dod = con[con["agency"].str.contains("Defense", case=False, na=False)].dropna(subset=["action_date"])
+        g = {k: v.sort_values("action_date") for k, v in dod.groupby("ticker")}
+        for i, (tk, td, fd) in enumerate(zip(tx["ticker"], tx["trade_date"], tx["filed_date"])):
+            v = g.get(tk)
+            if v is None:
+                continue
+            known = v[v.known_date <= fd]
+            # award announced after the member traded but before we saw the trade
+            if ((known.action_date > td) & (known.amount >= 7.5e6)).any():
+                after[i] = 1.0
+            last = known[known.action_date > fd - D(days=180)].amount.sum()
+            prior = known[(known.action_date <= fd - D(days=180)) & (known.action_date > fd - D(days=900))].amount.sum() / 4
+            recent[i] = last
+            if last > 0 and (prior == 0 or last / prior >= 2):
+                mom[i] = 1.0
+            elif prior > 0 and last / prior >= 1.3:
+                mom[i] = 0.5
+    tx["f_dod_award_after_trade"], tx["f_dod_momentum"], tx["dod_awards_180d"] = after, mom, recent
+    return tx
+
+
+# ----------------------------------------------------------------------------
+# Tables for the report and dashboard
+# ----------------------------------------------------------------------------
+def horizons_table(scored, px, cfg):
+    """How purchases did over several holding periods (does the edge show up fast, slow, or never?)."""
+    hs = cfg.get("HOLDING_PERIODS", [5, 20, 60, 125, 250])
+    buys = scored[(scored["tx_type"] == "buy")].copy()
+    if buys.empty:
+        return pd.DataFrame()
+    hist = buys.sort_values("filed_date")["score"].expanding().quantile(cfg["PICK_PERCENTILE"] / 100).shift(1)
+    buys["top"] = buys["score"] >= hist.reindex(buys.index).fillna(np.inf)
+    rows = []
+    labels = {5: "1 week", 20: "1 month", 60: "3 months", 125: "6 months", 250: "1 year"}
+    for h in hs:
+        fr = forward_returns(buys, px, h, cost=cfg.get("COST_BPS", 0) / 1e4)
+        fr = fr[fr["closed"]]
+        for name, m in (("All purchases", pd.Series(True, index=fr.index)),
+                        ("Top-scored purchases", buys.loc[fr.index, "top"]),
+                        ("Defense purchases", buys.loc[fr.index, "is_defense"].astype(bool) if "is_defense" in buys else None),
+                        ("Small companies", buys.loc[fr.index, "f_small_cap"] >= 1 if "f_small_cap" in buys else None)):
+            if m is None or not m.any():
+                continue
+            x = fr.loc[m[m].index, "excess"].dropna()
+            if len(x) < 20:
+                continue
+            se = x.std() / np.sqrt(len(x))
+            rows.append({"Holding period": labels.get(h, f"{h} days"), "Group": name, "Trades": len(x),
+                         "Avg vs SPY": x.mean(), "Range low": x.mean() - 1.96 * se, "Range high": x.mean() + 1.96 * se,
+                         "Beat SPY (%)": (x > 0).mean() * 100})
+    return pd.DataFrame(rows)
+
+
+def persistence_table(scored, min_trades=10):
+    """Does a member's record in earlier years predict their next year?"""
+    b = scored[(scored["tx_type"] == "buy") & scored["closed"] & scored["excess"].notna()].copy()
+    if b.empty:
+        return pd.DataFrame(), {}
+    b["year"] = b["filed_date"].dt.year
+    b["who"] = b["chamber"] + "|" + b["last_key"]
+    by = b.groupby(["who", "year"])["excess"].agg(["mean", "count"]).reset_index()
+    rows, pairs = [], []
+    for y in sorted(b["year"].unique())[2:]:
+        past = b[(b.year < y) & (b.year >= y - 2)].groupby("who")["excess"].agg(["mean", "count"])
+        now = by[(by.year == y)].set_index("who")
+        j = past[past["count"] >= min_trades].join(now[now["count"] >= min_trades], lsuffix="_past", rsuffix="_now", how="inner")
+        if len(j) < 8:
+            continue
+        top = j["mean_past"] >= j["mean_past"].quantile(0.8)
+        corr = j["mean_past"].rank().corr(j["mean_now"].rank())
+        rows.append({"Year": int(y), "Members compared": len(j), "Rank correlation": corr,
+                     "Past top 20%: next year vs SPY": j.loc[top, "mean_now"].mean(),
+                     "Everyone else: next year vs SPY": j.loc[~top, "mean_now"].mean()})
+        pairs.append(corr)
+    t = pd.DataFrame(rows)
+    verdict = {}
+    if len(t):
+        gap = (t["Past top 20%: next year vs SPY"] - t["Everyone else: next year vs SPY"]).mean()
+        verdict = {"avg_corr": float(np.nanmean(pairs)), "avg_gap": float(gap),
+                   "persists": bool(np.nanmean(pairs) > 0.1 and gap > 0.01)}
+    return t, verdict
+
+
+def crowding_table(scored):
+    b = scored[(scored["tx_type"] == "buy") & scored["closed"] & scored["disclosure_jump"].notna()]
+    rows = []
+    for lab, m in (("Jumped over 3% on disclosure day", b["disclosure_jump"] > 0.03),
+                   ("Moved normally", b["disclosure_jump"].abs() <= 0.03),
+                   ("Fell over 3% on disclosure day", b["disclosure_jump"] < -0.03)):
+        if m.sum() >= 20:
+            rows.append({"Disclosure day": lab, "Purchases": int(m.sum()), "Disclosure-day move vs SPY": b.loc[m, "disclosure_jump"].mean(),
+                         "Next 3 months vs SPY": b.loc[m, "excess"].mean(), "Beat SPY (%)": (b.loc[m, "excess"] > 0).mean() * 100})
+    return pd.DataFrame(rows)
+
+
+def size_table(scored):
+    b = scored[(scored["tx_type"] == "buy") & scored["closed"] & scored["market_cap"].notna()]
+    rows = []
+    for lab, lo, hi in (("Small (under $2B)", 0, 2e9), ("Mid ($2B-$10B)", 2e9, 1e10), ("Large ($10B-$200B)", 1e10, 2e11),
+                        ("Mega (over $200B)", 2e11, 1e16)):
+        m = (b["market_cap"] >= lo) & (b["market_cap"] < hi)
+        if m.sum() >= 20:
+            x = b.loc[m, "excess"]
+            xs = b.loc[m, "excess_sector"].dropna()
+            rows.append({"Company size": lab, "Purchases": int(m.sum()), "Avg vs SPY": x.mean(),
+                         "Avg vs its industry": xs.mean() if len(xs) else np.nan, "Beat SPY (%)": (x > 0).mean() * 100})
+    return pd.DataFrame(rows)
+
+
+def excess_range(daily, bench):
+    """Yearly return above the benchmark, with an approximate 95% range."""
+    d = (daily - bench).dropna()
+    if len(d) < 60:
+        return np.nan, np.nan, np.nan
+    ann = d.mean() * 252
+    se = d.std() * 252 / np.sqrt(len(d))
+    return ann, ann - 1.96 * se, ann + 1.96 * se
+
+
+def defense_backtest(scored, px, cfg):
+    sub = scored[scored["is_defense"].astype(bool)]
+    if (sub["tx_type"] == "buy").sum() < 50:
+        return None
+    dcfg = dict(cfg, PICKS_PER_WEEK=max(1, cfg.get("DEFENSE_PICKS_PER_WEEK", 2)), _nested=True)
+    bt = run_backtest(sub, px, dcfg)
+    if not cfg.get("ENABLE_SHORTS"):
+        bt["perf"] = bt["perf"].drop(columns=["Short picks"], errors="ignore")
+        bt["curves"] = bt["curves"].drop(columns=["Short picks"], errors="ignore")
+    if DEFENSE_ETF in px.columns:
+        idx = bt["curves"].index
+        ita = px[DEFENSE_ETF].pct_change(fill_method=None).reindex(idx)
+        p, eq = _perf(ita)
+        bt["perf"]["Defense fund (ITA)"] = pd.Series(p)
+        bt["curves"]["Defense fund (ITA)"] = eq
+    return bt
+
+
+# ----------------------------------------------------------------------------
+# Live DoD contract announcements (best effort: the site sometimes blocks automated requests)
+# ----------------------------------------------------------------------------
+def dod_announcements(cfg, days=30):
+    cache, path = _cache_json(cfg, "dod_announcements.json", {"items": []})
+    if _fresh(cache.get("fetched", ""), 0.5):
+        return cache["items"]
+    hdr = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                         "Chrome/126.0 Safari/537.36", "Accept": "application/rss+xml,text/xml,*/*"}
+    try:
+        r = requests.get("https://www.defense.gov/DesktopModules/ArticleCS/RSS.ashx?ContentType=400&Site=945&max=30",
+                         headers=hdr, timeout=30)
+        if r.status_code != 200:
+            log(f"DoD announcements: not reachable today ({r.status_code}); using the contract database instead")
+            return cache["items"]
+        import xml.etree.ElementTree as ET
+        from bs4 import BeautifulSoup
+        items = []
+        for it in ET.fromstring(r.content).iter("item"):
+            date = pd.to_datetime(it.findtext("pubDate"), errors="coerce")
+            text = BeautifulSoup(it.findtext("description") or "", "lxml").get_text(" ")
+            link = it.findtext("link") or ""
+            if len(text) < 500 and link:
+                try:
+                    page = requests.get(link, headers=hdr, timeout=30)
+                    if page.status_code == 200:
+                        soup = BeautifulSoup(page.text, "lxml")
+                        body = soup.find("div", class_=re.compile("body|content", re.I)) or soup
+                        text = body.get_text(" ")
+                except Exception:
+                    pass
+            for para in re.split(r"\n\s*\n|(?<=\.)\s{2,}", text):
+                m = re.match(r"\s*([A-Z][\w.,&'\- ]{2,80}?),\s+[A-Z][\w .'\-]+,\s+[A-Z][\w .]+,\s+(?:is|was|has been)\s+awarded\s+an?\s+"
+                             r"(?:\w+[- ])*\$([\d,]+)", para)
+                if m:
+                    items.append([str(date.date()) if pd.notna(date) else "", company_key(m.group(1)),
+                                  float(m.group(2).replace(",", "")), para.strip()[:300]])
+        cache = {"fetched": dt.datetime.now().isoformat(), "items": (items + cache["items"])[:3000]}
+        json.dump(cache, open(path, "w"))
+        log(f"DoD announcements: {len(items)} awards in the latest announcements")
+    except Exception as e:
+        log(f"DoD announcements: skipped ({e})")
+    return cache["items"]

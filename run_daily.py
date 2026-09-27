@@ -42,7 +42,11 @@ def upload_to_drive(local_path, title):
 
 
 def main():
-    scored, px = E.prepare(cfg)
+    try:
+        scored, px = E.prepare(cfg)
+    except RuntimeError as e:
+        E.log(f"Stopped early: {e}")
+        return
     bt = E.run_backtest(scored, px, cfg)
     E.backtest_report(bt, cfg)
     E.export_dashboard(cfg, bt=bt)
