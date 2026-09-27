@@ -30,6 +30,7 @@ DEFAULT_CONFIG = {
     "MAX_WATCHLIST_BUYS_PER_MEMBER": 3,
     "SKIP_LATE_FILINGS": True,       # trades disclosed after the 45-day deadline did worst; never pick them
     "NET_SELL_FILTER": True,         # skip buys when more members are selling the stock than buying it
+    "BUSY_TRADER_SOFTCAP": 100,      # when learning what works: a member's first 100 trades count fully, later ones a bit less
     "COST_BPS": 10,                  # trading cost per buy or sell, in hundredths of a percent (10 = 0.10%)
     "HOLDING_PERIODS": [5, 20, 60, 125, 250],   # tested in the report: 1 week to 1 year
     "DEFENSE_PICKS_PER_WEEK": 2,
@@ -1962,9 +1963,21 @@ def _select(rows, score_col, pct, per_week, blocked=None, short=False, per_membe
     return pd.DataFrame(picks).reset_index(drop=True), held
 
 
-def _attribution(rows, factors, sign):
+def member_weights(rows, cap=100):
+    """How much each trade counts when learning which signals work. A member's first `cap` trades count fully;
+    past that each trade counts sqrt(cap / their trade count), so a member with 1,100 trades counts about as
+    much as 330 trades instead of 1,100. Busy members still count the most, just not overwhelmingly.
+    No trade is dropped, and picks and the watchlist are unaffected."""
+    if not cap or "member" not in rows or not len(rows):
+        return np.ones(len(rows))
+    n = rows.groupby("member")["member"].transform("size").values.astype(float)
+    return np.minimum(1.0, np.sqrt(cap / n))
+
+
+def _attribution(rows, factors, sign, w=None):
     out = []
     y = sign * rows["excess"]
+    w = pd.Series(np.ones(len(rows)) if w is None else w, index=rows.index)
     for f, label in factors:
         s = rows[f]
         if s.nunique() <= 1:
@@ -1977,11 +1990,52 @@ def _attribution(rows, factors, sign):
             q = s.rank(pct=True)
             grp = np.where(q > 0.8, "high", np.where(q <= 0.2, "low", "mid"))
         for gname in ("no", "yes", "low", "mid", "high"):
-            m = grp == gname
+            m = (grp == gname) & y.notna().values
             if m.sum():
+                ww = w[m]
                 out.append({"Signal": label, "Group": gname, "Trades": int(m.sum()),
-                            "Avg result vs SPY": y[m].mean(), "Worked (%)": (y[m] > 0).mean() * 100})
+                            "Avg result vs SPY": float(np.average(y[m], weights=ww)),
+                            "Worked (%)": float(np.average(y[m] > 0, weights=ww)) * 100})
     return pd.DataFrame(out)
+
+
+def busy_check(rows, factors, cfg, top=3):
+    """Does each signal still work without the most active traders? Compares the signal's effect
+    (yes/high group minus no/low group) with and without the `top` busiest members."""
+    if not len(rows):
+        return pd.DataFrame(), []
+    busiest = list(rows["member"].value_counts().head(top).index)
+    cap = cfg.get("BUSY_TRADER_SOFTCAP", 100)
+    rest = rows[~rows["member"].isin(busiest)]
+    a_all = _attribution(rows, factors, 1, member_weights(rows, cap))
+    a_rest = _attribution(rest, factors, 1, member_weights(rest, cap))
+
+    def effects(a):
+        out = {}
+        for sig, g in a.groupby("Signal"):
+            g = g.set_index("Group")
+            hi = "yes" if "yes" in g.index else ("high" if "high" in g.index else None)
+            lo = "no" if "no" in g.index else ("low" if "low" in g.index else None)
+            if hi and lo and g.loc[hi, "Trades"] >= 30 and g.loc[lo, "Trades"] >= 30:
+                out[sig] = (g.loc[hi, "Avg result vs SPY"] - g.loc[lo, "Avg result vs SPY"], int(g.loc[hi, "Trades"]))
+        return out
+    e_all, e_rest = effects(a_all), effects(a_rest)
+    out = []
+    for sig, (ea, n) in e_all.items():
+        er = e_rest.get(sig, (np.nan, 0))[0]
+        if np.isnan(er):
+            verdict = "Not enough trades from others"
+        elif abs(ea) < 0.002:
+            verdict = "No real effect either way"
+        elif np.sign(er) != np.sign(ea):
+            verdict = "Flips: mostly the busiest traders"
+        elif abs(er) >= 0.5 * abs(ea):
+            verdict = "Holds up"
+        else:
+            verdict = "Weaker without them"
+        out.append({"Signal": sig, "Trades with signal": n, "Effect (everyone)": ea,
+                    "Effect without busiest 3": er, "Verdict": verdict})
+    return pd.DataFrame(out).sort_values("Effect (everyone)", ascending=False), busiest
 
 
 BUY_FACTORS = [("f_track_record", "Member track record"), ("f_cluster", "Cluster buying"),
@@ -2129,9 +2183,12 @@ def run_backtest(scored, px, cfg, since=None):
         extras = {"horizons": horizons_table(scored, px, cfg), "persistence": pt, "persistence_verdict": pv,
                   "crowding": crowding_table(scored), "sizes": size_table(scored),
                   "defense": defense_backtest(scored, px, cfg) if "is_defense" in scored else None}
+        bc, busiest = busy_check(buys[buys["closed"]], BUY_FACTORS, cfg)
+        extras.update({"busy_check": bc, "busiest": busiest})
     return {**extras, "longs": fmt_trades(longs, False), "shorts": fmt_trades(shorts, True), "perf": pd.DataFrame(perf),
             "curves": pd.DataFrame(curves), "trade_stats": trade_stats,
-            "buy_factors": _attribution(cb, BUY_FACTORS, 1), "short_factors": _attribution(cs, SHORT_FACTORS, -1),
+            "buy_factors": _attribution(cb, BUY_FACTORS, 1, member_weights(cb, cfg.get("BUSY_TRADER_SOFTCAP", 100))),
+            "short_factors": _attribution(cs, SHORT_FACTORS, -1, member_weights(cs, cfg.get("BUSY_TRADER_SOFTCAP", 100))),
             "lag": pd.DataFrame(lag), "stability": stab, "coverage": coverage, "since": since, "cfg": cfg,
             "avg_open": float(n_long[n_long > 0].mean()) if len(n_long) and (n_long > 0).any() else 0.0,
             "slots": slots_l}
@@ -2140,21 +2197,25 @@ def run_backtest(scored, px, cfg, since=None):
 # ============================================================================
 # Weight tuning: learn on early years, test on later years
 # ============================================================================
-def _fit(rows, names, y, defaults):
-    """Ridge regression of the trade's result on the signals. Signals with too little data keep their default."""
+def _fit(rows, names, y, defaults, w=None):
+    """Ridge regression of the trade's result on the signals, each trade weighted by member_weights.
+    Signals with too little data keep their default."""
     X = rows[[f"f_{n}" for n in names]].values.astype(float)
+    w = np.ones(len(X)) if w is None else np.asarray(w, float)
     mode = np.array([pd.Series(X[:, j]).mode().iloc[0] for j in range(X.shape[1])])
     usable = ((X != mode).sum(0) >= 30)
     out = {}
     if usable.sum():
         Xu = X[:, usable]
-        mu, sd = Xu.mean(0), Xu.std(0)
+        mu = np.average(Xu, axis=0, weights=w)
+        sd = np.sqrt(np.average((Xu - mu) ** 2, axis=0, weights=w))
         sd[sd == 0] = 1
         Xs = (Xu - mu) / sd
-        lam = 0.5 * len(Xs)
-        w = np.linalg.solve(Xs.T @ Xs + lam * np.eye(Xs.shape[1]), Xs.T @ (y - y.mean())) / sd
-        w = w / max(np.abs(w).max(), 1e-12)
-        out = dict(zip([n for n, u in zip(names, usable) if u], w))
+        lam = 0.5 * w.sum()
+        yc = y - np.average(y, weights=w)
+        coef = np.linalg.solve((Xs * w[:, None]).T @ Xs + lam * np.eye(Xs.shape[1]), (Xs * w[:, None]).T @ yc) / sd
+        coef = coef / max(np.abs(coef).max(), 1e-12)
+        out = dict(zip([n for n, u in zip(names, usable) if u], coef))
     return {n: round(float(out[n]), 3) if n in out else defaults[n] for n in names}
 
 
@@ -2164,8 +2225,10 @@ def tune_weights(scored, px, cfg):
     trb, trs = tr[tr["tx_type"] == "buy"], tr[tr["tx_type"] == "sell"]
     if len(trb) < 200:
         raise RuntimeError(f"Only {len(trb)} completed purchases before {split.date()}; move TRAIN_TEST_SPLIT later.")
-    bw = _fit(trb, list(cfg["BUY_WEIGHTS"]), trb["excess"].clip(-0.5, 1).values, cfg["BUY_WEIGHTS"])
-    sw = (_fit(trs, list(cfg["SHORT_WEIGHTS"]), (-trs["excess"]).clip(-1, 0.5).values, cfg["SHORT_WEIGHTS"])
+    cap = cfg.get("BUSY_TRADER_SOFTCAP", 100)
+    bw = _fit(trb, list(cfg["BUY_WEIGHTS"]), trb["excess"].clip(-0.5, 1).values, cfg["BUY_WEIGHTS"], member_weights(trb, cap))
+    sw = (_fit(trs, list(cfg["SHORT_WEIGHTS"]), (-trs["excess"]).clip(-1, 0.5).values, cfg["SHORT_WEIGHTS"],
+               member_weights(trs, cap))
           if len(trs) >= 200 else dict(cfg["SHORT_WEIGHTS"]))
     log(f"Tuned on {len(trb):,} purchases and {len(trs):,} sales that finished before {split.date()}")
     default = apply_scores(scored, dict(cfg, USE_TUNED_WEIGHTS=False), cfg["BUY_WEIGHTS"], cfg["SHORT_WEIGHTS"])
@@ -2710,7 +2773,8 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
         data["backtest"]["price_coverage"] = json.load(open(cpath)) if os.path.exists(cpath) else {}
         data["backtest"].update({"horizons": tbl(bt.get("horizons")), "persistence": tbl(bt.get("persistence")),
                                  "persistence_verdict": bt.get("persistence_verdict") or {},
-                                 "crowding": tbl(bt.get("crowding")), "sizes": tbl(bt.get("sizes"))})
+                                 "crowding": tbl(bt.get("crowding")), "sizes": tbl(bt.get("sizes")),
+                                 "busy_check": tbl(bt.get("busy_check")), "busiest": bt.get("busiest") or []})
         dbt = bt.get("defense")
         if dbt is not None:
             dperf, dts, DL = dbt["perf"], dbt["trade_stats"], dbt["longs"]
