@@ -11,6 +11,7 @@ cfg = {**E.DEFAULT_CONFIG,
        "LDA_API_KEY": env("LDA_API_KEY", ""),
        "QUIVER_API_KEY": env("QUIVER_API_KEY", ""),
        "FMP_API_KEY": env("FMP_API_KEY", ""),
+       "TIINGO_API_KEY": env("TIINGO_API_KEY", ""),
        "USE_TUNED_WEIGHTS": env("USE_TUNED_WEIGHTS", "false").lower() == "true",
        "TIME_BUDGET_MIN": int(env("TIME_BUDGET_MIN", "320"))}
 os.makedirs(cfg["DATA_DIR"], exist_ok=True)

@@ -63,6 +63,8 @@ DEFAULT_CONFIG = {
     "LDA_API_KEY": "",               # optional free key from lda.gov (faster lobbying downloads)
     "QUIVER_API_KEY": "",
     "FMP_API_KEY": "",
+    "TIINGO_API_KEY": "",            # free key from tiingo.com: fills in prices for delisted stocks
+    "TIINGO_PER_RUN": 45,
     "USE_HOUSE": True, "USE_SENATE": True, "USE_INSIDERS": True, "USE_CONTRACTS": True,
     "USE_LOBBYING": True, "USE_DONATIONS": True, "USE_BILLS": True, "USE_NEWS": True,
     "USE_EMPLOYEE_DONATIONS": True, "USE_ANNUAL_DISCLOSURES": True, "USE_COMPANY_INFO": True,
@@ -698,8 +700,13 @@ def load_prices(cfg, tickers, max_age_hours=12):
     dead = json.load(open(dead_path)) if os.path.exists(dead_path) else {}
     dead = {t: d for t, d in dead.items() if _days_since(d) < 30}
     missing = tickers if px is None else [t for t in tickers if t not in px.columns]
+    dead_missing = [t for t in missing if t in dead and t != "SPY"]
     missing = [t for t in missing if t not in dead or t == "SPY"]
     frames = []
+    if dead_missing and cfg.get("TIINGO_API_KEY") and not out_of_time(cfg, 60):
+        tf = tiingo_prices(cfg, dead_missing, start)
+        if len(tf):
+            frames.append(tf)
     if missing:
         log(f"Prices: downloading full history for {len(missing)} tickers")
         if px is None or "SPY" in missing:
@@ -731,6 +738,12 @@ def load_prices(cfg, tickers, max_age_hours=12):
                         if s_ is not None and len(s_):
                             frames.append(s_.to_frame())
             got = set().union(*[set(f.columns) for f in frames])
+        still = [t for t in rest if t not in got]
+        if still and cfg.get("TIINGO_API_KEY") and not out_of_time(cfg, 60):
+            tf = tiingo_prices(cfg, still, start)
+            if len(tf):
+                frames.append(tf)
+                got |= set(tf.columns)
         today = dt.date.today().isoformat()
         dead.update({t: today for t in rest if t not in got})
         json.dump(dead, open(dead_path, "w"))
@@ -2462,6 +2475,10 @@ def prepare(cfg):
     global _RUN_START
     tx = collect_all(cfg)
     px = load_prices(cfg, list(tx["ticker"].unique()) + BENCHMARK_ETFS)
+    cov = price_coverage(tx, px)
+    json.dump(cov, open(_p(cfg, "state", "price_coverage.json"), "w"))
+    log(f"Prices: {cov['with_prices']:,} of {cov['trades']:,} trades have price data; {cov['missing']:,} "
+        f"({cov['missing_share']*100:.1f}%) are missing, mostly delisted companies")
     tx = tx[tx["ticker"].isin(px.columns)].reset_index(drop=True)
     if tx.empty:
         raise RuntimeError("No trades have price data yet (price download was cut short); the next run continues.")
@@ -2588,6 +2605,8 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
             "shorts": _rows(bt["shorts"].sort_values("filed_date", ascending=False).head(250), _TRADE_COLS),
         }
         tbl = lambda df: [{k: _j(x) for k, x in r.items()} for r in df.to_dict("records")] if df is not None and len(df) else []
+        cpath = os.path.join(cfg["DATA_DIR"], "state", "price_coverage.json")
+        data["backtest"]["price_coverage"] = json.load(open(cpath)) if os.path.exists(cpath) else {}
         data["backtest"].update({"horizons": tbl(bt.get("horizons")), "persistence": tbl(bt.get("persistence")),
                                  "persistence_verdict": bt.get("persistence_verdict") or {},
                                  "crowding": tbl(bt.get("crowding")), "sizes": tbl(bt.get("sizes"))})
@@ -3530,8 +3549,22 @@ def _running_stats(tx, typ, sign, value_col="excess"):
 def extra_features(tx, px, data, cfg, mems):
     meta = data["meta"]
     D = pd.Timedelta
-    # company size (today's market value; size rankings change slowly)
-    cap = tx["ticker"].map(lambda t: (meta.get(t) or {}).get("cap"))
+    # company size at the time of the trade: today's value scaled by the (split-adjusted) price change since then
+    cap_now = tx["ticker"].map(lambda t: (meta.get(t) or {}).get("cap")).astype(float)
+    last_px = px.ffill().iloc[-1]
+    idx0 = px.index
+    p_then = []
+    for tk, d in zip(tx["ticker"], tx["filed_date"]):
+        if tk in px.columns and pd.notna(d):
+            j = idx0.searchsorted(d, side="right") - 1
+            p_then.append(px[tk].iat[j] if j >= 0 else np.nan)
+        else:
+            p_then.append(np.nan)
+    p_now = tx["ticker"].map(last_px).astype(float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        cap = cap_now * np.array(p_then, dtype=float) / p_now
+    cap = pd.Series(np.where(np.isfinite(cap), cap, np.nan), index=tx.index)
+    tx["market_cap_now"] = cap_now
     tx["market_cap"] = cap
     tx["f_small_cap"] = np.where(cap.isna(), 0.0, np.where(cap < 2e9, 1.0, np.where(cap < 1e10, 0.5, 0.0)))
 
@@ -3788,3 +3821,69 @@ def dod_announcements(cfg, days=30):
     except Exception as e:
         log(f"DoD announcements: skipped ({e})")
     return cache["items"]
+
+
+# ----------------------------------------------------------------------------
+# Prices for delisted stocks (Tiingo, free key; 50 requests an hour on the free plan)
+# ----------------------------------------------------------------------------
+def tiingo_prices(cfg, missing, start):
+    key = (cfg.get("TIINGO_API_KEY") or "").strip()
+    if not key or not missing:
+        return pd.DataFrame()
+    tried, tpath = _cache_json(cfg, "tiingo_tried.json", {})
+    todo = [t for t in missing if _days_since(tried.get(t, "2000-01-01")) >= 60][: int(cfg.get("TIINGO_PER_RUN", 45))]
+    if not todo:
+        return pd.DataFrame()
+    sup = _p(cfg, "cache", "tiingo_supported.csv")
+    if not os.path.exists(sup) or (time.time() - os.path.getmtime(sup)) > 7 * 86400:
+        try:
+            r = requests.get("https://apimedia.tiingo.com/docs/tiingo/daily/supported_tickers.zip", timeout=120)
+            z = zipfile.ZipFile(io.BytesIO(r.content))
+            open(sup, "wb").write(z.read(z.namelist()[0]))
+        except Exception as e:
+            log(f"Delisted prices: Tiingo ticker list failed ({e})")
+    try:
+        st = pd.read_csv(sup, dtype=str)
+        st["t"] = st["ticker"].str.upper().str.replace(".", "-", regex=False)
+        st = st[st["exchange"].isin(["NYSE", "NASDAQ", "AMEX", "NYSE ARCA", "NYSE MKT", "BATS", "OTC", "PINK"]) |
+                st["exchange"].isna()]
+        st["endDate"] = pd.to_datetime(st["endDate"], errors="coerce")
+    except Exception:
+        st = pd.DataFrame(columns=["t", "ticker", "endDate", "startDate"])
+    log(f"Delisted prices: trying Tiingo for {len(todo)} stocks Yahoo doesn't have")
+    frames, today = [], dt.date.today().isoformat()
+    for t in todo:
+        tried[t] = today
+        # a delisted ticker keeps its symbol until reused; reused ones get a digit suffix (e.g. ABC1)
+        cand = st[(st["t"] == t) | st["t"].str.fullmatch(re.escape(t) + r"\d")]
+        cand = cand[cand["endDate"].isna() | (cand["endDate"] >= pd.Timestamp(start))]
+        for sym in list(cand.sort_values("endDate")["ticker"]) or [t]:
+            try:
+                r = requests.get(f"https://api.tiingo.com/tiingo/daily/{sym}/prices",
+                                 params={"startDate": start, "token": key, "resampleFreq": "daily"}, timeout=60)
+                if r.status_code == 429:
+                    log("Delisted prices: Tiingo hourly limit reached; the next run continues")
+                    json.dump(tried, open(tpath, "w"))
+                    return pd.concat(frames, axis=1) if frames else pd.DataFrame()
+                js = r.json() if r.status_code == 200 else []
+            except Exception:
+                js = []
+            if isinstance(js, list) and js:
+                s = pd.Series({pd.Timestamp(x["date"][:10]): x.get("adjClose") for x in js}, name=t).dropna()
+                if len(s) > 20:
+                    frames.append(s.to_frame())
+                    break
+    json.dump(tried, open(tpath, "w"))
+    got = pd.concat(frames, axis=1) if frames else pd.DataFrame()
+    log(f"Delisted prices: found {got.shape[1]} of {len(todo)} on Tiingo")
+    return got
+
+
+def price_coverage(tx_all, px):
+    """How many disclosed stock trades have no price data (mostly delisted companies)."""
+    t = tx_all.dropna(subset=["ticker"])
+    have = t["ticker"].isin(px.columns)
+    miss = t.loc[~have, "ticker"].value_counts()
+    return {"trades": int(len(t)), "with_prices": int(have.sum()), "missing": int((~have).sum()),
+            "missing_share": float((~have).mean()) if len(t) else 0.0,
+            "top_missing": [[k, int(v)] for k, v in miss.head(15).items()]}
