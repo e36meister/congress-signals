@@ -2677,12 +2677,17 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
 import zlib
 
 _RUN_START = time.time()
+HIT_TIME_LIMIT = False
 
 
 def out_of_time(cfg, reserve_min=60):
     """True when a time-limited run (GitHub) should stop collecting and save what it has."""
+    global HIT_TIME_LIMIT
     budget = cfg.get("TIME_BUDGET_MIN")
-    return bool(budget) and (time.time() - _RUN_START) / 60 > budget - reserve_min
+    over = bool(budget) and (time.time() - _RUN_START) / 60 > budget - reserve_min
+    if over:
+        HIT_TIME_LIMIT = True      # the run stopped a step early, so there is more data to collect
+    return over
 
 
 def _datagov_key(cfg):

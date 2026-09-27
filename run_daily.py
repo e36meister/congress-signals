@@ -96,7 +96,8 @@ def main():
     E.backtest_report(bt, cfg)
     E.export_dashboard(cfg, bt=bt)
     tuned_path = os.path.join(cfg["DATA_DIR"], "state", "tuned_weights.json")
-    if dt.date.today().weekday() == 6 or not os.path.exists(tuned_path):     # retune on Sundays
+    now = dt.datetime.utcnow()
+    if (now.weekday() == 6 and now.hour < 16) or not os.path.exists(tuned_path):   # retune Sunday mornings
         try:
             tuned = E.tune_weights(scored, px, cfg)
             E.export_dashboard(cfg, tuned=tuned)
@@ -111,9 +112,22 @@ def main():
     E.log(f"Finished. {len(new)} new signal(s).")
 
 
+def flag_unfinished():
+    """Tells the workflow to start another run right away when this one ran out of time."""
+    path = os.path.join(cfg["DATA_DIR"], "state", "needs_more_runs")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if E.HIT_TIME_LIMIT:
+        open(path, "w").write(dt.datetime.utcnow().isoformat())
+        E.log("Data collection isn't finished; the next run will start right after this one.")
+    elif os.path.exists(path):
+        os.remove(path)
+
+
 if __name__ == "__main__":
     try:
         main()
     except Exception:
         traceback.print_exc()
         raise
+    finally:
+        flag_unfinished()
