@@ -144,7 +144,7 @@ def norm_type(s):
 
 # old symbols whose history now lives under a new ticker
 RENAMES = {"FB": "META", "SQ": "XYZ", "ANTM": "ELV", "WLTW": "WTW", "UTX": "RTX", "RTN": "RTX", "TPX": "SGI",
-           "ZI": "GTM", "ABC": "COR", "PKI": "RVTY", "FISV": "FI", "DISCA": "WBD", "DISCK": "WBD", "HFC": "DINO",
+           "ZI": "GTM", "ABC": "COR", "PKI": "RVTY", "FI": "FISV", "MMC": "MRSH", "BK": "BNY", "DISCA": "WBD", "DISCK": "WBD", "HFC": "DINO",
            "RE": "EG", "BRK": "BRK-B", "BRK-A": "BRK-B", "TWTR": None, "FLT": "CPAY", "PEAK": "DOC", "CDAY": "DAY",
            "COG": "CTRA", "XEC": "CTRA", "NLOK": "GEN", "SIVB": None}
 
@@ -701,7 +701,7 @@ def _stooq_close(t, start):
         return None
 
 
-def load_prices(cfg, tickers, max_age_hours=12):
+def load_prices(cfg, tickers, max_age_hours=12, priority=None):
     """Keeps a saved price table; downloads full history only for new tickers and just the last
     couple of weeks for everything else."""
     cache = _p(cfg, "cache", "prices.pkl")
@@ -713,7 +713,12 @@ def load_prices(cfg, tickers, max_age_hours=12):
         px = None
     dead_path = _p(cfg, "cache", "no_price_tickers.json")
     dead = json.load(open(dead_path)) if os.path.exists(dead_path) else {}
-    dead = {t: d for t, d in dead.items() if _days_since(d) < 30}
+    fails, fails_path = _cache_json(cfg, "no_price_fails.json", {})
+    # a ticker Yahoo missed once is often just throttling: try again after 2 days, then 7, then 30
+    wait = lambda t: 2 if fails.get(t, 1) <= 1 else (7 if fails.get(t, 1) <= 3 else 30)
+    dead = {t: d for t, d in dead.items() if _days_since(d) < wait(t)}
+    pri = priority or {}
+    tickers = sorted(tickers, key=lambda t: (-pri.get(t, 0), t))       # most-traded first
     missing = tickers if px is None else [t for t in tickers if t not in px.columns]
     dead_missing = [t for t in missing if t in dead and t != "SPY"]
     missing = [t for t in missing if t not in dead or t == "SPY"]
@@ -761,7 +766,13 @@ def load_prices(cfg, tickers, max_age_hours=12):
                 got |= set(tf.columns)
         today = dt.date.today().isoformat()
         dead.update({t: today for t in rest if t not in got})
+        for t in rest:
+            if t in got:
+                fails.pop(t, None)
+            else:
+                fails[t] = fails.get(t, 0) + 1
         json.dump(dead, open(dead_path, "w"))
+        json.dump(fails, open(fails_path, "w"))
         log(f"Prices: got {len(got)}/{len(missing)} new tickers")
     new = pd.concat(frames, axis=1) if frames else pd.DataFrame()
     if len(new):
@@ -877,6 +888,64 @@ def _read_tsv(z, suffix, cols):
     d = pd.read_csv(z.open(name[0]), sep="\t", dtype=str, quoting=3, on_bad_lines="skip", low_memory=False)
     d.columns = [c.strip().upper() for c in d.columns]
     return d[[c for c in cols if c in d.columns]]
+
+
+def ticker_renames(cfg):
+    """Finds tickers that changed (e.g. FI -> FISV) without a hand-made list. SEC insider filings record
+    the ticker each company used on every filing date; the SEC's current ticker list gives today's ticker
+    for the same company. Old symbols no company uses today map to the company's current ticker."""
+    hdr = _sec_headers(cfg)
+    seen, seen_path = _cache_json(cfg, "ticker_cik.json", {})          # symbol -> [cik, last filing date]
+    done, done_path = _cache_json(cfg, "ticker_cik_quarters.json", [])
+    if not hdr:
+        return {}
+    start = pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=120)
+    today = pd.Timestamp.today()
+    n_new = 0
+    for y in range(start.year, today.year + 1):
+        for q in range(1, 5):
+            key = f"{y}q{q}"
+            if key in done or pd.Timestamp(y, 3 * q - 2, 1) > today or pd.Timestamp(y, 3 * q, 1) < start - pd.Timedelta(days=90):
+                continue
+            if out_of_time(cfg, 75):
+                break
+            try:
+                r = requests.get(f"https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/"
+                                 f"{key}_form345.zip", headers=hdr, timeout=180)
+                if r.status_code != 200:
+                    continue
+                sub = _read_tsv(zipfile.ZipFile(io.BytesIO(r.content)), "SUBMISSION.TSV",
+                                ["ISSUERCIK", "ISSUERTRADINGSYMBOL", "FILING_DATE"])
+                sub["t"] = sub["ISSUERTRADINGSYMBOL"].map(clean_ticker)
+                sub["d"] = pd.to_datetime(sub["FILING_DATE"], format="%d-%b-%Y", errors="coerce").dt.strftime("%Y-%m-%d")
+                sub = sub.dropna(subset=["t", "d", "ISSUERCIK"]).sort_values("d").drop_duplicates("t", keep="last")
+                for t, c, d in zip(sub["t"], sub["ISSUERCIK"], sub["d"]):
+                    if t not in seen or d >= seen[t][1]:
+                        seen[t] = [int(c), d]
+                if pd.Timestamp(y, 3 * q, 1) + pd.offsets.MonthEnd(0) + pd.Timedelta(days=45) < today:
+                    done.append(key)
+                n_new += 1
+                time.sleep(0.2)
+            except Exception as e:
+                log(f"Ticker changes: {key} failed ({e})")
+    if n_new:
+        json.dump(seen, open(seen_path, "w"))
+        json.dump(done, open(done_path, "w"))
+    try:
+        cur = requests.get("https://www.sec.gov/files/company_tickers.json", headers=hdr, timeout=60).json().values()
+    except Exception as e:
+        log(f"Ticker changes: SEC ticker list failed ({e})")
+        return {}
+    now_tickers, cik_now = set(), {}
+    for v in cur:                                    # ordered by size; first ticker per company is its main one
+        t = clean_ticker(v["ticker"])
+        if t:
+            now_tickers.add(t)
+            cik_now.setdefault(int(v["cik_str"]), t)
+    ren = {t: cik_now[c] for t, (c, _) in seen.items()
+           if t not in now_tickers and c in cik_now and cik_now[c] != t}
+    log(f"Ticker changes: {len(ren)} old symbols map to a company's current ticker")
+    return ren
 
 
 def collect_insiders(cfg):
@@ -2497,7 +2566,13 @@ they can't be backtested.</p></div>"""
 def prepare(cfg):
     global _RUN_START
     tx = collect_all(cfg)
-    px = load_prices(cfg, list(tx["ticker"].unique()) + BENCHMARK_ETFS)
+    renames = ticker_renames(cfg) if cfg.get("USE_INSIDERS", True) else {}
+    if renames:
+        changed = tx["ticker"].isin(renames)
+        tx.loc[changed, "ticker"] = tx.loc[changed, "ticker"].map(renames)
+        log(f"Ticker changes: moved {int(changed.sum()):,} trades to their company's current ticker")
+    px = load_prices(cfg, list(tx["ticker"].unique()) + BENCHMARK_ETFS,
+                     priority=tx["ticker"].value_counts().to_dict())
     cov = price_coverage(tx, px)
     json.dump(cov, open(_p(cfg, "state", "price_coverage.json"), "w"))
     log(f"Prices: {cov['with_prices']:,} of {cov['trades']:,} trades have price data; {cov['missing']:,} "
@@ -2513,6 +2588,9 @@ def prepare(cfg):
     step = lambda flag: cfg.get(flag, True) and not out_of_time(cfg)
     if step("USE_INSIDERS"):
         ins = collect_insiders(cfg)
+        if renames and len(ins):
+            ins = ins.copy()
+            ins["ticker"] = ins["ticker"].replace(renames)
         recent = tx.loc[tx["filed_date"] >= pd.Timestamp.today() - pd.Timedelta(days=60), "ticker"].value_counts()
         live = recent_form4(cfg, list(recent.index[:150]))
         data["insiders"] = pd.concat([ins, live], ignore_index=True).drop_duplicates(
@@ -3871,8 +3949,11 @@ def tiingo_prices(cfg, missing, start):
     if not key or not missing:
         return pd.DataFrame()
     tried, tpath = _cache_json(cfg, "tiingo_tried.json", {})
-    todo = [t for t in missing if _days_since(tried.get(t, "2000-01-01")) >= 60][: int(cfg.get("TIINGO_PER_RUN", 45))]
-    if not todo:
+    month = dt.date.today().strftime("%Y-%m")
+    used = sum(1 for d in tried.values() if str(d).startswith(month) and not str(d).endswith("x"))
+    room = max(0, min(int(cfg.get("TIINGO_PER_RUN", 45)), 480 - used))
+    todo = [t for t in missing if _days_since(str(tried.get(t, "2000-01-01"))[:10]) >= 60]
+    if not todo or not room:
         return pd.DataFrame()
     sup = _p(cfg, "cache", "tiingo_supported.csv")
     if not os.path.exists(sup) or (time.time() - os.path.getmtime(sup)) > 7 * 86400:
@@ -3890,13 +3971,24 @@ def tiingo_prices(cfg, missing, start):
         st["endDate"] = pd.to_datetime(st["endDate"], errors="coerce")
     except Exception:
         st = pd.DataFrame(columns=["t", "ticker", "endDate", "startDate"])
-    log(f"Delisted prices: trying Tiingo for {len(todo)} stocks Yahoo doesn't have")
-    frames, today = [], dt.date.today().isoformat()
+    frames, today, picked = [], dt.date.today().isoformat(), []
     for t in todo:
-        tried[t] = today
         # a delisted ticker keeps its symbol until reused; reused ones get a digit suffix (e.g. ABC1)
         cand = st[(st["t"] == t) | st["t"].str.fullmatch(re.escape(t) + r"\d")]
         cand = cand[cand["endDate"].isna() | (cand["endDate"] >= pd.Timestamp(start))]
+        if len(st) and cand.empty:
+            tried[t] = today + "x"            # Tiingo doesn't have it: no API call spent
+            continue
+        picked.append((t, cand))
+        if len(picked) >= room:
+            break
+    if not picked:
+        json.dump(tried, open(tpath, "w"))
+        return pd.DataFrame()
+    log(f"Delisted prices: trying Tiingo for {len(picked)} stocks Yahoo doesn't have "
+        f"({used + len(picked)} of 480 this month)")
+    for t, cand in picked:
+        tried[t] = today
         for sym in list(cand.sort_values("endDate")["ticker"]) or [t]:
             try:
                 r = requests.get(f"https://api.tiingo.com/tiingo/daily/{sym}/prices",
@@ -3915,7 +4007,7 @@ def tiingo_prices(cfg, missing, start):
                     break
     json.dump(tried, open(tpath, "w"))
     got = pd.concat(frames, axis=1) if frames else pd.DataFrame()
-    log(f"Delisted prices: found {got.shape[1]} of {len(todo)} on Tiingo")
+    log(f"Delisted prices: found {got.shape[1]} of {len(picked)} on Tiingo")
     return got
 
 
@@ -3926,6 +4018,7 @@ def price_coverage(tx_all, px):
     miss = t.loc[~have, "ticker"].value_counts()
     return {"trades": int(len(t)), "with_prices": int(have.sum()), "missing": int((~have).sum()),
             "missing_share": float((~have).mean()) if len(t) else 0.0,
+            "missing_tickers": int(len(miss)),
             "top_missing": [[k, int(v)] for k, v in miss.head(15).items()]}
 
 
