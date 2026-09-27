@@ -1,0 +1,11 @@
+pandas>=2.1
+numpy
+requests
+pdfplumber
+beautifulsoup4
+lxml
+yfinance
+pyyaml
+plotly
+google-api-python-client
+google-auth
