@@ -1793,7 +1793,11 @@ def ticker_level(rows, score_col="score", short=False):
         return rows
     rows = rows.sort_values(score_col, ascending=False)
     best = rows.drop_duplicates("ticker").copy()
-    mem = rows.groupby("ticker")["member"].agg(lambda s: ", ".join(sorted(set(s))))
+    if "religion" in rows:
+        labels = [f"{m} ({r})" if isinstance(r, str) and r else m for m, r in zip(rows["member"], rows["religion"])]
+        mem = pd.Series(labels, index=rows.index).groupby(rows["ticker"]).agg(lambda s: ", ".join(sorted(set(s))))
+    else:
+        mem = rows.groupby("ticker")["member"].agg(lambda s: ", ".join(sorted(set(s))))
     best["members"] = best["ticker"].map(mem)
     best["why"] = best.apply(_why_short if short else _why_buy, axis=1)
     return best.reset_index(drop=True)
@@ -2504,7 +2508,7 @@ def prepare(cfg):
     meta = load_meta(cfg, tx["ticker"].unique())
     committees = load_committees(cfg)
     history = load_committee_history(cfg, committees)
-    data = {"meta": meta, "committees": committees, "committee_history": history}
+    data = {"meta": meta, "committees": committees, "committee_history": history, "religion": load_religion(cfg)}
     enrich = _enrich_tickers(tx, cfg)
     step = lambda flag: cfg.get(flag, True) and not out_of_time(cfg)
     if step("USE_INSIDERS"):
@@ -3686,6 +3690,10 @@ def extra_features(tx, px, data, cfg, mems):
             elif prior > 0 and last / prior >= 1.3:
                 mom[i] = 0.5
     tx["f_dod_award_after_trade"], tx["f_dod_momentum"], tx["dod_awards_180d"] = after, mom, recent
+    # display only: never used in scoring
+    ridx = religion_lookup(data.get("religion") or [])
+    tx["religion"] = [religion_for(ridx, ch, lk, fi, st) for ch, lk, fi, st in
+                      zip(tx["chamber"], tx["last_key"], tx["first"], tx["state"])]
     return tx
 
 
@@ -3914,3 +3922,62 @@ def price_coverage(tx_all, px):
     return {"trades": int(len(t)), "with_prices": int(have.sum()), "missing": int((~have).sum()),
             "missing_share": float((~have).mean()) if len(t) else 0.0,
             "top_missing": [[k, int(v)] for k, v in miss.head(15).items()]}
+
+
+# ----------------------------------------------------------------------------
+# Members' religious affiliation (Pew Research Center, 119th Congress) - shown next to names only;
+# deliberately NOT used in any score or analysis
+# ----------------------------------------------------------------------------
+PEW_URL = ("https://www.pewresearch.org/wp-content/uploads/sites/20/2024/12/"
+           "pr_2025-01-02_faith-on-the-hill_member-list.pdf")
+PEW_ROW = re.compile(r"^([A-Z]{2})(?:\s+(AL|\d{1,2}))?\s+(.+?)\s+([RDI])\s+(House|Senate)\s+(.+?)\s*$")
+
+
+def parse_pew_text(text):
+    out = []
+    for line in text.splitlines():
+        m = PEW_ROW.match(line.strip())
+        if m:
+            st, dist, name, party, chamber, rel = m.groups()
+            out.append({"state": st, "name": name.strip(), "chamber": chamber, "religion": rel.strip()})
+    return out
+
+
+def load_religion(cfg):
+    cache, path = _cache_json(cfg, "religion.json", {})
+    if cache.get("rows") and _fresh(cache.get("fetched", ""), 30):
+        return cache["rows"]
+    try:
+        import pdfplumber
+        r = requests.get(PEW_URL, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0"}, timeout=60)
+        r.raise_for_status()
+        with pdfplumber.open(io.BytesIO(r.content)) as pdf:
+            rows = parse_pew_text("\n".join((p.extract_text() or "") for p in pdf.pages))
+        if len(rows) > 300:
+            cache = {"fetched": dt.datetime.now().isoformat(), "rows": rows}
+            json.dump(cache, open(path, "w"))
+            log(f"Religious affiliation: {len(rows)} members from Pew Research Center")
+        else:
+            log(f"Religious affiliation: couldn't read the Pew list ({len(rows)} rows)")
+    except Exception as e:
+        log(f"Religious affiliation: download failed ({e})")
+    return cache.get("rows", [])
+
+
+def religion_lookup(rows):
+    idx = {}
+    for r in rows:
+        parts = [p for p in name_key(r["name"]).split(" ") if p]
+        if parts:
+            idx.setdefault((r["chamber"], parts[-1]), []).append(r)
+    return idx
+
+
+def religion_for(idx, chamber, last_key, first, state):
+    c = idx.get((chamber, last_key), [])
+    if len(c) > 1 and state:
+        c = [r for r in c if r["state"] == state] or c
+    if len(c) > 1 and first:
+        f = name_key(first)[:3]
+        c = [r for r in c if name_key(r["name"]).startswith(f)] or c
+    return c[0]["religion"] if len(c) == 1 else None
