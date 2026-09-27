@@ -2,8 +2,17 @@ name: Daily congress trade signals
 
 on:
   schedule:
-    - cron: "43 10 * * *"      # every day at 10:43 UTC (6:43 AM New York time in summer)
-  workflow_dispatch: {}          # "Run workflow" button for a manual run
+    - cron: "43 10 * * *"      # 6:43 AM New York time (summer): overnight filings, before the market opens
+    - cron: "43 23 * * *"      # 7:43 PM New York time (summer): filings posted during the day
+  workflow_dispatch:           # "Run workflow" button, also used to chain runs while history is filling
+    inputs:
+      chain:
+        description: "How many back-to-back runs came before this one (leave at 0)"
+        default: "0"
+
+permissions:
+  contents: write              # monthly keep-alive commit
+  actions: write               # start the next run while history is still filling
 
 concurrency:
   group: daily-run
@@ -55,10 +64,29 @@ jobs:
           path: data
           key: data-${{ github.run_id }}
 
-      - name: Keep the reports
+      - name: Start the next run right away if data collection isn't finished
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: reports
-          path: data/reports
-          retention-days: 14
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHAIN: ${{ github.event.inputs.chain || '0' }}
+        run: |
+          if [ -f data/state/needs_more_runs ] && [ "$CHAIN" -lt 8 ]; then
+            NEXT=$((CHAIN + 1))
+            echo "Starting back-to-back run $NEXT"
+            curl -sS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/daily.yml/dispatches" \
+              -d "{\"ref\":\"${{ github.ref_name }}\",\"inputs\":{\"chain\":\"$NEXT\"}}"
+          else
+            echo "No extra run needed"
+          fi
+
+      - name: Monthly keep-alive (GitHub pauses schedules after 60 quiet days)
+        if: always() && github.event_name == 'schedule' && github.event.schedule == '43 10 * * *'
+        run: |
+          if [ "$(date -u +%d)" = "01" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "Monthly keep-alive"
+            git push
+          fi
