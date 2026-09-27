@@ -24,18 +24,22 @@ DEFAULT_CONFIG = {
     "PICK_PERCENTILE": 80,           # a buy must score in the top 20% of all earlier buy signals
     "SHORT_PERCENTILE": 90,          # a short must score in the top 10% of earlier sell signals
     "AVOID_PERCENTILE": 70,          # sell signals above this (but below short) = "avoid"
-    "SHORT_ALLOCATION": 0.25,        # share of the combined portfolio that is short
+    "SHORT_ALLOCATION": 0.25,        # share of the combined portfolio that is short (only if ENABLE_SHORTS)
+    "ENABLE_SHORTS": False,          # backtest showed shorting lost money; strong sell signals become "avoid"
+    "MAX_PICKS_PER_MEMBER_WEEK": 2,  # stop one very active member from filling every weekly slot
+    "MAX_WATCHLIST_BUYS_PER_MEMBER": 3,
+    "SKIP_LATE_FILINGS": True,       # trades disclosed after the 45-day deadline did worst; never pick them
     "WATCHLIST_LOOKBACK_DAYS": 30,
     "CLUSTER_WINDOW_DAYS": 30,
     "TRACK_PRIOR_TRADES": 5,
     "BUY_WEIGHTS": {
-        "track_record": 1.0, "cluster": 0.8, "committee": 0.6, "subcommittee": 0.4, "committee_leader": 0.4,
-        "size": 0.3, "freshness": 0.3, "fast_filer": 0.3, "sell_pressure": -0.4, "insider_buying": 0.6,
-        "insider_selling": -0.2, "contracts": 0.4, "lobbying": 0.3, "donations": 0.4, "bills": 0.4, "momentum": 0.2,
+        "track_record": 0.5, "cluster": 0.8, "committee": 0.6, "subcommittee": 0.4, "committee_leader": 0.4,
+        "size": 0.3, "freshness": 0.4, "fast_filer": 0.6, "sell_pressure": -0.4, "insider_buying": 0.6,
+        "insider_selling": -0.2, "contracts": 0.4, "lobbying": 0.3, "donations": 0.4, "bills": 0.4, "momentum": 0.4,
         "employee_donations": 0.3, "already_owned": 0.1, "disclosure_tie": 0.4, "revolving_door": 0.4,
         "testified": 0.4, "closed_briefing": 0.5, "vote_sector": 0.3, "home_state": 0.2, "contract_in_state": 0.3,
         "speech": 0.3, "social_post": 0.2, "pre_event": 0.4, "committee_cluster": 0.5, "option": 0.4,
-        "spouse": 0.1, "first_time": 0.2, "unusual_size": 0.4, "new_sector": 0.1, "late": 0.2,
+        "spouse": 0.1, "first_time": 0.2, "unusual_size": 0.4, "new_sector": 0.1, "late": -0.5,
     },
     "SHORT_WEIGHTS": {
         "sell_track_record": 1.0, "sell_cluster": 0.8, "buy_pressure": -0.4, "committee": 0.5,
@@ -1765,8 +1769,9 @@ def _portfolio(picks, px, idx, sign=1):
     return pd.Series(np.where(cnt > 0, acc / np.maximum(cnt, 1), 0.0), index=idx)
 
 
-def _select(rows, score_col, pct, per_week, blocked=None, short=False):
-    """Weekly picks: clears the percentile of all EARLIER scores, best first, no re-buying an open ticker."""
+def _select(rows, score_col, pct, per_week, blocked=None, short=False, per_member=None, skip_late=False):
+    """Weekly picks: clears the percentile of all EARLIER scores, best first, no re-buying an open ticker,
+    at most `per_member` picks per member each week, and (optionally) no trades filed past the 45-day deadline."""
     rows = rows.sort_values("filed_date")
     rows = rows.assign(week=rows["filed_date"].dt.to_period("W-FRI"))
     hist = np.array([])
@@ -1777,10 +1782,14 @@ def _select(rows, score_col, pct, per_week, blocked=None, short=False):
         hist = np.concatenate([hist, g[score_col].values])
         cand = ticker_level(g, score_col, short)
         cand = cand[cand[score_col] >= bar]
-        taken = 0
+        if skip_late and "lag_days" in cand:
+            cand = cand[cand["lag_days"] <= 45]
+        taken, by_member = 0, {}
         for _, r in cand.iterrows():
             if taken >= per_week:
                 break
+            if per_member and by_member.get(r["member"], 0) >= per_member:
+                continue
             t = r["ticker"]
             if (held.get(t) is not None and r["entry_date"] <= held[t]) or \
                (blocked.get(t) is not None and r["entry_date"] <= blocked[t]):
@@ -1790,6 +1799,7 @@ def _select(rows, score_col, pct, per_week, blocked=None, short=False):
             picks.append(r)
             held[t] = r["exit_date"]
             taken += 1
+            by_member[r["member"]] = by_member.get(r["member"], 0) + 1
     return pd.DataFrame(picks).reset_index(drop=True), held
 
 
@@ -1859,8 +1869,11 @@ def _trade_stats(rows, sign):
 def run_backtest(scored, px, cfg, since=None):
     all_buys = scored[(scored["tx_type"] == "buy") & scored["entry_px"].notna()]
     all_sells = scored[(scored["tx_type"] == "sell") & scored["entry_px"].notna()]
-    longs, held = _select(all_buys, "score", cfg["PICK_PERCENTILE"], cfg["PICKS_PER_WEEK"])
-    shorts, _ = _select(all_sells, "short_score", cfg["SHORT_PERCENTILE"], cfg["SHORTS_PER_WEEK"], blocked=held, short=True)
+    longs, held = _select(all_buys, "score", cfg["PICK_PERCENTILE"], cfg["PICKS_PER_WEEK"],
+                          per_member=cfg.get("MAX_PICKS_PER_MEMBER_WEEK"), skip_late=cfg.get("SKIP_LATE_FILINGS"))
+    # shorts are still tested (so the report shows whether they would have worked) even when turned off
+    shorts, _ = _select(all_sells, "short_score", cfg["SHORT_PERCENTILE"], cfg["SHORTS_PER_WEEK"] or 2, blocked=held,
+                        short=True, per_member=cfg.get("MAX_PICKS_PER_MEMBER_WEEK"), skip_late=cfg.get("SKIP_LATE_FILINGS"))
     buys, sells = all_buys, all_sells
     if since is not None:
         since = pd.Timestamp(since)
@@ -1875,7 +1888,8 @@ def run_backtest(scored, px, cfg, since=None):
     ld, n_long = _portfolio_slots(longs, px, idx, slots_l, "spy") if len(longs) else (px["SPY"].pct_change(fill_method=None).reindex(idx), empty)
     sd, _ = _portfolio_slots(shorts, px, idx, slots_s, "cash", sign=-1) if len(shorts) else (empty, empty)
     a = cfg["SHORT_ALLOCATION"]
-    series = {"Long picks": ld, "Short picks": sd, f"Long {100-a*100:.0f}% / short {a*100:.0f}%": (1 - a) * ld + a * sd,
+    series = {"Long picks": ld, "Short picks": sd,
+              **({f"Long {100-a*100:.0f}% / short {a*100:.0f}%": (1 - a) * ld + a * sd} if cfg.get("ENABLE_SHORTS") else {}),
               "Copy every purchase": _portfolio(buys.drop_duplicates(["ticker", "filed_date"]), px, idx),
               "S&P 500 (SPY)": px["SPY"].pct_change(fill_method=None).reindex(idx)}
     perf, curves = {}, {}
@@ -2079,12 +2093,23 @@ def build_watchlist(scored, px, cfg, enrich_top=20):
         buys = prices(buys.sort_values("score", ascending=False).reset_index(drop=True))
         buys["percentile"] = [pct(v, hist_b) for v in buys["score"]]
         buys["action"] = np.where(buys["percentile"] >= cfg["PICK_PERCENTILE"], "BUY", "watch")
+        if cfg.get("SKIP_LATE_FILINGS"):
+            late = buys["lag_days"] > 45
+            buys.loc[late & (buys["action"] == "BUY"), "action"] = "watch"
+            buys.loc[late, "why"] = buys.loc[late, "why"] + "; filed after the 45-day deadline, so not a buy"
+        cap = cfg.get("MAX_WATCHLIST_BUYS_PER_MEMBER")
+        if cap:
+            n = buys[buys["action"] == "BUY"].groupby("member").cumcount()
+            over = n[n >= cap].index
+            buys.loc[over, "action"] = "watch"
+            buys.loc[over, "why"] = buys.loc[over, "why"] + f"; this member already has {cap} buy picks"
         buys.loc[(buys["n_sellers"] >= 2) & (buys["action"] == "watch"), "action"] = "mixed"
     sells = ticker_level(recent[recent["tx_type"] == "sell"], "short_score", short=True)
     if len(sells):
         sells = prices(sells.sort_values("short_score", ascending=False).reset_index(drop=True))
         sells["percentile"] = [pct(v, hist_s) for v in sells["short_score"]]
-        sells["action"] = np.where(sells["percentile"] >= cfg["SHORT_PERCENTILE"], "SHORT",
+        strong = "SHORT" if cfg.get("ENABLE_SHORTS") else "avoid"
+        sells["action"] = np.where(sells["percentile"] >= cfg["SHORT_PERCENTILE"], strong,
                                    np.where(sells["percentile"] >= cfg["AVOID_PERCENTILE"], "avoid", ""))
         sells = sells[sells["action"] != ""].reset_index(drop=True)
         if len(buys):
