@@ -16,6 +16,8 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      TZ: America/New_York        # dates and times in Eastern
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
