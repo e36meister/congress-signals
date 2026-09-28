@@ -74,14 +74,15 @@ def main():
         pts.append((today, acct_now))        # the daily history adds today's bar only later in the evening
     start_i = next((i for i in range(1, len(pts)) if pts[i][1] != pts[0][1]), 0)   # first day money actually moved
     pts = pts[max(0, start_i - 1):]
-    spy = _spy_closes(api, pts[0][0]) if pts else {}
+    spy = _spy_closes(api, (dt.date.fromisoformat(pts[0][0]) - dt.timedelta(days=7)).isoformat()) if pts else {}
     spy_last = _spy_now(api)
     if spy_last:
         spy[today] = spy_last
     series = {"dates": [], "account": [], "spy": []}
     if pts:
         e0 = pts[0][1]
-        s0 = next((spy[d] for d, _ in pts if d in spy), None)
+        before = [k for k in spy if k <= pts[0][0]]           # the last S&P close on or before the start (weekends)
+        s0 = spy[max(before)] if before else next((spy[d] for d, _ in pts if d in spy), None)
         last_s = s0
         for d, e in pts:
             last_s = spy.get(d, last_s)
