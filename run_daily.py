@@ -34,6 +34,17 @@ def upload_to_drive(local_path, title):
     q = f"name = '{title}' and '{folder}' in parents and trashed = false"
     found = drive.files().list(q=q, fields="files(id, modifiedTime)", supportsAllDrives=True,
                                includeItemsFromAllDrives=True).execute().get("files", [])
+    if found and title == "dashboard_data.json":
+        # keep what the market-close report wrote to Drive since this run started
+        try:
+            remote = json.loads(drive.files().get_media(fileId=found[0]["id"], supportsAllDrives=True).execute())
+            local = json.load(open(local_path))
+            for k in ("close_report", "close_history"):
+                if k in remote:
+                    local[k] = remote[k]
+            json.dump(local, open(local_path, "w"))
+        except Exception as e:
+            E.log(f"Drive: couldn't merge the close report ({type(e).__name__})")
     media = MediaFileUpload(local_path, mimetype="application/json", resumable=False)
     if found:
         drive.files().update(fileId=found[0]["id"], media_body=media, supportsAllDrives=True).execute()
@@ -73,7 +84,7 @@ def send_alerts(buys, sells, new):
     body = (f"<p>{len(new)} new signal(s) from today's congressional trade filings.</p>"
             f"<table border=1 cellpadding=6 style='border-collapse:collapse;font-family:Arial'>"
             f"<tr><th>Action</th><th>Stock</th><th>Members</th><th>Why</th></tr>{''.join(rows)}</table>"
-            f"<p><a href='{DASHBOARD_URL}'>Open the Capitol Trades Desk dashboard</a></p>")
+            f"<p><a href='{DASHBOARD_URL}'>Open Capitol Capital</a></p>")
     msg = MIMEMultipart("alternative")
     tick = ", ".join(f"{a} {t}" for a, t in zip(new["action"], new["ticker"]))
     msg["Subject"] = f"Congress trade signals: {tick}"[:140]
