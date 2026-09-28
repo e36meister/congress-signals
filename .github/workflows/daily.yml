@@ -21,6 +21,8 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
+    env:
+      TZ: America/New_York        # dates and times in Eastern
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4

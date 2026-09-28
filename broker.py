@@ -200,7 +200,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                        "per_week": float(cfg.get("PICKS_PER_WEEK", 5)), "from_policy": bool(cfg.get("_hold_policy"))},
             "positions": sorted(pos, key=lambda x: -x["mv"]),
             "orders": [{"t": from_alpaca(o["symbol"]), "side": o["side"], "qty": o.get("qty"), "status": o.get("status", ""),
-                        "filled_px": o.get("filled_avg_price"), "at": (o.get("filled_at") or o.get("submitted_at") or "")[:16],
+                        "filled_px": o.get("filled_avg_price"), "at": o.get("filled_at") or o.get("submitted_at") or "",
                         "bot": (o.get("client_order_id") or "").startswith(PREFIX),
                         "by": "tool" if (o.get("client_order_id") or "").startswith(PREFIX)
                         else ("tap" if (o.get("client_order_id") or "").startswith("tap-") else "you")} for o in recent],
