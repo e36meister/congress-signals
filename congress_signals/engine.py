@@ -4931,7 +4931,7 @@ def save_adaptive(cfg, a):
 
 
 def row_holds(df, policy):
-    small = (df["f_small_cap"].fillna(0) >= 0.5).values if "f_small_cap" in df else np.zeros(len(df), bool)
+    small = (df["f_small_cap"].fillna(0) >= 1).values if "f_small_cap" in df else np.zeros(len(df), bool)
     return np.where(small, int(policy["hold_small"]), int(policy["hold_other"]))
 
 
@@ -5223,7 +5223,7 @@ def small_cap_rows(scored):
     b = scored[(scored["tx_type"] == "buy") & scored["entry_px"].notna()]
     if "f_small_cap" not in b or not len(b):
         return b.iloc[0:0]
-    b = b[(b["f_small_cap"].fillna(0) >= 0.5) & (b["lag_days"].fillna(999) <= 45)].sort_values("filed_date")
+    b = b[(b["f_small_cap"].fillna(0) >= 1) & (b["lag_days"].fillna(999) <= 45)].sort_values("filed_date")
     keep, last = [], {}
     for i, (t, d) in enumerate(zip(b["ticker"], b["filed_date"])):
         if t in last and (d - last[t]).days < 30:
