@@ -2,6 +2,7 @@
 and update dashboard_data.json in your Google Drive so the dashboard refreshes."""
 import os, json, datetime as dt, traceback
 import congress_signals.engine as E
+import broker
 
 env = os.environ.get
 cfg = {**E.DEFAULT_CONFIG,
@@ -108,6 +109,16 @@ def main():
     E.watchlist_report(buys, sells, new, cfg)
     E.export_dashboard(cfg, buys=buys, sells=sells, new=new)
     send_alerts(buys, sells, new)
+    try:
+        last = px.ffill().iloc[-1].to_dict() if px is not None and len(px) else {}
+        snap = broker.sync(cfg, buys, new, last, E.log)
+        if snap is not None:
+            path = os.path.join(cfg["DATA_DIR"], "dashboard_data.json")
+            d = json.load(open(path))
+            d["portfolio"] = snap
+            json.dump(d, open(path, "w"))
+    except Exception as e:
+        E.log(f"Broker: skipped this run ({type(e).__name__})")
     upload_to_drive(os.path.join(cfg["DATA_DIR"], "dashboard_data.json"), "dashboard_data.json")
     E.log(f"Finished. {len(new)} new signal(s).")
 
