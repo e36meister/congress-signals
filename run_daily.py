@@ -125,7 +125,9 @@ def main():
     send_alerts(buys, sells, new)
     try:
         last = px.ffill().iloc[-1].to_dict() if px is not None and len(px) else {}
-        snap = broker.sync(dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"]), buys, new, last, E.log)
+        sm = (bt.get("small") or {}) if isinstance(bt, dict) else {}
+        snap = broker.sync(dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=sm.get("slots")),
+                           buys, new, last, E.log)
         if snap is not None:
             path = os.path.join(cfg["DATA_DIR"], "dashboard_data.json")
             d = json.load(open(path))
