@@ -4361,12 +4361,18 @@ OPPEXP_COLS = ["CMTE_ID", "AMNDT_IND", "RPT_YR", "RPT_TP", "IMAGE_NUM", "LINE_NU
                "BACK_REF_TRAN_ID"]
 
 
+def _fec_date(s):
+    s = s.fillna("").astype(str).str.strip()
+    d = pd.to_datetime(s, format="%m/%d/%Y", errors="coerce")
+    return d.fillna(pd.to_datetime(s, format="%m%d%Y", errors="coerce"))
+
+
 def collect_campaign_vendors(cfg, fec_ids):
     """Companies each trading member's campaign paid (FEC operating expenditures, bulk files)."""
     cache = _p(cfg, "cache", "campaign_vendors.pkl")
     df = pd.read_pickle(cache) if os.path.exists(cache) else pd.DataFrame(
         columns=["cand", "payee", "date", "amount", "purpose"])
-    state, spath = _cache_json(cfg, "campaign_vendor_cycles.json", {})
+    state, spath = _cache_json(cfg, "campaign_vendor_cycles_v2.json", {})
     principal = load_principal_committees(cfg)
     cm2cand = {c: cand for cand, cs in principal.items() if not cand.startswith("_") and cand in fec_ids for c in cs}
     if not cm2cand:
@@ -4401,7 +4407,7 @@ def collect_campaign_vendors(cfg, fec_ids):
                 k = pd.concat(keep, ignore_index=True)
                 k = k[~k["ENTITY_TP"].fillna("").isin(["IND", "CAN"])]         # companies, not people
                 new = pd.DataFrame({"cand": k["CMTE_ID"].map(cm2cand), "payee": k["NAME"].map(company_key),
-                                    "date": pd.to_datetime(k["TRANSACTION_DT"], format="%m%d%Y", errors="coerce"),
+                                    "date": _fec_date(k["TRANSACTION_DT"]),
                                     "amount": pd.to_numeric(k["TRANSACTION_AMT"], errors="coerce"),
                                     "purpose": k["PURPOSE"].fillna("").str.slice(0, 60)})
                 new = new.dropna(subset=["date"])
@@ -4412,7 +4418,8 @@ def collect_campaign_vendors(cfg, fec_ids):
                 df.to_pickle(cache)
             state[str(cyc)] = dt.datetime.now().isoformat()
             json.dump(state, open(spath, "w"))
-            log(f"Campaign spending: {cyc} cycle loaded ({sum(len(x) for x in keep):,} payments by trading members)")
+            log(f"Campaign spending: {cyc} cycle loaded ({sum(len(x) for x in keep):,} payments by trading members, "
+                f"{len(new) if keep else 0:,} to companies)")
         except Exception as e:
             log(f"Campaign spending: {cyc} failed ({e})")
         finally:
@@ -4423,6 +4430,22 @@ def collect_campaign_vendors(cfg, fec_ids):
 
 def _congress_of(year):
     return (year - 1789) // 2 + 1
+
+
+def _billstatus_zip_urls(cong, typ):
+    """govinfo's directory listing says where the zip for a Congress and bill type lives; common names as a fallback."""
+    base = f"https://www.govinfo.gov/bulkdata/BILLSTATUS/{cong}/{typ}"
+    urls = []
+    try:
+        js = requests.get(f"https://www.govinfo.gov/bulkdata/json/BILLSTATUS/{cong}/{typ}",
+                          headers={**UA, "Accept": "application/json"}, timeout=60).json()
+        for f in js.get("files", []):
+            link = f.get("link") or ""
+            if link.lower().endswith(".zip"):
+                urls.append(link)
+    except Exception:
+        pass
+    return urls + [f"{base}/BILLSTATUS-{cong}-{typ}.zip", f"{base}/BILLSTATUS-{cong}{typ}.zip"]
 
 
 def collect_bill_status(cfg):
@@ -4441,10 +4464,15 @@ def collect_bill_status(cfg):
                 continue
             if out_of_time(cfg, 75):
                 break
-            url = f"https://www.govinfo.gov/bulkdata/BILLSTATUS/{cong}/{typ}/BILLSTATUS-{cong}{typ}.zip"
             try:
-                r = requests.get(url, headers=UA, timeout=600)
-                r.raise_for_status()
+                r = None
+                for url in _billstatus_zip_urls(cong, typ):
+                    r = requests.get(url, headers=UA, timeout=600)
+                    if r.status_code == 200 and r.content[:2] == b"PK":
+                        break
+                    r = None
+                if r is None:
+                    raise RuntimeError("no zip found on govinfo")
                 z = zipfile.ZipFile(io.BytesIO(r.content))
                 rows = []
                 for n in z.namelist():
@@ -4492,7 +4520,7 @@ def collect_bill_status(cfg):
     return df
 
 
-FD_SCHEDULE = re.compile(r"\bschedule\s+([a-j])\s*[:\-]")
+FD_SCHEDULE = re.compile(r"^\s*s(?:chedule)?\s+([a-j])\s*:")
 
 
 def _fd_kinds(text_lower, ck):
