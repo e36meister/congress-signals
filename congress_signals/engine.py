@@ -47,6 +47,9 @@ DEFAULT_CONFIG = {
         "spouse": 0.1, "first_time": 0.2, "unusual_size": 0.4, "new_sector": 0.1, "late": -0.5,
         "small_cap": 0.4, "proven_member": 0.8, "crowded": -0.3, "ex_member_lobbyist": 0.3,
         "defense_power": 0.5, "dod_award_after_trade": 0.6, "dod_momentum": 0.4,
+        "grants": 0.2, "grant_after_trade": 0.4, "campaign_vendor": 0.3, "spouse_employer": 0.5,
+        "paid_travel": 0.3, "outside_position": 0.4, "buddy": 0.4, "leader": 0.3, "bill_advanced": 0.5,
+        "sector_bill_momentum": 0.2,
     },
     "SHORT_WEIGHTS": {
         "sell_track_record": 1.0, "sell_cluster": 0.8, "buy_pressure": -0.4, "committee": 0.5,
@@ -69,6 +72,7 @@ DEFAULT_CONFIG = {
     "USE_HOUSE": True, "USE_SENATE": True, "USE_INSIDERS": True, "USE_CONTRACTS": True,
     "USE_LOBBYING": True, "USE_DONATIONS": True, "USE_BILLS": True, "USE_NEWS": True,
     "USE_EMPLOYEE_DONATIONS": True, "USE_ANNUAL_DISCLOSURES": True, "USE_COMPANY_INFO": True,
+    "USE_BILL_STATUS": True, "USE_CAMPAIGN_SPENDING": True, "USE_ASSISTANCE": True,
     "USE_HEARINGS": True, "USE_VOTES": True, "USE_SPEECHES": True, "USE_BLUESKY": True, "USE_EVENTS": True,
     "TIME_BUDGET_MIN": 0,            # 0 = no limit (Colab); the daily GitHub run sets this
     "MAX_ENRICH_TICKERS": 800,       # contracts/lobbying are looked up for the most-traded tickers
@@ -1736,6 +1740,7 @@ def compute_features(tx, px, data, cfg):
                 note[i] = f"{'sponsored' if sp else 'cosponsored'} {len(w)} {w['policy'].iloc[0]} bill(s)"
         tx["f_bills"], tx["bill_note"] = f, note
     tx = compute_connections(tx, data, cfg, mems)
+    tx = relationship_features(tx, data, cfg, mems)
     tx = extra_features(tx, px, data, cfg, mems)
     return tx
 
@@ -1816,9 +1821,20 @@ def _why_buy(r):
                    ("f_defense_power", lambda: "defense company, and the member sits on a defense committee"),
                    ("f_dod_award_after_trade", lambda: "Defense Department award announced after the trade"),
                    ("f_dod_momentum", lambda: f"defense awards rising (${r['dod_awards_180d']/1e6:,.0f}M in 6 months)"),
+                   ("f_grant_after_trade", lambda: "federal grant or loan to the company after the trade"),
+                   ("f_grants", lambda: f"company got federal grants or loans (${r['grants_12m']/1e6:,.0f}M in 12 months)"),
+                   ("f_campaign_vendor", lambda: f"their campaign paid the company (${r['vendor_paid']:,.0f})"),
+                   ("f_spouse_employer", lambda: "spouse works for or is paid by the company (yearly disclosure)"),
+                   ("f_paid_travel", lambda: "company paid for their travel (yearly disclosure)"),
+                   ("f_outside_position", lambda: "holds a position with the company (yearly disclosure)"),
+                   ("f_leader", lambda: "this member usually trades before their trading partners"),
+                   ("f_sector_bill_momentum", lambda: f"a {r['sector']} bill passed recently"),
                    ("f_crowded", lambda: "but the stock already jumped on disclosure day")):
         if r.get(f, 0) and r.get(f, 0) >= 0.5:
             b.append(txt())
+    for k in ("buddy_note", "bill_adv_note"):
+        if r.get(k):
+            b.append(r[k])
     if r["f_size"] >= 0.4:
         b.append(f"large (${r['amt_lo']:,.0f}+)")
     if r["f_freshness"] >= 0.7:
@@ -2057,6 +2073,11 @@ BUY_FACTORS = [("f_track_record", "Member track record"), ("f_cluster", "Cluster
                ("f_fast_filer", "Member files fast"), ("f_sell_pressure", "Others selling"),
                ("f_momentum", "Prior 3m momentum"), ("f_employee_donations", "Employee donations to member"), ("f_already_owned", "Already held it"),
                ("f_disclosure_tie", "Company in yearly disclosure"), ("f_revolving_door", "Lobbyists are ex-staff"),
+               ("f_grants", "Federal grants or loans"), ("f_grant_after_trade", "Grant or loan after the trade"),
+               ("f_campaign_vendor", "Campaign paid the company"), ("f_spouse_employer", "Spouse works for the company"),
+               ("f_paid_travel", "Company paid for travel"), ("f_outside_position", "Holds a position at the company"),
+               ("f_buddy", "Trading partner also bought"), ("f_leader", "Member usually trades first"),
+               ("f_bill_advanced", "Their bill advanced after the trade"), ("f_sector_bill_momentum", "Industry bill just passed"),
                ("f_testified", "Company testified to their committee"), ("f_closed_briefing", "Closed briefing before trade"),
                ("f_vote_sector", "Voted on industry bill near trade"), ("f_home_state", "Company based in their state"),
                ("f_contract_in_state", "Contracts in their state"), ("f_speech", "Named company in floor speech"),
@@ -2186,7 +2207,11 @@ def run_backtest(scored, px, cfg, since=None):
                     ("f_vote_sector", "Near an industry vote"), ("f_home_state", "Home-state company"),
                     ("f_contract_in_state", "Contracts in member's state"), ("f_speech", "Floor speech mention"),
                     ("f_social_post", "Social post mention"), ("f_pre_event", "Before a company event"),
-                    ("f_option", "Options trades"), ("f_spouse", "Spouse or family")) if f in scored}}
+                    ("f_option", "Options trades"), ("f_spouse", "Spouse or family"),
+                    ("f_grants", "Company got grants or loans"), ("f_campaign_vendor", "Campaign paid the company"),
+                    ("f_spouse_employer", "Spouse works for the company"), ("f_paid_travel", "Company-paid travel"),
+                    ("f_outside_position", "Position at the company"), ("f_buddy", "Trading partner also bought"),
+                    ("f_bill_advanced", "Bill advanced after the trade")) if f in scored}}
     extras = {}
     if not cfg.get("_nested") and since is None:
         pt, pv = persistence_table(scored)
@@ -2706,10 +2731,22 @@ def prepare(cfg):
         data["bluesky"] = collect_bluesky(cfg)
     if step("USE_EVENTS"):
         data["events"] = collect_events(cfg, meta, enrich)
+    if step("USE_BILL_STATUS"):
+        data["bill_actions"] = collect_bill_status(cfg)
+    if step("USE_CAMPAIGN_SPENDING"):
+        data["campaign_vendors"] = collect_campaign_vendors(cfg, fecs)
+    if step("USE_ASSISTANCE"):
+        data["assistance"] = collect_assistance(cfg, meta, list(dict.fromkeys(
+            [t for t in tx["ticker"].unique() if is_defense(t, meta)] + enrich)))
     if out_of_time(cfg):
         log("Time limit reached: saved progress; the next run continues where this one stopped")
     log("Computing signals for every transaction...")
     feats = compute_features(tx, px, data, cfg)
+    try:
+        ev, names = data.get("_pairs") or (None, {})
+        json.dump(pairs_table(ev, names), open(_p(cfg, "state", "trading_pairs.json"), "w"))
+    except Exception as e:
+        log(f"Trading partners: table skipped ({e})")
     scored = apply_scores(feats, cfg)
     scored.to_pickle(_p(cfg, "cache", "scored.pkl"))
     log(f"Done: {len(scored):,} transactions scored")
@@ -2815,6 +2852,8 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
         tbl = lambda df: [{k: _j(x) for k, x in r.items()} for r in df.to_dict("records")] if df is not None and len(df) else []
         cpath = os.path.join(cfg["DATA_DIR"], "state", "price_coverage.json")
         data["backtest"]["price_coverage"] = json.load(open(cpath)) if os.path.exists(cpath) else {}
+        ppath = os.path.join(cfg["DATA_DIR"], "state", "trading_pairs.json")
+        data["backtest"]["pairs"] = json.load(open(ppath)) if os.path.exists(ppath) else []
         data["backtest"].update({"horizons": tbl(bt.get("horizons")), "persistence": tbl(bt.get("persistence")),
                                  "persistence_verdict": bt.get("persistence_verdict") or {},
                                  "crowding": tbl(bt.get("crowding")), "sizes": tbl(bt.get("sizes")),
@@ -4199,3 +4238,418 @@ def religion_for(idx, chamber, last_key, first, state):
         f = name_key(first)[:3]
         c = [r for r in c if name_key(r["name"]).startswith(f)] or c
     return c[0]["religion"] if len(c) == 1 else None
+
+
+# ############################################################################
+#  RELATIONSHIPS (v5): grants and loans, campaign vendors, yearly-disclosure details,
+#  trading partners, bill momentum
+# ############################################################################
+ASSIST_GROUPS = {"grant": ["02", "03", "04", "05"], "loan": ["07", "08"], "payment": ["06", "10"]}
+
+
+def collect_assistance(cfg, meta, tickers):
+    """Federal grants, loans and direct payments to each company (CHIPS grants, energy loans, subsidies...)."""
+    cache, path = _cache_json(cfg, "assistance.json", {})
+    start = (pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=200)).strftime("%Y-%m-%d")
+    today = dt.date.today().isoformat()
+    todo = [t for t in tickers if not _fresh(cache.get(t, {}).get("fetched", ""), 14)
+            and company_key((meta.get(t) or {}).get("name"))]
+    if todo:
+        log(f"Grants and loans: checking {len(todo)} companies on USAspending.gov")
+
+    def work(t):
+        key = company_key(meta[t]["name"])
+        rows = []
+        for kind, codes in ASSIST_GROUPS.items():
+            body = {"filters": {"recipient_search_text": [key], "award_type_codes": codes,
+                                "time_period": [{"start_date": start, "end_date": today}]},
+                    "fields": ["Action Date", "Transaction Amount", "Recipient Name", "Awarding Agency"],
+                    "sort": "Action Date", "order": "desc", "limit": 100, "page": 1}
+            try:
+                r = requests.post("https://api.usaspending.gov/api/v2/search/spending_by_transaction/",
+                                  json=body, timeout=60)
+                if r.status_code != 200:
+                    continue
+                res = r.json().get("results", [])
+            except Exception:
+                return t, None
+            for x in res:
+                rn = company_key(x.get("Recipient Name"))
+                if (rn == key or rn.startswith(key + " ")) and x.get("Action Date"):
+                    rows.append([x["Action Date"], float(x.get("Transaction Amount") or 0), x.get("Awarding Agency") or "", kind])
+        return t, rows
+
+    for i, (t, rows) in enumerate(chunked_map(work, todo, 4, cfg), 1):
+        if rows is not None:
+            cache[t] = {"fetched": dt.datetime.now().isoformat(), "rows": rows}
+        if i % 100 == 0:
+            json.dump(cache, open(path, "w"))
+            log(f"Grants and loans: {i}/{len(todo)}")
+    json.dump(cache, open(path, "w"))
+    out = [{"ticker": t, "action_date": r[0], "amount": r[1], "agency": r[2], "kind": r[3]}
+           for t, v in cache.items() for r in v.get("rows", [])]
+    a = pd.DataFrame(out, columns=["ticker", "action_date", "amount", "agency", "kind"])
+    a["action_date"] = pd.to_datetime(a["action_date"], errors="coerce")
+    a["known_date"] = a["action_date"] + pd.Timedelta(days=30)       # agencies report to USAspending within ~30 days
+    log(f"Grants and loans: {a['ticker'].nunique()} companies with federal assistance")
+    return a
+
+
+OPPEXP_COLS = ["CMTE_ID", "AMNDT_IND", "RPT_YR", "RPT_TP", "IMAGE_NUM", "LINE_NUM", "FORM_TP_CD", "SCHED_TP_CD",
+               "NAME", "CITY", "STATE", "ZIP_CODE", "TRANSACTION_DT", "TRANSACTION_AMT", "TRANSACTION_PGI", "PURPOSE",
+               "CATEGORY", "CATEGORY_DESC", "MEMO_CD", "MEMO_TEXT", "ENTITY_TP", "SUB_ID", "FILE_NUM", "TRAN_ID",
+               "BACK_REF_TRAN_ID"]
+
+
+def collect_campaign_vendors(cfg, fec_ids):
+    """Companies each trading member's campaign paid (FEC operating expenditures, bulk files)."""
+    cache = _p(cfg, "cache", "campaign_vendors.pkl")
+    df = pd.read_pickle(cache) if os.path.exists(cache) else pd.DataFrame(
+        columns=["cand", "payee", "date", "amount", "purpose"])
+    state, spath = _cache_json(cfg, "campaign_vendor_cycles.json", {})
+    principal = load_principal_committees(cfg)
+    cm2cand = {c: cand for cand, cs in principal.items() if not cand.startswith("_") and cand in fec_ids for c in cs}
+    if not cm2cand:
+        return df
+    y0 = pd.Timestamp(cfg["START_DATE"]).year - 2
+    this_cycle = dt.date.today().year + (dt.date.today().year % 2)
+    for cyc in range(y0 + (y0 % 2), this_cycle + 1, 2):
+        done = state.get(str(cyc))
+        if done and (cyc < this_cycle - 1 or _fresh(done, 7)):
+            continue
+        if out_of_time(cfg, 75):
+            break
+        url = f"https://www.fec.gov/files/bulk-downloads/{cyc}/oppexp{str(cyc)[2:]}.zip"
+        tmp = _p(cfg, "cache", f"oppexp{cyc}.zip")
+        try:
+            with requests.get(url, headers=UA, timeout=600, stream=True) as r:
+                r.raise_for_status()
+                with open(tmp, "wb") as fh:
+                    for chunk in r.iter_content(1 << 20):
+                        fh.write(chunk)
+            z = zipfile.ZipFile(tmp)
+            name = [n for n in z.namelist() if n.lower().endswith(".txt")][0]
+            keep = []
+            pos = [OPPEXP_COLS.index(c) for c in ("CMTE_ID", "NAME", "TRANSACTION_DT", "TRANSACTION_AMT", "PURPOSE", "ENTITY_TP")]
+            for ch in pd.read_csv(z.open(name), sep="|", header=None, usecols=pos, dtype=str, quoting=3,
+                                  encoding="latin-1", on_bad_lines="skip", chunksize=500_000):
+                ch.columns = [OPPEXP_COLS[p] for p in sorted(pos)]
+                ch = ch[ch["CMTE_ID"].isin(cm2cand)]
+                if len(ch):
+                    keep.append(ch)
+            if keep:
+                k = pd.concat(keep, ignore_index=True)
+                k = k[~k["ENTITY_TP"].fillna("").isin(["IND", "CAN"])]         # companies, not people
+                new = pd.DataFrame({"cand": k["CMTE_ID"].map(cm2cand), "payee": k["NAME"].map(company_key),
+                                    "date": pd.to_datetime(k["TRANSACTION_DT"], format="%m%d%Y", errors="coerce"),
+                                    "amount": pd.to_numeric(k["TRANSACTION_AMT"], errors="coerce"),
+                                    "purpose": k["PURPOSE"].fillna("").str.slice(0, 60)})
+                new = new.dropna(subset=["date"])
+                new = new[new["payee"].str.len() >= 3]
+                lo, hi = pd.Timestamp(cyc - 1, 1, 1), pd.Timestamp(cyc, 12, 31)
+                df = df[~((df["date"] >= lo) & (df["date"] <= hi))] if len(df) else df
+                df = pd.concat([df, new], ignore_index=True)
+                df.to_pickle(cache)
+            state[str(cyc)] = dt.datetime.now().isoformat()
+            json.dump(state, open(spath, "w"))
+            log(f"Campaign spending: {cyc} cycle loaded ({sum(len(x) for x in keep):,} payments by trading members)")
+        except Exception as e:
+            log(f"Campaign spending: {cyc} failed ({e})")
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+    return df
+
+
+def _congress_of(year):
+    return (year - 1789) // 2 + 1
+
+
+def collect_bill_status(cfg):
+    """Every bill's policy area, sponsors, cosponsors and major actions (GovInfo BILLSTATUS bulk data)."""
+    import xml.etree.ElementTree as ET
+    cache = _p(cfg, "cache", "bill_actions.pkl")
+    df = pd.read_pickle(cache) if os.path.exists(cache) else pd.DataFrame(
+        columns=["bill", "policy", "title", "date", "kind", "backers"])
+    state, spath = _cache_json(cfg, "bill_status_done.json", {})
+    first = _congress_of(pd.Timestamp(cfg["START_DATE"]).year - 1)
+    cur = _congress_of(dt.date.today().year)
+    for cong in range(first, cur + 1):
+        for typ in ("hr", "s", "hjres", "sjres"):
+            key = f"{cong}{typ}"
+            if state.get(key) and (cong < cur or _fresh(state[key], 3)):
+                continue
+            if out_of_time(cfg, 75):
+                break
+            url = f"https://www.govinfo.gov/bulkdata/BILLSTATUS/{cong}/{typ}/BILLSTATUS-{cong}{typ}.zip"
+            try:
+                r = requests.get(url, headers=UA, timeout=600)
+                r.raise_for_status()
+                z = zipfile.ZipFile(io.BytesIO(r.content))
+                rows = []
+                for n in z.namelist():
+                    if not n.lower().endswith(".xml"):
+                        continue
+                    try:
+                        root = ET.fromstring(z.read(n))
+                    except Exception:
+                        continue
+                    b = root.find(".//bill")
+                    if b is None:
+                        continue
+                    pol = b.findtext("policyArea/name") or ""
+                    title = (b.findtext("title") or "")[:140]
+                    backers = {e.text for e in b.findall("sponsors/item/bioguideId") + b.findall("cosponsors/item/bioguideId") if e.text}
+                    num = b.findtext("number") or b.findtext("billNumber") or ""
+                    seen = set()
+                    for a in b.findall("actions/item"):
+                        txt = (a.findtext("text") or "").lower()
+                        d = a.findtext("actionDate")
+                        atype = (a.findtext("type") or "").lower()
+                        if atype == "becamelaw" or "became public law" in txt or "signed by president" in txt:
+                            kind = "became law"
+                        elif txt.startswith("passed ") or "on passage passed" in txt or "passed/agreed to" in txt:
+                            kind = "passed a chamber"
+                        elif "reported" in txt and ("committee" in txt or atype in ("committee", "calendars")):
+                            kind = "cleared committee"
+                        else:
+                            continue
+                        if d and (kind, d) not in seen:
+                            seen.add((kind, d))
+                            rows.append({"bill": f"{cong}-{typ}{num}", "policy": pol, "title": title, "date": d,
+                                         "kind": kind, "backers": backers})
+                new = pd.DataFrame(rows, columns=["bill", "policy", "title", "date", "kind", "backers"])
+                new["date"] = pd.to_datetime(new["date"], errors="coerce")
+                pre = f"{cong}-{typ}"
+                df = df[~df["bill"].astype(str).str.startswith(pre)] if len(df) else df
+                df = pd.concat([df, new], ignore_index=True)
+                df.to_pickle(cache)
+                state[key] = dt.datetime.now().isoformat()
+                json.dump(state, open(spath, "w"))
+                log(f"Bill progress: {cong}th Congress {typ.upper()}: {len(new):,} major actions")
+            except Exception as e:
+                log(f"Bill progress: {key} failed ({e})")
+    return df
+
+
+FD_SCHEDULE = re.compile(r"\bschedule\s+([a-j])\s*[:\-]")
+
+
+def _fd_kinds(text_lower, ck):
+    """Where a company appears in a yearly disclosure: spouse's job, the member's income, an outside position,
+    a gift, sponsored travel, or elsewhere."""
+    kinds, sched = set(), ""
+    for ln in text_lower.splitlines():
+        m = FD_SCHEDULE.search(ln)
+        if m:
+            sched = m.group(1)
+        if not _name_hit(ln, ck):
+            continue
+        spouse = re.search(r"\bspouse\b|\bsp\b", ln) is not None
+        if sched == "c" and spouse or (spouse and re.search(r"salary|income|employ|compensation|wages|bonus", ln)):
+            kinds.add("spouse_job")
+        elif sched == "e" or re.search(r"\b(director|board|trustee|officer|partner|advisor)\b", ln) and sched not in ("a", "b"):
+            kinds.add("position")
+        elif sched == "h" or re.search(r"\btravel|\btrip\b|lodging|airfare|itinerary", ln):
+            kinds.add("travel")
+        elif sched == "g" or re.search(r"\bgift", ln):
+            kinds.add("gift")
+        else:
+            kinds.add("other")
+    return kinds
+
+
+def trading_pairs(tx, window_days=7, popular_top=60):
+    """Pairs of members who keep trading the same stocks the same way within a week of each other.
+    Very widely traded stocks (the most-traded 60) are left out, so pairs aren't just two people buying Apple."""
+    d = tx[["member", "chamber", "last_key", "ticker", "tx_type", "trade_date", "filed_date"]].dropna(
+        subset=["trade_date", "filed_date"]).copy()
+    d["who"] = d["chamber"] + "|" + d["last_key"]
+    popular = set(d["ticker"].value_counts().head(popular_top).index)
+    d = d[~d["ticker"].isin(popular)].drop_duplicates(["who", "ticker", "tx_type", "trade_date"])
+    names = d.groupby("who")["member"].agg(lambda s: s.mode().iloc[0]).to_dict()
+    ev = []
+    for (t, typ), g in d.groupby(["ticker", "tx_type"]):
+        if g["who"].nunique() < 2:
+            continue
+        g = g.sort_values("trade_date")
+        arr = list(zip(g["who"], g["trade_date"], g["filed_date"]))
+        for i in range(len(arr)):
+            j = i + 1
+            while j < len(arr) and (arr[j][1] - arr[i][1]).days <= window_days:
+                if arr[j][0] != arr[i][0]:
+                    a, b = arr[i], arr[j]
+                    first = a[0] if a[1] < b[1] else (b[0] if b[1] < a[1] else None)
+                    ev.append((tuple(sorted((a[0], b[0]))), t, typ, max(a[2], b[2]), first, abs((b[1] - a[1]).days)))
+                j += 1
+    ev = pd.DataFrame(ev, columns=["pair", "ticker", "typ", "known", "first", "gap"])
+    return ev, names
+
+
+def relationship_features(tx, data, cfg, mems):
+    D = pd.Timedelta
+    n = len(tx)
+    fdt, tdt = tx["filed_date"], tx["trade_date"]
+    for c in ("f_grants", "f_grant_after_trade", "f_campaign_vendor", "f_spouse_employer", "f_paid_travel",
+              "f_outside_position", "f_buddy", "f_leader", "f_bill_advanced", "f_sector_bill_momentum"):
+        tx[c] = 0.0
+    tx["grants_12m"], tx["vendor_paid"], tx["buddy_note"], tx["bill_adv_note"] = 0.0, 0.0, "", ""
+    meta = data.get("meta") or {}
+    tx["_ck"] = tx["ticker"].map({t: company_key((meta.get(t) or {}).get("name")) for t in tx["ticker"].unique()})
+
+    # grants, loans and direct payments
+    a = data.get("assistance")
+    if a is not None and len(a):
+        ag = {k: g for k, g in a.groupby("ticker")}
+        g12, fg, fa = np.zeros(n), np.zeros(n), np.zeros(n)
+        for i, (t, f, td) in enumerate(zip(tx["ticker"], fdt, tdt)):
+            g = ag.get(t)
+            if g is None:
+                continue
+            k = g[(g.known_date <= f) & (g.known_date > f - D(days=365))]
+            g12[i] = k["amount"].clip(lower=0).sum()
+            fg[i] = 1.0 if (g12[i] >= 1e6 or (k["kind"] == "loan").any()) else (0.5 if len(k) else 0.0)
+            after = g[(g.action_date > td) & (g.action_date <= f)]
+            fa[i] = 1.0 if len(after) and (after["amount"].sum() >= 1e6 or (after["kind"] == "loan").any()) else 0.0
+        tx["grants_12m"], tx["f_grants"], tx["f_grant_after_trade"] = g12, fg, fa
+
+    # the member's campaign paid the company (routine vendors most campaigns use are ignored)
+    cv = data.get("campaign_vendors")
+    if cv is not None and len(cv):
+        if cv["cand"].nunique() >= 20:                       # airlines, card companies, ad platforms: everyone pays them
+            share = cv.groupby("payee")["cand"].nunique() / cv["cand"].nunique()
+            cv = cv[cv["payee"].map(share) < 0.2]
+        payees = set(cv["payee"])
+        byk = {k: g for k, g in cv.groupby(["cand", "payee"])}
+        fec_of = [set(m.get("fec") or []) if m else set() for m in mems]
+        ck_map = {}
+        for ck in tx["_ck"].dropna().unique():
+            if ck and len(ck) >= 4:
+                ck_map[ck] = {p for p in payees if p == ck or p.startswith(ck + " ")}
+        paid, f = np.zeros(n), np.zeros(n)
+        for i, (fids, ck, fd) in enumerate(zip(fec_of, tx["_ck"], fdt)):
+            if not fids or not ck or not ck_map.get(ck):
+                continue
+            tot = 0.0
+            for c in fids:
+                for p in ck_map[ck]:
+                    g = byk.get((c, p))
+                    if g is not None:
+                        m = (g["date"] + D(days=105) <= fd) & (g["date"] > fd - D(days=730))
+                        tot += g.loc[m, "amount"].sum()
+            paid[i] = tot
+            f[i] = 1.0 if tot > 0 else 0.0
+        tx["vendor_paid"], tx["f_campaign_vendor"] = paid, f
+
+    # yearly disclosures, by schedule: spouse's employer, sponsored travel, outside positions
+    fd = data.get("annual_fd")
+    if fd is not None and len(fd):
+        fdg = {k: g.sort_values("filed") for k, g in fd.groupby(["chamber", "last_key"])}
+        memo, texts = {}, {}
+        sj, tr, po = np.zeros(n), np.zeros(n), np.zeros(n)
+        for i, (ch, lk, f, ck) in enumerate(zip(tx["chamber"], tx["last_key"], fdt, tx["_ck"])):
+            if not ck or len(ck) < 4:
+                continue
+            g = fdg.get((ch, lk))
+            if g is None:
+                continue
+            w = g[(g.filed <= f) & (g.filed > f - D(days=1100))]
+            kinds = set()
+            for doc, blob in zip(w.doc, w.text):
+                key = (doc, ck)
+                if key not in memo:
+                    if doc not in texts:
+                        texts[doc] = _unz(blob).lower()
+                    memo[key] = _fd_kinds(texts[doc], ck) if _name_hit(texts[doc], ck) else set()
+                kinds |= memo[key]
+            sj[i], tr[i], po[i] = float("spouse_job" in kinds), float("travel" in kinds), float("position" in kinds)
+        tx["f_spouse_employer"], tx["f_paid_travel"], tx["f_outside_position"] = sj, tr, po
+
+    # trading partners: pairs who keep making the same trades within a week (known only once both are filed)
+    ev, names = trading_pairs(tx)
+    data["_pairs"] = (ev, names)
+    if len(ev):
+        pair_first = {}
+        for p, g in ev.sort_values("known").groupby("pair"):
+            g = g.drop_duplicates("ticker")
+            pair_first[p] = list(g["known"])                     # when each distinct shared stock became known
+        whoS = tx["chamber"] + "|" + tx["last_key"]
+        who = whoS.values
+        partners = {}
+        for p in pair_first:
+            for x in p:
+                partners.setdefault(x, []).append(p)
+        lead = {}
+        for x in partners:
+            e = ev[ev["pair"].map(lambda p: x in p)].sort_values("known")
+            lead[x] = (e["known"].values, (e["first"] == x).values.astype(float), e["first"].notna().values.astype(float))
+        buys = tx[tx["tx_type"] == "buy"]
+        bt_idx = {k: g for k, g in buys.assign(_w=whoS).groupby("ticker")}
+        fb, fl, note = np.zeros(n), np.zeros(n), [""] * n
+        for i in np.where(tx["tx_type"].values == "buy")[0]:
+            me, t, f, td = who[i], tx["ticker"].iat[i], fdt.iat[i], tdt.iat[i]
+            strong = {q for q in partners.get(me, []) if sum(k < f for k in pair_first[q]) >= 3}
+            if strong:
+                g = bt_idx.get(t)
+                if g is not None:
+                    others = g[(g["_w"] != me) & (g["filed_date"] <= f) & ((g["trade_date"] - td).abs() <= D(days=30))]
+                    hit = [w_ for w_ in others["_w"].unique() if tuple(sorted((me, w_))) in strong]
+                    if hit:
+                        fb[i] = 1.0
+                        note[i] = "frequent trading partner " + ", ".join(names.get(h, h) for h in hit[:2]) + " also bought"
+            L = lead.get(me)
+            if L is not None:
+                k = L[0] < np.datetime64(f)
+                decided = L[2][k].sum()
+                if decided >= 5 and L[1][k].sum() / decided >= 0.6:
+                    fl[i] = 1.0
+        tx["f_buddy"], tx["f_leader"], tx["buddy_note"] = fb, fl, note
+
+    # bill momentum
+    ba = data.get("bill_actions")
+    if ba is not None and len(ba):
+        ba = ba.dropna(subset=["date"]).assign(sectors=lambda x: x["policy"].map(lambda p: set(POLICY_SECTORS.get(p, []))))
+        ba = ba[ba["sectors"].map(len) > 0]
+        by_bs = {}                                     # (member, sector) -> actions sorted by date
+        for r in ba.sort_values("date").itertuples():
+            for b in r.backers:
+                for s_ in r.sectors:
+                    by_bs.setdefault((b, s_), []).append((r.date, r.policy, r.kind))
+        dates_bs = {k: np.array([x[0] for x in v], dtype="datetime64[ns]") for k, v in by_bs.items()}
+        bios = [m.get("bioguide") if m else None for m in mems]
+        adv, mom, note = np.zeros(n), np.zeros(n), [""] * n
+        passed = ba[ba["kind"] != "cleared committee"]
+        ps = {s: g for s, g in passed.explode("sectors").groupby("sectors")} if len(passed) else {}
+        for i, (b, s, td, f) in enumerate(zip(bios, tx["sector"], tdt, fdt)):
+            if not s:
+                continue
+            arr = dates_bs.get((b, s))
+            if arr is not None and pd.notna(td):
+                j = np.searchsorted(arr, np.datetime64(td), side="right")
+                if j < len(arr) and arr[j] <= np.datetime64(f):
+                    d_, pol, kind = by_bs[(b, s)][j]
+                    adv[i] = 1.0
+                    note[i] = f"a {pol} bill they back {kind} after the trade"
+            g = ps.get(s)
+            if g is not None and ((g["date"] <= f) & (g["date"] > f - D(days=45))).any():
+                mom[i] = 1.0
+        tx["f_bill_advanced"], tx["f_sector_bill_momentum"], tx["bill_adv_note"] = adv, mom, note
+    return tx.drop(columns=["_ck"])
+
+
+def pairs_table(ev, names, top=15):
+    if ev is None or not len(ev):
+        return []
+    out = []
+    for p, g in ev.groupby("pair"):
+        k = g["ticker"].nunique()
+        if k < 3:
+            continue
+        firsts = g["first"].dropna()
+        lead = firsts.value_counts()
+        leader = names.get(lead.index[0], lead.index[0]) if len(lead) and lead.iloc[0] / max(len(firsts), 1) >= 0.6 else "Neither"
+        out.append({"Members": " & ".join(names.get(x, x) for x in p), "Shared stocks": int(k),
+                    "Usually first": leader, "Typical gap (days)": float(g["gap"].median()),
+                    "Last shared trade": str(pd.Timestamp(g["known"].max()).date())})
+    out.sort(key=lambda r: -r["Shared stocks"])
+    return out[:top]
