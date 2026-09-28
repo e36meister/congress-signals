@@ -13,7 +13,8 @@ cfg = {**E.DEFAULT_CONFIG,
        "QUIVER_API_KEY": env("QUIVER_API_KEY", ""),
        "FMP_API_KEY": env("FMP_API_KEY", ""),
        "TIINGO_API_KEY": env("TIINGO_API_KEY", ""),
-       "USE_TUNED_WEIGHTS": env("USE_TUNED_WEIGHTS", "false").lower() == "true",
+       # true / false forces tuned weights on or off; unset lets the weekly check decide
+       "USE_TUNED_WEIGHTS": {"true": True, "false": False}.get((env("USE_TUNED_WEIGHTS") or "").strip().lower(), "auto"),
        "TIME_BUDGET_MIN": int(env("TIME_BUDGET_MIN", "320"))}
 os.makedirs(cfg["DATA_DIR"], exist_ok=True)
 
@@ -101,9 +102,18 @@ def main():
     if (now.weekday() == 6 and now.hour < 16) or not os.path.exists(tuned_path):   # retune Sunday mornings
         try:
             tuned = E.tune_weights(scored, px, cfg)
+            E.decide_tuned(cfg, tuned)
             E.export_dashboard(cfg, tuned=tuned)
         except Exception as e:
             E.log(f"Tuning skipped: {e}")
+    a = E.load_adaptive(cfg)
+    due = not a.get("evaluated_at") or (dt.datetime.now(dt.timezone.utc)
+                                        - dt.datetime.fromisoformat(a["evaluated_at"])).days >= 7
+    if due and not E.out_of_time(cfg, 90):
+        try:
+            E.evaluate_adjustments(scored, px, cfg)
+        except Exception as e:
+            E.log(f"Adjustments: weekly check skipped ({e})")
     buys, sells = E.build_watchlist(scored, px, cfg)
     new = E.diff_alerts(buys, sells, cfg)
     E.watchlist_report(buys, sells, new, cfg)
@@ -111,7 +121,7 @@ def main():
     send_alerts(buys, sells, new)
     try:
         last = px.ffill().iloc[-1].to_dict() if px is not None and len(px) else {}
-        snap = broker.sync(cfg, buys, new, last, E.log)
+        snap = broker.sync(dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"]), buys, new, last, E.log)
         if snap is not None:
             path = os.path.join(cfg["DATA_DIR"], "dashboard_data.json")
             d = json.load(open(path))

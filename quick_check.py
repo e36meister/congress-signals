@@ -113,6 +113,9 @@ def refresh_portfolio():
         return
     fid = found[0]["id"]
     data = json.loads(drive.files().get_media(fileId=fid, supportsAllDrives=True).execute())
+    old = data.get("portfolio") or {}
+    if old.get("limits", {}).get("from_policy"):
+        snap["limits"] = old["limits"]          # the full update knows the current holding periods; keep them
     data["portfolio"] = snap
     body = io.BytesIO(json.dumps(data).encode())
     drive.files().update(fileId=fid, media_body=MediaIoBaseUpload(body, mimetype="application/json"),
