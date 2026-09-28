@@ -18,6 +18,15 @@ def _spy_closes(api, start):
     return {b["t"][:10]: float(b["c"]) for b in bars}
 
 
+def _spy_now(api):
+    try:
+        r = requests.get("https://data.alpaca.markets/v2/stocks/SPY/trades/latest", headers=api.h,
+                         params={"feed": "iex"}, timeout=30)
+        return float(r.json()["trade"]["p"])
+    except Exception:
+        return None
+
+
 def _expected(horizons, group, days):
     """What the backtest's average trade in this group did vs the S&P after about `days` trading days."""
     rows = [h for h in horizons or [] if h.get("Group") == group and h.get("Holding period") in HORIZON_DAYS]
@@ -50,7 +59,8 @@ def main():
     fid = found[0]["id"]
     data = json.loads(drive.files().get_media(fileId=fid, supportsAllDrives=True).execute())
     today = dt.date.today().isoformat()
-    if (data.get("close_report") or {}).get("date") == today:
+    forced = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+    if (data.get("close_report") or {}).get("date") == today and not forced:
         E.log("Close report: already done today")
         return
 
@@ -58,10 +68,16 @@ def main():
     hist = api.get("/v2/account/portfolio/history", period="3M", timeframe="1D")
     days = [dt.datetime.fromtimestamp(t, dt.timezone.utc).date().isoformat() for t in hist.get("timestamp") or []]
     eq = [float(x) if x is not None else None for x in hist.get("equity") or []]
-    pts = [(d, e) for d, e in zip(days, eq) if e]
+    pts = [(d, e) for d, e in zip(days, eq) if e and d < today]
+    acct_now = float(api.get("/v2/account").get("equity") or 0)
+    if acct_now:
+        pts.append((today, acct_now))        # the daily history adds today's bar only later in the evening
     start_i = next((i for i in range(1, len(pts)) if pts[i][1] != pts[0][1]), 0)   # first day money actually moved
     pts = pts[max(0, start_i - 1):]
     spy = _spy_closes(api, pts[0][0]) if pts else {}
+    spy_last = _spy_now(api)
+    if spy_last:
+        spy[today] = spy_last
     series = {"dates": [], "account": [], "spy": []}
     if pts:
         e0 = pts[0][1]
@@ -77,7 +93,7 @@ def main():
     snap = broker.sync({"HOLD_DAYS": 60, "_hold_policy": (data.get("adaptive") or {}).get("policy")},
                        None, None, {}, E.log, trade=False)
     spy_all = _spy_closes(api, min([p["bought"] for p in snap["positions"] if p.get("bought")] or [today]))
-    spy_now = spy_all[max(spy_all)] if spy_all else None
+    spy_now = spy_last or (spy_all[max(spy_all)] if spy_all else None)
     horizons = (data.get("backtest") or {}).get("horizons")
     groups = {"main": ("Main picks", "Top-scored purchases"), "small": ("Small-company portfolio", "Small companies"),
               "yours": ("Your own buys", "All purchases")}
