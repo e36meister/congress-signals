@@ -73,7 +73,7 @@ def _bot_buys(api):
     return out
 
 
-def sync(cfg, buys, new, last_prices, log):
+def sync(cfg, buys, new, last_prices, log, trade=True):
     """Sell bot positions past the holding period, buy new BUY picks within the limits, and return a
     snapshot of the account for the dashboard (or None when no keys are set)."""
     s = settings(cfg.get("HOLD_DAYS", 60))
@@ -95,7 +95,7 @@ def sync(cfg, buys, new, last_prices, log):
     actions = []
 
     # 1. sell what this tool bought once the holding period (trading days) is over
-    for sym, o in bot.items():
+    for sym, o in (bot.items() if trade else []):
         if sym not in positions or sym in pending:
             continue
         bought = dt.date.fromisoformat(o["filled_at"][:10])
@@ -106,7 +106,7 @@ def sync(cfg, buys, new, last_prices, log):
                             "why": f"held {held} trading days"})
 
     # 2. buy new BUY picks
-    if s["auto"]:
+    if s["auto"] and trade:
         equity = float(acct.get("equity") or 0)
         invested = sum(float(p.get("market_value") or 0) for p in positions.values())
         slots = s["max_positions"] - len(positions) - len(pending)
@@ -142,9 +142,12 @@ def sync(cfg, buys, new, last_prices, log):
                 if ok:
                     slots -= 1
                     invested += qty * price
-    log(f"Broker ({s['mode']}): {sum(a['ok'] for a in actions if a['side'] == 'buy')} buy order(s), "
-        f"{sum(a['ok'] for a in actions if a['side'] == 'sell')} sell order(s)"
-        + ("" if s["auto"] else "; automatic buying is off"))
+    if trade:
+        log(f"Broker ({s['mode']}): {sum(a['ok'] for a in actions if a['side'] == 'buy')} buy order(s), "
+            f"{sum(a['ok'] for a in actions if a['side'] == 'sell')} sell order(s)"
+            + ("" if s["auto"] else "; automatic buying is off"))
+    else:
+        log(f"Broker ({s['mode']}): connected, portfolio refreshed")
 
     # 3. snapshot for the dashboard (written to your private Drive, never to the log)
     try:
