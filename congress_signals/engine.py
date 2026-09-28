@@ -4092,7 +4092,9 @@ def price_coverage(tx_all, px):
 # ----------------------------------------------------------------------------
 PEW_URL = ("https://www.pewresearch.org/wp-content/uploads/sites/20/2024/12/"
            "pr_2025-01-02_faith-on-the-hill_member-list.pdf")
-PEW_ROW = re.compile(r"^([A-Z]{2})(?:\s+(AL|\d{1,2}))?\s+(.+?)\s+([RDI])\s+(House|Senate)\s+(.+?)\s*$")
+# rows look like "AL 7 Terri A. Sewell D Continuing Methodist" or "AK Senator Lisa Murkowski R Continuing Catholic"
+PEW_ROW = re.compile(r"^([A-Z]{2})\s+(AL|\d{1,2}|Senator|Delegate|Resident Commissioner)\s+(.+?)\s+([RDI])\s+"
+                     r"(Freshman|Continuing|Returning)\s+(.+?)\s*$")
 
 
 def parse_pew_text(text):
@@ -4100,8 +4102,10 @@ def parse_pew_text(text):
     for line in text.splitlines():
         m = PEW_ROW.match(line.strip())
         if m:
-            st, dist, name, party, chamber, rel = m.groups()
-            out.append({"state": st, "name": name.strip(), "chamber": chamber, "religion": rel.strip()})
+            st, dist, name, party, _status, rel = m.groups()
+            rel = rel.strip().replace("Protestant unspecified", "Protestant")
+            out.append({"state": st, "name": name.strip(), "chamber": "Senate" if dist == "Senator" else "House",
+                        "religion": rel})
     return out
 
 
@@ -4130,13 +4134,15 @@ def religion_lookup(rows):
     idx = {}
     for r in rows:
         parts = [p for p in name_key(r["name"]).split(" ") if p]
-        if parts:
-            idx.setdefault((r["chamber"], parts[-1]), []).append(r)
+        if parts:                                   # index "drew" and "van drew" so two-word last names match
+            for k in {parts[-1], " ".join(parts[-2:])}:
+                idx.setdefault((r["chamber"], k), []).append(r)
     return idx
 
 
 def religion_for(idx, chamber, last_key, first, state):
-    c = idx.get((chamber, last_key), [])
+    lk = name_key(last_key or "")
+    c = idx.get((chamber, lk), []) or idx.get((chamber, lk.split(" ")[-1] if lk else ""), [])
     if len(c) > 1 and state:
         c = [r for r in c if r["state"] == state] or c
     if len(c) > 1 and first:
