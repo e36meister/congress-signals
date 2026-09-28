@@ -28,7 +28,9 @@ jobs:
           cache: pip
 
       - name: Install libraries
-        run: pip install -r requirements.txt
+        run: |                  # retry: the package server occasionally hiccups
+          for i in 1 2 3 4; do pip install --retries 5 --timeout 60 -r requirements.txt && exit 0; sleep $((i * 20)); done
+          exit 1
 
       - name: Restore the list of filings already seen
         uses: actions/cache/restore@v4
