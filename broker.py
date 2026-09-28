@@ -53,8 +53,8 @@ def from_alpaca(s):
     return s.replace(".", "-")
 
 
-def _bot_buys(api):
-    """First filled buy per symbol that this tool placed, from Alpaca's own order history."""
+def _bot_buys(api, any_buyer=False):
+    """First filled buy per symbol that this tool placed (or anyone, with any_buyer), from Alpaca's order history."""
     out, after = {}, (dt.datetime.utcnow() - dt.timedelta(days=500)).strftime("%Y-%m-%dT%H:%M:%SZ")
     until = None
     for _ in range(20):
@@ -65,7 +65,7 @@ def _bot_buys(api):
         if not page:
             break
         for o in page:
-            if (o.get("client_order_id") or "").startswith(PREFIX) and o.get("side") == "buy" and o.get("filled_at"):
+            if (any_buyer or (o.get("client_order_id") or "").startswith(PREFIX)) and o.get("side") == "buy" and o.get("filled_at"):
                 sym = o["symbol"]
                 if sym not in out or o["filled_at"] < out[sym]["filled_at"]:
                     out[sym] = o
@@ -176,10 +176,15 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
     except Exception:
         positions, recent = list(positions.values()), []
     bot = _bot_buys(api) if actions else bot
+    try:
+        first = _bot_buys(api, any_buyer=True)
+    except Exception:
+        first = {}
     pos = []
     for p in positions:
         o = bot.get(p["symbol"])
-        bought = o["filled_at"][:10] if o else None
+        f0 = o or first.get(p["symbol"])
+        bought = f0["filled_at"][:10] if f0 else None
         pos.append({"t": from_alpaca(p["symbol"]), "qty": float(p["qty"]), "avg": float(p["avg_entry_price"]),
                     "px": float(p.get("current_price") or 0), "mv": float(p.get("market_value") or 0),
                     "pl": float(p.get("unrealized_pl") or 0), "plpc": float(p.get("unrealized_plpc") or 0),
