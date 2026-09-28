@@ -1,0 +1,48 @@
+name: Hourly check for new filings
+
+on:
+  schedule:
+    - cron: "17 * * * *"       # every hour at :17
+  workflow_dispatch: {}
+
+concurrency:
+  group: quick-check
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write               # to start the full update when new filings appear
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install libraries
+        run: pip install -r requirements.txt
+
+      - name: Restore the list of filings already seen
+        uses: actions/cache/restore@v4
+        with:
+          path: quick_state
+          key: quick-${{ github.run_id }}
+          restore-keys: quick-
+
+      - name: Look for new House and Senate filings
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python quick_check.py
+
+      - name: Save the list
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: quick_state
+          key: quick-${{ github.run_id }}

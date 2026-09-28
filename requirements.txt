@@ -9,3 +9,4 @@ pyyaml
 plotly
 google-api-python-client
 google-auth
+pillow

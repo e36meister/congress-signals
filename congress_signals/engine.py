@@ -3,7 +3,7 @@
 #  Collects US politicians' disclosed stock trades from public sources, scores
 #  each purchase, backtests the picks, and builds a ranked watchlist.
 # =============================================================================
-import os, re, io, json, time, math, zipfile, datetime as dt, unicodedata, smtplib
+import os, re, io, json, time, math, zipfile, base64, datetime as dt, unicodedata, smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1869,6 +1869,16 @@ def ticker_level(rows, score_col="score", short=False):
     else:
         mem = rows.groupby("ticker")["member"].agg(lambda s: ", ".join(sorted(set(s))))
     best["members"] = best["ticker"].map(mem)
+    # one entry per member for the dashboard cards: name, faith label and congress ID (for the official photo)
+    ppl = {}
+    for t, m, r, b in zip(rows["ticker"], rows["member"],
+                          rows["religion"] if "religion" in rows else [None] * len(rows),
+                          rows["bioguide"] if "bioguide" in rows else [None] * len(rows)):
+        lst = ppl.setdefault(t, [])
+        if all(p["n"] != m for p in lst):
+            lst.append({"n": str(m), "r": r if isinstance(r, str) and r else None,
+                        "b": b if isinstance(b, str) and b else None})
+    best["people"] = best["ticker"].map(lambda t: ppl.get(t, [])[:6])
     best["why"] = best.apply(_why_short if short else _why_buy, axis=1)
     return best.reset_index(drop=True)
 
@@ -2734,6 +2744,40 @@ _TRADE_COLS = {"d": "filed_date", "t": "ticker", "co": "company", "m": "members"
                "r": "ret", "spy": "spy_ret", "ex": "excess", "res": "result"}
 
 
+PHOTO_URL = "https://unitedstates.github.io/images/congress/225x275/{}.jpg"   # official photos, public domain
+
+
+def member_photos(cfg, bioguides, size=96):
+    """Small round-crop-ready thumbnails of members' official photos, as data: URIs the dashboard can show
+    (the dashboard page can't load images from other sites). Cached on disk; a missing photo is retried weekly."""
+    cache, path = _cache_json(cfg, "photos.json", {})
+    changed = False
+    for b in sorted({x for x in bioguides if isinstance(x, str) and re.fullmatch(r"[A-Z]\d{6}", x)}):
+        hit = cache.get(b)
+        if hit and (hit.get("uri") or _fresh(hit.get("tried", ""), 7)):
+            continue
+        uri = None
+        try:
+            from PIL import Image
+            r = requests.get(PHOTO_URL.format(b), timeout=30)
+            if r.status_code == 200:
+                im = Image.open(io.BytesIO(r.content)).convert("RGB")
+                w, h = im.size
+                side = min(w, h)
+                im = im.crop(((w - side) // 2, 0, (w - side) // 2 + side, side))   # square, keep the top (face)
+                im = im.resize((size, size), Image.LANCZOS)
+                buf = io.BytesIO()
+                im.save(buf, "JPEG", quality=72, optimize=True)
+                uri = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+        except Exception as e:
+            log(f"Photos: {b} failed ({e})")
+        cache[b] = {"uri": uri, "tried": dt.datetime.now().isoformat()}
+        changed = True
+    if changed:
+        json.dump(cache, open(path, "w"))
+    return {b: cache[b]["uri"] for b in bioguides if isinstance(b, str) and cache.get(b, {}).get("uri")}
+
+
 def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
     path = os.path.join(cfg["DATA_DIR"], "dashboard_data.json")
     try:
@@ -2792,12 +2836,18 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
         wcols = {"rank": "rank", "action": "action", "t": "ticker", "co": "company", "pct": "percentile",
                  "m": "members", "why": "why", "d": "filed_date", "move": "move_since_filing", "an": "analysts",
                  "up": "target_upside_%", "earn": "next_earnings", "news": "news_7d", "sec": "sector",
-                 "nwm": "news_with_member", "def": "is_defense", "cap": "market_cap", "dodm": "dod_awards_180d"}
+                 "nwm": "news_with_member", "def": "is_defense", "cap": "market_cap", "dodm": "dod_awards_180d",
+                 "ppl": "people"}
         data["watchlist"] = {
             "updated": now, "lookback": cfg["WATCHLIST_LOOKBACK_DAYS"],
             "buys": _rows(buys, dict(wcols, s="score")),
             "sells": _rows(sells, dict(wcols, s="short_score")),
             "new": _rows(new, {"action": "action", "t": "ticker"}) if new is not None else []}
+        bios = [p.get("b") for r in data["watchlist"]["buys"] + data["watchlist"]["sells"] for p in (r.get("ppl") or [])]
+        try:
+            data["photos"] = member_photos(cfg, bios)
+        except Exception as e:
+            log(f"Photos: skipped ({e})")
     if tuned is not None:
         comp = tuned["comparison"]
         data["tuning"] = {
