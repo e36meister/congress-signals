@@ -49,7 +49,7 @@ DEFAULT_CONFIG = {
         "defense_power": 0.5, "dod_award_after_trade": 0.6, "dod_momentum": 0.4,
         "grants": 0.2, "grant_after_trade": 0.4, "campaign_vendor": 0.3, "spouse_employer": 0.5,
         "paid_travel": 0.3, "outside_position": 0.4, "buddy": 0.4, "leader": 0.3, "bill_advanced": 0.5,
-        "sector_bill_momentum": 0.2,
+        "sector_bill_momentum": 0.2, "spouse_insider": 0.5,
     },
     "SHORT_WEIGHTS": {
         "sell_track_record": 1.0, "sell_cluster": 0.8, "buy_pressure": -0.4, "committee": 0.5,
@@ -72,7 +72,7 @@ DEFAULT_CONFIG = {
     "USE_HOUSE": True, "USE_SENATE": True, "USE_INSIDERS": True, "USE_CONTRACTS": True,
     "USE_LOBBYING": True, "USE_DONATIONS": True, "USE_BILLS": True, "USE_NEWS": True,
     "USE_EMPLOYEE_DONATIONS": True, "USE_ANNUAL_DISCLOSURES": True, "USE_COMPANY_INFO": True,
-    "USE_BILL_STATUS": True, "USE_CAMPAIGN_SPENDING": True, "USE_ASSISTANCE": True,
+    "USE_BILL_STATUS": True, "USE_SPOUSE_MATCHING": True, "USE_CAMPAIGN_SPENDING": True, "USE_ASSISTANCE": True,
     "USE_HEARINGS": True, "USE_VOTES": True, "USE_SPEECHES": True, "USE_BLUESKY": True, "USE_EVENTS": True,
     "TIME_BUDGET_MIN": 0,            # 0 = no limit (Colab); the daily GitHub run sets this
     "MAX_ENRICH_TICKERS": 800,       # contracts/lobbying are looked up for the most-traded tickers
@@ -1832,7 +1832,7 @@ def _why_buy(r):
                    ("f_crowded", lambda: "but the stock already jumped on disclosure day")):
         if r.get(f, 0) and r.get(f, 0) >= 0.5:
             b.append(txt())
-    for k in ("buddy_note", "bill_adv_note"):
+    for k in ("spouse_note", "buddy_note", "bill_adv_note"):
         if r.get(k):
             b.append(r[k])
     if r["f_size"] >= 0.4:
@@ -2078,6 +2078,7 @@ BUY_FACTORS = [("f_track_record", "Member track record"), ("f_cluster", "Cluster
                ("f_paid_travel", "Company paid for travel"), ("f_outside_position", "Holds a position at the company"),
                ("f_buddy", "Trading partner also bought"), ("f_leader", "Member usually trades first"),
                ("f_bill_advanced", "Their bill advanced after the trade"), ("f_sector_bill_momentum", "Industry bill just passed"),
+               ("f_spouse_insider", "Spouse is a company insider (SEC)"),
                ("f_testified", "Company testified to their committee"), ("f_closed_briefing", "Closed briefing before trade"),
                ("f_vote_sector", "Voted on industry bill near trade"), ("f_home_state", "Company based in their state"),
                ("f_contract_in_state", "Contracts in their state"), ("f_speech", "Named company in floor speech"),
@@ -2211,7 +2212,8 @@ def run_backtest(scored, px, cfg, since=None):
                     ("f_grants", "Company got grants or loans"), ("f_campaign_vendor", "Campaign paid the company"),
                     ("f_spouse_employer", "Spouse works for the company"), ("f_paid_travel", "Company-paid travel"),
                     ("f_outside_position", "Position at the company"), ("f_buddy", "Trading partner also bought"),
-                    ("f_bill_advanced", "Bill advanced after the trade")) if f in scored}}
+                    ("f_bill_advanced", "Bill advanced after the trade"),
+                    ("f_spouse_insider", "Spouse is a company insider")) if f in scored}}
     extras = {}
     if not cfg.get("_nested") and since is None:
         pt, pv = persistence_table(scored)
@@ -2735,6 +2737,19 @@ def prepare(cfg):
         data["bill_actions"] = collect_bill_status(cfg)
     if step("USE_CAMPAIGN_SPENDING"):
         data["campaign_vendors"] = collect_campaign_vendors(cfg, fecs)
+    if step("USE_SPOUSE_MATCHING"):
+        try:
+            members = {}
+            for _, snap in (history or []) + [(None, committees)]:
+                for ms in snap.values():
+                    for m in ms:
+                        if m.get("bioguide"):
+                            members.setdefault(m["bioguide"], m)
+            sp = {b: v for b, v in collect_spouses(cfg).items() if b in bios}
+            data["spouse_ties"] = spouse_ties(sp, collect_spouse_insiders(cfg, sp), members)
+            log(f"Spouse insiders: {len(data['spouse_ties'])} possible spouse-company ties")
+        except Exception as e:
+            log(f"Spouse insiders: skipped ({e})")
     if step("USE_ASSISTANCE"):
         data["assistance"] = collect_assistance(cfg, meta, list(dict.fromkeys(
             [t for t in tx["ticker"].unique() if is_defense(t, meta)] + enrich)))
@@ -2742,6 +2757,23 @@ def prepare(cfg):
         log("Time limit reached: saved progress; the next run continues where this one stopped")
     log("Computing signals for every transaction...")
     feats = compute_features(tx, px, data, cfg)
+    try:
+        ties = []
+        st_ = data.get("spouse_ties")
+        if st_ is not None and len(st_):
+            for r in st_.sort_values("first_filed").drop_duplicates(["bioguide", "ticker"]).to_dict("records"):
+                ties.append({"Member": r["member"], "Spouse": r["spouse"], "Company": f"{r['issuer']} ({r['ticker']})",
+                             "Role": r["role"], "Since": str(pd.Timestamp(r["first_filed"]).date()),
+                             "Confidence": r["confidence"], "Source": "SEC insider filings",
+                             "link": f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={r['owner_cik']}&type=4&owner=include&count=40"})
+        dj = feats[feats.get("f_spouse_employer", 0) > 0] if "f_spouse_employer" in feats else feats.iloc[0:0]
+        for r in dj.drop_duplicates(["member", "ticker"]).to_dict("records"):
+            ties.append({"Member": r["member"], "Spouse": "", "Company": f"{(data['meta'].get(r['ticker']) or {}).get('name') or r['ticker']} ({r['ticker']})",
+                         "Role": "Spouse income source", "Since": "", "Confidence": "Stated by the member",
+                         "Source": "Yearly financial disclosure", "link": ""})
+        json.dump(ties, open(_p(cfg, "state", "spouse_ties.json"), "w"), default=str)
+    except Exception as e:
+        log(f"Spouse ties: table skipped ({e})")
     try:
         ev, names = data.get("_pairs") or (None, {})
         json.dump(pairs_table(ev, names), open(_p(cfg, "state", "trading_pairs.json"), "w"))
@@ -2854,6 +2886,8 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
         data["backtest"]["price_coverage"] = json.load(open(cpath)) if os.path.exists(cpath) else {}
         ppath = os.path.join(cfg["DATA_DIR"], "state", "trading_pairs.json")
         data["backtest"]["pairs"] = json.load(open(ppath)) if os.path.exists(ppath) else []
+        spath_ = os.path.join(cfg["DATA_DIR"], "state", "spouse_ties.json")
+        data["backtest"]["spouse_ties"] = json.load(open(spath_)) if os.path.exists(spath_) else []
         data["backtest"].update({"horizons": tbl(bt.get("horizons")), "persistence": tbl(bt.get("persistence")),
                                  "persistence_verdict": bt.get("persistence_verdict") or {},
                                  "crowding": tbl(bt.get("crowding")), "sizes": tbl(bt.get("sizes")),
@@ -4490,6 +4524,17 @@ def relationship_features(tx, data, cfg, mems):
     D = pd.Timedelta
     n = len(tx)
     fdt, tdt = tx["filed_date"], tx["trade_date"]
+    tx["f_spouse_insider"], tx["spouse_note"] = 0.0, ""
+    st_ = data.get("spouse_ties")
+    if st_ is not None and len(st_):
+        ok = st_[st_["confidence"] == "Confirmed by state"]
+        tie = {(b, t): (f0, sp, role) for b, t, f0, sp, role in zip(ok["bioguide"], ok["ticker"], ok["first_filed"], ok["spouse"], ok["role"])}
+        fs, nt = np.zeros(n), [""] * n
+        for i, (m, t, f) in enumerate(zip(mems, tx["ticker"], fdt)):
+            h = tie.get(((m or {}).get("bioguide"), t))
+            if h and h[0] <= f:
+                fs[i], nt[i] = 1.0, f"spouse {h[1]} is a company insider ({h[2].lower()}) per SEC filings"
+        tx["f_spouse_insider"], tx["spouse_note"] = fs, nt
     for c in ("f_grants", "f_grant_after_trade", "f_campaign_vendor", "f_spouse_employer", "f_paid_travel",
               "f_outside_position", "f_buddy", "f_leader", "f_bill_advanced", "f_sector_bill_momentum"):
         tx[c] = 0.0
@@ -4653,3 +4698,134 @@ def pairs_table(ev, names, top=15):
                     "Last shared trade": str(pd.Timestamp(g["known"].max()).date())})
     out.sort(key=lambda r: -r["Shared stocks"])
     return out[:top]
+
+
+# ----------------------------------------------------------------------------
+# Spouses who are company insiders (Wikidata spouse names x SEC Forms 3/4/5 filers)
+# ----------------------------------------------------------------------------
+WIKIDATA_SPOUSES = """SELECT ?bioguide ?spouseLabel WHERE {
+  ?p wdt:P1157 ?bioguide . ?p wdt:P26 ?spouse .
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "en". } }"""
+
+
+def collect_spouses(cfg):
+    """Spouse names for members of Congress, from Wikidata (bioguide ID -> names)."""
+    cache, path = _cache_json(cfg, "spouses.json", {})
+    if cache.get("rows") and _fresh(cache.get("fetched", ""), 30):
+        return cache["rows"]
+    try:
+        r = requests.get("https://query.wikidata.org/sparql", params={"query": WIKIDATA_SPOUSES, "format": "json"},
+                         headers={"User-Agent": "congress-signals research tool (github.com/e36meister/congress-signals)",
+                                  "Accept": "application/sparql-results+json"}, timeout=180)
+        r.raise_for_status()
+        rows = {}
+        for b in r.json()["results"]["bindings"]:
+            bio, sp = b["bioguide"]["value"], b["spouseLabel"]["value"]
+            if re.fullmatch(r"Q\d+", sp):
+                continue
+            rows.setdefault(bio, [])
+            if sp not in rows[bio]:
+                rows[bio].append(sp)
+        cache = {"fetched": dt.datetime.now().isoformat(), "rows": rows}
+        json.dump(cache, open(path, "w"))
+        log(f"Spouses: names for {len(rows):,} current and former members (Wikidata)")
+    except Exception as e:
+        log(f"Spouses: Wikidata lookup failed ({e})")
+    return cache.get("rows", {})
+
+
+def _sec_owner_parts(name):
+    """SEC filer names are written 'LAST FIRST MIDDLE'."""
+    p = name_key(name or "").split()
+    return (p[0], p[1]) if len(p) >= 2 else (None, None)
+
+
+def collect_spouse_insiders(cfg, spouses):
+    """Every SEC insider filing (Forms 3/4/5) by someone whose first and last name match a member's spouse."""
+    hdr = _sec_headers(cfg)
+    cache = _p(cfg, "cache", "spouse_insiders.pkl")
+    cols = ["owner_cik", "owner_name", "last", "first", "state", "role", "ticker", "issuer", "filed"]
+    df = pd.read_pickle(cache) if os.path.exists(cache) else pd.DataFrame(columns=cols)
+    done, dpath = _cache_json(cfg, "spouse_insider_quarters.json", [])
+    want = {}
+    for names in spouses.values():
+        for nm in names:
+            p = name_key(nm).split()
+            if len(p) >= 2:
+                want.setdefault(p[-1], set()).add(p[0])
+    if not hdr or not want:
+        return df
+    start = pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=365)
+    today = pd.Timestamp.today()
+    for y in range(start.year, today.year + 1):
+        for q in range(1, 5):
+            key = f"{y}q{q}"
+            if key in done or pd.Timestamp(y, 3 * q - 2, 1) > today or pd.Timestamp(y, 3 * q, 1) < start:
+                continue
+            if out_of_time(cfg, 75):
+                break
+            try:
+                r = requests.get(f"https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/"
+                                 f"{key}_form345.zip", headers=hdr, timeout=180)
+                if r.status_code != 200:
+                    continue
+                z = zipfile.ZipFile(io.BytesIO(r.content))
+                own = _read_tsv(z, "REPORTINGOWNER.TSV", ["ACCESSION_NUMBER", "RPTOWNERCIK", "RPTOWNERNAME",
+                                                           "RPTOWNER_RELATIONSHIP", "RPTOWNER_TITLE", "RPTOWNER_STATE"])
+                if "RPTOWNERNAME" not in own:
+                    continue
+                lf = own["RPTOWNERNAME"].map(_sec_owner_parts)
+                own["last"], own["first"] = lf.str[0], lf.str[1]
+                own = own[[l in want and f in want[l] for l, f in zip(own["last"], own["first"])]]
+                if len(own):
+                    sub = _read_tsv(z, "SUBMISSION.TSV", ["ACCESSION_NUMBER", "FILING_DATE", "ISSUERTRADINGSYMBOL", "ISSUERNAME"])
+                    m = own.merge(sub, on="ACCESSION_NUMBER", how="left")
+                    new = pd.DataFrame({
+                        "owner_cik": m["RPTOWNERCIK"], "owner_name": m["RPTOWNERNAME"], "last": m["last"],
+                        "first": m["first"], "state": m.get("RPTOWNER_STATE"),
+                        "role": (m.get("RPTOWNER_RELATIONSHIP", pd.Series("", index=m.index)).fillna("") + " " +
+                                 m.get("RPTOWNER_TITLE", pd.Series("", index=m.index)).fillna("")).str.strip(),
+                        "ticker": m["ISSUERTRADINGSYMBOL"].map(clean_ticker), "issuer": m.get("ISSUERNAME"),
+                        "filed": pd.to_datetime(m["FILING_DATE"], format="%d-%b-%Y", errors="coerce")})
+                    df = pd.concat([df, new], ignore_index=True)
+                if pd.Timestamp(y, 3 * q, 1) + pd.offsets.MonthEnd(0) + pd.Timedelta(days=45) < today:
+                    done.append(key)
+                df.to_pickle(cache)
+                json.dump(done, open(dpath, "w"))
+                time.sleep(0.2)
+            except Exception as e:
+                log(f"Spouse insiders: {key} failed ({e})")
+    log(f"Spouse insiders: {len(df):,} SEC filings by people named like a member's spouse")
+    return df
+
+
+def spouse_ties(spouses, ins, members):
+    """Match members' spouses to SEC insiders. 'Confirmed by state' = same first and last name AND the filer's
+    address is in the member's state, and the name isn't shared by several different filers there.
+    Everything else is 'Needs review' and is shown but not scored."""
+    if ins is None or not len(ins) or not spouses:
+        return pd.DataFrame(columns=["bioguide", "member", "spouse", "ticker", "issuer", "role", "first_filed",
+                                     "owner_cik", "confidence"])
+    ins = ins.dropna(subset=["ticker", "filed"])
+    rows = []
+    for bio, names in spouses.items():
+        m = members.get(bio)
+        if not m:
+            continue
+        for nm in names:
+            p = name_key(nm).split()
+            if len(p) < 2:
+                continue
+            hit = ins[(ins["last"] == p[-1]) & (ins["first"] == p[0])]
+            if not len(hit):
+                continue
+            same_state = hit[hit["state"].fillna("") == (m.get("state") or "")]
+            ambiguous = same_state["owner_cik"].nunique() > 1
+            for (cik, t), g in hit.groupby(["owner_cik", "ticker"]):
+                ok = (g["state"].fillna("") == (m.get("state") or "")).any() and not ambiguous
+                rows.append({"bioguide": bio, "member": m.get("name"), "spouse": nm, "ticker": t,
+                             "issuer": g["issuer"].dropna().iloc[0] if g["issuer"].notna().any() else t,
+                             "role": g["role"].mode().iloc[0] if g["role"].str.len().gt(0).any() else "Insider",
+                             "first_filed": g["filed"].min(), "owner_cik": str(cik),
+                             "confidence": "Confirmed by state" if ok else "Needs review"})
+    return pd.DataFrame(rows)
