@@ -1755,7 +1755,10 @@ def _score(tx, weights):
 def active_weights(cfg):
     bw, sw = cfg["BUY_WEIGHTS"], cfg["SHORT_WEIGHTS"]
     path = os.path.join(cfg["DATA_DIR"], "state", "tuned_weights.json")
-    if cfg.get("USE_TUNED_WEIGHTS") and os.path.exists(path):
+    use = cfg.get("USE_TUNED_WEIGHTS")
+    if use == "auto":
+        use = load_adaptive(cfg).get("use_tuned", False)
+    if use and os.path.exists(path):
         t = json.load(open(path))
         bw, sw = t.get("buy", bw), t.get("short", sw)
         log("Using tuned weights from the last tuning run")
@@ -2136,7 +2139,8 @@ def run_backtest(scored, px, cfg, since=None):
         buys, sells = all_buys[all_buys["filed_date"] >= since], all_sells[all_sells["filed_date"] >= since]
     start = buys["entry_date"].min()
     idx = px.index[px.index >= start]
-    slots_l = max(1, int(cfg["PICKS_PER_WEEK"] * cfg["HOLD_DAYS"] / 5))
+    eff_hold = float(longs["hold_days_row"].mean()) if len(longs) and "hold_days_row" in longs else cfg["HOLD_DAYS"]
+    slots_l = max(1, int(cfg["PICKS_PER_WEEK"] * eff_hold / 5))
     slots_s = max(1, int(cfg["SHORTS_PER_WEEK"] * cfg["HOLD_DAYS"] / 5))
     empty = pd.Series(0.0, index=idx)
     cst = cfg.get("COST_BPS", 0) / 1e4
@@ -2780,6 +2784,10 @@ def prepare(cfg):
     except Exception as e:
         log(f"Trading partners: table skipped ({e})")
     scored = apply_scores(feats, cfg)
+    pol = load_adaptive(cfg)["policy"]
+    if int(pol["hold_small"]) != int(cfg["HOLD_DAYS"]) or int(pol["hold_other"]) != int(cfg["HOLD_DAYS"]):
+        scored = apply_hold_policy(scored, px, cfg, pol)
+        log(f"Holding periods in use: {pol['hold_other']} trading days, {pol['hold_small']} for companies under $2B")
     scored.to_pickle(_p(cfg, "cache", "scored.pkl"))
     log(f"Done: {len(scored):,} transactions scored")
     return scored, px
@@ -2905,6 +2913,12 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
                 "buy_factors": _rows(dbt["buy_factors"], {"signal": "Signal", "group": "Group", "n": "Trades",
                                                           "avg": "Avg result vs SPY", "hit": "Worked (%)"}),
                 "n_longs": len(DL), "longs": _rows(DL.sort_values("filed_date", ascending=False).head(300), _TRADE_COLS)}
+    apath = os.path.join(cfg["DATA_DIR"], "state", ADAPT_FILE)
+    if os.path.exists(apath):
+        try:
+            data["adaptive"] = json.load(open(apath))
+        except Exception:
+            pass
     if buys is not None or sells is not None:
         wcols = {"rank": "rank", "action": "action", "t": "ticker", "co": "company", "pct": "percentile",
                  "m": "members", "why": "why", "d": "filed_date", "move": "move_since_filing", "an": "analysts",
@@ -4829,3 +4843,157 @@ def spouse_ties(spouses, ins, members):
                              "first_filed": g["filed"].min(), "owner_cik": str(cik),
                              "confidence": "Confirmed by state" if ok else "Needs review"})
     return pd.DataFrame(rows)
+
+
+# ############################################################################
+#  AUTOMATIC ADJUSTMENTS: holding periods and tuned weights change themselves when a
+#  switch is clearly better in the backtest; other settings are shown as proposals
+# ############################################################################
+HOLD_CHOICES = [20, 60, 125, 250]          # ~1 month, 3 months, 6 months, 1 year of trading days
+ADAPT_FILE = "adaptive.json"
+HOLD_LABELS = {"hold_other": "Holding period (most stocks)", "hold_small": "Holding period (companies under $2B)"}
+
+
+def load_adaptive(cfg):
+    try:
+        a = json.load(open(_p(cfg, "state", ADAPT_FILE)))
+    except Exception:
+        a = {}
+    a.setdefault("policy", {"hold_small": int(cfg["HOLD_DAYS"]), "hold_other": int(cfg["HOLD_DAYS"])})
+    a.setdefault("use_tuned", False)
+    a.setdefault("history", [])
+    return a
+
+
+def save_adaptive(cfg, a):
+    json.dump(a, open(_p(cfg, "state", ADAPT_FILE), "w"), indent=1, default=str)
+
+
+def row_holds(df, policy):
+    small = (df["f_small_cap"].fillna(0) >= 0.5).values if "f_small_cap" in df else np.zeros(len(df), bool)
+    return np.where(small, int(policy["hold_small"]), int(policy["hold_other"]))
+
+
+def apply_hold_policy(scored, px, cfg, policy):
+    """Recompute each trade's exit with its group's holding period."""
+    h = row_holds(scored, policy)
+    out = scored.copy()
+    cost = cfg.get("COST_BPS", 0) / 1e4
+    cols = ["entry_date", "exit_date", "entry_px", "exit_px", "ret", "spy_ret", "excess", "closed"]
+    for hv in np.unique(h):
+        m = h == hv
+        fr = forward_returns(scored.loc[m], px, int(hv), cost=cost)
+        for c in cols:
+            out.loc[m, c] = fr[c].values
+    for c in ("entry_date", "exit_date"):
+        out[c] = pd.to_datetime(out[c])
+    for c in ("entry_px", "exit_px", "ret", "spy_ret", "excess"):
+        out[c] = out[c].astype(float)
+    out["closed"] = out["closed"].astype(bool)
+    out["hold_days_row"] = h
+    return out
+
+
+def _long_daily(bt):
+    return bt["curves"]["Long picks"].pct_change().fillna(0)
+
+
+def _compare(r_new, r_cur):
+    """Yearly gain of switching, how sure (t-stat on daily differences), and whether it also held in the last 3 years."""
+    d = (r_new - r_cur).dropna()
+    if len(d) < 250 or d.std() == 0:
+        return None
+    return {"gain": float(d.mean() * 252), "t": float(d.mean() / d.std() * np.sqrt(len(d))),
+            "recent": float(d.iloc[-756:].mean() * 252)}
+
+
+def clearly_better(c):
+    return bool(c) and c["gain"] >= 0.01 and c["t"] >= 1.65 and c["recent"] > 0
+
+
+def _verdict(c, auto):
+    if not c:
+        return "Not enough data"
+    if clearly_better(c):
+        return "Switched automatically" if auto else "Clearly better: ask Claude to apply"
+    if c["gain"] > 0:
+        return "Slightly better, not sure enough to switch"
+    return "Worse"
+
+
+def evaluate_adjustments(scored, px, cfg):
+    """Weekly: try other holding periods (switch when clearly better) and a few other settings (proposals only)."""
+    a = load_adaptive(cfg)
+    pol = dict(a["policy"])
+    base = dict(cfg, _nested=True)
+
+    def run(policy, **over):
+        return run_backtest(apply_hold_policy(scored, px, cfg, policy), px, dict(base, **over))
+
+    def vs_spy(b):
+        return float(b["perf"].loc["Per year vs S&P 500", "Long picks"])
+
+    today = dt.date.today().isoformat()
+    cur = run(pol)
+    rows = []
+    for key in ("hold_other", "hold_small"):
+        r_cur, best = _long_daily(cur), None
+        rows.append({"Setting": HOLD_LABELS[key], "Option": f"{pol[key]} trading days (current)",
+                     "Per year vs S&P": vs_spy(cur), "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
+        for h in HOLD_CHOICES:
+            if h == pol[key]:
+                continue
+            b = run(dict(pol, **{key: h}))
+            c = _compare(_long_daily(b), r_cur)
+            rows.append({"Setting": HOLD_LABELS[key], "Option": f"{h} trading days", "Per year vs S&P": vs_spy(b),
+                         "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
+                         "Verdict": _verdict(c, True)})
+            if clearly_better(c) and (best is None or c["gain"] > best[1]["gain"]):
+                best = (h, c, b)
+        if best:
+            a["history"].append({"date": today, "change": HOLD_LABELS[key], "from": f"{pol[key]} days",
+                                 "to": f"{best[0]} days", "gain_per_year": best[1]["gain"], "sureness": best[1]["t"]})
+            log(f"Adjustments: {HOLD_LABELS[key]} {pol[key]} -> {best[0]} trading days "
+                f"(+{best[1]['gain']*100:.1f}%/yr in the backtest)")
+            pol[key] = best[0]
+            for r in rows:
+                if r["Setting"] == HOLD_LABELS[key] and r["Option"].startswith(f"{best[0]} "):
+                    r["Verdict"] = "Switched automatically"
+            cur = best[2]
+    a["policy"] = pol
+
+    # proposals: measured the same way, never applied without the user's go-ahead
+    props, r_cur = [], _long_daily(cur)
+    for name, key, opts in (("How high a score a buy needs (percentile)", "PICK_PERCENTILE", (70, 90)),
+                            ("Picks per week", "PICKS_PER_WEEK", (3, 8))):
+        props.append({"Setting": name, "Option": f"{cfg[key]} (current)", "Per year vs S&P": vs_spy(cur),
+                      "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
+        for o in opts:
+            b = run(pol, **{key: o})
+            c = _compare(_long_daily(b), r_cur)
+            props.append({"Setting": name, "Option": str(o), "Per year vs S&P": vs_spy(b),
+                          "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
+                          "Verdict": _verdict(c, False)})
+    a.update({"evaluated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+              "evaluation": rows, "proposals": props})
+    save_adaptive(cfg, a)
+    return a
+
+
+def decide_tuned(cfg, tuned):
+    """Use the tuned weights automatically only when they clearly beat the defaults on years they never saw."""
+    a = load_adaptive(cfg)
+    try:
+        c = _compare(_long_daily(tuned["tuned_bt"]), _long_daily(tuned["default_bt"]))
+    except Exception:
+        c = None
+    use = clearly_better(c)
+    if use != bool(a.get("use_tuned")):
+        a["history"].append({"date": dt.date.today().isoformat(), "change": "Tuned signal weights",
+                             "from": "on" if a.get("use_tuned") else "off", "to": "on" if use else "off",
+                             "gain_per_year": c["gain"] if c else None, "sureness": c["t"] if c else None})
+    a["use_tuned"] = use
+    a["tuned_eval"] = {"gain": c["gain"] if c else None, "sureness": c["t"] if c else None,
+                       "verdict": _verdict(c, True) if use else ("Kept off: " + _verdict(c, True).lower())}
+    save_adaptive(cfg, a)
+    return a
