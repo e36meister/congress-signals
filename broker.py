@@ -161,7 +161,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                 if slots <= 0 or inv_main + dollars > main_cap:
                     break
                 row = rows[rows["ticker"] == t].iloc[0]
-                small = float(row.get("f_small_cap", 0) or 0) >= 0.5
+                small = float(row.get("f_small_cap", 0) or 0) >= 1
                 hold = int(pol["hold_small"] if small else pol["hold_other"])
                 ok = place(t, dollars, f"{PREFIX}{t}-{today:%Y%m%d}-h{hold}")
                 if ok is None:
@@ -174,7 +174,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
 
         # small-company portfolio: every timely purchase of a company under $2B, once per stock
         if sleeve_pct > 0 and buys is not None and len(buys) and "f_small_cap" in buys:
-            sm = buys[(buys["f_small_cap"].fillna(0) >= 0.5) & (buys.get("lag_days", pd.Series(0, index=buys.index)).fillna(999) <= 45)]
+            sm = buys[(buys["f_small_cap"].fillna(0) >= 1) & (buys.get("lag_days", pd.Series(0, index=buys.index)).fillna(999) <= 45)]
             sleeve_cap = sleeve_pct * 0.95 * equity
             sm_slots = int(cfg.get("_small_slots") or 25)
             amount = sleeve_cap / max(sm_slots, 1)
