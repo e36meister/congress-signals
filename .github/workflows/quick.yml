@@ -1,8 +1,8 @@
-name: Hourly check for new filings
+name: Check for new filings and dashboard orders
 
 on:
   schedule:
-    - cron: "17 * * * *"       # every hour at :17
+    - cron: "2,17,32,47 * * * *"   # every 15 minutes
   workflow_dispatch: {}
 
 concurrency:
@@ -43,6 +43,7 @@ jobs:
           ALPACA_LIVE_KEY_ID: ${{ secrets.ALPACA_LIVE_KEY_ID }}
           ALPACA_LIVE_SECRET_KEY: ${{ secrets.ALPACA_LIVE_SECRET_KEY }}
           TRADING_MODE: ${{ vars.TRADING_MODE }}
+          MAX_TAP_DOLLARS: ${{ vars.MAX_TAP_DOLLARS }}
           GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: python quick_check.py

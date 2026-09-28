@@ -175,5 +175,49 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             "positions": sorted(pos, key=lambda x: -x["mv"]),
             "orders": [{"t": from_alpaca(o["symbol"]), "side": o["side"], "qty": o.get("qty"), "status": o["status"],
                         "filled_px": o.get("filled_avg_price"), "at": (o.get("filled_at") or o.get("submitted_at") or "")[:16],
-                        "bot": (o.get("client_order_id") or "").startswith(PREFIX)} for o in recent],
+                        "bot": (o.get("client_order_id") or "").startswith(PREFIX),
+                        "by": "tool" if (o.get("client_order_id") or "").startswith(PREFIX)
+                        else ("tap" if (o.get("client_order_id") or "").startswith("tap-") else "you")} for o in recent],
             "this_run": actions}
+
+
+def place_tap_order(ticker, dollars, req_id, log):
+    """One order you approved on the dashboard. Returns (ok, short_reason)."""
+    s = settings(60)
+    if not (s["key"] and s["secret"]):
+        return False, "no-keys"
+    cap = float(env("MAX_TAP_DOLLARS") or 25000)
+    if not (1 <= dollars <= cap):
+        return False, "amount-over-limit"
+    api = Alpaca(s)
+    sym = to_alpaca(ticker)
+    try:
+        asset = api.get(f"/v2/assets/{sym}")
+        acct = api.get("/v2/account")
+    except Exception:
+        return False, "not-found"
+    if not asset.get("tradable"):
+        return False, "not-tradable"
+    if dollars > float(acct.get("buying_power") or 0):
+        return False, "not-enough-cash"
+    body = {"symbol": sym, "side": "buy", "type": "market", "time_in_force": "day",
+            "client_order_id": f"tap-{ticker}-{req_id}"[:48]}
+    if asset.get("fractionable"):
+        body["notional"] = f"{dollars:.2f}"
+    else:
+        try:
+            r = requests.get(f"https://data.alpaca.markets/v2/stocks/{sym}/trades/latest", headers=api.h,
+                             params={"feed": "iex"}, timeout=30)
+            price = float(r.json()["trade"]["p"])
+        except Exception:
+            return False, "no-price"
+        qty = int(dollars // price)
+        if qty < 1:
+            return False, "amount-too-small"
+        body["qty"] = str(qty)
+    r = api.post("/v2/orders", body)
+    if r.status_code in (200, 201):
+        return True, "placed"
+    if r.status_code == 422 and "client_order_id" in (r.text or ""):
+        return True, "placed"                    # already placed on an earlier pass
+    return False, f"rejected-{r.status_code}"
