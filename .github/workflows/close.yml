@@ -1,0 +1,47 @@
+name: Market-close report
+
+on:
+  schedule:
+    - cron: "12 20 * * 1-5"    # 4:12 PM New York time in summer (EDT)
+    - cron: "12 21 * * 1-5"    # 4:12 PM in winter (EST); the report runs once per day either way
+  workflow_dispatch: {}
+
+concurrency:
+  group: close-report
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    env:
+      TZ: America/New_York        # dates and times in Eastern
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install libraries
+        run: |                  # retry: the package server occasionally hiccups
+          for i in 1 2 3 4; do pip install --retries 5 --timeout 60 -r requirements.txt && exit 0; sleep $((i * 20)); done
+          exit 1
+
+      - name: Paper account vs the backtest
+        env:
+          ALPACA_PAPER_KEY_ID: ${{ secrets.ALPACA_PAPER_KEY_ID }}
+          ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
+          ALPACA_LIVE_KEY_ID: ${{ secrets.ALPACA_LIVE_KEY_ID }}
+          ALPACA_LIVE_SECRET_KEY: ${{ secrets.ALPACA_LIVE_SECRET_KEY }}
+          TRADING_MODE: ${{ vars.TRADING_MODE }}
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_TO: ${{ secrets.ALERT_TO }}
+        run: python close_report.py
