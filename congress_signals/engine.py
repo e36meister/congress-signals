@@ -2229,7 +2229,8 @@ def run_backtest(scored, px, cfg, since=None):
         pt, pv = persistence_table(scored)
         extras = {"horizons": horizons_table(scored, px, cfg), "persistence": pt, "persistence_verdict": pv,
                   "crowding": crowding_table(scored), "sizes": size_table(scored),
-                  "defense": defense_backtest(scored, px, cfg) if "is_defense" in scored else None}
+                  "defense": defense_backtest(scored, px, cfg) if "is_defense" in scored else None,
+                  "small": small_cap_backtest(scored, px, cfg)}
         bc, busiest = busy_check(buys[buys["closed"]], BUY_FACTORS, cfg)
         extras.update({"busy_check": bc, "busiest": busiest})
     return {**extras, "longs": fmt_trades(longs, False), "shorts": fmt_trades(shorts, True), "perf": pd.DataFrame(perf),
@@ -2898,8 +2899,10 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
             "lag": [{k: _j(v) for k, v in r.items()} for r in bt["lag"].to_dict("records")],
             "coverage": {k: _j(v) for k, v in bt["coverage"].items()},
             "n_longs": len(L), "n_shorts": len(bt["shorts"]),
-            "longs": _rows(L.sort_values("filed_date", ascending=False).head(500), _TRADE_COLS),
-            "shorts": _rows(bt["shorts"].sort_values("filed_date", ascending=False).head(250), _TRADE_COLS),
+            "longs": _rows(L.sort_values("filed_date", ascending=False).head(500), _TRADE_COLS)
+                     if len(L) and "filed_date" in L else [],
+            "shorts": _rows(bt["shorts"].sort_values("filed_date", ascending=False).head(250), _TRADE_COLS)
+                      if len(bt["shorts"]) and "filed_date" in bt["shorts"] else [],
         }
         tbl = lambda df: [{k: _j(x) for k, x in r.items()} for r in df.to_dict("records")] if df is not None and len(df) else []
         cpath = os.path.join(cfg["DATA_DIR"], "state", "price_coverage.json")
@@ -2925,6 +2928,22 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
                 "buy_factors": _rows(dbt["buy_factors"], {"signal": "Signal", "group": "Group", "n": "Trades",
                                                           "avg": "Avg result vs SPY", "hit": "Worked (%)"}),
                 "n_longs": len(DL), "longs": _rows(DL.sort_values("filed_date", ascending=False).head(300), _TRADE_COLS)}
+        sbt = bt.get("small")
+        if sbt is not None:
+            sp, swk = sbt["perf"], sbt["curves"].resample("W-FRI").last().dropna(how="all")
+            P = sbt["picks"].sort_values("filed_date", ascending=False).head(300).copy()
+            P["members"] = P["member"]
+            P["why"] = [_why_buy(r) for _, r in P.iterrows()]
+            P["result"] = np.where(~P["closed"], "open", np.where(P["excess"] > 0, "beat SPY",
+                                   np.where(P["ret"] > 0, "gained, lagged SPY", "lost money")))
+            data["small"] = {
+                "updated": now, "hold": sbt["hold"], "slots": sbt["slots"], "per_year": sbt["per_year_trades"],
+                "perf": [{"name": c, **{k: _j(sp.loc[k, c]) for k in sp.index}} for c in sp.columns],
+                "curve": {"dates": [d.strftime("%Y-%m-%d") for d in swk.index],
+                          "series": {c: [_j((x - 1) * 100) for x in swk[c].values] for c in swk.columns}},
+                "trade_stats": {k: _j(v) for k, v in sbt["trade_stats"].items()},
+                "years": [{"year": int(y), **{c: _j(v) for c, v in r.items()}} for y, r in sbt["years"].iterrows()],
+                "n_picks": len(sbt["picks"]), "picks": _rows(P, _TRADE_COLS)}
     apath = os.path.join(cfg["DATA_DIR"], "state", ADAPT_FILE)
     if os.path.exists(apath):
         try:
@@ -2936,7 +2955,7 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
                  "m": "members", "why": "why", "d": "filed_date", "move": "move_since_filing", "an": "analysts",
                  "up": "target_upside_%", "earn": "next_earnings", "news": "news_7d", "sec": "sector",
                  "nwm": "news_with_member", "def": "is_defense", "cap": "market_cap", "dodm": "dod_awards_180d",
-                 "ppl": "people", "ags": "f_against_street"}
+                 "ppl": "people", "ags": "f_against_street", "sm": "f_small_cap", "lag": "lag_days"}
         data["watchlist"] = {
             "updated": now, "lookback": cfg["WATCHLIST_LOOKBACK_DAYS"],
             "buys": _rows(buys, dict(wcols, s="score")),
@@ -3820,7 +3839,7 @@ SECTOR_ETF = {"Technology": "XLK", "Industrials": "XLI", "Financial Services": "
               "Energy": "XLE", "Utilities": "XLU", "Basic Materials": "XLB", "Consumer Cyclical": "XLY",
               "Consumer Defensive": "XLP", "Real Estate": "XLRE", "Communication Services": "XLC"}
 DEFENSE_ETF = "ITA"
-BENCHMARK_ETFS = sorted(set(SECTOR_ETF.values()) | {DEFENSE_ETF})
+BENCHMARK_ETFS = sorted(set(SECTOR_ETF.values()) | {DEFENSE_ETF, "IWM"})
 # committees and subcommittees that oversee the military, its budget and intelligence
 DEFENSE_CIDS = {"HSAS", "SSAS", "HSAP02", "SSAP02", "HLIG", "SLIN", "HSHM", "SSGA"}
 DEFENSE_EXTRA = {"PLTR", "BAH", "SAIC", "CACI", "LDOS", "KTOS", "AVAV", "MRCY", "BWXT", "HII", "GD", "LMT", "NOC",
@@ -4891,7 +4910,8 @@ def spouse_ties(spouses, ins, members):
 # ############################################################################
 HOLD_CHOICES = [20, 60, 125, 250]          # ~1 month, 3 months, 6 months, 1 year of trading days
 ADAPT_FILE = "adaptive.json"
-HOLD_LABELS = {"hold_other": "Holding period (most stocks)", "hold_small": "Holding period (companies under $2B)"}
+HOLD_LABELS = {"hold_other": "Holding period (most stocks)", "hold_small": "Holding period (companies under $2B)",
+               "hold_sleeve": "Small-company portfolio: holding period"}
 
 
 def load_adaptive(cfg):
@@ -4900,6 +4920,7 @@ def load_adaptive(cfg):
     except Exception:
         a = {}
     a.setdefault("policy", {"hold_small": int(cfg["HOLD_DAYS"]), "hold_other": int(cfg["HOLD_DAYS"])})
+    a["policy"].setdefault("hold_sleeve", 250)
     a.setdefault("use_tuned", False)
     a.setdefault("history", [])
     return a
@@ -5000,6 +5021,31 @@ def evaluate_adjustments(scored, px, cfg):
                 if r["Setting"] == HOLD_LABELS[key] and r["Option"].startswith(f"{best[0]} "):
                     r["Verdict"] = "Switched automatically"
             cur = best[2]
+    # the separate small-company portfolio picks its own holding period the same way
+    sb = small_cap_backtest(scored, px, cfg, hold=pol["hold_sleeve"])
+    if sb is not None:
+        sd = lambda b: b["curves"]["Small-company picks"].pct_change().fillna(0)
+        sv = lambda b: float(b["perf"].loc["Per year vs S&P 500", "Small-company picks"])
+        key, r_cur, best = "hold_sleeve", sd(sb), None
+        rows.append({"Setting": HOLD_LABELS[key], "Option": f"{pol[key]} trading days (current)", "Per year vs S&P": sv(sb),
+                     "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
+        for h in (60, 125, 250):
+            if h == pol[key]:
+                continue
+            b = small_cap_backtest(scored, px, cfg, hold=h)
+            c = _compare(sd(b), r_cur)
+            rows.append({"Setting": HOLD_LABELS[key], "Option": f"{h} trading days", "Per year vs S&P": sv(b),
+                         "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
+                         "Verdict": _verdict(c, True)})
+            if clearly_better(c) and (best is None or c["gain"] > best[1]["gain"]):
+                best = (h, c)
+        if best:
+            a["history"].append({"date": today, "change": HOLD_LABELS[key], "from": f"{pol[key]} days",
+                                 "to": f"{best[0]} days", "gain_per_year": best[1]["gain"], "sureness": best[1]["t"]})
+            pol[key] = best[0]
+            for r in rows:
+                if r["Setting"] == HOLD_LABELS[key] and r["Option"].startswith(f"{best[0]} "):
+                    r["Verdict"] = "Switched automatically"
     a["policy"] = pol
 
     # proposals: measured the same way, never applied without the user's go-ahead
@@ -5164,3 +5210,52 @@ def analyst_features(tx, data):
             note[i] = (note[i] + "; " if note[i] else "") + "bought within 30 days after an analyst downgrade"
     tx["f_against_street"], tx["f_after_downgrade"], tx["f_no_coverage"], tx["street_note"] = ag, dn, nc, note
     return tx
+
+
+# ############################################################################
+#  SMALL-COMPANY STRATEGY: every timely purchase of a company under $2B, held longer
+# ############################################################################
+SMALL_ETF = "IWM"          # Russell 2000, the usual small-company benchmark
+
+
+def small_cap_rows(scored):
+    """Purchases of companies under $2B (at the time), filed on time, at most one entry per stock per 30 days."""
+    b = scored[(scored["tx_type"] == "buy") & scored["entry_px"].notna()]
+    if "f_small_cap" not in b or not len(b):
+        return b.iloc[0:0]
+    b = b[(b["f_small_cap"].fillna(0) >= 0.5) & (b["lag_days"].fillna(999) <= 45)].sort_values("filed_date")
+    keep, last = [], {}
+    for i, (t, d) in enumerate(zip(b["ticker"], b["filed_date"])):
+        if t in last and (d - last[t]).days < 30:
+            continue
+        last[t] = d
+        keep.append(i)
+    return b.iloc[keep]
+
+
+def small_cap_backtest(scored, px, cfg, hold=None):
+    rows = small_cap_rows(scored)
+    if len(rows) < 50:
+        return None
+    hold = int(hold or load_adaptive(cfg)["policy"].get("hold_sleeve", 250))
+    cost = cfg.get("COST_BPS", 0) / 1e4
+    fr = forward_returns(rows, px, hold, cost=cost)
+    picks = rows.drop(columns=[c for c in fr.columns if c in rows.columns]).join(fr)
+    idx = px.index[px.index >= picks["entry_date"].min()]
+    weeks = max(1.0, (picks["filed_date"].max() - picks["filed_date"].min()).days / 7)
+    slots = max(5, int(round(len(picks) / weeks * hold / 5)))          # positions open at once, on average
+    ld, n_open = _portfolio_slots(picks, px, idx, slots, "spy", cost=cost)
+    spy = px["SPY"].pct_change(fill_method=None).reindex(idx)
+    series = {"Small-company picks": ld, "S&P 500 (SPY)": spy}
+    if SMALL_ETF in px.columns:
+        series["Small-company index (IWM)"] = px[SMALL_ETF].pct_change(fill_method=None).reindex(idx)
+    perf, curves = {}, {}
+    for k, d in series.items():
+        perf[k], curves[k] = _perf(d)
+        if k != "S&P 500 (SPY)":
+            ann, lo_, hi_ = excess_range(d.fillna(0), spy.fillna(0))
+            perf[k].update({"Per year vs S&P 500": ann, "Likely range low": lo_, "Likely range high": hi_})
+    years = pd.DataFrame(series).fillna(0).groupby(pd.DataFrame(series).index.year).apply(lambda g: (1 + g).prod() - 1)
+    return {"perf": pd.DataFrame(perf), "curves": pd.DataFrame(curves), "trade_stats": _trade_stats(picks, 1),
+            "picks": picks, "slots": slots, "hold": hold, "years": years,
+            "per_year_trades": float(len(picks) / weeks * 52)}

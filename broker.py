@@ -6,6 +6,7 @@ is left alone. Nothing about balances or positions is written to the run log, be
 """
 import os, re, math, datetime as dt
 import numpy as np
+import pandas as pd
 import requests
 
 env = os.environ.get
@@ -113,54 +114,83 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             actions.append({"side": "sell", "symbol": sym, "ok": r.status_code in (200, 207),
                             "why": f"held {held} trading days"})
 
-    # 2. buy new BUY picks
+    # 2. buy new picks: the main strategy (BUY picks) and the separate small-company portfolio
     if s["auto"] and trade:
         equity = float(acct.get("equity") or 0)
-        invested = sum(float(p.get("market_value") or 0) for p in positions.values())
+        sleeve_pct = max(0.0, min(0.9, float(env("SMALL_SLEEVE_PCT") or 30) / 100))
+        is_sleeve = lambda sym: (bot.get(sym, {}).get("client_order_id") or "").startswith(PREFIX + "sm-")
+        val = lambda sym: float(positions[sym].get("market_value") or 0)
+        inv_main = sum(val(p) for p in positions if not is_sleeve(p))
+        inv_sleeve = sum(val(p) for p in positions if is_sleeve(p))
         per_week = float(cfg.get("PICKS_PER_WEEK", 5))
         plan = max(5, int(per_week * int(pol["hold_other"]) / 5))     # positions open at once in the backtest
-        max_pos = s["max_positions"] or plan
-        dollars = s["dollars"] or equity * s["max_invested"] / plan
-        slots = max_pos - len(positions) - len(pending)
+        main_cap = s["max_invested"] * (1 - sleeve_pct) * equity
+        dollars = s["dollars"] or main_cap / plan
+        slots = (s["max_positions"] or plan) - len([p for p in positions if not is_sleeve(p)]) - len(pending)
+
+        def place(t, amount, cid):
+            sym = to_alpaca(t)
+            price = last_prices.get(t)
+            if sym in positions or sym in pending or not price or not math.isfinite(price) or price <= 0:
+                return None
+            try:
+                asset = api.get(f"/v2/assets/{sym}")
+                if not asset.get("tradable"):
+                    return None
+            except Exception:
+                return None
+            body = {"symbol": sym, "side": "buy", "type": "market", "time_in_force": "day", "client_order_id": cid}
+            if asset.get("fractionable"):
+                body["notional"] = f"{amount:.2f}"
+            else:
+                qty = int(amount // price)
+                if qty < 1:
+                    return None
+                body["qty"] = str(qty)
+            r = api.post("/v2/orders", body)
+            if r.status_code in (200, 201):
+                pending.add(sym)
+                return True
+            return False
+
         rows = buys[buys["action"] == "BUY"] if buys is not None and len(buys) else buys
         if rows is not None and len(rows):
             new_buys = set(new.loc[new["action"] == "BUY", "ticker"]) if new is not None and len(new) else set()
-            first_time = not bot          # first run with keys: start from the whole current BUY list
-            cands = [t for t in rows["ticker"] if first_time or t in new_buys]
-            for t in cands:
-                sym = to_alpaca(t)
-                if slots <= 0 or invested + dollars > s["max_invested"] * equity:
+            first_time = not any(not is_sleeve(x) for x in bot)   # first run: start from the whole current BUY list
+            for t in [t for t in rows["ticker"] if first_time or t in new_buys]:
+                if slots <= 0 or inv_main + dollars > main_cap:
                     break
-                if sym in positions or sym in pending:
-                    continue
-                price = last_prices.get(t)
-                if not price or not math.isfinite(price) or price <= 0:
-                    continue
-                try:
-                    asset = api.get(f"/v2/assets/{sym}")
-                    if not asset.get("tradable"):
-                        continue
-                except Exception:
-                    continue
                 row = rows[rows["ticker"] == t].iloc[0]
                 small = float(row.get("f_small_cap", 0) or 0) >= 0.5
                 hold = int(pol["hold_small"] if small else pol["hold_other"])
-                cid = f"{PREFIX}{t}-{today:%Y%m%d}-h{hold}"      # same pick on the same day can't be ordered twice
-                body = {"symbol": sym, "side": "buy", "type": "market", "time_in_force": "day", "client_order_id": cid}
-                if asset.get("fractionable"):
-                    body["notional"] = f"{dollars:.2f}"
-                else:
-                    qty = int(dollars // price)
-                    if qty < 1:
-                        continue
-                    body["qty"] = str(qty)
-                r = api.post("/v2/orders", body)
-                ok = r.status_code in (200, 201)
-                actions.append({"side": "buy", "symbol": sym, "ok": ok, "hold": hold,
+                ok = place(t, dollars, f"{PREFIX}{t}-{today:%Y%m%d}-h{hold}")
+                if ok is None:
+                    continue
+                actions.append({"side": "buy", "symbol": to_alpaca(t), "ok": ok, "hold": hold,
                                 "why": "new BUY pick" if not first_time else "current BUY pick (first run)"})
                 if ok:
                     slots -= 1
-                    invested += dollars
+                    inv_main += dollars
+
+        # small-company portfolio: every timely purchase of a company under $2B, once per stock
+        if sleeve_pct > 0 and buys is not None and len(buys) and "f_small_cap" in buys:
+            sm = buys[(buys["f_small_cap"].fillna(0) >= 0.5) & (buys.get("lag_days", pd.Series(0, index=buys.index)).fillna(999) <= 45)]
+            sleeve_cap = sleeve_pct * 0.95 * equity
+            sm_slots = int(cfg.get("_small_slots") or 25)
+            amount = sleeve_cap / max(sm_slots, 1)
+            hold = int(pol.get("hold_sleeve", 250))
+            ever = {sym for sym in bot if is_sleeve(sym)}
+            for t in sm["ticker"]:
+                if inv_sleeve + amount > sleeve_cap:
+                    break
+                if to_alpaca(t) in ever:
+                    continue
+                ok = place(t, amount, f"{PREFIX}sm-{t}-{today:%Y%m%d}-h{hold}")
+                if ok is None:
+                    continue
+                actions.append({"side": "buy", "symbol": to_alpaca(t), "ok": ok, "hold": hold, "why": "small-company portfolio"})
+                if ok:
+                    inv_sleeve += amount
     if trade:
         log(f"Broker ({s['mode']}): {sum(a['ok'] for a in actions if a['side'] == 'buy')} buy order(s), "
             f"{sum(a['ok'] for a in actions if a['side'] == 'sell')} sell order(s)"
@@ -189,6 +219,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                     "px": float(p.get("current_price") or 0), "mv": float(p.get("market_value") or 0),
                     "pl": float(p.get("unrealized_pl") or 0), "plpc": float(p.get("unrealized_plpc") or 0),
                     "day": float(p.get("change_today") or 0), "bot": bool(o), "bought": bought,
+                    "sleeve": "small" if o and (o.get("client_order_id") or "").startswith(PREFIX + "sm-") else None,
                     "hold": _hold_of(o, s["hold_days"]) if o else None,
                     "held": int(np.busday_count(dt.date.fromisoformat(bought), today)) if bought else None})
     eq, last = float(acct.get("equity") or 0), float(acct.get("last_equity") or 0)
@@ -197,7 +228,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             "equity": eq, "cash": float(acct.get("cash") or 0), "day_pl": eq - last if last else None,
             "limits": {"dollars": s["dollars"], "max_positions": s["max_positions"], "max_invested_pct": s["max_invested"] * 100,
                        "hold_days": int(pol["hold_other"]), "hold_small": int(pol["hold_small"]),
-                       "per_week": float(cfg.get("PICKS_PER_WEEK", 5)), "from_policy": bool(cfg.get("_hold_policy"))},
+                       "per_week": float(cfg.get("PICKS_PER_WEEK", 5)), "from_policy": bool(cfg.get("_hold_policy")),
+                       "small_pct": float(env("SMALL_SLEEVE_PCT") or 30), "hold_sleeve": int(pol.get("hold_sleeve", 250))},
             "positions": sorted(pos, key=lambda x: -x["mv"]),
             "orders": [{"t": from_alpaca(o["symbol"]), "side": o["side"], "qty": o.get("qty"), "status": o.get("status", ""),
                         "filled_px": o.get("filled_avg_price"), "at": o.get("filled_at") or o.get("submitted_at") or "",

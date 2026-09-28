@@ -68,6 +68,7 @@ jobs:
           DOLLARS_PER_TRADE: ${{ vars.DOLLARS_PER_TRADE }}
           MAX_POSITIONS: ${{ vars.MAX_POSITIONS }}
           MAX_INVESTED_PCT: ${{ vars.MAX_INVESTED_PCT }}
+          SMALL_SLEEVE_PCT: ${{ vars.SMALL_SLEEVE_PCT }}
           TIME_BUDGET_MIN: "320"
         run: python run_daily.py
 
