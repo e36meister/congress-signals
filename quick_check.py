@@ -58,19 +58,55 @@ def start_full_update():
     return r.status_code == 204
 
 
-def refresh_portfolio():
-    """Read-only: update the dashboard's My portfolio tab from Alpaca every hour. Never trades."""
-    import broker
-    snap = broker.sync({"HOLD_DAYS": int(os.environ.get("HOLD_DAYS", "60"))}, None, None, {}, E.log, trade=False)
+def _drive():
     sa, folder = os.environ.get("GDRIVE_SERVICE_ACCOUNT_JSON"), os.environ.get("GDRIVE_FOLDER_ID")
-    if snap is None or not (sa and folder):
-        return
+    if not (sa and folder):
+        return None, None
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
+    creds = service_account.Credentials.from_service_account_info(json.loads(sa), scopes=["https://www.googleapis.com/auth/drive"])
+    return build("drive", "v3", credentials=creds, cache_discovery=False), folder
+
+
+TAP = re.compile(r"^order_request_([A-Z][A-Z0-9\-]{0,6})_(\d+(?:\.\d+)?)_(\d{10,14})\.json$")
+
+
+def process_order_requests():
+    """Orders you approved with the Buy button on the dashboard (saved as small files in your Drive folder)."""
+    import broker
+    drive, folder = _drive()
+    if drive is None:
+        return
+    q = f"name contains 'order_request_' and '{folder}' in parents and trashed = false"
+    files = drive.files().list(q=q, fields="files(id,name)", supportsAllDrives=True,
+                               includeItemsFromAllDrives=True).execute().get("files", [])
+    for f in files:
+        m = TAP.match(f["name"])
+        if not m:
+            new_name, ok = f["name"].replace("order_request_", "order_failed_", 1).replace(".json", "_bad-request.json"), False
+        else:
+            t, dollars, ms = m.group(1), float(m.group(2)), int(m.group(3))
+            age_h = (dt.datetime.now(dt.timezone.utc).timestamp() * 1000 - ms) / 3.6e6
+            if age_h > 48:
+                ok, why = False, "expired"
+            else:
+                ok, why = broker.place_tap_order(t, dollars, m.group(3), E.log)
+            new_name = (f"order_done_{t}_{m.group(2)}_{m.group(3)}.json" if ok
+                        else f"order_failed_{t}_{m.group(2)}_{m.group(3)}_{why}.json")
+        drive.files().update(fileId=f["id"], body={"name": new_name}, supportsAllDrives=True).execute()
+    if files:
+        E.log(f"Quick check: handled {len(files)} order request(s) from the dashboard")
+
+
+def refresh_portfolio():
+    """Read-only: update the dashboard's My portfolio tab from Alpaca. Never trades."""
+    import broker
+    snap = broker.sync({"HOLD_DAYS": int(os.environ.get("HOLD_DAYS", "60"))}, None, None, {}, E.log, trade=False)
+    drive, folder = _drive()
+    if snap is None or drive is None:
+        return
     from googleapiclient.http import MediaIoBaseUpload
     import io
-    creds = service_account.Credentials.from_service_account_info(json.loads(sa), scopes=["https://www.googleapis.com/auth/drive"])
-    drive = build("drive", "v3", credentials=creds, cache_discovery=False)
     q = f"name = 'dashboard_data.json' and '{folder}' in parents and trashed = false"
     found = drive.files().list(q=q, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute().get("files", [])
     if not found:
@@ -111,6 +147,10 @@ if __name__ == "__main__":
     try:
         main()
     finally:
+        try:
+            process_order_requests()
+        except Exception as e:
+            E.log(f"Quick check: order requests skipped ({type(e).__name__})")
         try:
             refresh_portfolio()
         except Exception as e:
