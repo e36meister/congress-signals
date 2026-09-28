@@ -58,6 +58,32 @@ def start_full_update():
     return r.status_code == 204
 
 
+def refresh_portfolio():
+    """Read-only: update the dashboard's My portfolio tab from Alpaca every hour. Never trades."""
+    import broker
+    snap = broker.sync({"HOLD_DAYS": int(os.environ.get("HOLD_DAYS", "60"))}, None, None, {}, E.log, trade=False)
+    sa, folder = os.environ.get("GDRIVE_SERVICE_ACCOUNT_JSON"), os.environ.get("GDRIVE_FOLDER_ID")
+    if snap is None or not (sa and folder):
+        return
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseUpload
+    import io
+    creds = service_account.Credentials.from_service_account_info(json.loads(sa), scopes=["https://www.googleapis.com/auth/drive"])
+    drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+    q = f"name = 'dashboard_data.json' and '{folder}' in parents and trashed = false"
+    found = drive.files().list(q=q, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute().get("files", [])
+    if not found:
+        return
+    fid = found[0]["id"]
+    data = json.loads(drive.files().get_media(fileId=fid, supportsAllDrives=True).execute())
+    data["portfolio"] = snap
+    body = io.BytesIO(json.dumps(data).encode())
+    drive.files().update(fileId=fid, media_body=MediaIoBaseUpload(body, mimetype="application/json"),
+                         supportsAllDrives=True).execute()
+    E.log("Quick check: portfolio refreshed on the dashboard")
+
+
 def main():
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     seen = set(json.load(open(STATE))) if os.path.exists(STATE) else None
@@ -82,4 +108,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        try:
+            refresh_portfolio()
+        except Exception as e:
+            E.log(f"Quick check: portfolio refresh skipped ({type(e).__name__})")
