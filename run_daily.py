@@ -116,6 +116,10 @@ def main():
             E.log(f"Adjustments: weekly check skipped ({e})")
     buys, sells = E.build_watchlist(scored, px, cfg)
     new = E.diff_alerts(buys, sells, cfg)
+    try:
+        E.archive_analysts(cfg, [buys, sells])
+    except Exception as e:
+        E.log(f"Analyst archive: skipped ({e})")
     E.watchlist_report(buys, sells, new, cfg)
     E.export_dashboard(cfg, buys=buys, sells=sells, new=new)
     send_alerts(buys, sells, new)
