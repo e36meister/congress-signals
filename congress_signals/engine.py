@@ -50,6 +50,7 @@ DEFAULT_CONFIG = {
         "grants": 0.2, "grant_after_trade": 0.4, "campaign_vendor": 0.3, "spouse_employer": 0.5,
         "paid_travel": 0.3, "outside_position": 0.4, "buddy": 0.4, "leader": 0.3, "bill_advanced": 0.5,
         "sector_bill_momentum": 0.2, "spouse_insider": 0.5,
+        "against_street": 0.3, "after_downgrade": 0.2, "no_coverage": 0.2,
     },
     "SHORT_WEIGHTS": {
         "sell_track_record": 1.0, "sell_cluster": 0.8, "buy_pressure": -0.4, "committee": 0.5,
@@ -72,7 +73,7 @@ DEFAULT_CONFIG = {
     "USE_HOUSE": True, "USE_SENATE": True, "USE_INSIDERS": True, "USE_CONTRACTS": True,
     "USE_LOBBYING": True, "USE_DONATIONS": True, "USE_BILLS": True, "USE_NEWS": True,
     "USE_EMPLOYEE_DONATIONS": True, "USE_ANNUAL_DISCLOSURES": True, "USE_COMPANY_INFO": True,
-    "USE_BILL_STATUS": True, "USE_SPOUSE_MATCHING": True, "USE_CAMPAIGN_SPENDING": True, "USE_ASSISTANCE": True,
+    "USE_BILL_STATUS": True, "USE_SPOUSE_MATCHING": True, "USE_ANALYST_HISTORY": True, "USE_CAMPAIGN_SPENDING": True, "USE_ASSISTANCE": True,
     "USE_HEARINGS": True, "USE_VOTES": True, "USE_SPEECHES": True, "USE_BLUESKY": True, "USE_EVENTS": True,
     "TIME_BUDGET_MIN": 0,            # 0 = no limit (Colab); the daily GitHub run sets this
     "MAX_ENRICH_TICKERS": 800,       # contracts/lobbying are looked up for the most-traded tickers
@@ -1741,6 +1742,7 @@ def compute_features(tx, px, data, cfg):
         tx["f_bills"], tx["bill_note"] = f, note
     tx = compute_connections(tx, data, cfg, mems)
     tx = relationship_features(tx, data, cfg, mems)
+    tx = analyst_features(tx, data)
     tx = extra_features(tx, px, data, cfg, mems)
     return tx
 
@@ -1835,7 +1837,7 @@ def _why_buy(r):
                    ("f_crowded", lambda: "but the stock already jumped on disclosure day")):
         if r.get(f, 0) and r.get(f, 0) >= 0.5:
             b.append(txt())
-    for k in ("spouse_note", "buddy_note", "bill_adv_note"):
+    for k in ("street_note", "spouse_note", "buddy_note", "bill_adv_note"):
         if r.get(k):
             b.append(r[k])
     if r["f_size"] >= 0.4:
@@ -2082,6 +2084,8 @@ BUY_FACTORS = [("f_track_record", "Member track record"), ("f_cluster", "Cluster
                ("f_buddy", "Trading partner also bought"), ("f_leader", "Member usually trades first"),
                ("f_bill_advanced", "Their bill advanced after the trade"), ("f_sector_bill_momentum", "Industry bill just passed"),
                ("f_spouse_insider", "Spouse is a company insider (SEC)"),
+               ("f_against_street", "Bought against Wall Street"), ("f_after_downgrade", "Bought after a downgrade"),
+               ("f_no_coverage", "No analyst coverage"),
                ("f_testified", "Company testified to their committee"), ("f_closed_briefing", "Closed briefing before trade"),
                ("f_vote_sector", "Voted on industry bill near trade"), ("f_home_state", "Company based in their state"),
                ("f_contract_in_state", "Contracts in their state"), ("f_speech", "Named company in floor speech"),
@@ -2217,7 +2221,9 @@ def run_backtest(scored, px, cfg, since=None):
                     ("f_spouse_employer", "Spouse works for the company"), ("f_paid_travel", "Company-paid travel"),
                     ("f_outside_position", "Position at the company"), ("f_buddy", "Trading partner also bought"),
                     ("f_bill_advanced", "Bill advanced after the trade"),
-                    ("f_spouse_insider", "Spouse is a company insider")) if f in scored}}
+                    ("f_spouse_insider", "Spouse is a company insider"),
+                    ("f_against_street", "Bought against Wall Street"), ("f_after_downgrade", "Bought after a downgrade"),
+                    ("f_no_coverage", "No analyst coverage")) if f in scored}}
     extras = {}
     if not cfg.get("_nested") and since is None:
         pt, pv = persistence_table(scored)
@@ -2741,6 +2747,12 @@ def prepare(cfg):
         data["bill_actions"] = collect_bill_status(cfg)
     if step("USE_CAMPAIGN_SPENDING"):
         data["campaign_vendors"] = collect_campaign_vendors(cfg, fecs)
+    if step("USE_ANALYST_HISTORY"):
+        try:
+            recent_first = list(tx.sort_values("filed_date", ascending=False)["ticker"].drop_duplicates())
+            data["analyst_history"] = collect_analyst_history(cfg, recent_first)
+        except Exception as e:
+            log(f"Analyst ratings: skipped ({e})")
     if step("USE_SPOUSE_MATCHING"):
         try:
             members = {}
@@ -2924,7 +2936,7 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
                  "m": "members", "why": "why", "d": "filed_date", "move": "move_since_filing", "an": "analysts",
                  "up": "target_upside_%", "earn": "next_earnings", "news": "news_7d", "sec": "sector",
                  "nwm": "news_with_member", "def": "is_defense", "cap": "market_cap", "dodm": "dod_awards_180d",
-                 "ppl": "people"}
+                 "ppl": "people", "ags": "f_against_street"}
         data["watchlist"] = {
             "updated": now, "lookback": cfg["WATCHLIST_LOOKBACK_DAYS"],
             "buys": _rows(buys, dict(wcols, s="score")),
@@ -4997,3 +5009,130 @@ def decide_tuned(cfg, tuned):
                        "verdict": _verdict(c, True) if use else ("Kept off: " + _verdict(c, True).lower())}
     save_adaptive(cfg, a)
     return a
+
+
+# ############################################################################
+#  WALL STREET VIEW AT THE TIME OF THE TRADE: consensus rebuilt from analyst rating changes
+# ############################################################################
+GRADE_POS = ("strong buy", "buy", "outperform", "overweight", "accumulate", "positive", "add", "top pick",
+             "conviction buy", "long-term buy", "speculative buy", "sector outperform", "market outperform", "strong-buy")
+GRADE_NEU = ("hold", "neutral", "equal-weight", "equal weight", "market perform", "sector perform", "in-line", "in line",
+             "peer perform", "perform", "mixed", "fair value", "sector weight", "peer weight", "market weight")
+GRADE_NEG = ("sell", "underperform", "underweight", "reduce", "strong sell", "negative", "sector underperform",
+             "market underperform")
+
+
+def grade_score(g):
+    g = str(g or "").strip().lower()
+    if not g:
+        return None
+    if any(g == x for x in GRADE_NEG) or "underperform" in g or "underweight" in g or "sell" in g:
+        return -1
+    if any(g == x for x in GRADE_NEU):
+        return 0
+    if any(g == x for x in GRADE_POS) or "outperform" in g or "overweight" in g or "buy" in g:
+        return 1
+    return None
+
+
+def collect_analyst_history(cfg, tickers, per_run=700):
+    """Every analyst upgrade/downgrade on record for each stock (Yahoo Finance), cached for two weeks."""
+    import yfinance as yf
+    logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+    cache, path = _cache_json(cfg, "analyst_history.json", {})
+    todo = [t for t in tickers if not _fresh(cache.get(t, {}).get("fetched", ""), 14)][:per_run]
+    if todo:
+        log(f"Analyst ratings: downloading rating history for {len(todo)} stocks")
+
+    def work(t):
+        try:
+            d = yf.Ticker(t).upgrades_downgrades
+        except Exception:
+            return t, None
+        if d is None or not len(d):
+            return t, []
+        d = d.reset_index()
+        dc = next((c for c in d.columns if "date" in str(c).lower()), d.columns[0])
+        rows = []
+        for r in d.to_dict("records"):
+            when = pd.to_datetime(r.get(dc), errors="coerce")
+            if pd.isna(when):
+                continue
+            rows.append([when.strftime("%Y-%m-%d"), str(r.get("Firm") or ""), str(r.get("ToGrade") or ""),
+                         str(r.get("FromGrade") or ""), str(r.get("Action") or "")])
+        return t, rows
+
+    for i, (t, rows) in enumerate(chunked_map(work, todo, 4, cfg), 1):
+        if rows is not None:
+            cache[t] = {"fetched": dt.datetime.now().isoformat(), "rows": rows}
+        if i % 100 == 0:
+            json.dump(cache, open(path, "w"))
+    json.dump(cache, open(path, "w"))
+    return cache
+
+
+def archive_analysts(cfg, frames):
+    """Keep today's ratings for watchlist stocks, building an exact point-in-time record going forward."""
+    path = _p(cfg, "state", "analyst_snapshots.json")
+    try:
+        arc = json.load(open(path))
+    except Exception:
+        arc = {}
+    day = dt.date.today().isoformat()
+    snap = arc.setdefault(day, {})
+    for f in frames:
+        if f is None or not len(f) or "analysts" not in f:
+            continue
+        for t, a, u in zip(f["ticker"], f["analysts"], f.get("target_upside_%", pd.Series(np.nan, index=f.index))):
+            if isinstance(a, str) and a:
+                snap[t] = {"rec": a, "upside": None if pd.isna(u) else round(float(u), 1)}
+    json.dump(arc, open(path, "w"))
+
+
+def analyst_features(tx, data):
+    """Consensus when the member traded (from rating changes), downgrades just before, and stocks nobody covers."""
+    n = len(tx)
+    tx["f_against_street"], tx["f_after_downgrade"], tx["f_no_coverage"] = 0.0, 0.0, 0.0
+    tx["street_note"] = ""
+    hist = data.get("analyst_history") or {}
+    if not hist:
+        return tx
+    per = {}
+    for t, v in hist.items():
+        rows = []
+        for d, firm, to, fr, act in v.get("rows", []):
+            s_to, s_fr = grade_score(to), grade_score(fr)
+            if s_to is None:
+                continue
+            down = act.lower() == "down" or (s_fr is not None and s_to < s_fr)
+            rows.append((pd.Timestamp(d), firm, s_to, down))
+        rows.sort(key=lambda x: x[0])
+        per[t] = rows
+    ag, dn, nc, note = np.zeros(n), np.zeros(n), np.zeros(n), [""] * n
+    label = {-1: "sell", 0: "hold", 1: "buy"}
+    for i, (t, td, typ) in enumerate(zip(tx["ticker"], tx["trade_date"], tx["tx_type"])):
+        if typ != "buy" or t not in hist or pd.isna(td):
+            continue
+        rows = per.get(t, [])
+        latest = {}
+        recent_down = False
+        for d, firm, s, down in rows:
+            if d > td:
+                break
+            if d > td - pd.Timedelta(days=540):
+                latest[firm] = s
+            if down and d > td - pd.Timedelta(days=30):
+                recent_down = True
+        if not latest:
+            nc[i] = 1.0
+            note[i] = "no analyst ratings on record when they bought"
+            continue
+        avg = float(np.mean(list(latest.values())))
+        if len(latest) >= 2 and avg <= 0.2:
+            ag[i] = 1.0
+            note[i] = f"bought against Wall Street (consensus about {label[int(round(avg))]}, {len(latest)} analysts)"
+        if recent_down:
+            dn[i] = 1.0
+            note[i] = (note[i] + "; " if note[i] else "") + "bought within 30 days after an analyst downgrade"
+    tx["f_against_street"], tx["f_after_downgrade"], tx["f_no_coverage"], tx["street_note"] = ag, dn, nc, note
+    return tx
