@@ -1639,6 +1639,33 @@ def _member_track(tx, sign):
     return val, n
 
 
+def _party_letter(p):
+    p = str(p or "").strip().lower()
+    return {"republican": "R", "democrat": "D", "democratic": "D", "independent": "I"}.get(p, p[:1].upper() if p else "")
+
+
+def save_member_tags(cfg, tx, mems):
+    """Party-state tags like "R-TX" for the dashboard, keyed by member name and by congress ID."""
+    path = _p(cfg, "state", "member_tags.json")
+    try:
+        tags = json.load(open(path)) if os.path.exists(path) else {}
+    except Exception:
+        tags = {}
+    names, bios = tags.setdefault("names", {}), tags.setdefault("bio", {})
+    for name, st, m in zip(tx["member"], tx["state"] if "state" in tx else [None] * len(tx), mems):
+        if not m:
+            continue
+        pl, state = _party_letter(m.get("party")), (m.get("state") or st or "")
+        if not (pl and state):
+            continue
+        tag = f"{pl}-{str(state).upper()}"
+        if isinstance(name, str) and name:
+            names[name] = tag
+        if m.get("bioguide"):
+            bios[m["bioguide"]] = tag
+    json.dump(tags, open(path, "w"))
+
+
 def compute_features(tx, px, data, cfg):
     meta, committees = data["meta"], data["committees"]
     hold = cfg["HOLD_DAYS"]
@@ -1686,6 +1713,10 @@ def compute_features(tx, px, data, cfg):
     tx["committees"] = ["; ".join(m["committees"]) if m else "" for m in mems]
     tx["bioguide"] = [m.get("bioguide") if m else None for m in mems]
     tx["party"] = [m.get("party") if m else None for m in mems]
+    try:
+        save_member_tags(cfg, tx, mems)
+    except Exception as e:
+        log(f"Member tags: skipped ({e})")
     csect = [set(m["sectors"]) if m else set() for m in mems]
     cissue = [{c for n in m["committees"] for k, v in COMMITTEE_ISSUES.items() if k in n.lower() for c in v}
               if m else set() for m in mems]
@@ -3134,6 +3165,12 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
         data = {}
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     data.update({"version": 2, "updated": now})
+    try:
+        tp = _p(cfg, "state", "member_tags.json")
+        if os.path.exists(tp):
+            data["member_tags"] = json.load(open(tp))
+    except Exception as e:
+        log(f"Member tags: not added ({e})")
     if bt is not None:
         cur = bt["curves"]
         wk = cur.resample("W-FRI").last().dropna(how="all")
