@@ -113,6 +113,14 @@ def refresh_portfolio():
         return
     fid = found[0]["id"]
     data = json.loads(drive.files().get_media(fileId=fid, supportsAllDrives=True).execute())
+    try:                                        # undo a waiting cleanup sale that no longer applies
+        w = data.get("watchlist") or {}
+        caps = {broker.to_alpaca(r["t"]): r.get("cap") for r in (w.get("buys") or []) + (w.get("sells") or []) if r.get("t")}
+        if caps:
+            broker.recheck_queued_sells(caps, E.log)
+            snap = broker.sync({"HOLD_DAYS": int(os.environ.get("HOLD_DAYS", "60"))}, None, None, {}, E.log, trade=False) or snap
+    except Exception as e:
+        E.log(f"Quick check: sell recheck skipped ({type(e).__name__})")
     old = data.get("portfolio") or {}
     if old.get("limits", {}).get("from_policy"):
         snap["limits"] = old["limits"]          # the full update knows the current holding periods; keep them
