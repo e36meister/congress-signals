@@ -81,6 +81,45 @@ def _hold_of(order, default):
     return int(m.group(1)) if m else int(default)
 
 
+SLEEVE_MAX_CAP = 2e9
+MISFIT_MARGIN = 1.10      # sell only when the estimated size is at least 10% over the line
+
+
+def sleeve_misfits(bot, caps):
+    """Small-company-portfolio positions whose company was clearly $2B or more when the member bought."""
+    out = set()
+    for sym, o in bot.items():
+        if not (o.get("client_order_id") or "").startswith(PREFIX + "sm-"):
+            continue
+        c = caps.get(sym)
+        if c is not None and pd.notna(c) and float(c) >= SLEEVE_MAX_CAP * MISFIT_MARGIN:
+            out.add(sym)
+    return out
+
+
+def recheck_queued_sells(caps, log):
+    """Cancel a waiting cleanup sell whose position no longer counts as a misfit (its size estimate moved
+    back under the margin). Only touches sell orders the cleanup itself placed; never your orders."""
+    s = settings(60)
+    if not (s["key"] and s["secret"]):
+        return
+    api = Alpaca(s)
+    bot = _bot_buys(api)
+    keep = sleeve_misfits(bot, caps)
+    n = 0
+    for o in api.get("/v2/orders", status="open", limit=500):
+        sym = o["symbol"]
+        if (o.get("side") == "sell" and sym in bot and sym not in keep
+                and (bot[sym].get("client_order_id") or "").startswith(PREFIX + "sm-")
+                and sym in caps and not (o.get("client_order_id") or "").startswith(PREFIX)):
+            held = int(np.busday_count(dt.date.fromisoformat(bot[sym]["filled_at"][:10]), dt.date.today()))
+            if held < _hold_of(bot[sym], 250):       # not a normal end-of-hold sale
+                if api.delete(f"/v2/orders/{o['id']}").status_code in (200, 204):
+                    n += 1
+    if n:
+        log(f"Broker: cancelled {n} cleanup sell order(s) that no longer apply")
+
+
 def sync(cfg, buys, new, last_prices, log, trade=True):
     """Sell bot positions past the holding period, buy new BUY picks within the limits, and return a
     snapshot of the account for the dashboard (or None when no keys are set)."""
@@ -119,20 +158,19 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                             "why": f"held {held} trading days"})
             sold.add(sym)
 
-    # 1b. keep the paper test clean: sell small-company-portfolio positions whose purchase doesn't fit its rules
-    #     (company worth $2B or more when the member bought), e.g. anything bought under an earlier bug
-    if trade and buys is not None and len(buys) and "f_small_cap" in buys:
-        size = dict(zip(buys["ticker"].map(to_alpaca), buys["f_small_cap"]))
-        for sym, o in bot.items():
-            if not (o.get("client_order_id") or "").startswith(PREFIX + "sm-") or sym not in positions or sym in pending or sym in sold or sym in others:
+    # 1b. keep the paper test clean: sell small-company-portfolio positions that clearly don't fit its rules
+    #     (anything bought under the earlier bug). Company size is an estimate that drifts a little from day
+    #     to day, so only clearly larger companies are sold; one near the $2B line is left alone.
+    if trade and buys is not None and len(buys) and "market_cap" in buys:
+        caps = dict(zip(buys["ticker"].map(to_alpaca), buys["market_cap"]))
+        for sym in sleeve_misfits(bot, caps):
+            if sym not in positions or sym in pending or sym in sold or sym in others:
                 continue
-            f = size.get(sym)
-            if f is not None and pd.notna(f) and float(f) < 1:
-                r = api.delete(f"/v2/positions/{sym}")
-                actions.append({"side": "sell", "symbol": sym, "ok": r.status_code in (200, 207),
-                                "why": "didn't fit the small-company rules"})
-                positions.pop(sym, None)
-                sold.add(sym)                            # don't buy it back in the same run
+            r = api.delete(f"/v2/positions/{sym}")
+            actions.append({"side": "sell", "symbol": sym, "ok": r.status_code in (200, 207),
+                            "why": "didn't fit the small-company rules"})
+            positions.pop(sym, None)
+            sold.add(sym)                            # don't buy it back in the same run
 
     # 2. buy new picks: the main strategy (BUY picks) and the separate small-company portfolio
     if s["auto"] and trade:
@@ -255,6 +293,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                         "filled_px": o.get("filled_avg_price"), "at": o.get("filled_at") or o.get("submitted_at") or "",
                         "bot": (o.get("client_order_id") or "").startswith(PREFIX),
                         "by": "tool" if (o.get("client_order_id") or "").startswith(PREFIX)
+                        or (o["side"] == "sell" and o["symbol"] in bot and not o.get("client_order_id", "").startswith("tap-")
+                            and o["symbol"] not in others)
                         else ("tap" if (o.get("client_order_id") or "").startswith("tap-") else "you")} for o in recent],
             "this_run": actions}
 
