@@ -954,6 +954,89 @@ def ticker_renames(cfg):
     return ren
 
 
+DELIST_OUTCOME = {   # assumed result vs the S&P 500 for a trade in a stock we have no prices for, by why it vanished
+    "bought out": 0.15,          # typical takeover premium, paid in cash or stock
+    "bankrupt": -0.90,           # shareholders are usually wiped out
+    "failed": -0.50,             # delisted for low price or missed rules: research puts the average loss at 30-55%
+    "moved": 0.0,                # still trades somewhere else (OTC or a new ticker); no clear direction
+}
+MERGER_FORMS = {"DEFM14A", "DEFM14C", "PREM14A", "SC 14D9", "SC TO-T", "SC 13E3", "425"}
+
+
+def classify_missing(cfg, tickers):
+    """Why stocks we have no prices for disappeared, from each company's SEC filing history: still trading
+    under a new ticker, bought out, bankrupt, delisted for failing listing rules, or unknown."""
+    hdr = _sec_headers(cfg)
+    out, path = _cache_json(cfg, "delistings.json", {})
+    if not hdr or not tickers:
+        return out
+    ciks, _ = _cache_json(cfg, "ticker_cik.json", {})
+    try:
+        cur = requests.get("https://www.sec.gov/files/company_tickers.json", headers=hdr, timeout=60).json().values()
+        now = {int(v["cik_str"]): clean_ticker(v["ticker"]) for v in cur}
+    except Exception:
+        now = {}
+    n = 0
+    for t in tickers:
+        if t in out and _fresh(out[t].get("checked"), 30):
+            continue
+        if out_of_time(cfg, 60) or n >= 400:
+            break
+        rec = {"status": "unknown", "checked": dt.datetime.now().isoformat()}
+        c = (ciks.get(t) or [None])[0]
+        if c:
+            try:
+                js = requests.get(f"https://data.sec.gov/submissions/CIK{int(c):010d}.json", headers=hdr, timeout=30).json()
+                time.sleep(0.12)
+                f = js.get("filings", {}).get("recent", {})
+                forms, items, dates = f.get("form", []), f.get("items", []), f.get("filingDate", [])
+                its = [(fm, str(it or ""), d) for fm, it, d in zip(forms, items or [""] * len(forms), dates)]
+                new = now.get(int(c)) or next((clean_ticker(x) for x in js.get("tickers") or [] if clean_ticker(x)), None)
+                rec.update({"name": js.get("name"), "last_filing": max(dates) if dates else None})
+                if new and new != t:
+                    rec.update({"status": "renamed", "new": new})
+                elif any(fm == "8-K" and "1.03" in it for fm, it, _ in its):
+                    rec["status"] = "bankrupt"
+                elif any(fm in MERGER_FORMS for fm, _, _ in its) or any(fm == "8-K" and "5.01" in it for fm, it, _ in its):
+                    rec["status"] = "bought out"
+                elif any(fm.startswith("25") for fm, _, _ in its) or any(fm == "8-K" and "3.01" in it for fm, it, _ in its):
+                    rec["status"] = "failed"
+                elif any(fm.startswith("15-") for fm, _, _ in its):
+                    rec["status"] = "moved"
+            except Exception:
+                pass
+        out[t] = rec
+        n += 1
+    json.dump(out, open(path, "w"), indent=0)
+    return out
+
+
+def missing_price_scenarios(tx, px, cfg, horizons=None):
+    """How much the purchases we can't price could move the headline average, using why each stock vanished."""
+    buys = tx[(tx["tx_type"] == "buy") & tx["ticker"].notna()]
+    if not len(buys):
+        return None
+    miss = buys[~buys["ticker"].isin(px.columns)]
+    cl, _ = _cache_json(cfg, "delistings.json", {})
+    status = miss["ticker"].map(lambda t: (cl.get(t) or {}).get("status", "unknown"))
+    status = status.where(status != "renamed", "unknown")       # renamed ones get prices on the next run
+    counts = status.value_counts().to_dict()
+    share = len(miss) / len(buys)
+    known = status.map(DELIST_OUTCOME)
+    best = known.fillna(0.0).mean() if len(miss) else 0.0
+    worst = known.fillna(DELIST_OUTCOME["failed"]).mean() if len(miss) else 0.0
+    base = None
+    for h in horizons or []:
+        if h.get("Group") == "All purchases" and h.get("Holding period") == "3 months":
+            base = h.get("Avg vs SPY")
+    res = {"missing_buys": int(len(miss)), "all_buys": int(len(buys)), "share": share, "by_reason": counts,
+           "assumptions": DELIST_OUTCOME, "avg_missing_best": best, "avg_missing_worst": worst}
+    if base is not None:
+        res.update({"reported": base, "with_missing_best": base * (1 - share) + best * share,
+                    "with_missing_worst": base * (1 - share) + worst * share})
+    return res
+
+
 def collect_insiders(cfg):
     hdr = _sec_headers(cfg)
     cache = _p(cfg, "cache", "insiders.pkl")
@@ -1458,12 +1541,14 @@ def match_member_at(history, when, chamber, last_key, first, state):
     """Committee record for this member as of `when` (latest snapshot on or before it)."""
     if not history:
         return None
-    pos = 0
+    pos = -1
     for i, (d, _) in enumerate(history):
         if d <= when:
             pos = i
-    # search the matching snapshot first, then neighbours (members who joined mid-quarter)
-    for j in [pos, pos + 1, pos - 1]:
+    if pos < 0:                      # trade predates the first saved roster
+        return None
+    # the snapshot in force at the time, then the one before it; never a later roster (no peeking)
+    for j in [pos, pos - 1]:
         if 0 <= j < len(history):
             m = match_member(history[j][1], chamber, last_key, first, state)
             if m:
@@ -1591,8 +1676,9 @@ def compute_features(tx, px, data, cfg):
     tx["company"] = tx["ticker"].map(lambda t: (meta.get(t) or {}).get("name") or "")
     history = data.get("committee_history")
     if history:
+        recent = pd.Timestamp.today() - pd.Timedelta(days=120)       # today's roster only stands in for recent trades
         mems = [match_member_at(history, r.trade_date, r.chamber, r.last_key, r.first, r.state)
-                or match_member(committees, r.chamber, r.last_key, r.first, r.state)
+                or (match_member(committees, r.chamber, r.last_key, r.first, r.state) if r.trade_date >= recent else None)
                 for r in tx[["chamber", "last_key", "first", "state", "trade_date"]].itertuples(index=False)]
     else:
         mems = [match_member(committees, r.chamber, r.last_key, r.first, r.state)
@@ -1717,7 +1803,8 @@ def compute_features(tx, px, data, cfg):
                 for c in fids:
                     g = by.get((o, c))
                     if g is not None:
-                        m = (g["date"] <= e - pd.Timedelta(days=60)) & (g["date"] > e - pd.Timedelta(days=1461))
+                        # quarterly FEC reports can arrive up to ~105 days after a donation
+                        m = (g["date"] <= e - pd.Timedelta(days=105)) & (g["date"] > e - pd.Timedelta(days=1461))
                         tot += g.loc[m, "amount"].sum()
             vals[i] = tot
         tx["donations_4y"] = vals
@@ -1958,24 +2045,30 @@ def _portfolio(picks, px, idx, sign=1):
 
 
 def _select(rows, score_col, pct, per_week, blocked=None, short=False, per_member=None, skip_late=False,
-            net_sell=False):
-    """Weekly picks: clears the percentile of all EARLIER scores, best first, no re-buying an open ticker,
-    at most `per_member` picks per member each week, and (optionally) no trades filed past the 45-day deadline."""
+            net_sell=False, start=None):
+    """Picks as filings arrive: each day's filings must clear the percentile of all EARLIER scores, best first,
+    no re-buying an open ticker, at most `per_week` picks per week (used up day by day, first come first served,
+    so a Monday pick never depends on what gets filed later that week), at most `per_member` per member each
+    week, and (optionally) no trades filed past the 45-day deadline."""
     rows = rows.sort_values("filed_date")
-    rows = rows.assign(week=rows["filed_date"].dt.to_period("W-FRI"))
+    rows = rows.assign(week=rows["filed_date"].dt.to_period("W-FRI"), day=rows["filed_date"].dt.normalize())
     hist = np.array([])
     picks, held = [], {}
     blocked = blocked or {}
-    for wk, g in rows.groupby("week"):
+    taken, by_member, cur_wk = 0, {}, None
+    for (wk, day), g in rows.groupby(["week", "day"], sort=True):
+        if wk != cur_wk:
+            taken, by_member, cur_wk = 0, {}, wk
         bar = np.percentile(hist, pct) if len(hist) >= 100 else np.inf
         hist = np.concatenate([hist, g[score_col].values])
+        if taken >= per_week or (start is not None and day < start):     # earlier rows only set the bar
+            continue
         cand = ticker_level(g, score_col, short)
         cand = cand[cand[score_col] >= bar]
         if skip_late and "lag_days" in cand:
             cand = cand[cand["lag_days"] <= 45]
         if net_sell and not short:
             cand = cand[cand["n_sellers"] <= cand["n_buyers"]]
-        taken, by_member = 0, {}
         for _, r in cand.iterrows():
             if taken >= per_week:
                 break
@@ -2233,6 +2326,17 @@ def run_backtest(scored, px, cfg, since=None):
                   "small": small_cap_backtest(scored, px, cfg)}
         bc, busiest = busy_check(buys[buys["closed"]], BUY_FACTORS, cfg)
         extras.update({"busy_check": bc, "busiest": busiest})
+        try:
+            if not out_of_time(cfg, 60):
+                extras["walk_forward"] = walk_forward(scored, px, cfg)
+        except Exception as e:
+            log(f"Never-seen-years test skipped ({type(e).__name__}: {e})")
+        try:
+            hz = extras["horizons"]
+            extras["missing"] = missing_price_scenarios(_TX_ALL, px, cfg, hz.to_dict("records") if hz is not None else None) \
+                if _TX_ALL is not None else None
+        except Exception as e:
+            log(f"Missing prices: scenarios skipped ({type(e).__name__})")
     return {**extras, "longs": fmt_trades(longs, False), "shorts": fmt_trades(shorts, True), "perf": pd.DataFrame(perf),
             "curves": pd.DataFrame(curves), "trade_stats": trade_stats,
             "buy_factors": _attribution(cb, BUY_FACTORS, 1, member_weights(cb, cfg.get("BUSY_TRADER_SOFTCAP", 100))),
@@ -2303,6 +2407,75 @@ def tune_weights(scored, px, cfg):
               and comp.loc["Tuned weights", "Long picks"] >= 30)
     return {"comparison": comp, "buy_weights": wt, "short_weights": swt, "split": split, "tuned_better": bool(better),
             "tuned_bt": bt, "default_bt": bd}
+
+
+def walk_forward(scored, px, cfg, min_train=500):
+    """The honest version of the main strategy: each year is picked using only what was known before it.
+    For every year, signal weights are learned from trades that had finished before January 1 (signals with
+    too little data get no weight, not a hand-picked one), the holding period is the one that worked best on
+    those earlier trades, and the bar a pick must clear comes from earlier scores. The years are then strung
+    together into one portfolio. Nothing about a year is used to pick trades in that same year."""
+    cost = cfg.get("COST_BPS", 0) / 1e4
+    buys_all = scored[(scored["tx_type"] == "buy") & scored["entry_px"].notna()]
+    if not len(buys_all):
+        return None
+    names = list(cfg["BUY_WEIGHTS"])
+    zeros = {n: 0.0 for n in names}
+    by_hold = {h: apply_hold_policy(buys_all, px, cfg, {"hold_small": h, "hold_other": h}) for h in HOLD_CHOICES}
+    base = by_hold[60] if 60 in by_hold else next(iter(by_hold.values()))
+    years = sorted(base["filed_date"].dt.year.unique())
+    picks, log_rows, held = [], [], {}
+    for y in years:
+        start = pd.Timestamp(y, 1, 1)
+        tr = base[base["closed"] & base["excess"].notna() & (base["exit_date"] < start)]
+        if len(tr) < min_train:
+            continue
+        w = _fit(tr, names, tr["excess"].clip(-0.5, 1).values, zeros, member_weights(tr, cfg.get("BUSY_TRADER_SOFTCAP", 100)))
+        # holding period: best average result of the top-scored earlier trades that had finished by January 1
+        best_h, best_v = 60, -np.inf
+        for h, dfh in by_hold.items():
+            t2 = dfh[dfh["closed"] & dfh["excess"].notna() & (dfh["exit_date"] < start)]
+            if len(t2) < min_train:
+                continue
+            sc = _score(t2, w)
+            top = t2[sc >= np.percentile(sc, cfg["PICK_PERCENTILE"])]
+            if len(top) >= 30 and top["excess"].mean() > best_v:
+                best_h, best_v = h, top["excess"].mean()
+        dfh = by_hold[best_h]
+        # score this year's filings (plus earlier ones, only so the percentile bar has history) with this year's weights
+        rows = dfh[(dfh["filed_date"] >= start - pd.Timedelta(days=3 * 365)) & (dfh["filed_date"] < pd.Timestamp(y + 1, 1, 1))].copy()
+        rows["score"] = _score(rows, w)
+        pk, held_y = _select(rows, "score", cfg["PICK_PERCENTILE"], cfg["PICKS_PER_WEEK"], blocked=dict(held),
+                             per_member=cfg.get("MAX_PICKS_PER_MEMBER_WEEK"), skip_late=cfg.get("SKIP_LATE_FILINGS"),
+                             net_sell=cfg.get("NET_SELL_FILTER"), start=start)
+        held.update(held_y)                          # a stock still held from last year isn't bought again
+        if len(pk):
+            pk = pk.assign(hold_days_row=best_h)
+            picks.append(pk)
+        top_w = sorted(w.items(), key=lambda kv: -abs(kv[1]))[:5]
+        log_rows.append({"Year": int(y), "Learned from trades": int(len(tr)), "Holding period": f"{best_h} days",
+                         "Picks": int(len(pk)), "Main signals": ", ".join(f"{k} {v:+.2f}" for k, v in top_w)})
+    if not picks:
+        return None
+    longs = pd.concat(picks, ignore_index=True)
+    idx = px.index[px.index >= longs["entry_date"].min()]
+    slots = max(1, int(cfg["PICKS_PER_WEEK"] * float(longs["hold_days_row"].mean()) / 5))
+    ld, _ = _portfolio_slots(longs, px, idx, slots, "spy", cost=cost)
+    spy = px["SPY"].pct_change(fill_method=None).reindex(idx)
+    # the regular (full-history) strategy over exactly the same years, for comparison
+    reg = run_backtest(scored, px, dict(cfg, _nested=True), since=longs["filed_date"].min())
+    series = {"Never-seen-years picks": ld, "Regular backtest, same years": _long_daily(reg).reindex(idx).fillna(0),
+              "S&P 500 (SPY)": spy}
+    perf, curves = {}, {}
+    for k, d in series.items():
+        perf[k], curves[k] = _perf(d)
+        if k != "S&P 500 (SPY)":
+            ann, lo_, hi_ = excess_range(d.fillna(0), spy.fillna(0))
+            perf[k].update({"Per year vs S&P 500": ann, "Likely range low": lo_, "Likely range high": hi_})
+    df = pd.DataFrame(series).fillna(0)
+    yrs = df.groupby(df.index.year).apply(lambda g: (1 + g).prod() - 1)
+    return {"perf": pd.DataFrame(perf), "curves": pd.DataFrame(curves), "trade_stats": _trade_stats(longs, 1),
+            "years": yrs, "log": pd.DataFrame(log_rows), "n_picks": int(len(longs)), "slots": slots}
 
 
 def tuning_report(res):
@@ -2710,10 +2883,23 @@ def bad_price_tickers(px, meta):
     return bad
 
 
+_TX_ALL = None
+
+
+def _jsonable(x):
+    """Plain JSON types for the dashboard (numpy numbers become floats)."""
+    return json.loads(json.dumps(x, default=lambda v: float(v) if hasattr(v, "__float__") else str(v))) if x is not None else None
+
+
 def prepare(cfg):
     global _RUN_START
     tx = collect_all(cfg)
     renames = ticker_renames(cfg) if cfg.get("USE_INSIDERS", True) else {}
+    try:
+        dl, _ = _cache_json(cfg, "delistings.json", {})
+        renames.update({t: v["new"] for t, v in dl.items() if v.get("status") == "renamed" and v.get("new") and t not in renames})
+    except Exception:
+        pass
     if renames:
         changed = tx["ticker"].isin(renames)
         tx.loc[changed, "ticker"] = tx.loc[changed, "ticker"].map(renames)
@@ -2724,6 +2910,15 @@ def prepare(cfg):
     json.dump(cov, open(_p(cfg, "state", "price_coverage.json"), "w"))
     log(f"Prices: {cov['with_prices']:,} of {cov['trades']:,} trades have price data; {cov['missing']:,} "
         f"({cov['missing_share']*100:.1f}%) are missing, mostly delisted companies")
+    try:
+        miss_t = [t for t, _ in tx.loc[~tx["ticker"].isin(px.columns), "ticker"].value_counts().items()]
+        cl = classify_missing(cfg, miss_t)
+        cnt = pd.Series([(cl.get(t) or {}).get("status", "unknown") for t in miss_t]).value_counts().to_dict()
+        log(f"Missing prices: why {len(miss_t)} stocks vanished: " + ", ".join(f"{v} {k}" for k, v in cnt.items()))
+        global _TX_ALL
+        _TX_ALL = tx[["ticker", "tx_type"]].copy()
+    except Exception as e:
+        log(f"Missing prices: classification skipped ({type(e).__name__}: {e})")
     tx = tx[tx["ticker"].isin(px.columns)].reset_index(drop=True)
     if tx.empty:
         raise RuntimeError("No trades have price data yet (price download was cut short); the next run continues.")
@@ -2956,7 +3151,8 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
         data["backtest"].update({"horizons": tbl(bt.get("horizons")), "persistence": tbl(bt.get("persistence")),
                                  "persistence_verdict": bt.get("persistence_verdict") or {},
                                  "crowding": tbl(bt.get("crowding")), "sizes": tbl(bt.get("sizes")),
-                                 "busy_check": tbl(bt.get("busy_check")), "busiest": bt.get("busiest") or []})
+                                 "busy_check": tbl(bt.get("busy_check")), "busiest": bt.get("busiest") or [],
+                                 "missing": _jsonable(bt.get("missing"))})
         dbt = bt.get("defense")
         if dbt is not None:
             dperf, dts, DL = dbt["perf"], dbt["trade_stats"], dbt["longs"]
@@ -2970,6 +3166,16 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
                 "buy_factors": _rows(dbt["buy_factors"], {"signal": "Signal", "group": "Group", "n": "Trades",
                                                           "avg": "Avg result vs SPY", "hit": "Worked (%)"}),
                 "n_longs": len(DL), "longs": _rows(DL.sort_values("filed_date", ascending=False).head(300), _TRADE_COLS)}
+        wf = bt.get("walk_forward")
+        if wf is not None:
+            wp, wwk = wf["perf"], wf["curves"].resample("W-FRI").last().dropna(how="all")
+            data["walk_forward"] = {
+                "perf": [{"name": c, **{k: _j(wp.loc[k, c]) for k in wp.index}} for c in wp.columns],
+                "curve": {"dates": [d.strftime("%Y-%m-%d") for d in wwk.index],
+                          "series": {c: [_j((x - 1) * 100) for x in wwk[c].values] for c in wwk.columns}},
+                "years": [{"year": int(y), **{c: _j(wf["years"].loc[y, c]) for c in wf["years"].columns}} for y in wf["years"].index],
+                "trade_stats": {k: _j(v) for k, v in wf["trade_stats"].items()},
+                "log": tbl(wf["log"]), "n_picks": wf["n_picks"], "slots": wf["slots"]}
         sbt = bt.get("small")
         if sbt is not None:
             sp, swk = sbt["perf"], sbt["curves"].resample("W-FRI").last().dropna(how="all")
@@ -3760,7 +3966,7 @@ def compute_connections(tx, data, cfg, mems):
         tot = 0.0
         for cand in fids:
             for cyc, rows in by_cand.get(cand, []):
-                if pd.Timestamp(cyc, 12, 31) < f:
+                if pd.Timestamp(cyc + 1, 1, 31) < f:          # the year-end report is due Jan 31
                     tot += sum(a for e, a in rows.items() if e == c_ or e.startswith(c_ + " "))
         ed[i] = tot
     tx["employee_donations"] = ed
@@ -3864,7 +4070,8 @@ def compute_connections(tx, data, cfg, mems):
         evmap[t] = pd.to_datetime([e[1] for e in v.get("events", [])], errors="coerce").dropna()
     if con is not None and len(con):
         for t, g in con[con.amount >= 1e7].groupby("ticker"):
-            evmap[t] = evmap.get(t, pd.DatetimeIndex([])).append(pd.DatetimeIndex(g.action_date.dropna()))
+            # a contract counts from the day it was made public, so it must be public by the filing date
+            evmap[t] = evmap.get(t, pd.DatetimeIndex([])).append(pd.DatetimeIndex(g.known_date.dropna()))
     for i, (t, td, f) in enumerate(zip(tx["ticker"], tdt, fdt)):
         d = evmap.get(t)
         if d is not None and len(d) and _within(d, td, min(td + D(days=30), f)):
@@ -4520,7 +4727,7 @@ def collect_bill_status(cfg):
     cur = _congress_of(dt.date.today().year)
     for cong in range(first, cur + 1):
         for typ in ("hr", "s", "hjres", "sjres"):
-            key = f"{cong}{typ}"
+            key = f"{cong}{typ}-v2"                      # v2: backers carry the date they joined
             if state.get(key) and (cong < cur or _fresh(state[key], 3)):
                 continue
             if out_of_time(cfg, 75):
@@ -4548,7 +4755,14 @@ def collect_bill_status(cfg):
                         continue
                     pol = b.findtext("policyArea/name") or ""
                     title = (b.findtext("title") or "")[:140]
-                    backers = {e.text for e in b.findall("sponsors/item/bioguideId") + b.findall("cosponsors/item/bioguideId") if e.text}
+                    # who backs the bill and since when (a cosponsor who joined later, or withdrew, must not count
+                    # for actions before they joined; that would be peeking)
+                    intro = b.findtext("introducedDate") or ""
+                    backers = {e.findtext("bioguideId"): intro for e in b.findall("sponsors/item") if e.findtext("bioguideId")}
+                    for e in b.findall("cosponsors/item"):
+                        bid = e.findtext("bioguideId")
+                        if bid and not (e.findtext("sponsorshipWithdrawnDate") or "").strip():
+                            backers.setdefault(bid, (e.findtext("sponsorshipDate") or intro)[:10])
                     num = b.findtext("number") or b.findtext("billNumber") or ""
                     seen = set()
                     for a in b.findall("actions/item"):
@@ -4669,7 +4883,7 @@ def relationship_features(tx, data, cfg, mems):
             k = g[(g.known_date <= f) & (g.known_date > f - D(days=365))]
             g12[i] = k["amount"].clip(lower=0).sum()
             fg[i] = 1.0 if (g12[i] >= 1e6 or (k["kind"] == "loan").any()) else (0.5 if len(k) else 0.0)
-            after = g[(g.action_date > td) & (g.action_date <= f)]
+            after = g[(g.action_date > td) & (g.known_date <= f)]           # public by disclosure day
             fa[i] = 1.0 if len(after) and (after["amount"].sum() >= 1e6 or (after["kind"] == "loan").any()) else 0.0
         tx["grants_12m"], tx["f_grants"], tx["f_grant_after_trade"] = g12, fg, fa
 
@@ -4773,6 +4987,10 @@ def relationship_features(tx, data, cfg, mems):
         by_bs = {}                                     # (member, sector) -> actions sorted by date
         for r in ba.sort_values("date").itertuples():
             for b in r.backers:
+                if isinstance(r.backers, dict):          # only backers who had joined by the time of the action
+                    j = pd.to_datetime(r.backers[b], errors="coerce")
+                    if pd.isna(j) or j > r.date:
+                        continue
                 for s_ in r.sectors:
                     by_bs.setdefault((b, s_), []).append((r.date, r.policy, r.kind))
         dates_bs = {k: np.array([x[0] for x in v], dtype="datetime64[ns]") for k, v in by_bs.items()}
@@ -5258,8 +5476,12 @@ def analyst_features(tx, data):
             if down and d > td - pd.Timedelta(days=30):
                 recent_down = True
         if not latest:
-            nc[i] = 1.0
-            note[i] = "no analyst ratings on record when they bought"
+            # only call it "no coverage" when the rating record reaches back far enough to know;
+            # older years are thin in the source, and treating a gap in the record as "nobody covered it" would
+            # mostly mark the era, not the company
+            if rows and rows[0][0] <= td - pd.Timedelta(days=540):
+                nc[i] = 1.0
+                note[i] = "no analyst ratings on record when they bought"
             continue
         avg = float(np.mean(list(latest.values())))
         if len(latest) >= 2 and avg <= 0.2:
