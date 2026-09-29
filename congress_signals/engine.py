@@ -1851,6 +1851,9 @@ def active_weights(cfg):
         t = json.load(open(path))
         bw, sw = t.get("buy", bw), t.get("short", sw)
         log("Using tuned weights from the last tuning run")
+    lpath = os.path.join(cfg["DATA_DIR"], "state", "learned_weights.json")
+    if load_adaptive(cfg)["policy"].get("main_method") == "learned" and os.path.exists(lpath):
+        bw = {**{k: 0.0 for k in cfg["BUY_WEIGHTS"]}, **json.load(open(lpath)).get("buy", {})}
     return bw, sw
 
 
@@ -2455,6 +2458,22 @@ def walk_forward(scored, px, cfg, min_train=500):
         top_w = sorted(w.items(), key=lambda kv: -abs(kv[1]))[:5]
         log_rows.append({"Year": int(y), "Learned from trades": int(len(tr)), "Holding period": f"{best_h} days",
                          "Picks": int(len(pk)), "Main signals": ", ".join(f"{k} {v:+.2f}" for k, v in top_w)})
+    # today's version: learned from every trade that has finished by now, for live picks if the weekly check chooses it
+    try:
+        now = pd.Timestamp.today().normalize()
+        tr = base[base["closed"] & base["excess"].notna() & (base["exit_date"] < now)]
+        w_now = _fit(tr, names, tr["excess"].clip(-0.5, 1).values, zeros, member_weights(tr, cfg.get("BUSY_TRADER_SOFTCAP", 100)))
+        h_now, v_now = 60, -np.inf
+        for h, dfh in by_hold.items():
+            t2 = dfh[dfh["closed"] & dfh["excess"].notna() & (dfh["exit_date"] < now)]
+            sc = _score(t2, w_now)
+            top = t2[sc >= np.percentile(sc, cfg["PICK_PERCENTILE"])] if len(t2) else t2
+            if len(top) >= 30 and top["excess"].mean() > v_now:
+                h_now, v_now = h, top["excess"].mean()
+        json.dump({"buy": w_now, "hold": int(h_now), "trained_on": int(len(tr)), "made": dt.datetime.now().isoformat()},
+                  open(_p(cfg, "state", "learned_weights.json"), "w"), indent=1)
+    except Exception as e:
+        log(f"Learned weights: not saved ({type(e).__name__})")
     if not picks:
         return None
     longs = pd.concat(picks, ignore_index=True)
@@ -2463,7 +2482,9 @@ def walk_forward(scored, px, cfg, min_train=500):
     ld, _ = _portfolio_slots(longs, px, idx, slots, "spy", cost=cost)
     spy = px["SPY"].pct_change(fill_method=None).reindex(idx)
     # the regular (full-history) strategy over exactly the same years, for comparison
-    reg = run_backtest(scored, px, dict(cfg, _nested=True), since=longs["filed_date"].min())
+    # always with the hand-set weights, so the weekly check compares the two methods whichever one is in use
+    hand = apply_scores(scored, cfg, cfg["BUY_WEIGHTS"], cfg["SHORT_WEIGHTS"])
+    reg = run_backtest(hand, px, dict(cfg, _nested=True), since=longs["filed_date"].min())
     series = {"Never-seen-years picks": ld, "Regular backtest, same years": _long_daily(reg).reindex(idx).fillna(0),
               "S&P 500 (SPY)": spy}
     perf, curves = {}, {}
@@ -5181,7 +5202,8 @@ def load_adaptive(cfg):
         a = {}
     a.setdefault("policy", {"hold_small": int(cfg["HOLD_DAYS"]), "hold_other": int(cfg["HOLD_DAYS"])})
     a["policy"].setdefault("hold_sleeve", 250)
-    a["policy"].setdefault("sleeve_coverage", False)     # small-company portfolio skips companies no analyst covers
+    a["policy"].setdefault("sleeve_coverage", False)
+    a["policy"].setdefault("main_method", "hand")       # "learned": buy weights refit from all finished trades     # small-company portfolio skips companies no analyst covers
     a.setdefault("use_tuned", False)
     a.setdefault("history", [])
     return a
@@ -5243,7 +5265,7 @@ def _verdict(c, auto):
     return "Worse"
 
 
-def evaluate_adjustments(scored, px, cfg):
+def evaluate_adjustments(scored, px, cfg, wf=None):
     """Weekly: try other holding periods (switch when clearly better) and a few other settings (proposals only)."""
     a = load_adaptive(cfg)
     pol = dict(a["policy"])
@@ -5324,6 +5346,34 @@ def evaluate_adjustments(scored, px, cfg):
                                      "to": "off" if cov else "on", "gain_per_year": c["gain"], "sureness": c["t"]})
                 log(f"Adjustments: {label} -> {'off' if cov else 'on'} (+{c['gain']*100:.1f}%/yr in the backtest)")
                 pol["sleeve_coverage"] = not cov
+    # how buy picks are scored: hand-set weights, or weights learned each year from earlier trades only.
+    # The learned side is the never-seen-years test, so its result has no hindsight in it.
+    if wf is not None:
+        label = "How buy picks are scored"
+        cv = wf["curves"].pct_change().fillna(0)
+        learned, regular = cv["Never-seen-years picks"], cv["Regular backtest, same years"]
+        cur_m = pol.get("main_method", "hand")
+        new, old = (learned, regular) if cur_m == "hand" else (regular, learned)
+        c = _compare(new, old)
+        names_ = {"hand": "Hand-set weights", "learned": "Learned from earlier trades"}
+        alt = "learned" if cur_m == "hand" else "hand"
+        ann = lambda d: float(_perf(d)[0]["Annual return (CAGR)"] - _perf(cv["S&P 500 (SPY)"])[0]["Annual return (CAGR)"])
+        rows.append({"Setting": label, "Option": names_[cur_m] + " (current)", "Per year vs S&P": ann(old),
+                     "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
+        rows.append({"Setting": label, "Option": names_[alt], "Per year vs S&P": ann(new),
+                     "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
+                     "Verdict": "Switched automatically" if clearly_better(c) else _verdict(c, True)})
+        if clearly_better(c):
+            a["history"].append({"date": today, "change": label, "from": names_[cur_m], "to": names_[alt],
+                                 "gain_per_year": c["gain"], "sureness": c["t"]})
+            log(f"Adjustments: {label} -> {names_[alt]} (+{c['gain']*100:.1f}%/yr)")
+            pol["main_method"] = alt
+            if alt == "learned":                      # the learned method brings its own holding period
+                try:
+                    h = int(json.load(open(_p(cfg, "state", "learned_weights.json"))).get("hold", pol["hold_other"]))
+                    pol["hold_other"] = pol["hold_small"] = h
+                except Exception:
+                    pass
     a["policy"] = pol
 
     # proposals: measured the same way, never applied without the user's go-ahead
