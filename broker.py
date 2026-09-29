@@ -101,11 +101,15 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
     open_orders = api.get("/v2/orders", status="open", limit=500)
     pending = {o["symbol"] for o in open_orders}
     bot = _bot_buys(api)
-    actions = []
+    actions, sold = [], set()
+    # symbols you (or the Buy button) also bought: selling would close your shares too, so the tool leaves them
+    others = {o["symbol"] for o in api.get("/v2/orders", status="all", limit=500, direction="desc")
+              if o.get("side") == "buy" and float(o.get("filled_qty") or 0) > 0
+              and not (o.get("client_order_id") or "").startswith(PREFIX)}
 
     # 1. sell what this tool bought once the holding period (trading days) is over
     for sym, o in (bot.items() if trade else []):
-        if sym not in positions or sym in pending:
+        if sym not in positions or sym in pending or sym in others:
             continue
         bought = dt.date.fromisoformat(o["filled_at"][:10])
         held = int(np.busday_count(bought, today))
@@ -113,6 +117,22 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             r = api.delete(f"/v2/positions/{sym}")
             actions.append({"side": "sell", "symbol": sym, "ok": r.status_code in (200, 207),
                             "why": f"held {held} trading days"})
+            sold.add(sym)
+
+    # 1b. keep the paper test clean: sell small-company-portfolio positions whose purchase doesn't fit its rules
+    #     (company worth $2B or more when the member bought), e.g. anything bought under an earlier bug
+    if trade and buys is not None and len(buys) and "f_small_cap" in buys:
+        size = dict(zip(buys["ticker"].map(to_alpaca), buys["f_small_cap"]))
+        for sym, o in bot.items():
+            if not (o.get("client_order_id") or "").startswith(PREFIX + "sm-") or sym not in positions or sym in pending or sym in sold or sym in others:
+                continue
+            f = size.get(sym)
+            if f is not None and pd.notna(f) and float(f) < 1:
+                r = api.delete(f"/v2/positions/{sym}")
+                actions.append({"side": "sell", "symbol": sym, "ok": r.status_code in (200, 207),
+                                "why": "didn't fit the small-company rules"})
+                positions.pop(sym, None)
+                sold.add(sym)                            # don't buy it back in the same run
 
     # 2. buy new picks: the main strategy (BUY picks) and the separate small-company portfolio
     if s["auto"] and trade:
@@ -131,7 +151,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         def place(t, amount, cid):
             sym = to_alpaca(t)
             price = last_prices.get(t)
-            if sym in positions or sym in pending or not price or not math.isfinite(price) or price <= 0:
+            if sym in positions or sym in pending or sym in sold or not price or not math.isfinite(price) or price <= 0:
                 return None
             try:
                 asset = api.get(f"/v2/assets/{sym}")
