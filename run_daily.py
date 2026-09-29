@@ -128,7 +128,7 @@ def main():
                                         - dt.datetime.fromisoformat(a["evaluated_at"])).days >= 7
     if due and not E.out_of_time(cfg, 90):
         try:
-            E.evaluate_adjustments(scored, px, cfg)
+            E.evaluate_adjustments(scored, px, cfg, wf=(bt or {}).get("walk_forward") if isinstance(bt, dict) else None)
         except Exception as e:
             E.log(f"Adjustments: weekly check skipped ({e})")
     buys, sells = E.build_watchlist(scored, px, cfg)
