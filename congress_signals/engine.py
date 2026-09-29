@@ -2674,6 +2674,42 @@ they can't be backtested.</p></div>"""
 # ============================================================================
 # Entry point
 # ============================================================================
+def bad_price_tickers(px, meta):
+    """Price series that are clearly data errors, not real moves. Left in, a single one can fake a big result
+    (a large foreign company's OTC ticker once showed a 17x gain in a year). Removing a real stock is the
+    safe mistake here: it can only make results look worse, never better.
+      - a one-day jump or drop of 3x or more that is mostly undone within 20 trading days
+      - a one-day 3x jump in a foreign over-the-counter ticker (5 letters ending in F or Y)
+      - a company worth $10B+ today whose price rose more than 10x within a year"""
+    bad = {}
+    skip = set(BENCHMARK_ETFS)
+    for t in px.columns:
+        if t in skip:
+            continue
+        s = px[t].dropna()
+        s = s[s > 0]
+        if len(s) < 30:
+            continue
+        lr = np.log(s.values)
+        d = np.diff(lr)
+        big = np.where(np.abs(d) >= np.log(3))[0]
+        for i in big:
+            after = lr[i + 1:i + 22]                        # the new level and the 20 days after it
+            undone = (after[0] - after.min()) if d[i] > 0 else (after.max() - after[0])
+            if undone >= 0.5 * abs(d[i]):
+                bad[t] = "spike that reversed"
+                break
+            if d[i] > 0 and len(t) == 5 and t[-1] in "FY":
+                bad[t] = "jump in a foreign OTC ticker"
+                break
+        if t in bad:
+            continue
+        cap = (meta.get(t) or {}).get("cap") or 0
+        if cap >= 1e10 and len(lr) > 250 and (lr[250:] - lr[:-250]).max() > np.log(10):
+            bad[t] = "large company up 10x+ within a year"
+    return bad
+
+
 def prepare(cfg):
     global _RUN_START
     tx = collect_all(cfg)
@@ -2692,6 +2728,12 @@ def prepare(cfg):
     if tx.empty:
         raise RuntimeError("No trades have price data yet (price download was cut short); the next run continues.")
     meta = load_meta(cfg, tx["ticker"].unique())
+    bad = bad_price_tickers(px, meta)
+    if bad:
+        json.dump(bad, open(_p(cfg, "state", "bad_prices.json"), "w"), indent=1)
+        px = px.drop(columns=list(bad))
+        tx = tx[~tx["ticker"].isin(bad)].reset_index(drop=True)
+        log(f"Prices: set aside {len(bad)} stock(s) whose price history has clear data errors")
     committees = load_committees(cfg)
     history = load_committee_history(cfg, committees)
     data = {"meta": meta, "committees": committees, "committee_history": history, "religion": load_religion(cfg)}
