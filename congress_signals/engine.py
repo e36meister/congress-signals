@@ -5233,6 +5233,30 @@ def small_cap_rows(scored):
     return b.iloc[keep]
 
 
+def export_research(scored, px, cfg, max_cap=1e10):
+    """Every timely purchase of a company under $10B, with all its signal values and what the stock did
+    afterwards (vs the S&P 500 and the small-company index), for studying what the big winners share."""
+    b = scored[(scored["tx_type"] == "buy") & (scored["lag_days"].fillna(999) <= 45)
+               & scored["market_cap"].notna() & (scored["market_cap"] < max_cap)].copy()
+    if not len(b):
+        return None
+    text = ("ticker", "member", "chamber", "state", "party", "sector", "industry", "owner", "trade_date", "filed_date", "bioguide")
+    keep = [c for c in b.columns if c in text or (pd.api.types.is_numeric_dtype(b[c]) or pd.api.types.is_bool_dtype(b[c]))]
+    out = b[[c for c in keep if c in b.columns]].copy()
+    for h in (20, 60, 125, 250):
+        fr = forward_returns(b, px, h)
+        out[f"ret_{h}"] = fr["ret"]
+        out[f"vs_spy_{h}"] = fr["excess"]
+        out[f"closed_{h}"] = fr["closed"]
+        if SMALL_ETF in px.columns:
+            p2 = pd.DataFrame({"SPY": px[SMALL_ETF]})       # same math with the small-company index
+            out[f"vs_iwm_{h}"] = fr["ret"] - forward_returns(b.assign(ticker="SPY"), p2, h)["ret"]
+    path = os.path.join(cfg["DATA_DIR"], "research_buys.csv.gz")
+    out.to_csv(path, index=False, compression="gzip")
+    log(f"Research export: {len(out):,} purchases saved")
+    return path
+
+
 def small_cap_backtest(scored, px, cfg, hold=None):
     rows = small_cap_rows(scored)
     if len(rows) < 50:
