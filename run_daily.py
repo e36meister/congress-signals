@@ -19,7 +19,7 @@ cfg = {**E.DEFAULT_CONFIG,
 os.makedirs(cfg["DATA_DIR"], exist_ok=True)
 
 
-def upload_to_drive(local_path, title):
+def upload_to_drive(local_path, title, mimetype="application/json"):
     sa = env("GDRIVE_SERVICE_ACCOUNT_JSON")
     folder = env("GDRIVE_FOLDER_ID")
     if not sa or not folder:
@@ -45,7 +45,7 @@ def upload_to_drive(local_path, title):
             json.dump(local, open(local_path, "w"))
         except Exception as e:
             E.log(f"Drive: couldn't merge the close report ({type(e).__name__})")
-    media = MediaFileUpload(local_path, mimetype="application/json", resumable=False)
+    media = MediaFileUpload(local_path, mimetype=mimetype, resumable=False)
     if found:
         drive.files().update(fileId=found[0]["id"], media_body=media, supportsAllDrives=True).execute()
         E.log(f"Drive: updated {title}")
@@ -108,6 +108,12 @@ def main():
     bt = E.run_backtest(scored, px, cfg)
     E.backtest_report(bt, cfg)
     E.export_dashboard(cfg, bt=bt)
+    try:
+        rp = E.export_research(scored, px, cfg)
+        if rp:
+            upload_to_drive(rp, "research_buys.csv.gz", mimetype="application/gzip")
+    except Exception as e:
+        E.log(f"Research export skipped ({type(e).__name__}: {e})")
     tuned_path = os.path.join(cfg["DATA_DIR"], "state", "tuned_weights.json")
     now = dt.datetime.utcnow()
     if (now.weekday() == 6 and now.hour < 16) or not os.path.exists(tuned_path):   # retune Sunday mornings
