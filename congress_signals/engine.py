@@ -2997,7 +2997,7 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
                  "m": "members", "why": "why", "d": "filed_date", "move": "move_since_filing", "an": "analysts",
                  "up": "target_upside_%", "earn": "next_earnings", "news": "news_7d", "sec": "sector",
                  "nwm": "news_with_member", "def": "is_defense", "cap": "market_cap", "dodm": "dod_awards_180d",
-                 "ppl": "people", "ags": "f_against_street", "sm": "f_small_cap", "lag": "lag_days"}
+                 "ppl": "people", "ags": "f_against_street", "sm": "f_small_cap", "lag": "lag_days", "nc": "f_no_coverage"}
         data["watchlist"] = {
             "updated": now, "lookback": cfg["WATCHLIST_LOOKBACK_DAYS"],
             "buys": _rows(buys, dict(wcols, s="score")),
@@ -4963,6 +4963,7 @@ def load_adaptive(cfg):
         a = {}
     a.setdefault("policy", {"hold_small": int(cfg["HOLD_DAYS"]), "hold_other": int(cfg["HOLD_DAYS"])})
     a["policy"].setdefault("hold_sleeve", 250)
+    a["policy"].setdefault("sleeve_coverage", False)     # small-company portfolio skips companies no analyst covers
     a.setdefault("use_tuned", False)
     a.setdefault("history", [])
     return a
@@ -5088,6 +5089,23 @@ def evaluate_adjustments(scored, px, cfg):
             for r in rows:
                 if r["Setting"] == HOLD_LABELS[key] and r["Option"].startswith(f"{best[0]} "):
                     r["Verdict"] = "Switched automatically"
+        # skip companies no analyst covers? switches only when clearly better, in either direction
+        cov = bool(pol.get("sleeve_coverage"))
+        cur_b = small_cap_backtest(scored, px, cfg, hold=pol["hold_sleeve"], coverage=cov)
+        alt_b = small_cap_backtest(scored, px, cfg, hold=pol["hold_sleeve"], coverage=not cov)
+        label = "Small-company portfolio: skip companies no analyst covers"
+        if cur_b is not None and alt_b is not None:
+            c = _compare(sd(alt_b), sd(cur_b))
+            rows.append({"Setting": label, "Option": ("On" if cov else "Off") + " (current)", "Per year vs S&P": sv(cur_b),
+                         "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
+            rows.append({"Setting": label, "Option": "On" if not cov else "Off", "Per year vs S&P": sv(alt_b),
+                         "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
+                         "Verdict": "Switched automatically" if clearly_better(c) else _verdict(c, True)})
+            if clearly_better(c):
+                a["history"].append({"date": today, "change": label, "from": "on" if cov else "off",
+                                     "to": "off" if cov else "on", "gain_per_year": c["gain"], "sureness": c["t"]})
+                log(f"Adjustments: {label} -> {'off' if cov else 'on'} (+{c['gain']*100:.1f}%/yr in the backtest)")
+                pol["sleeve_coverage"] = not cov
     a["policy"] = pol
 
     # proposals: measured the same way, never applied without the user's go-ahead
@@ -5260,12 +5278,16 @@ def analyst_features(tx, data):
 SMALL_ETF = "IWM"          # Russell 2000, the usual small-company benchmark
 
 
-def small_cap_rows(scored):
-    """Purchases of companies under $2B (at the time), filed on time, at most one entry per stock per 30 days."""
+def small_cap_rows(scored, coverage=False):
+    """Purchases of companies under $2B (at the time), filed on time, at most one entry per stock per 30 days.
+    With coverage=True, only companies at least one Wall Street analyst covered when the member bought."""
     b = scored[(scored["tx_type"] == "buy") & scored["entry_px"].notna()]
     if "f_small_cap" not in b or not len(b):
         return b.iloc[0:0]
-    b = b[(b["f_small_cap"].fillna(0) >= 1) & (b["lag_days"].fillna(999) <= 45)].sort_values("filed_date")
+    b = b[(b["f_small_cap"].fillna(0) >= 1) & (b["lag_days"].fillna(999) <= 45)]
+    if coverage and "f_no_coverage" in b:
+        b = b[b["f_no_coverage"].fillna(0) == 0]
+    b = b.sort_values("filed_date")
     keep, last = [], {}
     for i, (t, d) in enumerate(zip(b["ticker"], b["filed_date"])):
         if t in last and (d - last[t]).days < 30:
@@ -5299,11 +5321,13 @@ def export_research(scored, px, cfg, max_cap=1e10):
     return path
 
 
-def small_cap_backtest(scored, px, cfg, hold=None):
-    rows = small_cap_rows(scored)
+def small_cap_backtest(scored, px, cfg, hold=None, coverage=None):
+    pol = load_adaptive(cfg)["policy"]
+    coverage = bool(pol.get("sleeve_coverage")) if coverage is None else coverage
+    rows = small_cap_rows(scored, coverage)
     if len(rows) < 50:
         return None
-    hold = int(hold or load_adaptive(cfg)["policy"].get("hold_sleeve", 250))
+    hold = int(hold or pol.get("hold_sleeve", 250))
     cost = cfg.get("COST_BPS", 0) / 1e4
     fr = forward_returns(rows, px, hold, cost=cost)
     picks = rows.drop(columns=[c for c in fr.columns if c in rows.columns]).join(fr)
