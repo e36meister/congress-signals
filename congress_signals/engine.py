@@ -2601,6 +2601,10 @@ def build_watchlist(scored, px, cfg, enrich_top=20):
         df["price_at_filing"] = [px[t].asof(d) if t in px.columns else np.nan for t, d in zip(df["ticker"], df["filed_date"])]
         df["price_now"] = [last.get(t, np.nan) for t in df["ticker"]]
         df["move_since_filing"] = df["price_now"] / df["price_at_filing"] - 1
+        if "trade_date" in df:
+            df["price_at_trade"] = [px[t].asof(d) if t in px.columns and pd.notna(d) else np.nan
+                                    for t, d in zip(df["ticker"], df["trade_date"])]
+            df["move_since_trade"] = df["price_now"] / df["price_at_trade"] - 1
         return df
 
     buys = ticker_level(recent[recent["tx_type"] == "buy"], "score")
@@ -3258,7 +3262,7 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
             pass
     if buys is not None or sells is not None:
         wcols = {"rank": "rank", "action": "action", "t": "ticker", "co": "company", "pct": "percentile",
-                 "m": "members", "why": "why", "d": "filed_date", "move": "move_since_filing", "an": "analysts",
+                 "m": "members", "why": "why", "d": "filed_date", "move": "move_since_filing", "td": "trade_date", "mt": "move_since_trade", "an": "analysts",
                  "up": "target_upside_%", "earn": "next_earnings", "news": "news_7d", "sec": "sector",
                  "nwm": "news_with_member", "def": "is_defense", "cap": "market_cap", "dodm": "dod_awards_180d",
                  "ppl": "people", "ags": "f_against_street", "sm": "f_small_cap", "lag": "lag_days", "nc": "f_no_coverage"}
