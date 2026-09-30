@@ -131,6 +131,10 @@ def main():
             E.evaluate_adjustments(scored, px, cfg, wf=(bt or {}).get("walk_forward") if isinstance(bt, dict) else None)
         except Exception as e:
             E.log(f"Adjustments: weekly check skipped ({e})")
+    try:
+        E.check_exit_rule_once(scored, px, cfg)
+    except Exception as e:
+        E.log(f"Adjustments: sell-when-member-sells check skipped ({e})")
     buys, sells = E.build_watchlist(scored, px, cfg)
     new = E.diff_alerts(buys, sells, cfg)
     try:
@@ -143,13 +147,23 @@ def main():
     try:
         last = px.ffill().iloc[-1].to_dict() if px is not None and len(px) else {}
         sm = (bt.get("small") or {}) if isinstance(bt, dict) else {}
-        snap = broker.sync(dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=sm.get("slots")),
-                           buys, new, last, E.log)
+        mt = E.member_trades(scored)
+        msales = lambda t, bought: E.member_sales(mt, t, bought)
+        snap = broker.sync(dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=sm.get("slots"),
+                                _member_sales=msales), buys, new, last, E.log)
+        path = os.path.join(cfg["DATA_DIR"], "dashboard_data.json")
+        d = json.load(open(path))
         if snap is not None:
-            path = os.path.join(cfg["DATA_DIR"], "dashboard_data.json")
-            d = json.load(open(path))
             d["portfolio"] = snap
-            json.dump(d, open(path, "w"))
+        # members who bought a stock you hold and have since disclosed a sale (shown on My portfolio)
+        ms = {}
+        for p in (d.get("portfolio") or {}).get("positions") or []:
+            if p.get("bought"):
+                s_ = msales(p["t"], p["bought"])
+                if s_:
+                    ms[p["t"]] = {"bought": p["bought"], "sales": s_}
+        d["member_sold"] = ms
+        json.dump(d, open(path, "w"))
     except Exception as e:
         E.log(f"Broker: skipped this run ({type(e).__name__})")
     upload_to_drive(os.path.join(cfg["DATA_DIR"], "dashboard_data.json"), "dashboard_data.json")

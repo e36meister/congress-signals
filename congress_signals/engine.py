@@ -1564,12 +1564,16 @@ def _entry_positions(px_index, dates):
     return np.searchsorted(px_index.values, pd.to_datetime(dates).values, side="right")
 
 
-def forward_returns(tx, px, hold, cost=0.0):
-    """Return after entering the day after disclosure and holding `hold` trading days, minus trading costs."""
+def forward_returns(tx, px, hold, cost=0.0, stop=None):
+    """Return after entering the day after disclosure and holding `hold` trading days, minus trading costs.
+    `stop` (optional, one price-index position per row) ends a trade early on that day."""
     idx = px.index
     n = len(idx)
     ent = _entry_positions(idx, tx["filed_date"])
     ext = ent + hold
+    if stop is not None:
+        stop = np.asarray(stop)
+        ext = np.where(stop > ent, np.minimum(ext, stop), ext)
     col = {c: i for i, c in enumerate(px.columns)}
     arr = px.values
     spy = px["SPY"].values
@@ -3091,7 +3095,8 @@ def prepare(cfg):
         log(f"Trading partners: table skipped ({e})")
     scored = apply_scores(feats, cfg)
     pol = load_adaptive(cfg)["policy"]
-    if int(pol["hold_small"]) != int(cfg["HOLD_DAYS"]) or int(pol["hold_other"]) != int(cfg["HOLD_DAYS"]):
+    if (int(pol["hold_small"]) != int(cfg["HOLD_DAYS"]) or int(pol["hold_other"]) != int(cfg["HOLD_DAYS"])
+            or pol.get("exit_on_member_sell")):
         scored = apply_hold_policy(scored, px, cfg, pol)
         log(f"Holding periods in use: {pol['hold_other']} trading days, {pol['hold_small']} for companies under $2B")
     scored.to_pickle(_p(cfg, "cache", "scored.pkl"))
@@ -5236,6 +5241,121 @@ HOLD_LABELS = {"hold_other": "Holding period (most stocks)", "hold_small": "Hold
                "hold_sleeve": "Small-company portfolio: holding period"}
 
 
+# ---------- "the member who bought has sold" ----------
+MEMBER_SELL_WINDOW = 30      # purchase disclosures filed this many days before our buy count as the reason we bought
+
+
+def member_trades(scored):
+    """Each ticker's purchase and sale disclosures, sorted by filing date, for member_sales()."""
+    import bisect  # noqa: F401  (used by member_sales)
+    df = scored[[c for c in ("ticker", "tx_type", "filed_date", "trade_date", "member", "bioguide") if c in scored]]
+    df = df[df["tx_type"].isin(["buy", "sell"]) & df["ticker"].notna() & df["filed_date"].notna()]
+    bio = df["bioguide"] if "bioguide" in df else pd.Series([None] * len(df), index=df.index)
+    td = df["trade_date"] if "trade_date" in df else df["filed_date"]
+    out = {"buy": {}, "sell": {}}
+    for t, ty, f, d, m, b in zip(df["ticker"], df["tx_type"], df["filed_date"], td, df["member"], bio):
+        b = b if isinstance(b, str) and b else None
+        f = pd.Timestamp(f)
+        d = pd.Timestamp(d) if pd.notna(d) else f
+        out[ty].setdefault(t, []).append((f, d, b or str(m), str(m), b))
+    for side in out.values():
+        for k in side:
+            side[k].sort(key=lambda x: x[0])
+            side[k] = ([x[0] for x in side[k]], side[k])
+    return out
+
+
+def member_sales(mt, ticker, ref, after=None, window=MEMBER_SELL_WINDOW):
+    """Sales of `ticker` by the members whose purchase disclosures were filed in the `window` days up to `ref`
+    (the reason for our buy). A sale counts when it was filed after that member's purchase disclosure (and after
+    `after`, if given) and traded on or after their purchase."""
+    import bisect
+    ref = pd.Timestamp(ref)
+    fb, rb = mt["buy"].get(ticker, ([], []))
+    lo_i, hi_i = bisect.bisect_left(fb, ref - pd.Timedelta(days=window)), bisect.bisect_right(fb, ref)
+    trig = {}
+    for f, d, k, _, _ in rb[lo_i:hi_i]:
+        if k not in trig or d < trig[k][0]:
+            trig[k] = (d, f)
+    if not trig:
+        return []
+    fs, rs = mt["sell"].get(ticker, ([], []))
+    start = min(f for _, f in trig.values())
+    if after is not None:
+        start = max(start, pd.Timestamp(after))
+    out = []
+    for f, d, k, n, b in rs[bisect.bisect_right(fs, start):]:
+        if k in trig and f > trig[k][1] and d >= trig[k][0]:
+            out.append({"n": n, "b": b, "td": d.date().isoformat(), "d": f.date().isoformat()})
+    return out
+
+
+_STOP_CACHE = {}
+
+
+def member_sell_stops(rows, scored, px):
+    """For each purchase row: the price-index position of the first trading day after a buying member's sale is
+    disclosed (len(px) when there's none). Sale rows never get a stop."""
+    key = (id(rows), len(rows), id(px), len(px))
+    if key in _STOP_CACHE:
+        return _STOP_CACHE[key]
+    mt = member_trades(scored)
+    n = len(px.index)
+    stops = np.full(len(rows), n)
+    buy = (rows["tx_type"] == "buy").values if "tx_type" in rows else np.ones(len(rows), bool)
+    for i, (t, f) in enumerate(zip(rows["ticker"], rows["filed_date"])):
+        if not buy[i] or pd.isna(f):
+            continue
+        s_ = member_sales(mt, t, f, after=f)
+        if s_:
+            stops[i] = _entry_positions(px.index, [min(x["d"] for x in s_)])[0]
+    _STOP_CACHE.clear()
+    _STOP_CACHE[key] = stops
+    return stops
+
+
+EXIT_LABEL = "Sell when a member who bought discloses a sale"
+
+
+def check_exit_rule(scored, px, cfg, a, pol, rows, today):
+    """Compare selling when a buying member's sale is disclosed against holding for the full period.
+    Switches (either way) only when clearly better; appends the result rows to `rows`."""
+    base = dict(cfg, _nested=True)
+    run = lambda p: run_backtest(apply_hold_policy(scored, px, cfg, p), px, base)
+    vs = lambda b: float(b["perf"].loc["Per year vs S&P 500", "Long picks"])
+    on = bool(pol.get("exit_on_member_sell"))
+    cur, alt = run(pol), run(dict(pol, exit_on_member_sell=not on))
+    c = _compare(_long_daily(alt), _long_daily(cur))
+    rows[:] = [r for r in rows if r.get("Setting") != EXIT_LABEL]
+    rows.append({"Setting": EXIT_LABEL, "Option": ("On" if on else "Off") + " (current)", "Per year vs S&P": vs(cur),
+                 "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
+    rows.append({"Setting": EXIT_LABEL, "Option": "Off" if on else "On", "Per year vs S&P": vs(alt),
+                 "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
+                 "Verdict": "Switched automatically" if clearly_better(c) else _verdict(c, True)})
+    if clearly_better(c):
+        a["history"].append({"date": today, "change": EXIT_LABEL, "from": "on" if on else "off",
+                             "to": "off" if on else "on", "gain_per_year": c["gain"], "sureness": c["t"]})
+        log(f"Adjustments: {EXIT_LABEL} -> {'off' if on else 'on'} (+{c['gain']*100:.1f}%/yr in the backtest)")
+        pol["exit_on_member_sell"] = not on
+    else:
+        log(f"Adjustments: {EXIT_LABEL}: stays {'on' if on else 'off'}"
+            + (f" (switching: {c['gain']*100:+.1f}%/yr, t={c['t']:.2f})" if c else ""))
+    a["exit_checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    return c
+
+
+def check_exit_rule_once(scored, px, cfg):
+    """First run after this rule was added: test it right away instead of waiting for the weekly check."""
+    a = load_adaptive(cfg)
+    if a.get("exit_checked_at"):
+        return
+    pol = dict(a["policy"])
+    rows = list(a.get("evaluation") or [])
+    check_exit_rule(scored, px, cfg, a, pol, rows, dt.date.today().isoformat())
+    a["policy"], a["evaluation"] = pol, rows
+    save_adaptive(cfg, a)
+
+
 def load_adaptive(cfg):
     try:
         a = json.load(open(_p(cfg, "state", ADAPT_FILE)))
@@ -5244,6 +5364,7 @@ def load_adaptive(cfg):
     a.setdefault("policy", {"hold_small": int(cfg["HOLD_DAYS"]), "hold_other": int(cfg["HOLD_DAYS"])})
     a["policy"].setdefault("hold_sleeve", 250)
     a["policy"].setdefault("sleeve_coverage", False)
+    a["policy"].setdefault("exit_on_member_sell", False)   # sell when a member who bought discloses a sale
     a["policy"].setdefault("main_method", "hand")       # "learned": buy weights refit from all finished trades     # small-company portfolio skips companies no analyst covers
     a.setdefault("use_tuned", False)
     a.setdefault("history", [])
@@ -5265,9 +5386,10 @@ def apply_hold_policy(scored, px, cfg, policy):
     out = scored.copy()
     cost = cfg.get("COST_BPS", 0) / 1e4
     cols = ["entry_date", "exit_date", "entry_px", "exit_px", "ret", "spy_ret", "excess", "closed"]
+    stops = member_sell_stops(scored, scored, px) if policy.get("exit_on_member_sell") else None
     for hv in np.unique(h):
         m = h == hv
-        fr = forward_returns(scored.loc[m], px, int(hv), cost=cost)
+        fr = forward_returns(scored.loc[m], px, int(hv), cost=cost, stop=None if stops is None else stops[m])
         for c in cols:
             out.loc[m, c] = fr[c].values
     for c in ("entry_date", "exit_date"):
@@ -5415,6 +5537,10 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
                     pol["hold_other"] = pol["hold_small"] = h
                 except Exception:
                     pass
+    try:
+        check_exit_rule(scored, px, cfg, a, pol, rows, today)
+    except Exception as e:
+        log(f"Adjustments: sell-when-member-sells check skipped ({e})")
     a["policy"] = pol
 
     # proposals: measured the same way, never applied without the user's go-ahead

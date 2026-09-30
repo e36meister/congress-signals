@@ -158,6 +158,26 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                             "why": f"held {held} trading days"})
             sold.add(sym)
 
+    # 1a. the weekly check can turn on "sell when a member who bought discloses a sale" (main picks only;
+    #     the small-company portfolio keeps its own fixed hold). Only sales disclosed since we bought count.
+    fn = cfg.get("_member_sales")
+    if trade and pol.get("exit_on_member_sell") and fn:
+        for sym, o in bot.items():
+            if sym not in positions or sym in pending or sym in sold or sym in others:
+                continue
+            if (o.get("client_order_id") or "").startswith(PREFIX + "sm-"):
+                continue
+            bought = o["filled_at"][:10]
+            try:
+                hits = [x for x in fn(from_alpaca(sym), bought) if x["d"] >= bought]
+            except Exception:
+                hits = []
+            if hits:
+                r = api.delete(f"/v2/positions/{sym}")
+                actions.append({"side": "sell", "symbol": sym, "ok": r.status_code in (200, 207),
+                                "why": "a member who bought it disclosed a sale"})
+                sold.add(sym)
+
     # 1b. keep the paper test clean: sell small-company-portfolio positions that clearly don't fit its rules
     #     (anything bought under the earlier bug). Company size is an estimate that drifts a little from day
     #     to day, so only clearly larger companies are sold; one near the $2B line is left alone.
@@ -290,7 +310,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                        "hold_days": int(pol["hold_other"]), "hold_small": int(pol["hold_small"]),
                        "per_week": float(cfg.get("PICKS_PER_WEEK", 5)), "from_policy": bool(cfg.get("_hold_policy")),
                        "small_pct": float(env("SMALL_SLEEVE_PCT") or 30), "hold_sleeve": int(pol.get("hold_sleeve", 250)),
-                       "sleeve_coverage": bool(pol.get("sleeve_coverage"))},
+                       "sleeve_coverage": bool(pol.get("sleeve_coverage")),
+                       "exit_on_member_sell": bool(pol.get("exit_on_member_sell"))},
             "positions": sorted(pos, key=lambda x: -x["mv"]),
             "orders": [{"t": from_alpaca(o["symbol"]), "side": o["side"], "qty": o.get("qty"), "status": o.get("status", ""),
                         "filled_px": o.get("filled_avg_price"), "at": o.get("filled_at") or o.get("submitted_at") or "",
