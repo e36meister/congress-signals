@@ -3132,6 +3132,56 @@ _TRADE_COLS = {"d": "filed_date", "t": "ticker", "co": "company", "m": "members"
                "r": "ret", "spy": "spy_ret", "ex": "excess", "res": "result"}
 
 
+def _sig(v, n=5):
+    """Round a price to about n significant digits (keeps the chart file small)."""
+    if v is None or not np.isfinite(v):
+        return None
+    if v == 0:
+        return 0.0
+    return float(round(v, max(0, n - 1 - int(np.floor(np.log10(abs(v)))))))
+
+
+def export_ticker_charts(cfg, scored, px, tickers, years=5):
+    """Price history plus every member trade for the dashboard's ticker popups: ticker_charts.json.
+    Prices are daily closes adjusted for splits and dividends; a trade's price is that day's close."""
+    tickers = sorted({t for t in tickers if isinstance(t, str) and t in px.columns})
+    end = px.index[-1]
+    sub = px.loc[px.index >= end - pd.DateOffset(years=years), tickers + (["SPY"] if "SPY" in px.columns else [])]
+    out = {"updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+           "dates": [d.strftime("%Y-%m-%d") for d in sub.index], "px": {}, "trades": {}, "photos": {}}
+    for t in tickers:
+        col = sub[t]
+        out["px"][t] = [_sig(v) if pd.notna(v) else None for v in col.values]
+    cols = [c for c in ("ticker", "tx_type", "member", "bioguide", "trade_date", "filed_date", "amt_lo", "amt_hi", "owner")
+            if c in scored]
+    tr = scored.loc[scored["ticker"].isin(tickers) & scored["tx_type"].isin(["buy", "sell"]), cols]
+    tr = tr[tr["trade_date"] >= sub.index[0] - pd.Timedelta(days=7)].drop_duplicates(
+        ["ticker", "member", "tx_type", "trade_date", "amt_lo"])
+    bios = set()
+    for r in tr.sort_values("trade_date").itertuples(index=False):
+        r = r._asdict()
+        t, td = r["ticker"], pd.Timestamp(r["trade_date"])
+        p = px[t].asof(td) if t in px.columns else np.nan
+        b = r.get("bioguide") if isinstance(r.get("bioguide"), str) and r.get("bioguide") else None
+        bios.add(b)
+        lo, hi = r.get("amt_lo"), r.get("amt_hi")
+        out["trades"].setdefault(t, []).append({
+            "n": str(r["member"]), "b": b, "ty": r["tx_type"], "td": td.strftime("%Y-%m-%d"),
+            "d": pd.Timestamp(r["filed_date"]).strftime("%Y-%m-%d") if pd.notna(r.get("filed_date")) else None,
+            "p": _sig(float(p)) if pd.notna(p) else None,
+            "lo": float(lo) if lo is not None and pd.notna(lo) else None,
+            "hi": float(hi) if hi is not None and pd.notna(hi) else None,
+            "own": str(r["owner"]) if isinstance(r.get("owner"), str) and r.get("owner") else None})
+    try:
+        out["photos"] = member_photos(cfg, [b for b in bios if b])
+    except Exception as e:
+        log(f"Ticker charts: photos skipped ({e})")
+    path = os.path.join(cfg["DATA_DIR"], "ticker_charts.json")
+    json.dump(out, open(path, "w"), separators=(",", ":"))
+    log(f"Ticker charts: {len(tickers)} stocks, {sum(len(v) for v in out['trades'].values())} member trades")
+    return path
+
+
 PHOTO_URL = "https://unitedstates.github.io/images/congress/225x275/{}.jpg"   # official photos, public domain
 
 

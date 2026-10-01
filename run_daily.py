@@ -167,6 +167,15 @@ def main():
     except Exception as e:
         E.log(f"Broker: skipped this run ({type(e).__name__})")
     upload_to_drive(os.path.join(cfg["DATA_DIR"], "dashboard_data.json"), "dashboard_data.json")
+    try:      # price charts with member trades for the tickers on Today, Defense and My portfolio
+        d = json.load(open(os.path.join(cfg["DATA_DIR"], "dashboard_data.json")))
+        w = d.get("watchlist") or {}
+        ts = {r.get("t") for r in (w.get("buys") or []) + (w.get("sells") or [])}
+        ts |= {r.get("t") for r in ((d.get("defense") or {}).get("longs") or [])}
+        ts |= {p.get("t") for p in ((d.get("portfolio") or {}).get("positions") or [])}
+        upload_to_drive(E.export_ticker_charts(cfg, scored, px, ts), "ticker_charts.json")
+    except Exception as e:
+        E.log(f"Ticker charts: skipped ({type(e).__name__}: {e})")
     E.log(f"Finished. {len(new)} new signal(s).")
 
 
