@@ -236,19 +236,25 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             new_buys = set(new.loc[new["action"] == "BUY", "ticker"]) if new is not None and len(new) else set()
             first_time = not any(not is_sleeve(x) for x in bot)   # first run: start from the whole current BUY list
             for t in [t for t in rows["ticker"] if first_time or t in new_buys]:
-                if slots <= 0 or inv_main + dollars > main_cap:
+                if slots <= 0 or inv_main + dollars * 0.5 > main_cap:
                     break
                 row = rows[rows["ticker"] == t].iloc[0]
                 small = float(row.get("f_small_cap", 0) or 0) >= 1
                 hold = int(pol["hold_small"] if small else pol["hold_other"])
-                ok = place(t, dollars, f"{PREFIX}{t}-{today:%Y%m%d}-h{hold}")
+                k = float(row.get("size_mult", 1.0) or 1.0) if pol.get("sizing", "equal") != "equal" else 1.0
+                amt = dollars * k                        # bigger position for a stronger pick, when sizing is on
+                if inv_main + amt > main_cap:
+                    amt = main_cap - inv_main
+                if amt < 1:
+                    break
+                ok = place(t, amt, f"{PREFIX}{t}-{today:%Y%m%d}-h{hold}")
                 if ok is None:
                     continue
                 actions.append({"side": "buy", "symbol": to_alpaca(t), "ok": ok, "hold": hold,
                                 "why": "new BUY pick" if not first_time else "current BUY pick (first run)"})
                 if ok:
                     slots -= 1
-                    inv_main += dollars
+                    inv_main += amt
 
         # small-company portfolio: every timely purchase of a company under $2B, once per stock
         if sleeve_pct > 0 and buys is not None and len(buys) and "f_small_cap" in buys:
@@ -303,6 +309,12 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                     "hold": _hold_of(o, s["hold_days"]) if o else None,
                     "held": int(np.busday_count(dt.date.fromisoformat(bought), today)) if bought else None})
     eq, last = float(acct.get("equity") or 0), float(acct.get("last_equity") or 0)
+    try:    # the standard amount per main pick (before sizing), for the dashboard's suggested amounts
+        sp_ = max(0.0, min(0.9, float(env("SMALL_SLEEVE_PCT") or 30) / 100))
+        plan_ = max(5, int(float(cfg.get("PICKS_PER_WEEK", 5)) * int(pol["hold_other"]) / 5))
+        per_pick = s["dollars"] or s["max_invested"] * (1 - sp_) * eq / plan_
+    except Exception:
+        per_pick = None
     return {"mode": s["mode"], "auto": s["auto"], "updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
             "market_open": bool(clock.get("is_open")), "next_open": clock.get("next_open"),
             "equity": eq, "cash": float(acct.get("cash") or 0), "day_pl": eq - last if last else None,
@@ -311,7 +323,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                        "per_week": float(cfg.get("PICKS_PER_WEEK", 5)), "from_policy": bool(cfg.get("_hold_policy")),
                        "small_pct": float(env("SMALL_SLEEVE_PCT") or 30), "hold_sleeve": int(pol.get("hold_sleeve", 250)),
                        "sleeve_coverage": bool(pol.get("sleeve_coverage")),
-                       "exit_on_member_sell": bool(pol.get("exit_on_member_sell"))},
+                       "exit_on_member_sell": bool(pol.get("exit_on_member_sell")),
+                       "per_pick": per_pick, "sizing": pol.get("sizing", "equal")},
             "positions": sorted(pos, key=lambda x: -x["mv"]),
             "orders": [{"t": from_alpaca(o["symbol"]), "side": o["side"], "qty": o.get("qty"), "status": o.get("status", ""),
                         "filled_px": o.get("filled_avg_price"), "at": o.get("filled_at") or o.get("submitted_at") or "",

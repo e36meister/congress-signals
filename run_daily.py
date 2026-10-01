@@ -132,6 +132,10 @@ def main():
         except Exception as e:
             E.log(f"Adjustments: weekly check skipped ({e})")
     try:
+        E.check_sizing_once(scored, px, cfg)
+    except Exception as e:
+        E.log(f"Adjustments: sizing check skipped ({e})")
+    try:
         E.check_exit_rule_once(scored, px, cfg)
     except Exception as e:
         E.log(f"Adjustments: sell-when-member-sells check skipped ({e})")
