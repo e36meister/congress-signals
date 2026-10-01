@@ -204,6 +204,8 @@ HOUSE_ASSET = re.compile(r"(?:\(([A-Za-z0-9.\-/]{1,8})\)\s*)?\[([A-Z]{2})\]")
 
 
 PARSER_VERSION = 3
+# a House PTR row's own description ("D: ...") or comment ("C: ...") lines, written by the filer
+HOUSE_NOTE = re.compile(r"(?im)^\s*(?:D(?:ESCRIPTION)?|C(?:OMMENTS?)?)\s*:\s*(.+?)\s*$")
 
 
 def parse_house_ptr_text(text):
@@ -242,9 +244,11 @@ def parse_house_ptr_text(text):
         if a.group(2) == "OP":
             low = seg.lower()
             opt = "put" if re.search(r"\bputs?\b", low) else ("call" if re.search(r"\bcalls?\b", low) else "option")
+        notes = [m.group(1).strip() for m in HOUSE_NOTE.finditer(seg)]
         out.append({"ticker": a.group(1), "asset_type": a.group(2), "tx_raw": typ,
                     "trade_date": tdate, "notif_date": ndate, "amt_lo": lo, "amt_hi": hi,
-                    "owner": own.group(1) if own else "", "option": opt})
+                    "owner": own.group(1) if own else "", "option": opt,
+                    "note": " ".join(n for n in notes if n) or None})
         prev_end = max(a.end(), c.end())
     return out
 
@@ -374,7 +378,7 @@ def parse_senate_ptr_html(html):
         return None
 
     ci = {"date": col("transaction date"), "owner": col("owner"), "ticker": col("ticker"),
-          "atype": col("asset type"), "type": col("type"), "amount": col("amount")}
+          "atype": col("asset type"), "type": col("type"), "amount": col("amount"), "comment": col("comment")}
     # "type" also matches "asset type"; pick the exact 'type' column
     for i, h in enumerate(heads):
         if h == "type":
@@ -394,8 +398,10 @@ def parse_senate_ptr_html(html):
             row_txt = " ".join(tds).lower()
             opt = "put" if re.search(r"\bputs?\b", row_txt) else ("call" if re.search(r"\bcalls?\b", row_txt) else "option")
         lo, hi = parse_amount(g("amount"))
+        cm = (g("comment") or "").strip()
         out.append({"trade_date": g("date"), "owner": g("owner"), "ticker": g("ticker"),
-                    "tx_raw": g("type"), "amt_lo": lo, "amt_hi": hi, "option": opt})
+                    "tx_raw": g("type"), "amt_lo": lo, "amt_hi": hi, "option": opt,
+                    "note": None if cm in ("", "--", "-") else cm})
     return out
 
 
@@ -3141,6 +3147,101 @@ def _sig(v, n=5):
     return float(round(v, max(0, n - 1 - int(np.floor(np.log10(abs(v)))))))
 
 
+NOTE_SHARES = re.compile(r"([\d,]+(?:\.\d+)?)\s*(?:sh(?:ares?|s)?\b|shrs?\b)", re.I)
+NOTE_PRICE = re.compile(r"(?:@|\bat\b|price(?:\s+of)?|per\s+share\s+of)\s*:?\s*\$\s?([\d,]+(?:\.\d+)?)|\$\s?([\d,]+(?:\.\d+)?)\s*(?:per\s+share|/\s*sh(?:are)?|a\s+share|each)", re.I)
+
+
+def parse_note(note):
+    """Shares and price a filer wrote in a transaction's note, when they did ("Purchased 200 shares at $41.10")."""
+    if not note:
+        return None, None
+    sh = pr = None
+    m = NOTE_SHARES.search(note)
+    if m:
+        try:
+            sh = float(m.group(1).replace(",", ""))
+        except ValueError:
+            pass
+    m = NOTE_PRICE.search(note)
+    if m:
+        try:
+            pr = float((m.group(1) or m.group(2)).replace(",", ""))
+        except ValueError:
+            pass
+    return (sh if sh and sh > 0 else None), (pr if pr and pr > 0 else None)
+
+
+def trade_notes(cfg, trades, per_run=150):
+    """Notes the filer wrote on each transaction, read from the original report. Reports are fetched once and
+    cached (cache/trade_notes.json, by report), at most `per_run` new reports per run."""
+    cache, path = _cache_json(cfg, "trade_notes.json", {})
+    want = {}
+    for t in trades:
+        src, doc = t.get("source"), t.get("doc_id")
+        if src in ("house_clerk", "senate_efd") and isinstance(doc, str) and doc and doc not in cache:
+            want.setdefault(doc, t)
+    todo = list(want.items())[:per_run]
+    sess = None
+    if any(t["source"] == "senate_efd" for _, t in todo):
+        try:
+            sess = _senate_session()
+        except Exception as e:
+            log(f"Trade notes: Senate site unavailable ({e})")
+
+    def work(item):
+        doc, t = item
+        try:
+            if t["source"] == "house_clerk":
+                yr = pd.Timestamp(t["filed_date"]).year
+                text = _fetch_house_pdf(yr, doc) or (_fetch_house_pdf(yr - 1, doc) if pd.Timestamp(t["filed_date"]).month == 1 else None)
+                items = parse_house_ptr_text(text) if text else None
+            elif sess is not None:
+                r = sess.get(EFD + doc, timeout=60)
+                items = parse_senate_ptr_html(r.text) if r.status_code == 200 and "<table" in r.text else None
+            else:
+                items = None
+        except Exception:
+            items = None
+        return doc, items
+
+    n = 0
+    for doc, items in chunked_map(work, todo, min(4, cfg.get("WORKERS", 4)), cfg):
+        if items is None:
+            continue
+        cache[doc] = [{"t": it.get("ticker"), "td": str(pd.to_datetime(it.get("trade_date"), errors="coerce").date())
+                       if pd.notna(pd.to_datetime(it.get("trade_date"), errors="coerce")) else None,
+                       "ty": norm_type(it.get("tx_raw")), "note": it.get("note")} for it in items if it.get("note")]
+        n += 1
+    if n:
+        json.dump(cache, open(path, "w"))
+    left = len(want) - n
+    log(f"Trade notes: read {n} report(s)" + (f", {left} still to read" if left > 0 else ""))
+    out = {}
+    for t in trades:
+        doc = t.get("doc_id")
+        for it in cache.get(doc) or []:
+            if it["t"] == t.get("ticker") and it["td"] == t.get("td") and (it["ty"] == t.get("ty") or not it["ty"]):
+                out[(doc, t.get("ticker"), t.get("td"), t.get("ty"))] = it["note"]
+                break
+    return out
+
+
+def day_ranges(tickers, start):
+    """Each day's low and high (split/dividend adjusted, like the closes), for the chart tickers."""
+    try:
+        import yfinance as yf
+        d = yf.download(sorted(tickers), start=start, auto_adjust=True, progress=False, threads=True)
+        if d is None or d.empty:
+            return None, None
+        lo, hi = d["Low"], d["High"]
+        if isinstance(lo, pd.Series):
+            lo, hi = lo.to_frame(sorted(tickers)[0]), hi.to_frame(sorted(tickers)[0])
+        return lo, hi
+    except Exception as e:
+        log(f"Ticker charts: day ranges unavailable ({type(e).__name__})")
+        return None, None
+
+
 def export_ticker_charts(cfg, scored, px, tickers, years=5):
     """Price history plus every member trade for the dashboard's ticker popups: ticker_charts.json.
     Prices are daily closes adjusted for splits and dividends; a trade's price is that day's close."""
@@ -3152,12 +3253,28 @@ def export_ticker_charts(cfg, scored, px, tickers, years=5):
     for t in tickers:
         col = sub[t]
         out["px"][t] = [_sig(v) if pd.notna(v) else None for v in col.values]
-    cols = [c for c in ("ticker", "tx_type", "member", "bioguide", "trade_date", "filed_date", "amt_lo", "amt_hi", "owner")
-            if c in scored]
+    cols = [c for c in ("ticker", "tx_type", "member", "bioguide", "trade_date", "filed_date", "amt_lo", "amt_hi", "owner",
+                        "source", "doc_id") if c in scored]
     tr = scored.loc[scored["ticker"].isin(tickers) & scored["tx_type"].isin(["buy", "sell"]), cols]
     tr = tr[tr["trade_date"] >= sub.index[0] - pd.Timedelta(days=7)].drop_duplicates(
         ["ticker", "member", "tx_type", "trade_date", "amt_lo"])
     bios = set()
+    dlo, dhi = day_ranges([t for t in tickers if t in set(tr["ticker"])], (sub.index[0] - pd.Timedelta(days=10)).strftime("%Y-%m-%d")) \
+        if len(tr) else (None, None)
+    try:
+        keys = [{"source": r.get("source"), "doc_id": r.get("doc_id"), "ticker": r["ticker"], "filed_date": r["filed_date"],
+                 "td": pd.Timestamp(r["trade_date"]).strftime("%Y-%m-%d"), "ty": r["tx_type"]} for r in tr.to_dict("records")]
+        notes = trade_notes(cfg, keys)
+    except Exception as e:
+        log(f"Ticker charts: filing notes skipped ({type(e).__name__}: {e})")
+        notes = {}
+
+    def rng(frame, t, td):
+        try:
+            v = frame[t].asof(td) if frame is not None and t in frame.columns else np.nan
+            return _sig(float(v)) if pd.notna(v) else None
+        except Exception:
+            return None
     for r in tr.sort_values("trade_date").itertuples(index=False):
         r = r._asdict()
         t, td = r["ticker"], pd.Timestamp(r["trade_date"])
@@ -3171,7 +3288,12 @@ def export_ticker_charts(cfg, scored, px, tickers, years=5):
             "p": _sig(float(p)) if pd.notna(p) else None,
             "lo": float(lo) if lo is not None and pd.notna(lo) else None,
             "hi": float(hi) if hi is not None and pd.notna(hi) else None,
-            "own": str(r["owner"]) if isinstance(r.get("owner"), str) and r.get("owner") else None})
+            "own": str(r["owner"]) if isinstance(r.get("owner"), str) and r.get("owner") else None,
+            "dl": rng(dlo, t, td), "dh": rng(dhi, t, td)})
+        note = notes.get((r.get("doc_id"), t, td.strftime("%Y-%m-%d"), r["tx_type"]))
+        if note:
+            sh, pr = parse_note(note)
+            out["trades"][t][-1].update({"note": note[:300], "nsh": sh, "npx": pr})
     try:
         out["photos"] = member_photos(cfg, [b for b in bios if b])
     except Exception as e:
