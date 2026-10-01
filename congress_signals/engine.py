@@ -2205,12 +2205,13 @@ def _portfolio_slots(picks, px, idx, slots, idle="spy", sign=1, cost=0.0):
             continue
         a = idx.searchsorted(p.entry_date, side="right")
         b = idx.searchsorted(p.exit_date, side="right")
-        acc[a:b] += sign * np.nan_to_num(R[a:b, col[p.ticker]])
-        cnt[a:b] += 1
+        k = float(getattr(p, "size_mult", 1.0) or 1.0)   # bigger or smaller position by confidence (1 = standard)
+        acc[a:b] += k * sign * np.nan_to_num(R[a:b, col[p.ticker]])
+        cnt[a:b] += k
         if cost and b > a:
-            acc[a] -= cost
-            acc[b - 1] -= cost
-    over = cnt > slots                      # more open picks than slots: scale them down
+            acc[a] -= k * cost
+            acc[b - 1] -= k * cost
+    over = cnt > slots                      # more money wanted than there is: scale every pick down
     w = np.where(over, 1 / np.maximum(cnt, 1), 1 / slots)
     invested = np.minimum(cnt, slots) / slots
     fill = spy if idle == "spy" else 0.0
@@ -2248,6 +2249,7 @@ def _select(rows, score_col, pct, per_week, blocked=None, short=False, per_membe
         if wk != cur_wk:
             taken, by_member, cur_wk = 0, {}, wk
         bar = np.percentile(hist, pct) if len(hist) >= 100 else np.inf
+        prev = np.sort(hist)
         hist = np.concatenate([hist, g[score_col].values])
         if taken >= per_week or (start is not None and day < start):     # earlier rows only set the bar
             continue
@@ -2268,6 +2270,7 @@ def _select(rows, score_col, pct, per_week, blocked=None, short=False, per_membe
                 continue
             r = r.copy()
             r["bar"] = bar
+            r["prank"] = float(np.searchsorted(prev, r[score_col], side="left") / max(len(prev), 1) * 100)
             picks.append(r)
             held[t] = r["exit_date"]
             taken += 1
@@ -2408,6 +2411,19 @@ def _trade_stats(rows, sign):
             "Range high (%)": (y.mean() + 1.96 * y.std() / np.sqrt(len(y))) * 100 if len(c) > 1 else np.nan}
 
 
+# Position sizing by confidence: a pick's size grows with how far its score sits above the buy bar
+# (its percentile among all earlier buy scores). "equal" = every pick the same size.
+SIZING = {"equal": (1.0, 1.0), "moderate": (0.75, 1.25), "strong": (0.5, 1.5)}
+SIZING_LABEL = "Position size by confidence"
+
+
+def size_mult(percentile, cfg, scheme):
+    lo, hi = SIZING.get(scheme or "equal", (1.0, 1.0))
+    bar = float(cfg.get("PICK_PERCENTILE", 80))
+    z = np.clip((np.asarray(percentile, dtype=float) - bar) / max(100 - bar, 1e-9), 0, 1)
+    return np.where(np.isfinite(z), lo + (hi - lo) * z, 1.0)
+
+
 def run_backtest(scored, px, cfg, since=None):
     all_buys = scored[(scored["tx_type"] == "buy") & scored["entry_px"].notna()]
     all_sells = scored[(scored["tx_type"] == "sell") & scored["entry_px"].notna()]
@@ -2430,6 +2446,9 @@ def run_backtest(scored, px, cfg, since=None):
     slots_s = max(1, int(cfg["SHORTS_PER_WEEK"] * cfg["HOLD_DAYS"] / 5))
     empty = pd.Series(0.0, index=idx)
     cst = cfg.get("COST_BPS", 0) / 1e4
+    scheme = cfg.get("_sizing") or load_adaptive(cfg)["policy"].get("sizing", "equal")
+    if len(longs) and "prank" in longs and scheme != "equal":
+        longs = longs.assign(size_mult=size_mult(longs["prank"], cfg, scheme))
     ld, n_long = _portfolio_slots(longs, px, idx, slots_l, "spy", cost=cst) if len(longs) else (px["SPY"].pct_change(fill_method=None).reindex(idx), empty)
     sd, _ = _portfolio_slots(shorts, px, idx, slots_s, "cash", sign=-1, cost=cst) if len(shorts) else (empty, empty)
     a = cfg["SHORT_ALLOCATION"]
@@ -2768,6 +2787,7 @@ def build_watchlist(scored, px, cfg, enrich_top=20):
         buys = prices(buys.sort_values("score", ascending=False).reset_index(drop=True))
         buys["percentile"] = [pct(v, hist_b) for v in buys["score"]]
         buys["action"] = np.where(buys["percentile"] >= cfg["PICK_PERCENTILE"], "BUY", "watch")
+        buys["size_mult"] = size_mult(buys["percentile"], cfg, load_adaptive(cfg)["policy"].get("sizing", "equal"))
         if cfg.get("SKIP_LATE_FILINGS"):
             late = buys["lag_days"] > 45
             buys.loc[late & (buys["action"] == "BUY"), "action"] = "watch"
@@ -3616,7 +3636,7 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
                  "m": "members", "why": "why", "d": "filed_date", "move": "move_since_filing", "td": "trade_date", "mt": "move_since_trade", "an": "analysts",
                  "up": "target_upside_%", "earn": "next_earnings", "news": "news_7d", "sec": "sector",
                  "nwm": "news_with_member", "def": "is_defense", "cap": "market_cap", "dodm": "dod_awards_180d",
-                 "ppl": "people", "ags": "f_against_street", "sm": "f_small_cap", "lag": "lag_days", "nc": "f_no_coverage"}
+                 "ppl": "people", "px": "price_now", "sz": "size_mult", "ags": "f_against_street", "sm": "f_small_cap", "lag": "lag_days", "nc": "f_no_coverage"}
         data["watchlist"] = {
             "updated": now, "lookback": cfg["WATCHLIST_LOOKBACK_DAYS"],
             "buys": _rows(buys, dict(wcols, s="score")),
@@ -5817,6 +5837,55 @@ def check_trial_signals(scored, px, cfg, a, pol, rows, today):
             pol["signals_on"] = alt_sig
 
 
+def check_sizing(scored, px, cfg, a, pol, rows, today):
+    """Compare position sizing schemes (equal vs bigger positions for stronger picks); switch only when clearly better."""
+    base = dict(cfg, _nested=True)
+    sc = apply_hold_policy(scored, px, cfg, pol)
+    run = lambda k: run_backtest(sc, px, dict(base, _sizing=k))
+    vs = lambda b: float(b["perf"].loc["Per year vs S&P 500", "Long picks"])
+    names = {"equal": "Same size for every pick", "moderate": "0.75x-1.25x by score", "strong": "0.5x-1.5x by score"}
+    curk = pol.get("sizing", "equal")
+    cur = run(curk)
+    r_cur = _long_daily(cur)
+    rows[:] = [r for r in rows if r.get("Setting") != SIZING_LABEL]
+    rows.append({"Setting": SIZING_LABEL, "Option": names[curk] + " (current)", "Per year vs S&P": vs(cur),
+                 "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
+    best = None
+    for k in SIZING:
+        if k == curk:
+            continue
+        b = run(k)
+        c = _compare(_long_daily(b), r_cur)
+        rows.append({"Setting": SIZING_LABEL, "Option": names[k], "Per year vs S&P": vs(b),
+                     "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
+                     "Verdict": _verdict(c, True)})
+        if clearly_better(c) and (best is None or c["gain"] > best[1]["gain"]):
+            best = (k, c)
+    if best:
+        for r in rows:
+            if r["Setting"] == SIZING_LABEL and r["Option"] == names[best[0]]:
+                r["Verdict"] = "Switched automatically"
+        a["history"].append({"date": today, "change": SIZING_LABEL, "from": names[curk], "to": names[best[0]],
+                             "gain_per_year": best[1]["gain"], "sureness": best[1]["t"]})
+        log(f"Adjustments: {SIZING_LABEL} -> {names[best[0]]} (+{best[1]['gain']*100:.1f}%/yr in the backtest)")
+        pol["sizing"] = best[0]
+    else:
+        log(f"Adjustments: {SIZING_LABEL}: stays {names[curk]}")
+    a["sizing_checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def check_sizing_once(scored, px, cfg):
+    """First run after sizing was added: test it right away instead of waiting for the weekly check."""
+    a = load_adaptive(cfg)
+    if a.get("sizing_checked_at"):
+        return
+    pol = dict(a["policy"])
+    rows = list(a.get("evaluation") or [])
+    check_sizing(scored, px, cfg, a, pol, rows, dt.date.today().isoformat())
+    a["policy"], a["evaluation"] = pol, rows
+    save_adaptive(cfg, a)
+
+
 def check_exit_rule_once(scored, px, cfg):
     """First run after this rule was added: test it right away instead of waiting for the weekly check."""
     a = load_adaptive(cfg)
@@ -5838,7 +5907,8 @@ def load_adaptive(cfg):
     a["policy"].setdefault("hold_sleeve", 250)
     a["policy"].setdefault("sleeve_coverage", False)
     a["policy"].setdefault("exit_on_member_sell", False)
-    a["policy"].setdefault("signals_on", [])                # new signals the weekly check has switched on   # sell when a member who bought discloses a sale
+    a["policy"].setdefault("signals_on", [])
+    a["policy"].setdefault("sizing", "equal")               # position size by confidence                # new signals the weekly check has switched on   # sell when a member who bought discloses a sale
     a["policy"].setdefault("main_method", "hand")       # "learned": buy weights refit from all finished trades     # small-company portfolio skips companies no analyst covers
     a.setdefault("use_tuned", False)
     a.setdefault("history", [])
@@ -6019,6 +6089,10 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
         check_trial_signals(scored, px, cfg, a, pol, rows, today)
     except Exception as e:
         log(f"Adjustments: new-signal check skipped ({e})")
+    try:
+        check_sizing(scored, px, cfg, a, pol, rows, today)
+    except Exception as e:
+        log(f"Adjustments: sizing check skipped ({e})")
     a["policy"] = pol
 
     # proposals: measured the same way, never applied without the user's go-ahead
