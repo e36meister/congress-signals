@@ -713,6 +713,136 @@ def _stooq_close(t, start):
         return None
 
 
+def _yf_volume(tickers, start):
+    import yfinance as yf
+    logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+    try:
+        d = yf.download(tickers, start=start, auto_adjust=False, progress=False, threads=True)
+        if d is None or d.empty:
+            return pd.DataFrame()
+        v = d["Volume"] if isinstance(d.columns, pd.MultiIndex) else d[["Volume"]].rename(columns={"Volume": tickers[0]})
+        return v.dropna(how="all", axis=1)
+    except Exception as e:
+        log(f"Volume: Yahoo download failed ({type(e).__name__})")
+        return pd.DataFrame()
+
+
+def load_volume(cfg, tickers, priority=None):
+    """Daily share volume, kept in a saved table like prices: full history for new tickers (most-traded first, a
+    batch at a time while the run has time), just the last month for the rest."""
+    cache = _p(cfg, "cache", "volume.pkl")
+    vol = pd.read_pickle(cache) if os.path.exists(cache) else pd.DataFrame()
+    start = (pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=120)).strftime("%Y-%m-%d")
+    pri = priority or {}
+    tickers = sorted({t for t in tickers if isinstance(t, str)}, key=lambda t: (-pri.get(t, 0), t))
+    tried, tpath = _cache_json(cfg, "volume_tried.json", {})
+    missing = [t for t in tickers if t not in vol.columns and _days_since(tried.get(t, "2000-01-01")) >= 7]
+    frames = []
+    for i in range(0, len(missing), 50):
+        if out_of_time(cfg, 70):
+            break
+        batch = missing[i:i + 50]
+        frames.append(_yf_volume(batch, start))
+        for t in batch:
+            tried[t] = dt.date.today().isoformat()
+        time.sleep(2)
+    have = [t for t in vol.columns if t in set(tickers)]
+    if have and len(vol) and (pd.Timestamp.today().normalize() - vol.index.max()).days >= 1 and not out_of_time(cfg, 70):
+        recent = (pd.Timestamp.today() - pd.Timedelta(days=35)).strftime("%Y-%m-%d")
+        for i in range(0, len(have), 100):
+            if out_of_time(cfg, 70):
+                break
+            frames.append(_yf_volume(have[i:i + 100], recent))
+            time.sleep(1)
+    for f in frames:
+        if f is None or not len(f):
+            continue
+        f = f.copy()
+        f.index = pd.to_datetime(f.index).tz_localize(None) if getattr(f.index, "tz", None) else pd.to_datetime(f.index)
+        vol = f if not len(vol) else f.combine_first(vol)      # newer download wins where both have a value
+    if len(vol):
+        vol = vol.sort_index()
+        vol.to_pickle(cache)
+    json.dump(tried, open(tpath, "w"))
+    left = len([t for t in tickers if t not in vol.columns])
+    log(f"Volume: {len(vol.columns):,} stocks on file" + (f", {left:,} still to download" if left else ""))
+    return vol
+
+
+VOL_WINDOW, VOL_BASE = 10, 60      # look at the 2 weeks before a trade, against the prior 3 months
+
+
+def volume_ratio_table(vol):
+    """For every stock and day: the highest daily volume of the previous VOL_WINDOW trading days divided by the
+    typical (median) daily volume of the VOL_BASE trading days before that window."""
+    v = vol.where(vol > 0)
+    peak = v.shift(1).rolling(VOL_WINDOW, min_periods=VOL_WINDOW // 2).max()
+    base = v.shift(VOL_WINDOW + 1).rolling(VOL_BASE, min_periods=VOL_BASE * 2 // 3).median()
+    return peak / base
+
+
+def volume_features(tx, data):
+    """Unusual trading volume in the stock in the two weeks before the member's trade: someone may have been
+    trading on the same information. 0 at 2x normal or less, 1 at 5x or more."""
+    tx["f_unusual_volume"], tx["volume_ratio"], tx["volume_note"] = 0.0, np.nan, ""
+    vol = data.get("volume")
+    if vol is None or not len(vol):
+        return tx
+    ratio = volume_ratio_table(vol)
+    idx = ratio.index
+    pos = np.searchsorted(idx.values, pd.to_datetime(tx["trade_date"]).values, side="right")   # ratio as of the trade day
+    col = {c: i for i, c in enumerate(ratio.columns)}
+    R = ratio.values
+    rr = np.full(len(tx), np.nan)
+    for i, (t, p_) in enumerate(zip(tx["ticker"], pos)):
+        j = col.get(t)
+        if j is not None and 0 < p_ <= len(idx):
+            rr[i] = R[min(p_, len(idx)) - 1, j]
+    f = np.clip((rr - 2) / 3, 0, 1)
+    f = np.where(np.isfinite(f), f, 0.0)
+    tx["f_unusual_volume"], tx["volume_ratio"] = f, rr
+    tx["volume_note"] = [f"trading volume hit {x:.1f}x normal in the 2 weeks before the trade" if np.isfinite(x) and x >= 3 else ""
+                         for x in rr]
+    return tx
+
+
+def unusual_activity(scored, px, cfg, days=90, min_ratio=2.5):
+    """Stocks members traded in the last `days` days whose trading volume over the last week is unusually high."""
+    path = _p(cfg, "cache", "volume.pkl")
+    if not os.path.exists(path):
+        return []
+    vol = pd.read_pickle(path)
+    if len(vol) < 80:
+        return []
+    since = pd.Timestamp.today().normalize() - pd.Timedelta(days=days)
+    rec = scored[(scored["trade_date"] >= since) & scored["ticker"].isin(vol.columns)]
+    out = []
+    for t, g in rec.groupby("ticker"):
+        v = vol[t].dropna()
+        v = v[v > 0]
+        if len(v) < 70:
+            continue
+        last5, base = v.iloc[-5:].mean(), v.iloc[-70:-5].median()
+        if not base or not np.isfinite(base):
+            continue
+        r = float(last5 / base)
+        peak = float(v.iloc[-5:].max() / base)
+        if r < min_ratio and peak < min_ratio * 1.6:
+            continue
+        p = px[t].dropna() if t in px.columns else pd.Series(dtype=float)
+        mv = float(p.iloc[-1] / p.iloc[-6] - 1) if len(p) > 6 else None
+        who = []
+        for m, ty, td, b in g.sort_values("trade_date", ascending=False)[["member", "tx_type", "trade_date", "bioguide"]].itertuples(index=False):
+            if all(w["n"] != m or w["ty"] != ty for w in who):
+                who.append({"n": str(m), "ty": ty, "td": pd.Timestamp(td).strftime("%Y-%m-%d"), "b": b if isinstance(b, str) else None})
+        out.append({"t": t, "ratio": round(r, 2), "peak": round(peak, 2), "move5": round(mv, 4) if mv is not None else None,
+                    "asof": v.index[-1].strftime("%Y-%m-%d"), "who": who[:6],
+                    "co": str(g["company"].dropna().iloc[0]) if "company" in g and g["company"].notna().any() else None})
+    out.sort(key=lambda x: -max(x["ratio"], x["peak"] / 1.6))
+    log(f"Unusual activity: {len(out)} recently traded stock(s) with unusual volume")
+    return out[:40]
+
+
 def load_prices(cfg, tickers, max_age_hours=12, priority=None):
     """Keeps a saved price table; downloads full history only for new tickers and just the last
     couple of weeks for everything else."""
@@ -1231,7 +1361,7 @@ def collect_lobbying(cfg, meta, tickers):
         tickers = tickers[:150]
     max_pages = 20 if key else 4
     start_year = pd.Timestamp(cfg["START_DATE"]).year - 1
-    todo = [t for t in tickers if (not _fresh(cache.get(t, {}).get("fetched", ""), 14) or cache.get(t, {}).get("v") != 2)
+    todo = [t for t in tickers if (not _fresh(cache.get(t, {}).get("fetched", ""), 14) or cache.get(t, {}).get("v") != 3)
             and company_key((meta.get(t) or {}).get("name"))]
     if todo:
         log(f"Lobbying: checking {len(todo)} companies" + ("" if key else " (add LDA_API_KEY for more and faster)"))
@@ -1271,22 +1401,27 @@ def collect_lobbying(cfg, meta, tickers):
                     amt = f.get("income") or f.get("expenses") or 0
                     cov = " | ".join(sorted({(l.get("covered_position") or "").strip() for a in acts
                                              for l in (a.get("lobbyists") or []) if (l.get("covered_position") or "").strip()}))
+                    who = sorted({" ".join(x for x in ((l.get("lobbyist") or {}).get("first_name"),
+                                                           (l.get("lobbyist") or {}).get("last_name")) if x)
+                                  for a in acts for l in (a.get("lobbyists") or [])} - {""})
                     rows.append([f.get("dt_posted"), float(amt or 0),
-                                 sorted({a.get("general_issue_code") for a in acts if a.get("general_issue_code")}), cov[:2000]])
+                                 sorted({a.get("general_issue_code") for a in acts if a.get("general_issue_code")}), cov[:2000],
+                                 who[:60]])
                 url, params, pages = js.get("next"), None, pages + 1
                 if not key:
                     time.sleep(4)
             if ok:
                 break
         if ok:
-            cache[t] = {"fetched": dt.datetime.now().isoformat(), "rows": rows, "v": 2}
+            cache[t] = {"fetched": dt.datetime.now().isoformat(), "rows": rows, "v": 3}
         if i % 50 == 0:
             json.dump(cache, open(path, "w"))
             log(f"Lobbying: {i}/{len(todo)}")
     json.dump(cache, open(path, "w"))
-    out = [{"ticker": t, "posted": r[0], "amount": r[1], "issues": r[2], "covered": r[3] if len(r) > 3 else ""}
+    out = [{"ticker": t, "posted": r[0], "amount": r[1], "issues": r[2], "covered": r[3] if len(r) > 3 else "",
+            "lobbyists": r[4] if len(r) > 4 else []}
            for t, v in cache.items() for r in v.get("rows", [])]
-    lb = pd.DataFrame(out, columns=["ticker", "posted", "amount", "issues", "covered"])
+    lb = pd.DataFrame(out, columns=["ticker", "posted", "amount", "issues", "covered", "lobbyists"])
     lb["posted"] = pd.to_datetime(lb["posted"], errors="coerce", utc=True).dt.tz_localize(None)
     log(f"Lobbying: {lb['ticker'].nunique()} companies with lobbying filings")
     return lb
@@ -1870,6 +2005,7 @@ def compute_features(tx, px, data, cfg):
         tx["f_bills"], tx["bill_note"] = f, note
     tx = compute_connections(tx, data, cfg, mems)
     tx = relationship_features(tx, data, cfg, mems)
+    tx = volume_features(tx, data)
     tx = analyst_features(tx, data)
     tx = extra_features(tx, px, data, cfg, mems)
     return tx
@@ -1882,8 +2018,16 @@ def _score(tx, weights):
     return ((raw - lo) / max(hi - lo, 1e-9) * 100).clip(0, 100).round(1)
 
 
-def active_weights(cfg):
+# New signals start switched off; the weekly check turns one on (with this weight) only when it's clearly better.
+TRIAL_SIGNALS = {"relative_tie": 0.5, "unusual_volume": 0.4}
+TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
+                "unusual_volume": "Signal: unusual trading volume before the trade"}
+
+
+def active_weights(cfg, signals_on=None):
     bw, sw = cfg["BUY_WEIGHTS"], cfg["SHORT_WEIGHTS"]
+    on = load_adaptive(cfg)["policy"].get("signals_on", []) if signals_on is None else signals_on
+    bw = {**{k: 0.0 for k in TRIAL_SIGNALS}, **bw, **{k: TRIAL_SIGNALS[k] for k in on if k in TRIAL_SIGNALS}}
     path = os.path.join(cfg["DATA_DIR"], "state", "tuned_weights.json")
     use = cfg.get("USE_TUNED_WEIGHTS")
     if use == "auto":
@@ -1968,7 +2112,7 @@ def _why_buy(r):
                    ("f_crowded", lambda: "but the stock already jumped on disclosure day")):
         if r.get(f, 0) and r.get(f, 0) >= 0.5:
             b.append(txt())
-    for k in ("street_note", "spouse_note", "buddy_note", "bill_adv_note"):
+    for k in ("street_note", "spouse_note", "relative_note", "volume_note", "buddy_note", "bill_adv_note"):
         if r.get(k):
             b.append(r[k])
     if r["f_size"] >= 0.4:
@@ -2221,6 +2365,7 @@ BUY_FACTORS = [("f_track_record", "Member track record"), ("f_cluster", "Cluster
                ("f_buddy", "Trading partner also bought"), ("f_leader", "Member usually trades first"),
                ("f_bill_advanced", "Their bill advanced after the trade"), ("f_sector_bill_momentum", "Industry bill just passed"),
                ("f_spouse_insider", "Spouse is a company insider (SEC)"),
+               ("f_relative_tie", "Relative is a company insider (SEC)"), ("f_unusual_volume", "Unusual trading volume before the trade"),
                ("f_against_street", "Bought against Wall Street"), ("f_after_downgrade", "Bought after a downgrade"),
                ("f_no_coverage", "No analyst coverage"),
                ("f_testified", "Company testified to their committee"), ("f_closed_briefing", "Closed briefing before trade"),
@@ -2359,6 +2504,7 @@ def run_backtest(scored, px, cfg, since=None):
                     ("f_outside_position", "Position at the company"), ("f_buddy", "Trading partner also bought"),
                     ("f_bill_advanced", "Bill advanced after the trade"),
                     ("f_spouse_insider", "Spouse is a company insider"),
+                    ("f_relative_tie", "Relative is a company insider"), ("f_unusual_volume", "Unusual volume before the trade"),
                     ("f_against_street", "Bought against Wall Street"), ("f_after_downgrade", "Bought after a downgrade"),
                     ("f_no_coverage", "No analyst coverage")) if f in scored}}
     extras = {}
@@ -3000,6 +3146,11 @@ def prepare(cfg):
     data = {"meta": meta, "committees": committees, "committee_history": history, "religion": load_religion(cfg)}
     enrich = _enrich_tickers(tx, cfg)
     step = lambda flag: cfg.get(flag, True) and not out_of_time(cfg)
+    if step("USE_VOLUME"):
+        try:
+            data["volume"] = load_volume(cfg, list(tx["ticker"].unique()), priority=tx["ticker"].value_counts().to_dict())
+        except Exception as e:
+            log(f"Volume: skipped ({type(e).__name__}: {e})")
     if step("USE_INSIDERS"):
         ins = collect_insiders(cfg)
         if renames and len(ins):
@@ -3070,6 +3221,20 @@ def prepare(cfg):
             log(f"Spouse insiders: {len(data['spouse_ties'])} possible spouse-company ties")
         except Exception as e:
             log(f"Spouse insiders: skipped ({e})")
+        try:      # public-figure relatives: SEC insider roles and lobbyist registrations
+            rel = {b: v for b, v in collect_relatives(cfg).items() if b in bios}
+            names = {b: [x[0] for x in v] for b, v in rel.items()}
+            rt = spouse_ties(names, collect_spouse_insiders(cfg, names, prefix="relative"), members)
+            if len(rt):
+                kind = {(b, n): k for b, v in rel.items() for n, k in v}
+                rt = rt.rename(columns={"spouse": "relative"})
+                rt["relation"] = [kind.get((b, n), "relative") for b, n in zip(rt["bioguide"], rt["relative"])]
+                rt["source"] = "SEC insider filings"
+            lt = relative_lobbyist_ties(rel, data.get("lobbying"), members)
+            data["relative_ties"] = pd.concat([x for x in (rt, lt) if len(x)], ignore_index=True) if (len(rt) or len(lt)) else pd.DataFrame()
+            log(f"Relatives: {len(data['relative_ties'])} possible relative-company ties")
+        except Exception as e:
+            log(f"Relatives: skipped ({e})")
     if step("USE_ASSISTANCE"):
         data["assistance"] = collect_assistance(cfg, meta, list(dict.fromkeys(
             [t for t in tx["ticker"].unique() if is_defense(t, meta)] + enrich)))
@@ -3086,6 +3251,15 @@ def prepare(cfg):
                              "Role": r["role"], "Since": str(pd.Timestamp(r["first_filed"]).date()),
                              "Confidence": r["confidence"], "Source": "SEC insider filings",
                              "link": f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={r['owner_cik']}&type=4&owner=include&count=40"})
+        rt_ = data.get("relative_ties")
+        if rt_ is not None and len(rt_):
+            for r in rt_.sort_values("first_filed").drop_duplicates(["bioguide", "ticker", "relative"]).to_dict("records"):
+                ties.append({"Member": r["member"], "Spouse": f"{r['relative']} ({r['relation']})",
+                             "Company": f"{r['issuer']} ({r['ticker']})", "Role": r["role"],
+                             "Since": str(pd.Timestamp(r["first_filed"]).date()) if pd.notna(r["first_filed"]) else "",
+                             "Confidence": r["confidence"], "Source": r.get("source") or "SEC insider filings",
+                             "link": f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={r['owner_cik']}&type=4&owner=include&count=40"
+                             if r.get("owner_cik") else ""})
         dj = feats[feats.get("f_spouse_employer", 0) > 0] if "f_spouse_employer" in feats else feats.iloc[0:0]
         for r in dj.drop_duplicates(["member", "ticker"]).to_dict("records"):
             ties.append({"Member": r["member"], "Spouse": "", "Company": f"{(data['meta'].get(r['ticker']) or {}).get('name') or r['ticker']} ({r['ticker']})",
@@ -3561,12 +3735,18 @@ def load_sec_companies(cfg, tickers):
 # ----------------------------------------------------------------------------
 # 2, 3, 4. Yearly financial disclosures: holdings, family jobs, positions, paid travel, gifts
 # ----------------------------------------------------------------------------
+FD_MAX_PAGES = 80
+
+
 def collect_annual_disclosures(cfg, traders=None):
     """Returns DataFrame: chamber, last_key, first, filed, holdings (set of tickers), text (compressed)."""
     cache = _p(cfg, "cache", "annual_fd.pkl")
     df = pd.read_pickle(cache) if os.path.exists(cache) else pd.DataFrame(
         columns=["chamber", "last_key", "first", "state", "filed", "doc", "holdings", "text"])
-    done = set(df["doc"]) if len(df) else set()
+    if "v" not in df.columns:
+        df["v"] = 1
+    # version 2 reads up to FD_MAX_PAGES pages (version 1 stopped at 20, cutting off long reports)
+    done = set(df.loc[(df["chamber"] != "House") | (df["v"].fillna(1) >= 2), "doc"]) if len(df) else set()
     start = pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=500)
     rows = []
 
@@ -3599,7 +3779,7 @@ def collect_annual_disclosures(cfg, traders=None):
                     if resp.status_code != 200:
                         return r, None
                     with pdfplumber.open(io.BytesIO(resp.content)) as pdf:
-                        return r, "\n".join((pg.extract_text() or "") for pg in pdf.pages[:20])
+                        return r, "\n".join((pg.extract_text() or "") for pg in pdf.pages[:FD_MAX_PAGES])
                 except Exception:
                     return r, None
 
@@ -3617,7 +3797,7 @@ def collect_annual_disclosures(cfg, traders=None):
                     rows.append({"chamber": "House", "last_key": name_key(r.get("Last") or "").split(" ")[-1],
                                  "first": str(r.get("First") or ""), "state": str(r.get("StateDst") or "")[:2],
                                  "filed": pd.to_datetime(r.get("FilingDate"), errors="coerce"),
-                                 "doc": str(r["DocID"]), "holdings": {h for h in hold if h}, "text": _z(ties)})
+                                 "doc": str(r["DocID"]), "holdings": {h for h in hold if h}, "text": _z(ties), "v": 2})
             if out_of_time(cfg):
                 break
 
@@ -3666,14 +3846,17 @@ def collect_annual_disclosures(cfg, traders=None):
                 done.add(rep["link"])
                 rows.append({"chamber": "Senate", "last_key": name_key(rep["last"]).split(" ")[-1], "first": rep["first"],
                              "state": None, "filed": pd.to_datetime(rep["filed"], errors="coerce"), "doc": rep["link"],
-                             "holdings": hold, "text": _z("\n".join(ties))})
+                             "holdings": hold, "text": _z("\n".join(ties)), "v": 2})
                 time.sleep(0.4)
         except Exception as e:
             log(f"Yearly disclosures: Senate skipped ({e})")
     if rows:
         df = pd.concat([df, pd.DataFrame(rows)], ignore_index=True)
+    if len(df):          # a re-read report replaces its older, shorter copy
+        df = df.sort_values("v", kind="stable").drop_duplicates("doc", keep="last").reset_index(drop=True)
         df.to_pickle(cache)
-    log(f"Yearly disclosures: {len(df):,} reports on file")
+    left = 0 if not len(df) else int(((df["chamber"] == "House") & (df["v"].fillna(1) < 2)).sum())
+    log(f"Yearly disclosures: {len(df):,} reports on file" + (f"; {left:,} long House reports still to re-read in full" if left else ""))
     return df
 
 
@@ -5103,6 +5286,21 @@ def relationship_features(tx, data, cfg, mems):
             if h and h[0] <= f:
                 fs[i], nt[i] = 1.0, f"spouse {h[1]} is a company insider ({h[2].lower()}) per SEC filings"
         tx["f_spouse_insider"], tx["spouse_note"] = fs, nt
+    tx["f_relative_tie"], tx["relative_note"] = 0.0, ""
+    rt_ = data.get("relative_ties")
+    if rt_ is not None and len(rt_):
+        ok = rt_[rt_["confidence"] == "Confirmed by state"].dropna(subset=["first_filed"])
+        tie = {}
+        for b, t, f0, nm, rel, role in zip(ok["bioguide"], ok["ticker"], ok["first_filed"], ok["relative"],
+                                           ok["relation"], ok["role"]):
+            if (b, t) not in tie or f0 < tie[(b, t)][0]:
+                tie[(b, t)] = (f0, nm, rel, role)
+        fr, nr = np.zeros(n), [""] * n
+        for i, (m, t, f) in enumerate(zip(mems, tx["ticker"], fdt)):
+            h = tie.get(((m or {}).get("bioguide"), t))
+            if h and h[0] <= f:
+                fr[i], nr[i] = 1.0, f"{h[2]} {h[1]} is a company insider ({str(h[3]).lower()}) per SEC filings"
+        tx["f_relative_tie"], tx["relative_note"] = fr, nr
     for c in ("f_grants", "f_grant_after_trade", "f_campaign_vendor", "f_spouse_employer", "f_paid_travel",
               "f_outside_position", "f_buddy", "f_leader", "f_bill_advanced", "f_sector_bill_momentum"):
         tx[c] = 0.0
@@ -5306,19 +5504,89 @@ def collect_spouses(cfg):
     return cache.get("rows", {})
 
 
+# Relatives with their own Wikidata entry (Wikidata lists notable people): children, siblings, parents and other
+# relatives such as in-laws. Only public figures are covered; private family members are not looked up.
+WIKIDATA_RELATIVES = """SELECT ?bioguide ?relLabel ?kind ?kinLabel WHERE {
+  ?p wdt:P1157 ?bioguide .
+  { ?p wdt:P40 ?rel . BIND("child" AS ?kind) } UNION { ?rel wdt:P22 ?p . BIND("child" AS ?kind) } UNION
+  { ?rel wdt:P25 ?p . BIND("child" AS ?kind) } UNION { ?p wdt:P3373 ?rel . BIND("sibling" AS ?kind) } UNION
+  { ?rel wdt:P3373 ?p . BIND("sibling" AS ?kind) } UNION { ?p wdt:P22 ?rel . BIND("parent" AS ?kind) } UNION
+  { ?p wdt:P25 ?rel . BIND("parent" AS ?kind) } UNION
+  { ?p p:P1038 ?st . ?st ps:P1038 ?rel . OPTIONAL { ?st pq:P1039 ?kin } BIND("relative" AS ?kind) }
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "en". } }"""
+
+
+def collect_relatives(cfg):
+    """Public-figure relatives of members, from Wikidata: bioguide ID -> [[name, relation], ...]."""
+    cache, path = _cache_json(cfg, "relatives.json", {})
+    if cache.get("rows") and _fresh(cache.get("fetched", ""), 30):
+        return cache["rows"]
+    try:
+        r = requests.get("https://query.wikidata.org/sparql", params={"query": WIKIDATA_RELATIVES, "format": "json"},
+                         headers={"User-Agent": "congress-signals research tool (github.com/e36meister/congress-signals)",
+                                  "Accept": "application/sparql-results+json"}, timeout=180)
+        r.raise_for_status()
+        rows = {}
+        for b in r.json()["results"]["bindings"]:
+            bio, nm, kind = b["bioguide"]["value"], b["relLabel"]["value"], b["kind"]["value"]
+            kin = (b.get("kinLabel") or {}).get("value")
+            if re.fullmatch(r"Q\d+", nm):
+                continue
+            rel = kin if kind == "relative" and kin and not re.fullmatch(r"Q\d+", kin) else kind
+            lst = rows.setdefault(bio, [])
+            if all(x[0] != nm for x in lst):
+                lst.append([nm, rel])
+        cache = {"fetched": dt.datetime.now().isoformat(), "rows": rows}
+        json.dump(cache, open(path, "w"))
+        log(f"Relatives: {sum(len(v) for v in rows.values()):,} public-figure relatives of {len(rows):,} members (Wikidata)")
+    except Exception as e:
+        log(f"Relatives: Wikidata lookup failed ({e})")
+    return cache.get("rows", {})
+
+
+def relative_lobbyist_ties(relatives, lobbyists, members):
+    """Relatives whose name matches a lobbyist on a company's lobbying filings. A name match alone isn't proof,
+    so these are always shown as 'Needs review' and never scored."""
+    rows = []
+    if lobbyists is None or not len(lobbyists):
+        return pd.DataFrame(rows)
+    by_name = {}
+    for t, d, names in zip(lobbyists["ticker"], lobbyists["posted"], lobbyists["lobbyists"]):
+        for nm in names or []:
+            p = name_key(nm).split()
+            if len(p) >= 2:
+                by_name.setdefault((p[0], p[-1]), []).append((t, d))
+    for bio, rels in relatives.items():
+        m = members.get(bio)
+        if not m:
+            continue
+        for nm, rel in rels:
+            p = name_key(nm).split()
+            if len(p) < 2:
+                continue
+            hits = by_name.get((p[0], p[-1]), [])
+            for t in sorted({h[0] for h in hits}):
+                f0 = min((h[1] for h in hits if h[0] == t and pd.notna(h[1])), default=pd.NaT)
+                rows.append({"bioguide": bio, "member": m.get("name"), "relative": nm, "relation": rel, "ticker": t,
+                             "issuer": t, "role": "Registered lobbyist for the company", "first_filed": f0,
+                             "owner_cik": "", "confidence": "Needs review", "source": "Lobbying disclosures"})
+    return pd.DataFrame(rows)
+
+
 def _sec_owner_parts(name):
     """SEC filer names are written 'LAST FIRST MIDDLE'."""
     p = name_key(name or "").split()
     return (p[0], p[1]) if len(p) >= 2 else (None, None)
 
 
-def collect_spouse_insiders(cfg, spouses):
-    """Every SEC insider filing (Forms 3/4/5) by someone whose first and last name match a member's spouse."""
+def collect_spouse_insiders(cfg, spouses, prefix="spouse"):
+    """Every SEC insider filing (Forms 3/4/5) by someone whose first and last name match one of the given names
+    (members' spouses, or with prefix="relative", their public-figure relatives)."""
     hdr = _sec_headers(cfg)
-    cache = _p(cfg, "cache", "spouse_insiders.pkl")
+    cache = _p(cfg, "cache", f"{prefix}_insiders.pkl")
     cols = ["owner_cik", "owner_name", "last", "first", "state", "role", "ticker", "issuer", "filed"]
     df = pd.read_pickle(cache) if os.path.exists(cache) else pd.DataFrame(columns=cols)
-    done, dpath = _cache_json(cfg, "spouse_insider_quarters.json", [])
+    done, dpath = _cache_json(cfg, f"{prefix}_insider_quarters.json", [])
     want = {}
     for names in spouses.values():
         for nm in names:
@@ -5366,8 +5634,8 @@ def collect_spouse_insiders(cfg, spouses):
                 json.dump(done, open(dpath, "w"))
                 time.sleep(0.2)
             except Exception as e:
-                log(f"Spouse insiders: {key} failed ({e})")
-    log(f"Spouse insiders: {len(df):,} SEC filings by people named like a member's spouse")
+                log(f"{prefix.title()} insiders: {key} failed ({e})")
+    log(f"{prefix.title()} insiders: {len(df):,} SEC filings by people named like a member's {prefix}")
     return df
 
 
@@ -5516,6 +5784,39 @@ def check_exit_rule(scored, px, cfg, a, pol, rows, today):
     return c
 
 
+def check_trial_signals(scored, px, cfg, a, pol, rows, today):
+    """Test each new signal on and off (rescoring every trade); switch only when clearly better."""
+    base = dict(cfg, _nested=True)
+    vs = lambda b: float(b["perf"].loc["Per year vs S&P 500", "Long picks"])
+    for k in TRIAL_SIGNALS:
+        label = TRIAL_LABELS[k]
+        rows[:] = [r for r in rows if r.get("Setting") != label]
+        on = k in pol.get("signals_on", [])
+        n = int((scored.get(f"f_{k}", pd.Series(0, index=scored.index)) > 0).sum())
+        if n < 30:
+            rows.append({"Setting": label, "Option": ("On" if on else "Off") + " (current)", "Per year vs S&P": None,
+                         "Gain vs current": None, "Sureness": None, "Verdict": f"Not enough data yet ({n} trades)"})
+            continue
+
+        def run(sig):
+            bw, sw = active_weights(cfg, signals_on=sig)
+            return run_backtest(apply_hold_policy(apply_scores(scored, cfg, buy_w=bw, short_w=sw), px, cfg, pol), px, base)
+        cur_sig = list(pol.get("signals_on", []))
+        alt_sig = [x for x in cur_sig if x != k] if on else cur_sig + [k]
+        cur, alt = run(cur_sig), run(alt_sig)
+        c = _compare(_long_daily(alt), _long_daily(cur))
+        rows.append({"Setting": label, "Option": ("On" if on else "Off") + " (current)", "Per year vs S&P": vs(cur),
+                     "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
+        rows.append({"Setting": label, "Option": "Off" if on else "On", "Per year vs S&P": vs(alt),
+                     "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
+                     "Verdict": "Switched automatically" if clearly_better(c) else _verdict(c, True)})
+        if clearly_better(c):
+            a["history"].append({"date": today, "change": label, "from": "on" if on else "off", "to": "off" if on else "on",
+                                 "gain_per_year": c["gain"], "sureness": c["t"]})
+            log(f"Adjustments: {label} -> {'off' if on else 'on'} (+{c['gain']*100:.1f}%/yr in the backtest)")
+            pol["signals_on"] = alt_sig
+
+
 def check_exit_rule_once(scored, px, cfg):
     """First run after this rule was added: test it right away instead of waiting for the weekly check."""
     a = load_adaptive(cfg)
@@ -5536,7 +5837,8 @@ def load_adaptive(cfg):
     a.setdefault("policy", {"hold_small": int(cfg["HOLD_DAYS"]), "hold_other": int(cfg["HOLD_DAYS"])})
     a["policy"].setdefault("hold_sleeve", 250)
     a["policy"].setdefault("sleeve_coverage", False)
-    a["policy"].setdefault("exit_on_member_sell", False)   # sell when a member who bought discloses a sale
+    a["policy"].setdefault("exit_on_member_sell", False)
+    a["policy"].setdefault("signals_on", [])                # new signals the weekly check has switched on   # sell when a member who bought discloses a sale
     a["policy"].setdefault("main_method", "hand")       # "learned": buy weights refit from all finished trades     # small-company portfolio skips companies no analyst covers
     a.setdefault("use_tuned", False)
     a.setdefault("history", [])
@@ -5713,6 +6015,10 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
         check_exit_rule(scored, px, cfg, a, pol, rows, today)
     except Exception as e:
         log(f"Adjustments: sell-when-member-sells check skipped ({e})")
+    try:
+        check_trial_signals(scored, px, cfg, a, pol, rows, today)
+    except Exception as e:
+        log(f"Adjustments: new-signal check skipped ({e})")
     a["policy"] = pol
 
     # proposals: measured the same way, never applied without the user's go-ahead

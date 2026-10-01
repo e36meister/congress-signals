@@ -143,6 +143,13 @@ def main():
         E.log(f"Analyst archive: skipped ({e})")
     E.watchlist_report(buys, sells, new, cfg)
     E.export_dashboard(cfg, buys=buys, sells=sells, new=new)
+    try:     # recently traded stocks with unusual trading volume (Today tab)
+        path = os.path.join(cfg["DATA_DIR"], "dashboard_data.json")
+        d = json.load(open(path))
+        d["unusual"] = E.unusual_activity(scored, px, cfg)
+        json.dump(d, open(path, "w"), default=str)
+    except Exception as e:
+        E.log(f"Unusual activity: skipped ({type(e).__name__}: {e})")
     send_alerts(buys, sells, new)
     try:
         last = px.ffill().iloc[-1].to_dict() if px is not None and len(px) else {}
