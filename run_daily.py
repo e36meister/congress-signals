@@ -105,6 +105,12 @@ def main():
     except RuntimeError as e:
         E.log(f"Stopped early: {e}")
         return
+    try:     # foreign vs US purchases (country lookups fill in over a few runs)
+        cs = E.load_countries(cfg, list(scored["ticker"].unique()), priority=scored["ticker"].value_counts().to_dict())
+        fr = E.foreign_report(scored, cs, cfg)
+    except Exception as e:
+        fr = None
+        E.log(f"Foreign companies: report skipped ({type(e).__name__}: {e})")
     bt = E.run_backtest(scored, px, cfg)
     E.backtest_report(bt, cfg)
     E.export_dashboard(cfg, bt=bt)
@@ -151,6 +157,8 @@ def main():
         path = os.path.join(cfg["DATA_DIR"], "dashboard_data.json")
         d = json.load(open(path))
         d["unusual"] = E.unusual_activity(scored, px, cfg)
+        if fr is not None:
+            d["foreign"] = fr
         json.dump(d, open(path, "w"), default=str)
     except Exception as e:
         E.log(f"Unusual activity: skipped ({type(e).__name__}: {e})")

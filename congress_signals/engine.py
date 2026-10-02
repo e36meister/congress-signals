@@ -986,6 +986,86 @@ def load_meta(cfg, tickers):
     return meta
 
 
+def load_countries(cfg, tickers, priority=None, per_run=1500):
+    """Country of each company (Yahoo's company profile), cached in cache/ticker_country.json and filled in a
+    batch per run, most-traded first. Funds have no country."""
+    import yfinance as yf
+    cache, path = _cache_json(cfg, "ticker_country.json", {})
+    pri = priority or {}
+    todo = sorted({t for t in tickers if isinstance(t, str) and t not in cache}, key=lambda t: (-pri.get(t, 0), t))[:per_run]
+
+    def get(t):
+        try:
+            i = yf.Ticker(t).info or {}
+            return t, {"c": i.get("country"), "type": i.get("quoteType")}
+        except Exception:
+            return t, None
+    n = 0
+    for t, v in chunked_map(get, todo, min(4, cfg.get("WORKERS", 4)), cfg):
+        if v is not None:
+            cache[t] = v
+            n += 1
+    if n:
+        json.dump(cache, open(path, "w"))
+    left = len({t for t in tickers if isinstance(t, str)} - set(cache))
+    log(f"Countries: {len(cache):,} companies on file" + (f", {left:,} still to look up" if left else ""))
+    return cache
+
+
+def _ci(x):
+    x = pd.Series(x, dtype=float).dropna()
+    if len(x) < 2:
+        return None, None
+    se = x.std() / np.sqrt(len(x))
+    return float(x.mean() - 1.96 * se), float(x.mean() + 1.96 * se)
+
+
+def foreign_report(scored, countries, cfg):
+    """How often members buy foreign companies, and how those purchases did vs US ones (and vs the S&P)."""
+    b = scored[scored["tx_type"] == "buy"].copy()
+    b = b.drop_duplicates(["member", "ticker", "trade_date"])
+    otc_f = b["ticker"].str.fullmatch(r"[A-Z]{4}[FY]").fillna(False)
+
+    def kind(t, otc):
+        c = countries.get(t) or {}
+        if (c.get("type") or "").upper() in ("ETF", "MUTUALFUND"):
+            return "Fund"
+        if c.get("c"):
+            return "United States" if c["c"] == "United States" else "Foreign"
+        return "Foreign" if otc else "Unknown"
+    b["origin"] = [kind(t, o) for t, o in zip(b["ticker"], otc_f)]
+    b["country"] = [((countries.get(t) or {}).get("c") or "") for t in b["ticker"]]
+    out = {"updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+           "looked_up": int(sum(1 for t in b["ticker"].unique() if t in countries)),
+           "tickers": int(b["ticker"].nunique()), "groups": [], "countries": [], "top": []}
+    closed = b[b["closed"].astype(bool) & b["excess"].notna()]
+    for g in ("United States", "Foreign", "Fund", "Unknown"):
+        x, c = b[b["origin"] == g], closed[closed["origin"] == g]
+        lo, hi = _ci(c["excess"])
+        out["groups"].append({"group": g, "purchases": int(len(x)), "share": float(len(x) / max(len(b), 1)),
+                              "stocks": int(x["ticker"].nunique()), "finished": int(len(c)),
+                              "avg_vs_spy": float(c["excess"].mean()) if len(c) else None,
+                              "median_vs_spy": float(c["excess"].median()) if len(c) else None,
+                              "beat_spy": float((c["excess"] > 0).mean()) if len(c) else None, "low": lo, "high": hi})
+    f = b[b["origin"] == "Foreign"]
+    for ctry, x in f[f["country"] != ""].groupby("country"):
+        c = closed[(closed["origin"] == "Foreign") & (closed["country"] == ctry)]
+        out["countries"].append({"country": ctry, "purchases": int(len(x)), "stocks": int(x["ticker"].nunique()),
+                                 "avg_vs_spy": float(c["excess"].mean()) if len(c) >= 10 else None, "finished": int(len(c))})
+    out["countries"].sort(key=lambda r: -r["purchases"])
+    out["countries"] = out["countries"][:15]
+    for t, x in f.groupby("ticker"):
+        out["top"].append({"t": t, "country": x["country"].iloc[0] or "OTC (foreign)", "purchases": int(len(x)),
+                           "members": int(x["member"].nunique())})
+    out["top"] = sorted(out["top"], key=lambda r: -r["purchases"])[:15]
+    out["hold_days"] = int(load_adaptive(cfg)["policy"].get("hold_other", cfg.get("HOLD_DAYS", 60)))
+    json.dump(out, open(_p(cfg, "state", "foreign_report.json"), "w"), default=str)
+    g = {r["group"]: r for r in out["groups"]}
+    log(f"Foreign companies: {g['Foreign']['purchases']:,} of {len(b):,} purchases "
+        f"({g['Foreign']['share']*100:.1f}%); country known for {out['looked_up']:,} of {out['tickers']:,} stocks")
+    return out
+
+
 _SUFFIX = re.compile(r"\b(the|inc|incorporated|corp|corporation|co|company|companies|ltd|limited|plc|holdings?|group|"
                      r"llc|lp|l p|n v|nv|s a|sa|ag|se|class [a-c]|common stock|new|de|del|trust|international|intl)\b")
 
