@@ -159,6 +159,11 @@ def main():
         d["unusual"] = E.unusual_activity(scored, px, cfg)
         if fr is not None:
             d["foreign"] = fr
+        w = d.get("watchlist") or {}
+        hear = E.upcoming_hearings(cfg, (w.get("buys") or []) + (w.get("sells") or []))
+        for r in (w.get("buys") or []) + (w.get("sells") or []):
+            if r.get("t") in hear:
+                r["hear"] = hear[r["t"]]
         json.dump(d, open(path, "w"), default=str)
     except Exception as e:
         E.log(f"Unusual activity: skipped ({type(e).__name__}: {e})")
