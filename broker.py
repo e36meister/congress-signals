@@ -97,9 +97,12 @@ def sleeve_misfits(bot, caps):
     return out
 
 
-def recheck_queued_sells(caps, log):
+def recheck_queued_sells(caps, log, policy=None):
     """Cancel a waiting cleanup sell whose position no longer counts as a misfit (its size estimate moved
-    back under the margin). Only touches sell orders the cleanup itself placed; never your orders."""
+    back under the margin). Only touches sell orders the cleanup itself placed; never your orders.
+    Skipped while a small-company price rule is on, since its sales look the same."""
+    if (policy or {}).get("sleeve_price_exit", "none") != "none" or (policy or {}).get("sleeve_extend", "none") != "none":
+        return
     s = settings(60)
     if not (s["key"] and s["secret"]):
         return
@@ -146,8 +149,10 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
               if o.get("side") == "buy" and float(o.get("filled_qty") or 0) > 0
               and not (o.get("client_order_id") or "").startswith(PREFIX)}
 
-    # price rules the weekly check can turn on (main picks only; the small-company portfolio keeps its fixed hold)
-    pe, ext = pol.get("price_exit", "none"), pol.get("extend", "none")
+    # price rules the weekly check can turn on, set separately for main picks and the small-company portfolio
+    is_sm = lambda o: (o.get("client_order_id") or "").startswith(PREFIX + "sm-")
+    rule_pe = lambda o: pol.get("sleeve_price_exit" if is_sm(o) else "price_exit", "none")
+    rule_ext = lambda o: pol.get("sleeve_extend" if is_sm(o) else "extend", "none")
     pct = lambda r: int(re.search(r"(\d+)$", r).group(1)) / 100 if re.search(r"(\d+)$", r or "") else 0.0
     hist = cfg.get("_price_hist")                            # daily closes since a date, from the full update
 
@@ -167,8 +172,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         bought = dt.date.fromisoformat(o["filled_at"][:10])
         held = int(np.busday_count(bought, today))
         hold = _hold_of(o, s["hold_days"])
-        main = not (o.get("client_order_id") or "").startswith(PREFIX + "sm-")
-        if ext != "none" and main and hold <= held < 2 * hold:
+        ext = rule_ext(o)
+        if ext != "none" and hold <= held < 2 * hold:
             # keep holding while it's in profit and within X% of its high since buying
             now_px = float(positions[sym].get("current_price") or 0)
             entry = float(positions[sym].get("avg_entry_price") or 0)
@@ -201,12 +206,13 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                                 "why": "a member who bought it disclosed a sale"})
                 sold.add(sym)
 
-    # 1a2. stop rules: sell a main pick that fell X% below its buy price, or X% from its high since buying
-    if trade and pe != "none":
+    # 1a2. stop rules: sell a position that fell X% below its buy price, or X% from its high since buying
+    if trade:
         for sym, o in bot.items():
             if sym not in positions or sym in pending or sym in sold or sym in others:
                 continue
-            if (o.get("client_order_id") or "").startswith(PREFIX + "sm-"):
+            pe = rule_pe(o)
+            if pe == "none":
                 continue
             now_px = float(positions[sym].get("current_price") or 0)
             entry = float(positions[sym].get("avg_entry_price") or 0)
@@ -369,6 +375,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                        "sleeve_coverage": bool(pol.get("sleeve_coverage")),
                        "exit_on_member_sell": bool(pol.get("exit_on_member_sell")),
                        "price_exit": pol.get("price_exit", "none"), "extend": pol.get("extend", "none"),
+                       "sleeve_price_exit": pol.get("sleeve_price_exit", "none"),
+                       "sleeve_extend": pol.get("sleeve_extend", "none"),
                        "per_pick": per_pick, "sizing": pol.get("sizing", "equal")},
             "positions": sorted(pos, key=lambda x: -x["mv"]),
             "orders": [{"t": from_alpaca(o["symbol"]), "side": o["side"], "qty": o.get("qty"), "status": o.get("status", ""),
