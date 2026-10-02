@@ -135,27 +135,123 @@ def main():
     drive.files().update(fileId=fid, media_body=MediaIoBaseUpload(io.BytesIO(json.dumps(data).encode()),
                          mimetype="application/json"), supportsAllDrives=True).execute()
     E.log("Close report: saved to the dashboard")
-    email(report, snap["mode"])
+    email(report, snap["mode"], snap, data)
 
 
-def email(rep, mode):
+LUCK_TE, LUCK_Z = 0.15, 1.96          # same 95% luck range as the dashboard chart
+
+
+def _fmt_money(v, sign=False):
+    if v is None:
+        return "–"
+    s = f"${abs(v):,.0f}"
+    return (("+" if v >= 0 else "-") + s) if sign else (("-" if v < 0 else "") + s)
+
+
+def build_email(rep, mode, snap, data):
+    """The close email: three number tiles, the luck range, today's biggest movers, each strategy vs the S&P,
+    and what happens next. Inline styles only (email apps ignore style sheets)."""
+    pct = lambda v, d=2: "–" if v is None else f"{v:+.{d}f}%"
+    green, red, grey, ink, line = "#0B7A4B", "#B42318", "#6B778A", "#152033", "#DCE1E8"
+    col = lambda v: grey if v is None or v == 0 else (green if v > 0 else red)
+    eq, day = rep.get("equity") or 0, rep.get("day_pl")
+    day_pct = (day / (eq - day) * 100) if (day is not None and eq and eq != day) else None
+    acct, spy = rep.get("since_start"), rep.get("spy_since_start")
+    gap = (acct - spy) if (acct is not None and spy is not None) else None
+    start = dt.date.fromisoformat(rep["start"]) if rep.get("start") else dt.date.today()
+    start_txt = f"{start:%b} {start.day}"
+
+    def tile(big, label, sub, color):
+        return (f"<td width='33%' style='padding:12px 10px;border:1px solid {line};border-radius:8px;vertical-align:top'>"
+                f"<div style='font:600 22px Menlo,Consolas,monospace;color:{color}'>{big}</div>"
+                f"<div style='font-size:12px;color:{grey};margin-top:2px'>{label}</div>"
+                f"<div style='font-size:12px;color:{ink}'>{sub}</div></td>")
+    tiles = ("<table width='100%' cellspacing='6' cellpadding='0' style='border-collapse:separate'><tr>"
+             + tile(_fmt_money(eq), "account value", f"{'Paper' if mode == 'paper' else 'Real money'}", ink)
+             + tile(_fmt_money(day, True), "today", pct(day_pct), col(day))
+             + tile(pct(gap), "vs the S&amp;P 500", f"since {start_txt} (S&amp;P {pct(spy)})", col(gap))
+             + "</tr></table>")
+
+    # where the account sits in the 95% luck range around the S&P
+    yrs = max((dt.date.fromisoformat(rep["date"]) - start).days, 0) / 365.25
+    w = LUCK_Z * LUCK_TE * yrs ** 0.5 * 100
+    if gap is None or w <= 0:
+        luck = "Not enough history yet to place the account in the luck range."
+    elif abs(gap) <= w:
+        room_up, room_dn = w - gap, w + gap
+        edge = f"{room_up:.1f}% below the top edge" if room_up <= room_dn else f"{room_dn:.1f}% above the bottom edge"
+        luck = (f"<b>Inside the luck range, {edge}.</b> The range is ±{w:.1f}% around the S&amp;P today and widens "
+                f"over time. Inside it, results can't yet be told apart from luck.")
+    else:
+        luck = (f"<b>{'Above' if gap > 0 else 'Below'} the luck range</b> by {abs(gap) - w:.1f}% "
+                f"(the range is ±{w:.1f}% around the S&amp;P today). Early on, one stock's big day can do this.")
+
+    # today's biggest movers among open positions
+    pos = [p for p in (snap.get("positions") or []) if p.get("day") is not None and abs(float(p["day"])) >= 0.0005]
+    mv = []
+    for p in pos:
+        d = float(p["day"])
+        mv.append((p["t"], d * 100, (p.get("mv") or 0) * d / (1 + d) if d > -1 else 0))
+    mv.sort(key=lambda x: x[1], reverse=True)
+    up, dn = [m for m in mv if m[1] > 0][:3], [m for m in mv if m[1] < 0][-3:][::-1]
+
+    def mrow(m, arrow, c):
+        return (f"<tr><td style='padding:3px 8px 3px 0;color:{c}'>{arrow}</td><td style='padding:3px 12px 3px 0;font-weight:600'>{m[0]}</td>"
+                f"<td align='right' style='padding:3px 12px 3px 0;color:{c};font-family:Menlo,Consolas,monospace'>{m[1]:+.1f}%</td>"
+                f"<td align='right' style='color:{c};font-family:Menlo,Consolas,monospace'>{_fmt_money(m[2], True)}</td></tr>")
+    movers = "".join(mrow(m, "▲", green) for m in up) + "".join(mrow(m, "▼", red) for m in dn)
+    movers = movers or f"<tr><td style='color:{grey}'>No price changes today.</td></tr>"
+
+    # each strategy vs the S&P since bought
+    srows = ""
+    for s_ in rep.get("sleeves") or []:
+        diff = None if s_.get("diff") is None else s_["diff"] * 100
+        e = (s_.get("expected") or {}).get("avg")
+        srows += (f"<tr><td style='padding:4px 12px 4px 0'>{s_['name']} <span style='color:{grey}'>({s_['positions']})</span></td>"
+                  f"<td align='right' style='padding:4px 12px 4px 0;font-family:Menlo,Consolas,monospace'>{pct(s_['ret'] * 100, 1)}</td>"
+                  f"<td align='right' style='padding:4px 12px 4px 0;font-family:Menlo,Consolas,monospace;color:{col(diff)}'>{pct(diff, 1)}</td>"
+                  f"<td align='right' style='font-family:Menlo,Consolas,monospace;color:{grey}'>{pct(None if e is None else e * 100, 1)}</td></tr>")
+    strat = (f"<table cellspacing='0' cellpadding='0' style='font-size:14px'><tr style='color:{grey};font-size:12px'>"
+             f"<td style='padding-bottom:4px'>Since bought</td><td align='right' style='padding:0 12px 4px 0'>Return</td>"
+             f"<td align='right' style='padding:0 12px 4px 0'>vs S&amp;P</td><td align='right' style='padding-bottom:4px'>Backtest</td></tr>{srows}</table>"
+             f"<div style='font-size:12px;color:{grey};margin-top:4px'>Backtest = how the backtest's average pick did vs the S&amp;P after the same number of days.</div>") if srows else ""
+
+    # what happens next
+    soon = sorted([(p["t"], int(p["hold"]) - int(p.get("held") or 0)) for p in snap.get("positions") or []
+                   if p.get("bot") and p.get("hold") is not None and int(p["hold"]) - int(p.get("held") or 0) <= 5],
+                  key=lambda x: x[1])
+    today_s = rep["date"]
+    bought = sorted({o["t"] for o in snap.get("orders") or [] if o.get("side") == "buy" and str(o.get("at", ""))[:10] == today_s
+                     and o.get("status") in ("filled", "partially_filled", "accepted", "new")})
+    w_ = data.get("watchlist") or {}
+    n_buy = len([r for r in w_.get("buys") or [] if r.get("action") == "BUY"])
+    n_worth = len(data.get("worth") or [])
+    nxt = [f"<b>Tool sells in the next 5 trading days:</b> " + (", ".join(f"{t} ({'today' if d <= 0 else f'in {d} day' + ('s' if d > 1 else '')})" for t, d in soon) or "none"),
+           f"<b>Bought today:</b> " + (", ".join(bought) or "none"),
+           f"<b>On the dashboard:</b> {n_buy} buy candidate{'s' if n_buy != 1 else ''}" + (f", {n_worth} worth a look" if n_worth else "")]
+
+    h = lambda t: f"<div style='font:600 12px Arial;letter-spacing:.8px;color:{grey};text-transform:uppercase;margin:22px 0 6px'>{t}</div>"
+    d0 = dt.date.fromisoformat(rep["date"])
+    html = (f"<div style='font-family:Arial,Helvetica,sans-serif;color:{ink};max-width:560px;font-size:14px;line-height:1.45'>"
+            f"<div style='font:600 12px Arial;letter-spacing:1px;color:{grey};text-transform:uppercase'>Capitol Capital · close, {d0:%b} {d0.day}</div>"
+            f"{tiles}<p style='margin:10px 2px 0'>{luck}</p>"
+            f"{h('Today’s biggest moves')}<table cellspacing='0' cellpadding='0' style='font-size:14px'>{movers}</table>"
+            f"{h('Each strategy') + strat if strat else ''}"
+            f"{h('Coming up')}" + "".join(f"<div style='margin:3px 0'>{x}</div>" for x in nxt) +
+            f"<p style='margin-top:22px'><a href='https://claude.ai/artifact/Hkj8H6ZduZXcuvtgSaByru' style='color:#1D4F91'>Open Capitol Capital</a></p></div>")
+    subject = (f"Close: {_fmt_money(day, True)} today · {pct(gap)} vs S&P" if day is not None else f"Close: {pct(gap)} vs S&P")
+    return subject, html
+
+
+def email(rep, mode, snap=None, data=None):
     addr, pw = os.environ.get("GMAIL_ADDRESS"), os.environ.get("GMAIL_APP_PASSWORD")
     if not (addr and pw):
         return
     import smtplib
     from email.mime.text import MIMEText
-    pct = lambda v: "–" if v is None else f"{v:+.2f}%"
-    lines = [f"<p><b>{'Paper' if mode == 'paper' else 'Real-money'} account at the close:</b> ${rep['equity']:,.0f} "
-             f"({'+' if (rep['day_pl'] or 0) >= 0 else '-'}${abs(rep['day_pl'] or 0):,.0f} today)</p>",
-             f"<p>Since {rep['start']}: account {pct(rep['since_start'])}, S&amp;P 500 {pct(rep['spy_since_start'])}</p><ul>"]
-    for s_ in rep["sleeves"]:
-        e = s_.get("expected") or {}
-        exp = "" if e.get("avg") is None else f"; backtest expects about {e['avg']*100:+.1f}% vs S&amp;P by now"
-        lines.append(f"<li>{s_['name']}: {s_['positions']} positions, {s_['ret']*100:+.1f}% "
-                     f"vs S&amp;P {pct(None if s_['spy'] is None else s_['spy']*100)} over the same days{exp}</li>")
-    lines.append(f"</ul><p><a href='https://claude.ai/artifact/Hkj8H6ZduZXcuvtgSaByru'>Open Capitol Capital</a></p>")
-    msg = MIMEText("".join(lines), "html")
-    msg["Subject"] = f"Capitol Capital close: {pct(rep['since_start'])} vs S&P {pct(rep['spy_since_start'])}"
+    subject, html = build_email(rep, mode, snap or {}, data or {})
+    msg = MIMEText(html, "html")
+    msg["Subject"] = subject
     msg["From"], msg["To"] = addr, os.environ.get("ALERT_TO") or addr
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
