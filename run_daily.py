@@ -190,6 +190,11 @@ def main():
         E.check_exit_rule_once(scored, px, cfg)
     except Exception as e:
         E.log(f"Adjustments: sell-when-member-sells check skipped ({e})")
+    if not E.out_of_time(cfg, 75):
+        try:
+            E.check_price_rules_once(scored, px, cfg)
+        except Exception as e:
+            E.log(f"Adjustments: price-rule check skipped ({type(e).__name__}: {e})")
     buys, sells = E.build_watchlist(scored, px, cfg)
     new = E.diff_alerts(buys, sells, cfg)
     try:
@@ -223,8 +228,10 @@ def main():
         sm = (bt.get("small") or {}) if isinstance(bt, dict) else {}
         mt = E.member_trades(scored)
         msales = lambda t, bought: E.member_sales(mt, t, bought)
+        pxf = px.ffill() if px is not None else None
+        phist = lambda t, since: pxf.loc[E.pd.Timestamp(since):, t].dropna().values if pxf is not None and t in pxf else None
         snap = broker.sync(dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=sm.get("slots"),
-                                _member_sales=msales), buys, new, last, E.log)
+                                _member_sales=msales, _price_hist=phist), buys, new, last, E.log)
         path = os.path.join(cfg["DATA_DIR"], "dashboard_data.json")
         d = json.load(open(path))
         if snap is not None:

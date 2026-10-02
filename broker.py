@@ -146,13 +146,36 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
               if o.get("side") == "buy" and float(o.get("filled_qty") or 0) > 0
               and not (o.get("client_order_id") or "").startswith(PREFIX)}
 
+    # price rules the weekly check can turn on (main picks only; the small-company portfolio keeps its fixed hold)
+    pe, ext = pol.get("price_exit", "none"), pol.get("extend", "none")
+    pct = lambda r: int(re.search(r"(\d+)$", r).group(1)) / 100 if re.search(r"(\d+)$", r or "") else 0.0
+    hist = cfg.get("_price_hist")                            # daily closes since a date, from the full update
+
+    def high_since(sym, bought, now_px):
+        try:
+            h = hist(from_alpaca(sym), bought) if hist else None
+        except Exception:
+            h = None
+        if h is None or not len(h):
+            return None
+        return max(float(np.nanmax(h)), now_px)
+
     # 1. sell what this tool bought once the holding period (trading days) is over
     for sym, o in (bot.items() if trade else []):
         if sym not in positions or sym in pending or sym in others:
             continue
         bought = dt.date.fromisoformat(o["filled_at"][:10])
         held = int(np.busday_count(bought, today))
-        if held >= _hold_of(o, s["hold_days"]):             # each position keeps the hold it was bought under
+        hold = _hold_of(o, s["hold_days"])
+        main = not (o.get("client_order_id") or "").startswith(PREFIX + "sm-")
+        if ext != "none" and main and hold <= held < 2 * hold:
+            # keep holding while it's in profit and within X% of its high since buying
+            now_px = float(positions[sym].get("current_price") or 0)
+            entry = float(positions[sym].get("avg_entry_price") or 0)
+            hi = high_since(sym, o["filled_at"][:10], now_px)
+            if hi is None or (now_px > entry and now_px >= hi * (1 - pct(ext))):
+                continue
+        if held >= hold:                                    # each position keeps the hold it was bought under
             r = api.delete(f"/v2/positions/{sym}")
             actions.append({"side": "sell", "symbol": sym, "ok": r.status_code in (200, 207),
                             "why": f"held {held} trading days"})
@@ -176,6 +199,27 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                 r = api.delete(f"/v2/positions/{sym}")
                 actions.append({"side": "sell", "symbol": sym, "ok": r.status_code in (200, 207),
                                 "why": "a member who bought it disclosed a sale"})
+                sold.add(sym)
+
+    # 1a2. stop rules: sell a main pick that fell X% below its buy price, or X% from its high since buying
+    if trade and pe != "none":
+        for sym, o in bot.items():
+            if sym not in positions or sym in pending or sym in sold or sym in others:
+                continue
+            if (o.get("client_order_id") or "").startswith(PREFIX + "sm-"):
+                continue
+            now_px = float(positions[sym].get("current_price") or 0)
+            entry = float(positions[sym].get("avg_entry_price") or 0)
+            if not (now_px > 0 and entry > 0):
+                continue
+            if pe.startswith("trail"):
+                ref = high_since(sym, o["filled_at"][:10], now_px)
+                why = f"fell {pct(pe)*100:.0f}% from its high since buying"
+            else:
+                ref, why = entry, f"fell {pct(pe)*100:.0f}% below the buy price"
+            if ref and now_px <= ref * (1 - pct(pe)):
+                r = api.delete(f"/v2/positions/{sym}")
+                actions.append({"side": "sell", "symbol": sym, "ok": r.status_code in (200, 207), "why": why})
                 sold.add(sym)
 
     # 1b. keep the paper test clean: sell small-company-portfolio positions that clearly don't fit its rules
@@ -324,6 +368,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                        "small_pct": float(env("SMALL_SLEEVE_PCT") or 30), "hold_sleeve": int(pol.get("hold_sleeve", 250)),
                        "sleeve_coverage": bool(pol.get("sleeve_coverage")),
                        "exit_on_member_sell": bool(pol.get("exit_on_member_sell")),
+                       "price_exit": pol.get("price_exit", "none"), "extend": pol.get("extend", "none"),
                        "per_pick": per_pick, "sizing": pol.get("sizing", "equal")},
             "positions": sorted(pos, key=lambda x: -x["mv"]),
             "orders": [{"t": from_alpaca(o["symbol"]), "side": o["side"], "qty": o.get("qty"), "status": o.get("status", ""),

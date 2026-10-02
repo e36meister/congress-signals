@@ -1843,13 +1843,17 @@ def _entry_positions(px_index, dates):
     return np.searchsorted(px_index.values, pd.to_datetime(dates).values, side="right")
 
 
-def forward_returns(tx, px, hold, cost=0.0, stop=None):
+def forward_returns(tx, px, hold, cost=0.0, stop=None, exit_pos=None):
     """Return after entering the day after disclosure and holding `hold` trading days, minus trading costs.
+    `exit_pos` (optional, one price-index position per row) replaces the scheduled exit (price rules);
     `stop` (optional, one price-index position per row) ends a trade early on that day."""
     idx = px.index
     n = len(idx)
     ent = _entry_positions(idx, tx["filed_date"])
     ext = ent + hold
+    if exit_pos is not None:
+        exit_pos = np.asarray(exit_pos)
+        ext = np.where(exit_pos > ent, exit_pos, ext)
     if stop is not None:
         stop = np.asarray(stop)
         ext = np.where(stop > ent, np.minimum(ext, stop), ext)
@@ -6288,6 +6292,138 @@ def check_exit_rule_once(scored, px, cfg):
     save_adaptive(cfg, a)
 
 
+# ---- price rules: sell early when a stock falls, or keep holding while it keeps rising ----------------------
+# Applied to purchases (main picks). Decisions use daily closes; a sale happens at that day's close.
+PRICE_EXITS = {"none": "Hold the full period",
+               "stop10": "Sell if it falls 10% below the buy price",
+               "stop15": "Sell if it falls 15% below the buy price",
+               "stop20": "Sell if it falls 20% below the buy price",
+               "trail15": "Sell after a 15% drop from its high since buying"}
+EXTENDS = {"none": "Sell on the scheduled day",
+           "ride10": "Keep holding while rising (sell after a 10% drop from its high, at most 2x the hold)",
+           "ride15": "Keep holding while rising (sell after a 15% drop from its high, at most 2x the hold)"}
+PRICE_EXIT_LABEL = "Sell early when a stock falls"
+EXTEND_LABEL = "Hold longer while a stock keeps rising"
+_PEXIT_CACHE = {}
+
+
+def _rule_pct(rule):
+    m = re.search(r"(\d+)$", rule or "")
+    return int(m.group(1)) / 100 if m else 0.0
+
+
+def price_exit_positions(rows, px, hold, price_exit="none", extend="none"):
+    """Exit position (in the price index) for each row under the price rules. Stop rules end a trade early;
+    the extend rule keeps a trade that is in profit and near its high past the scheduled day, until it drops
+    X% from its high (at most 2x the hold). A trade whose exit is past the last price is left open.
+    Sale rows keep the normal schedule."""
+    key = (id(rows), len(rows), id(px), len(px), int(hold), price_exit, extend)
+    if key in _PEXIT_CACHE:
+        return _PEXIT_CACHE[key]
+    idx = px.index
+    n = len(idx)
+    ent = _entry_positions(idx, rows["filed_date"])
+    out = ent + int(hold)
+    col = {c: i for i, c in enumerate(px.columns)}
+    if not hasattr(price_exit_positions, "_ff") or price_exit_positions._ff[0] is not px:
+        price_exit_positions._ff = (px, px.ffill().values)
+    arr = price_exit_positions._ff[1]
+    buy = (rows["tx_type"] == "buy").values if "tx_type" in rows else np.ones(len(rows), bool)
+    sx, ex = _rule_pct(price_exit), _rule_pct(extend)
+    trail = price_exit.startswith("trail")
+    for i, (t, e) in enumerate(zip(rows["ticker"].values, ent)):
+        c = col.get(t)
+        if c is None or not buy[i] or e >= n:
+            continue
+        base = e + int(hold)
+        p0 = arr[e, c]
+        if not np.isfinite(p0) or p0 <= 0:
+            continue
+        stopped = False
+        if sx:
+            seg = arr[e + 1:min(base, n - 1) + 1, c]
+            if len(seg):
+                ref = np.fmax.accumulate(np.concatenate([[p0], seg]))[:-1] if trail else p0
+                hit = np.nonzero(seg <= ref * (1 - sx))[0]
+                if len(hit):
+                    out[i] = e + 1 + int(hit[0])
+                    stopped = True
+        if ex and not stopped and base < n:
+            pb = arr[base, c]
+            hi = np.nanmax(arr[e:base + 1, c])
+            if np.isfinite(pb) and pb > p0 and pb >= hi * (1 - ex):
+                cap = e + 2 * int(hold)
+                seg = arr[base + 1:min(cap, n - 1) + 1, c]
+                run_hi = np.fmax.accumulate(np.concatenate([[hi], seg]))[1:]
+                hit = np.nonzero(seg <= run_hi * (1 - ex))[0] if len(seg) else []
+                out[i] = base + 1 + int(hit[0]) if len(hit) else cap
+    _PEXIT_CACHE.clear()
+    _PEXIT_CACHE[key] = out
+    return out
+
+
+def _price_rule_check(scored, px, cfg, a, pol, rows, today, key, options, label):
+    """Try every option of one price rule against the current one; switch only when clearly better.
+    Rows also report the account's worst drop and the worst single trade, so risk is visible."""
+    base = dict(cfg, _nested=True)
+    vs = lambda b: float(b["perf"].loc["Per year vs S&P 500", "Long picks"])
+
+    def risk(b):
+        dd = float(b["perf"].loc["Worst drawdown", "Long picks"])
+        lg = b.get("longs")
+        closed = lg[lg["closed"]] if lg is not None and len(lg) else None
+        worst = float(closed["ret"].min()) if closed is not None and len(closed) else None
+        big = float((closed["ret"] <= -0.25).mean()) if closed is not None and len(closed) else None
+        return {"Worst drop": dd, "Worst trade": worst, "Trades down 25%+": big}
+
+    curk = pol.get(key, "none")
+    cur = run_backtest(apply_hold_policy(scored, px, cfg, pol), px, base)
+    r_cur = _long_daily(cur)
+    rows[:] = [r for r in rows if r.get("Setting") != label]
+    rows.append({"Setting": label, "Option": options[curk] + " (current)", "Per year vs S&P": vs(cur),
+                 "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current", **risk(cur)})
+    best = None
+    for k in options:
+        if k == curk:
+            continue
+        b = run_backtest(apply_hold_policy(scored, px, cfg, dict(pol, **{key: k})), px, base)
+        c = _compare(_long_daily(b), r_cur)
+        rows.append({"Setting": label, "Option": options[k], "Per year vs S&P": vs(b),
+                     "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
+                     "Verdict": _verdict(c, True), **risk(b)})
+        log(f"Adjustments: {label}: {options[k]}: " + (f"{c['gain']*100:+.2f}%/yr, t={c['t']:.2f}" if c else "no data"))
+        if clearly_better(c) and (best is None or c["gain"] > best[1]["gain"]):
+            best = (k, c)
+    if best:
+        for r in rows:
+            if r["Setting"] == label and r["Option"] == options[best[0]]:
+                r["Verdict"] = "Switched automatically"
+        a["history"].append({"date": today, "change": label, "from": options[curk], "to": options[best[0]],
+                             "gain_per_year": best[1]["gain"], "sureness": best[1]["t"]})
+        log(f"Adjustments: {label} -> {options[best[0]]} (+{best[1]['gain']*100:.1f}%/yr in the backtest)")
+        pol[key] = best[0]
+    else:
+        log(f"Adjustments: {label}: stays {options[curk]}")
+
+
+def check_price_rules(scored, px, cfg, a, pol, rows, today):
+    _price_rule_check(scored, px, cfg, a, pol, rows, today, "price_exit", PRICE_EXITS, PRICE_EXIT_LABEL)
+    _price_rule_check(scored, px, cfg, a, pol, rows, today, "extend", EXTENDS, EXTEND_LABEL)
+    a["price_rules_checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def check_price_rules_once(scored, px, cfg):
+    """First run after the price rules were added: test them right away instead of waiting for the weekly check."""
+    a = load_adaptive(cfg)
+    if a.get("price_rules_checked_at"):
+        return
+    pol = dict(a["policy"])
+    rows = list(a.get("evaluation") or [])
+    check_price_rules(scored, px, cfg, a, pol, rows, dt.date.today().isoformat())
+    a["policy"], a["evaluation"] = pol, rows
+    save_adaptive(cfg, a)
+
+
 def load_adaptive(cfg):
     try:
         a = json.load(open(_p(cfg, "state", ADAPT_FILE)))
@@ -6298,7 +6434,9 @@ def load_adaptive(cfg):
     a["policy"].setdefault("sleeve_coverage", False)
     a["policy"].setdefault("exit_on_member_sell", False)
     a["policy"].setdefault("signals_on", [])
-    a["policy"].setdefault("sizing", "equal")               # position size by confidence                # new signals the weekly check has switched on   # sell when a member who bought discloses a sale
+    a["policy"].setdefault("price_exit", "none")           # sell early when a stock falls (stop rules)
+    a["policy"].setdefault("extend", "none")               # keep holding while a stock keeps rising
+    a["policy"].setdefault("sizing", "equal")              # position size by confidence                # new signals the weekly check has switched on   # sell when a member who bought discloses a sale
     a["policy"].setdefault("main_method", "hand")       # "learned": buy weights refit from all finished trades     # small-company portfolio skips companies no analyst covers
     a.setdefault("use_tuned", False)
     a.setdefault("history", [])
@@ -6321,9 +6459,12 @@ def apply_hold_policy(scored, px, cfg, policy):
     cost = cfg.get("COST_BPS", 0) / 1e4
     cols = ["entry_date", "exit_date", "entry_px", "exit_px", "ret", "spy_ret", "excess", "closed"]
     stops = member_sell_stops(scored, scored, px) if policy.get("exit_on_member_sell") else None
+    pe, ex = policy.get("price_exit", "none"), policy.get("extend", "none")
     for hv in np.unique(h):
         m = h == hv
-        fr = forward_returns(scored.loc[m], px, int(hv), cost=cost, stop=None if stops is None else stops[m])
+        ep = price_exit_positions(scored.loc[m], px, int(hv), pe, ex) if (pe != "none" or ex != "none") else None
+        fr = forward_returns(scored.loc[m], px, int(hv), cost=cost, stop=None if stops is None else stops[m],
+                             exit_pos=ep)
         for c in cols:
             out.loc[m, c] = fr[c].values
     for c in ("entry_date", "exit_date"):
@@ -6483,6 +6624,10 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
         check_sizing(scored, px, cfg, a, pol, rows, today)
     except Exception as e:
         log(f"Adjustments: sizing check skipped ({e})")
+    try:
+        check_price_rules(scored, px, cfg, a, pol, rows, today)
+    except Exception as e:
+        log(f"Adjustments: price-rule check skipped ({e})")
     a["policy"] = pol
 
     # proposals: measured the same way, never applied without the user's go-ahead
