@@ -770,6 +770,7 @@ def load_volume(cfg, tickers, priority=None):
 
 
 VOL_WINDOW, VOL_BASE = 10, 60      # look at the 2 weeks before a trade, against the prior 3 months
+VOL_FLAG = 5.5                     # "very heavy trading" flag: about the top 10% of trades (the median trade sees ~2x)
 
 
 def volume_ratio_table(vol):
@@ -801,7 +802,7 @@ def volume_features(tx, data):
     f = np.clip((rr - 4) / 8, 0, 1)       # the typical trade's peak day is ~2x normal; 8x+ is the top 5%
     f = np.where(np.isfinite(f), f, 0.0)
     tx["f_unusual_volume"], tx["volume_ratio"] = f, rr
-    tx["volume_note"] = [f"trading volume hit {x:.1f}x normal in the 2 weeks before the trade" if np.isfinite(x) and x >= 8 else ""
+    tx["volume_note"] = [f"trading volume hit {x:.1f}x normal in the 2 weeks before the trade" if np.isfinite(x) and x >= VOL_FLAG else ""
                          for x in rr]
     return tx
 
@@ -815,7 +816,7 @@ def worth_a_look(scored, cfg, days=None):
     if not len(r):
         return []
     col = lambda c: r[c] if c in r else pd.Series(0, index=r.index)
-    flags = ((col("f_spouse_insider") > 0) | (col("f_relative_tie") > 0) | (col("volume_ratio").fillna(0) >= 8)
+    flags = ((col("f_spouse_insider") > 0) | (col("f_relative_tie") > 0) | (col("volume_ratio").fillna(0) >= VOL_FLAG)
              | (col("f_reg_action") > 0) | (col("f_witness_after") > 0) | (col("f_markup_after") > 0)
              | (col("f_major_8k_after") > 0) | (col("f_closed_briefing") > 0))
     r = r[flags]
