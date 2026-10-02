@@ -2086,6 +2086,7 @@ def compute_features(tx, px, data, cfg):
     tx = compute_connections(tx, data, cfg, mems)
     tx = relationship_features(tx, data, cfg, mems)
     tx = volume_features(tx, data)
+    tx = event_features(tx, data, mems)
     tx = analyst_features(tx, data)
     tx = extra_features(tx, px, data, cfg, mems)
     return tx
@@ -2099,9 +2100,14 @@ def _score(tx, weights):
 
 
 # New signals start switched off; the weekly check turns one on (with this weight) only when it's clearly better.
-TRIAL_SIGNALS = {"relative_tie": 0.5, "unusual_volume": 0.4}
+TRIAL_SIGNALS = {"relative_tie": 0.5, "unusual_volume": 0.4, "reg_action": 0.3, "witness_after": 0.4,
+                 "markup_after": 0.3, "major_8k_after": 0.3}
 TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
-                "unusual_volume": "Signal: unusual trading volume before the trade"}
+                "unusual_volume": "Signal: unusual trading volume before the trade",
+                "reg_action": "Signal: federal rule naming the company soon after the trade",
+                "witness_after": "Signal: company testified to their committee soon after the trade",
+                "markup_after": "Signal: their committee marked up an industry bill soon after the trade",
+                "major_8k_after": "Signal: major company announcement (8-K) soon after the trade"}
 
 
 def active_weights(cfg, signals_on=None):
@@ -2192,7 +2198,7 @@ def _why_buy(r):
                    ("f_crowded", lambda: "but the stock already jumped on disclosure day")):
         if r.get(f, 0) and r.get(f, 0) >= 0.5:
             b.append(txt())
-    for k in ("street_note", "spouse_note", "relative_note", "volume_note", "buddy_note", "bill_adv_note"):
+    for k in ("street_note", "spouse_note", "relative_note", "volume_note", "event_note", "buddy_note", "bill_adv_note"):
         if r.get(k):
             b.append(r[k])
     if r["f_size"] >= 0.4:
@@ -2449,6 +2455,8 @@ BUY_FACTORS = [("f_track_record", "Member track record"), ("f_cluster", "Cluster
                ("f_bill_advanced", "Their bill advanced after the trade"), ("f_sector_bill_momentum", "Industry bill just passed"),
                ("f_spouse_insider", "Spouse is a company insider (SEC)"),
                ("f_relative_tie", "Relative is a company insider (SEC)"), ("f_unusual_volume", "Unusual trading volume before the trade"),
+               ("f_reg_action", "Federal rule named the company after the trade"), ("f_witness_after", "Company testified to their committee after the trade"),
+               ("f_markup_after", "Committee marked up an industry bill after the trade"), ("f_major_8k_after", "Major company announcement after the trade"),
                ("f_against_street", "Bought against Wall Street"), ("f_after_downgrade", "Bought after a downgrade"),
                ("f_no_coverage", "No analyst coverage"),
                ("f_testified", "Company testified to their committee"), ("f_closed_briefing", "Closed briefing before trade"),
@@ -2604,6 +2612,8 @@ def run_backtest(scored, px, cfg, since=None):
                     ("f_bill_advanced", "Bill advanced after the trade"),
                     ("f_spouse_insider", "Spouse is a company insider"),
                     ("f_relative_tie", "Relative is a company insider"), ("f_unusual_volume", "Unusual volume before the trade"),
+                    ("f_reg_action", "Federal rule after the trade"), ("f_witness_after", "Testimony after the trade"),
+                    ("f_markup_after", "Industry markup after the trade"), ("f_major_8k_after", "Major 8-K after the trade"),
                     ("f_against_street", "Bought against Wall Street"), ("f_after_downgrade", "Bought after a downgrade"),
                     ("f_no_coverage", "No analyst coverage")) if f in scored}}
     extras = {}
@@ -3298,6 +3308,22 @@ def prepare(cfg):
         data["bluesky"] = collect_bluesky(cfg)
     if step("USE_EVENTS"):
         data["events"] = collect_events(cfg, meta, enrich)
+    if step("USE_FEDREG"):
+        try:
+            data["fedreg"] = collect_fedreg(cfg, meta, enrich)
+        except Exception as e:
+            log(f"Federal rules: skipped ({type(e).__name__}: {e})")
+    if step("USE_8K"):
+        try:
+            data["k8"] = collect_8k(cfg, data.get("sec_companies") or load_sec_companies(cfg, enrich), enrich)
+        except Exception as e:
+            log(f"Company 8-K filings: skipped ({type(e).__name__}: {e})")
+    if step("USE_HEARINGS") and data.get("meetings") is not None and len(data["meetings"]) and "bills" in data["meetings"]:
+        try:      # the subject of every bill a committee marked up, so markups map to industries
+            mb = [b for bl in data["meetings"].loc[data["meetings"]["type"].str.lower().str.contains("markup"), "bills"] for b in bl]
+            data["bill_policy"] = {**(data.get("bill_policy") or {}), **collect_bill_policy(cfg, mb)}
+        except Exception as e:
+            log(f"Markups: bill subjects skipped ({e})")
     if step("USE_BILL_STATUS"):
         data["bill_actions"] = collect_bill_status(cfg)
     if step("USE_CAMPAIGN_SPENDING"):
@@ -4064,7 +4090,19 @@ def collect_meetings(cfg):
             for e in ids:
                 cache["events"].setdefault(f"{cong}|{ch}|{e}", None)
             cache["lists"][lk] = dt.datetime.now().isoformat()
-    todo = [k for k, v in cache["events"].items() if v is None]
+    soon = (dt.date.today() - dt.timedelta(days=14)).isoformat()
+
+    def stale(v):
+        if v is None:
+            return True
+        if not v:
+            return False
+        if v.get("v") != 2:                      # older reads lack the bills and meeting type
+            return True
+        # scheduled meetings change (witnesses added, postponed): re-read upcoming ones daily
+        return (v.get("date") or "") >= soon and not _fresh(v.get("fetched", ""), 1)
+    todo = [k for k, v in cache["events"].items() if stale(v)]
+    todo.sort(key=lambda k: (cache["events"][k] is not None, -(int(k.split("|")[0]))))   # new, then recent congresses
     if todo:
         log(f"Hearings: {len(todo):,} committee meetings to read (first run only)")
     for i, k in enumerate(todo, 1):
@@ -4081,10 +4119,20 @@ def collect_meetings(cfg):
             coms = m.get("committees") or []
             if isinstance(coms, dict):
                 coms = coms.get("item") or []
+            rel = m.get("relatedItems") or {}
+            bl = rel.get("bills") or []
+            if isinstance(bl, dict):
+                bl = bl.get("item") or []
+            bills = []
+            for b in bl:
+                typ = str(b.get("type") or "").lower().replace(".", "").replace(" ", "")
+                if typ in ("hr", "s", "hres", "sres", "hjres", "sjres", "hconres", "sconres") and b.get("number"):
+                    bills.append(f"{b.get('congress') or cong}|{typ}|{b.get('number')}")
             cache["events"][k] = {"date": (m.get("date") or "")[:10], "title": (m.get("title") or "")[:200],
                                   "type": m.get("type"), "status": m.get("meetingStatus"),
                                   "cids": [_cid(c.get("systemCode")) for c in coms],
-                                  "orgs": [company_key(w.get("organization")) for w in wit if w.get("organization")]}
+                                  "orgs": [company_key(w.get("organization")) for w in wit if w.get("organization")],
+                                  "bills": bills, "v": 2, "fetched": dt.datetime.now().isoformat()}
         elif js is not None:
             cache["events"][k] = {}
         time.sleep(0.75)           # congress.gov allows 5,000 requests per hour
@@ -4095,14 +4143,218 @@ def collect_meetings(cfg):
     return cache
 
 
+_NAME_TAIL = re.compile(r"[,\s]+(inc|incorporated|corp|corporation|co|company|ltd|limited|plc|holdings?|group|llc|lp|"
+                        r"l\.p|n\.v|nv|s\.a|sa|ag|se|the|class [a-c]|common stock)\.?$", re.I)
+
+
+def _fr_name(name):
+    """A company's name as it would appear in a federal document ("Lockheed Martin"), or None if too generic."""
+    n = re.sub(r"^the\s+", "", (name or "").strip(), flags=re.I)
+    for _ in range(4):
+        n2 = _NAME_TAIL.sub("", n).strip(" ,.")
+        if n2 == n:
+            break
+        n = n2
+    words = n.split()
+    if not words or (len(words) == 1 and len(n) < 6):
+        return None          # single short words ("Apple", "Intel") match too many unrelated documents
+    return n
+
+
+def collect_fedreg(cfg, meta, tickers, per_run=500):
+    """Federal rules and proposed rules that name the company (Federal Register), with their publication date."""
+    cache, path = _cache_json(cfg, "fedreg.json", {})
+    todo = [t for t in tickers if not _fresh((cache.get(t) or {}).get("fetched", ""), 14)][:per_run]
+    if todo:
+        log(f"Federal rules: checking {len(todo)} companies")
+    start = pd.Timestamp(cfg["START_DATE"]).strftime("%Y-%m-%d")
+    for i, t in enumerate(todo, 1):
+        if out_of_time(cfg):
+            break
+        nm = _fr_name((meta.get(t) or {}).get("name"))
+        if not nm:
+            cache[t] = {"fetched": dt.datetime.now().isoformat(), "docs": [], "skip": True}
+            continue
+        docs, page = [], 1
+        while page <= 5:
+            js = _get_json("https://www.federalregister.gov/api/v1/documents.json", params=[
+                ("conditions[term]", f'"{nm}"'), ("conditions[type][]", "RULE"), ("conditions[type][]", "PRORULE"),
+                ("conditions[publication_date][gte]", start), ("fields[]", "publication_date"), ("fields[]", "type"),
+                ("fields[]", "agencies"), ("fields[]", "title"), ("per_page", "1000"), ("page", str(page)), ("order", "newest")])
+            if js is None:
+                break
+            for r in js.get("results") or []:
+                ag = ", ".join(a.get("name") or "" for a in (r.get("agencies") or [])[-1:])
+                docs.append([r.get("publication_date"), r.get("type"), ag, (r.get("title") or "")[:160]])
+            if not js.get("next_page_url"):
+                break
+            page += 1
+            time.sleep(0.3)
+        if js is not None or docs:
+            cache[t] = {"fetched": dt.datetime.now().isoformat(), "docs": docs, "name": nm}
+        time.sleep(0.3)
+        if i % 100 == 0:
+            json.dump(cache, open(path, "w"))
+            log(f"Federal rules: {i}/{len(todo)}")
+    json.dump(cache, open(path, "w"))
+    return cache
+
+
+# 8-K items that mark a major company announcement (earnings, 2.02, are already a company event elsewhere)
+MAJOR_8K = {"1.01": "a major agreement", "1.02": "the end of a major agreement", "2.01": "an acquisition or sale",
+            "2.05": "a restructuring", "2.06": "a write-down", "3.01": "a delisting notice", "4.02": "a restatement",
+            "5.01": "a change of control", "5.02": "a top executive change"}
+
+
+def collect_8k(cfg, sec_companies, tickers, per_run=600):
+    """Each company's 8-K filings (major-event reports) with filing date and item numbers, from SEC EDGAR."""
+    hdr = _sec_headers(cfg)
+    cache, path = _cache_json(cfg, "filings_8k.json", {})
+    if not hdr:
+        return cache
+    start = pd.Timestamp(cfg["START_DATE"]).strftime("%Y-%m-%d")
+    todo = [t for t in tickers if (sec_companies.get(t) or {}).get("cik")
+            and not _fresh((cache.get(t) or {}).get("fetched", ""), 7)][:per_run]
+    if todo:
+        log(f"Company 8-K filings: checking {len(todo)} companies")
+
+    def pick(block):
+        return [[d, it] for f, d, it in zip(block.get("form", []), block.get("filingDate", []), block.get("items", []))
+                if f in ("8-K", "8-K/A") and d >= start and it]
+    for i, t in enumerate(todo, 1):
+        if out_of_time(cfg):
+            break
+        cik = int(sec_companies[t]["cik"])
+        sub = _get_json(f"https://data.sec.gov/submissions/CIK{cik:010d}.json", headers=hdr)
+        time.sleep(0.12)
+        if not sub:
+            continue
+        old = cache.get(t) or {}
+        rows = pick((sub.get("filings") or {}).get("recent") or {})
+        if not old.get("old_done"):            # older filings sit in extra files; read them once
+            for f in (sub.get("filings") or {}).get("files") or []:
+                if (f.get("filingTo") or "") < start:
+                    continue
+                more = _get_json(f"https://data.sec.gov/submissions/{f.get('name')}", headers=hdr)
+                time.sleep(0.12)
+                rows += pick(more or {})
+        else:
+            rows += [r for r in old.get("k", []) if r[0] < min((r_[0] for r_ in rows), default="9999")]
+        seen, k = set(), []
+        for r in sorted(rows, reverse=True):
+            if tuple(r) not in seen:
+                seen.add(tuple(r))
+                k.append(r)
+        cache[t] = {"fetched": dt.datetime.now().isoformat(), "k": k, "old_done": True}
+        if i % 100 == 0:
+            json.dump(cache, open(path, "w"))
+            log(f"Company 8-K filings: {i}/{len(todo)}")
+    json.dump(cache, open(path, "w"))
+    return cache
+
+
+def event_features(tx, data, mems):
+    """Things that happened between the member's trade and its disclosure (so they were public by the filing date):
+    a federal rule naming the company, the company testifying before the member's committee, the member's committee
+    marking up an industry bill, and a major company announcement (8-K). Window: 30 days after the trade."""
+    D = pd.Timedelta
+    n = len(tx)
+    tdt, fdt = pd.to_datetime(tx["trade_date"]), pd.to_datetime(tx["filed_date"])
+    hi = np.minimum(tdt + D(days=30), fdt)
+    meta = data.get("meta") or {}
+    ck = [company_key((meta.get(t) or {}).get("name")) for t in tx["ticker"]]
+    cids = [set((m.get("cids") or [])) if m else set() for m in mems]
+    for c in ("f_reg_action", "f_witness_after", "f_markup_after", "f_major_8k_after"):
+        tx[c] = 0.0
+    tx["event_note"] = ""
+    notes = [[] for _ in range(n)]
+
+    def win(dates, i):
+        return [d for d in dates if tdt.iloc[i] < d <= hi.iloc[i]]
+    # federal rules naming the company
+    fr = data.get("fedreg") or {}
+    frd = {t: sorted(pd.to_datetime([d[0] for d in v.get("docs", []) if d[0]], errors="coerce").dropna())
+           for t, v in fr.items() if v.get("docs")}
+    f1 = np.zeros(n)
+    for i, t in enumerate(tx["ticker"]):
+        w = win(frd.get(t, []), i)
+        if w:
+            f1[i] = 1.0
+            notes[i].append(f"a federal rule naming the company was published {(w[0] - tdt.iloc[i]).days} days after the trade")
+    tx["f_reg_action"] = f1
+    # committee hearings and markups after the trade
+    mt = data.get("meetings")
+    pol = data.get("bill_policy") or {}
+    f2, f3 = np.zeros(n), np.zeros(n)
+    if mt is not None and len(mt) and "bills" in mt:
+        mt = mt.sort_values("date")
+        md = mt["date"].values
+        for i in range(n):
+            if not cids[i]:
+                continue
+            a, b = np.searchsorted(md, np.datetime64(tdt.iloc[i]), side="right"), np.searchsorted(md, np.datetime64(hi.iloc[i]), side="right")
+            if b <= a:
+                continue
+            sec = tx["sector"].iloc[i] if "sector" in tx else None
+            for _, r in mt.iloc[a:b].iterrows():
+                if not (cids[i] & r["cids"]):
+                    continue
+                if ck[i] and not f2[i] and any(ck[i] in o for o in r["orgs"]):
+                    f2[i] = 1.0
+                    notes[i].append(f"company testified before their committee {(r['date'] - tdt.iloc[i]).days} days after the trade")
+                if sec and not f3[i] and "markup" in r["type"].lower() and any(
+                        sec in POLICY_SECTORS.get(pol.get(bl) or "", []) for bl in r["bills"]):
+                    f3[i] = 1.0
+                    notes[i].append(f"their committee marked up a bill affecting {sec} {(r['date'] - tdt.iloc[i]).days} days after the trade")
+    tx["f_witness_after"], tx["f_markup_after"] = f2, f3
+    # major company announcements (8-K)
+    k8 = data.get("k8") or {}
+    f4 = np.zeros(n)
+    kd = {}
+    for t, v in k8.items():
+        lst = []
+        for d, items in v.get("k", []):
+            its = [x.strip() for x in str(items).split(",") if x.strip() in MAJOR_8K]
+            if its:
+                lst.append((pd.Timestamp(d), its))
+        kd[t] = sorted(lst)
+    for i, t in enumerate(tx["ticker"]):
+        for d, its in kd.get(t, []):
+            if tdt.iloc[i] < d <= hi.iloc[i]:
+                f4[i] = 1.0
+                notes[i].append(f"company announced {MAJOR_8K[its[0]]} {(d - tdt.iloc[i]).days} days after the trade (8-K)")
+                break
+    tx["f_major_8k_after"] = f4
+    tx["event_note"] = ["; ".join(x) for x in notes]
+    return tx
+
+
+def upcoming_hearings(cfg, rows, days=45):
+    """Scheduled hearings in the next `days` days where the company is a witness, for the watchlist cards."""
+    cache, _ = _cache_json(cfg, "committee_meetings.json", {"events": {}})
+    today, end = dt.date.today().isoformat(), (dt.date.today() + dt.timedelta(days=days)).isoformat()
+    up = [v for v in (cache.get("events") or {}).values() if v and today <= (v.get("date") or "") <= end
+          and (v.get("status") or "").lower() not in ("canceled", "cancelled", "postponed")]
+    out = {}
+    for r in rows:
+        c_ = company_key(r.get("co") or "")
+        if not c_:
+            continue
+        hits = sorted((v["date"], v.get("title") or "") for v in up if any(c_ in (o or "") for o in v.get("orgs", [])))
+        if hits:
+            out[r["t"]] = [{"date": d, "title": t_} for d, t_ in hits[:3]]
+    return out
+
+
 def meetings_frame(cache):
     rows = []
     for k, v in (cache or {}).get("events", {}).items():
         if not v or not v.get("date") or (v.get("status") or "").lower() in ("canceled", "cancelled", "postponed"):
             continue
         rows.append({"date": pd.to_datetime(v["date"], errors="coerce"), "cids": set(c for c in v.get("cids", []) if c),
-                     "orgs": set(o for o in v.get("orgs", []) if o), "closed": bool(CLOSED_RE.search(v.get("title") or ""))})
-    return pd.DataFrame(rows, columns=["date", "cids", "orgs", "closed"]).dropna(subset=["date"])
+                     "orgs": set(o for o in v.get("orgs", []) if o), "closed": bool(CLOSED_RE.search(v.get("title") or "")),
+                     "type": str(v.get("type") or ""), "bills": list(v.get("bills") or []), "title": v.get("title") or ""})
+    return pd.DataFrame(rows, columns=["date", "cids", "orgs", "closed", "type", "bills", "title"]).dropna(subset=["date"])
 
 
 # ----------------------------------------------------------------------------
