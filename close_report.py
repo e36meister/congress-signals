@@ -181,10 +181,10 @@ def build_email(rep, mode, snap, data):
         room_up, room_dn = w - gap, w + gap
         edge = f"{room_up:.1f}% below the top edge" if room_up <= room_dn else f"{room_dn:.1f}% above the bottom edge"
         luck = (f"<b>Inside the luck range, {edge}.</b> The range is ±{w:.1f}% around the S&amp;P today and widens "
-                f"over time. Inside it, results can't yet be told apart from luck.")
+                f"over time.")
     else:
         luck = (f"<b>{'Above' if gap > 0 else 'Below'} the luck range</b> by {abs(gap) - w:.1f}% "
-                f"(the range is ±{w:.1f}% around the S&amp;P today). Early on, one stock's big day can do this.")
+                f"(the range is ±{w:.1f}% around the S&amp;P today).")
 
     # today's biggest movers among open positions
     pos = [p for p in (snap.get("positions") or []) if p.get("day") is not None and abs(float(p["day"])) >= 0.0005]
@@ -213,8 +213,7 @@ def build_email(rep, mode, snap, data):
                   f"<td align='right' style='font-family:Menlo,Consolas,monospace;color:{grey}'>{pct(None if e is None else e * 100, 1)}</td></tr>")
     strat = (f"<table cellspacing='0' cellpadding='0' style='font-size:14px'><tr style='color:{grey};font-size:12px'>"
              f"<td style='padding-bottom:4px'>Since bought</td><td align='right' style='padding:0 12px 4px 0'>Return</td>"
-             f"<td align='right' style='padding:0 12px 4px 0'>vs S&amp;P</td><td align='right' style='padding-bottom:4px'>Backtest</td></tr>{srows}</table>"
-             f"<div style='font-size:12px;color:{grey};margin-top:4px'>Backtest = how the backtest's average pick did vs the S&amp;P after the same number of days.</div>") if srows else ""
+             f"<td align='right' style='padding:0 12px 4px 0'>vs S&amp;P</td><td align='right' style='padding-bottom:4px'>Backtest</td></tr>{srows}</table>") if srows else ""
 
     # what happens next
     soon = sorted([(p["t"], int(p["hold"]) - int(p.get("held") or 0)) for p in snap.get("positions") or []
