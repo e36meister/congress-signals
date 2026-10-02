@@ -6406,6 +6406,59 @@ def _price_rule_check(scored, px, cfg, a, pol, rows, today, key, options, label)
         log(f"Adjustments: {label}: stays {options[curk]}")
 
 
+SLEEVE_HOLDS = (20, 60, 125, 250, 375, 500)
+SLEEVE_EXTENDS = {"none": "Sell on the scheduled day",
+                  "ride10": "Keep holding while rising (sell after a 10% drop from its high, at most 2x the hold)",
+                  "ride15": "Keep holding while rising (sell after a 15% drop from its high, at most 2x the hold)"}
+
+
+def check_sleeve_price_rules(scored, px, cfg, a, pol, rows, today):
+    """The same stop-loss and hold-longer rules, tried on the small-company portfolio with its own hold."""
+    sd = lambda b: b["curves"]["Small-company picks"].pct_change().fillna(0)
+    sv = lambda b: float(b["perf"].loc["Per year vs S&P 500", "Small-company picks"])
+
+    def risk(b):
+        dd = float(b["perf"].loc["Worst drawdown", "Small-company picks"])
+        pk = b["picks"]
+        closed = pk[pk["closed"]] if len(pk) else pk
+        return {"Worst drop": dd, "Worst trade": float(closed["ret"].min()) if len(closed) else None,
+                "Trades down 25%+": float((closed["ret"] <= -0.25).mean()) if len(closed) else None}
+
+    for key, options, label in (("sleeve_price_exit", PRICE_EXITS, "Small-company portfolio: " + PRICE_EXIT_LABEL.lower()),
+                                ("sleeve_extend", SLEEVE_EXTENDS, "Small-company portfolio: " + EXTEND_LABEL.lower())):
+        curk = pol.get(key, "none")
+        kw = lambda k: {"price_exit": pol.get("sleeve_price_exit", "none"), "extend": pol.get("sleeve_extend", "none"),
+                        key.replace("sleeve_", ""): k}
+        cur = small_cap_backtest(scored, px, cfg, hold=pol["hold_sleeve"], coverage=pol.get("sleeve_coverage"), **kw(curk))
+        if cur is None:
+            return
+        r_cur = sd(cur)
+        rows[:] = [r for r in rows if r.get("Setting") != label]
+        rows.append({"Setting": label, "Option": options[curk] + " (current)", "Per year vs S&P": sv(cur),
+                     "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current", **risk(cur)})
+        best = None
+        for k in options:
+            if k == curk:
+                continue
+            b = small_cap_backtest(scored, px, cfg, hold=pol["hold_sleeve"], coverage=pol.get("sleeve_coverage"), **kw(k))
+            c = _compare(sd(b), r_cur)
+            rows.append({"Setting": label, "Option": options[k], "Per year vs S&P": sv(b),
+                         "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
+                         "Verdict": _verdict(c, True), **risk(b)})
+            if clearly_better(c) and (best is None or c["gain"] > best[1]["gain"]):
+                best = (k, c)
+        if best:
+            for r in rows:
+                if r["Setting"] == label and r["Option"] == options[best[0]]:
+                    r["Verdict"] = "Switched automatically"
+            a["history"].append({"date": today, "change": label, "from": options[curk], "to": options[best[0]],
+                                 "gain_per_year": best[1]["gain"], "sureness": best[1]["t"]})
+            log(f"Adjustments: {label} -> {options[best[0]]} (+{best[1]['gain']*100:.1f}%/yr in the backtest)")
+            pol[key] = best[0]
+        else:
+            log(f"Adjustments: {label}: stays {options[curk]}")
+
+
 def check_price_rules(scored, px, cfg, a, pol, rows, today):
     _price_rule_check(scored, px, cfg, a, pol, rows, today, "price_exit", PRICE_EXITS, PRICE_EXIT_LABEL)
     _price_rule_check(scored, px, cfg, a, pol, rows, today, "extend", EXTENDS, EXTEND_LABEL)
@@ -6436,6 +6489,8 @@ def load_adaptive(cfg):
     a["policy"].setdefault("signals_on", [])
     a["policy"].setdefault("price_exit", "none")           # sell early when a stock falls (stop rules)
     a["policy"].setdefault("extend", "none")               # keep holding while a stock keeps rising
+    a["policy"].setdefault("sleeve_price_exit", "none")    # the same two rules for the small-company portfolio
+    a["policy"].setdefault("sleeve_extend", "none")
     a["policy"].setdefault("sizing", "equal")              # position size by confidence                # new signals the weekly check has switched on   # sell when a member who bought discloses a sale
     a["policy"].setdefault("main_method", "hand")       # "learned": buy weights refit from all finished trades     # small-company portfolio skips companies no analyst covers
     a.setdefault("use_tuned", False)
@@ -6550,7 +6605,7 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
         key, r_cur, best = "hold_sleeve", sd(sb), None
         rows.append({"Setting": HOLD_LABELS[key], "Option": f"{pol[key]} trading days (current)", "Per year vs S&P": sv(sb),
                      "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
-        for h in (60, 125, 250):
+        for h in SLEEVE_HOLDS:
             if h == pol[key]:
                 continue
             b = small_cap_backtest(scored, px, cfg, hold=h)
@@ -6584,6 +6639,10 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
                                      "to": "off" if cov else "on", "gain_per_year": c["gain"], "sureness": c["t"]})
                 log(f"Adjustments: {label} -> {'off' if cov else 'on'} (+{c['gain']*100:.1f}%/yr in the backtest)")
                 pol["sleeve_coverage"] = not cov
+        try:
+            check_sleeve_price_rules(scored, px, cfg, a, pol, rows, today)
+        except Exception as e:
+            log(f"Adjustments: small-company price-rule check skipped ({e})")
     # how buy picks are scored: hand-set weights, or weights learned each year from earlier trades only.
     # The learned side is the never-seen-years test, so its result has no hindsight in it.
     if wf is not None:
@@ -6847,7 +6906,7 @@ def export_research(scored, px, cfg, max_cap=1e10):
     return path
 
 
-def small_cap_backtest(scored, px, cfg, hold=None, coverage=None):
+def small_cap_backtest(scored, px, cfg, hold=None, coverage=None, price_exit=None, extend=None):
     pol = load_adaptive(cfg)["policy"]
     coverage = bool(pol.get("sleeve_coverage")) if coverage is None else coverage
     rows = small_cap_rows(scored, coverage)
@@ -6855,7 +6914,10 @@ def small_cap_backtest(scored, px, cfg, hold=None, coverage=None):
         return None
     hold = int(hold or pol.get("hold_sleeve", 250))
     cost = cfg.get("COST_BPS", 0) / 1e4
-    fr = forward_returns(rows, px, hold, cost=cost)
+    pe = pol.get("sleeve_price_exit", "none") if price_exit is None else price_exit
+    ex = pol.get("sleeve_extend", "none") if extend is None else extend
+    ep = price_exit_positions(rows, px, hold, pe, ex) if (pe != "none" or ex != "none") else None
+    fr = forward_returns(rows, px, hold, cost=cost, exit_pos=ep)
     picks = rows.drop(columns=[c for c in fr.columns if c in rows.columns]).join(fr)
     idx = px.index[px.index >= picks["entry_date"].min()]
     weeks = max(1.0, (picks["filed_date"].max() - picks["filed_date"].min()).days / 7)

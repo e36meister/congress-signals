@@ -117,7 +117,7 @@ def refresh_portfolio():
         w = data.get("watchlist") or {}
         caps = {broker.to_alpaca(r["t"]): r.get("cap") for r in (w.get("buys") or []) + (w.get("sells") or []) if r.get("t")}
         if caps:
-            broker.recheck_queued_sells(caps, E.log)
+            broker.recheck_queued_sells(caps, E.log, policy=(data.get("adaptive") or {}).get("policy"))
             snap = broker.sync({"HOLD_DAYS": int(os.environ.get("HOLD_DAYS", "60"))}, None, None, {}, E.log, trade=False) or snap
     except Exception as e:
         E.log(f"Quick check: sell recheck skipped ({type(e).__name__})")
