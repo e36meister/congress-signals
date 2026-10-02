@@ -204,6 +204,9 @@ HOUSE_ASSET = re.compile(r"(?:\(([A-Za-z0-9.\-/]{1,8})\)\s*)?\[([A-Z]{2})\]")
 
 
 PARSER_VERSION = 3
+# House reports whose rows lost the ticker are re-read once when this changes (Oct 2: ticker before the transaction)
+HOUSE_TICKER_FIX = 1
+HOUSE_TICKER_BEFORE = re.compile(r"\(([A-Z][A-Z0-9.\-/]{0,7})\)\s*$")
 # a House PTR row's own description ("D: ...") or comment ("C: ...") lines, written by the filer
 HOUSE_NOTE = re.compile(r"(?im)^\s*(?:D(?:ESCRIPTION)?|C(?:OMMENTS?)?)\s*:\s*(.+?)\s*$")
 
@@ -245,7 +248,14 @@ def parse_house_ptr_text(text):
             low = seg.lower()
             opt = "put" if re.search(r"\bputs?\b", low) else ("call" if re.search(r"\bcalls?\b", low) else "option")
         notes = [m.group(1).strip() for m in HOUSE_NOTE.finditer(seg)]
-        out.append({"ticker": a.group(1), "asset_type": a.group(2), "tx_raw": typ,
+        ticker = a.group(1)
+        if not ticker:
+            # short names fit on one line, so the ticker sits just before the transaction
+            # ("Apple Inc. - Common Stock (AAPL) S 06/01/2026 ...") and the [ST] tag wraps to the next line
+            pre = text[text.rfind("\n", 0, c.start()) + 1:c.start()]
+            m = HOUSE_TICKER_BEFORE.search(pre)
+            ticker = m.group(1) if m else None
+        out.append({"ticker": ticker, "asset_type": a.group(2), "tx_raw": typ,
                     "trade_date": tdate, "notif_date": ndate, "amt_lo": lo, "amt_hi": hi,
                     "owner": own.group(1) if own else "", "option": opt,
                     "note": " ".join(n for n in notes if n) or None})
@@ -293,6 +303,18 @@ def collect_house(cfg):
             log("House: parser upgraded (owners and options); re-reading all reports once")
         tx, done = pd.DataFrame(), set()
         open(ver_path, "w").write(str(PARSER_VERSION))
+    fix_path = _p(cfg, "cache", "house_ticker_fix.txt")
+    if not os.path.exists(fix_path) or open(fix_path).read().strip() != str(HOUSE_TICKER_FIX):
+        if len(tx) and "ticker" in tx.columns:
+            bad = set(tx.loc[tx["ticker"].isna() | (tx["ticker"].astype(str).str.strip().isin(["", "None"])),
+                             "doc_id"].astype(str))
+            if bad:
+                log(f"House: re-reading {len(bad)} reports with rows missing a ticker")
+                tx = tx[~tx["doc_id"].astype(str).isin(bad)].reset_index(drop=True)
+                done -= bad
+                tx.to_pickle(cache_tx)
+                json.dump(sorted(done), open(cache_done, "w"))
+        open(fix_path, "w").write(str(HOUSE_TICKER_FIX))
 
     idx = []
     for y in range(start.year, dt.date.today().year + 1):
