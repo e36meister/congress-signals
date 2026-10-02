@@ -783,7 +783,7 @@ def volume_ratio_table(vol):
 
 def volume_features(tx, data):
     """Unusual trading volume in the stock in the two weeks before the member's trade: someone may have been
-    trading on the same information. 0 at 2x normal or less, 1 at 5x or more."""
+    trading on the same information. 0 at 4x normal or less, 1 at 12x or more (the median trade sees ~2x)."""
     tx["f_unusual_volume"], tx["volume_ratio"], tx["volume_note"] = 0.0, np.nan, ""
     vol = data.get("volume")
     if vol is None or not len(vol):
@@ -798,12 +798,47 @@ def volume_features(tx, data):
         j = col.get(t)
         if j is not None and 0 < p_ <= len(idx):
             rr[i] = R[min(p_, len(idx)) - 1, j]
-    f = np.clip((rr - 2) / 3, 0, 1)
+    f = np.clip((rr - 4) / 8, 0, 1)       # the typical trade's peak day is ~2x normal; 8x+ is the top 5%
     f = np.where(np.isfinite(f), f, 0.0)
     tx["f_unusual_volume"], tx["volume_ratio"] = f, rr
-    tx["volume_note"] = [f"trading volume hit {x:.1f}x normal in the 2 weeks before the trade" if np.isfinite(x) and x >= 3 else ""
+    tx["volume_note"] = [f"trading volume hit {x:.1f}x normal in the 2 weeks before the trade" if np.isfinite(x) and x >= 8 else ""
                          for x in rr]
     return tx
+
+
+def worth_a_look(scored, cfg, days=None):
+    """Recently disclosed trades with a rare red flag, whatever their score: a family tie to the company, heavy trading
+    before the trade, a big company event or federal rule soon after it, or a closed committee briefing just before it."""
+    days = days or cfg.get("WATCHLIST_LOOKBACK_DAYS", 30)
+    since = pd.Timestamp.today().normalize() - pd.Timedelta(days=days)
+    r = scored[(scored["filed_date"] >= since) & scored["tx_type"].isin(["buy", "sell"])]
+    if not len(r):
+        return []
+    col = lambda c: r[c] if c in r else pd.Series(0, index=r.index)
+    flags = ((col("f_spouse_insider") > 0) | (col("f_relative_tie") > 0) | (col("volume_ratio").fillna(0) >= 8)
+             | (col("f_reg_action") > 0) | (col("f_witness_after") > 0) | (col("f_markup_after") > 0)
+             | (col("f_major_8k_after") > 0) | (col("f_closed_briefing") > 0))
+    r = r[flags]
+    out = {}
+    for x in r.sort_values("filed_date", ascending=False).to_dict("records"):
+        why = [x.get(k) for k in ("spouse_note", "relative_note", "volume_note", "event_note") if x.get(k)]
+        if x.get("f_closed_briefing", 0) > 0:
+            why.append("a closed committee briefing shortly before the trade")
+        why = [w for part in why for w in str(part).split("; ") if w]
+        if not why:
+            continue
+        o = out.setdefault(x["ticker"], {"t": x["ticker"], "co": x.get("company") or None, "who": [], "why": [],
+                                         "d": pd.Timestamp(x["filed_date"]).strftime("%Y-%m-%d")})
+        if not any(w["n"] == x["member"] and w["ty"] == x["tx_type"] for w in o["who"]):
+            o["who"].append({"n": str(x["member"]), "b": x.get("bioguide") if isinstance(x.get("bioguide"), str) else None,
+                             "ty": x["tx_type"], "td": pd.Timestamp(x["trade_date"]).strftime("%Y-%m-%d"),
+                             "d": pd.Timestamp(x["filed_date"]).strftime("%Y-%m-%d")})
+        for w in why:
+            if w not in o["why"]:
+                o["why"].append(w)
+    res = sorted(out.values(), key=lambda o: o["d"], reverse=True)[:30]
+    log(f"Worth a look: {len(res)} recently disclosed stock(s) with a rare red flag")
+    return res
 
 
 def unusual_activity(scored, px, cfg, days=90, min_ratio=2.5):
