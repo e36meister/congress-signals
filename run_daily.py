@@ -58,6 +58,51 @@ def upload_to_drive(local_path, title, mimetype="application/json"):
 DASHBOARD_URL = "https://claude.ai/artifact/Hkj8H6ZduZXcuvtgSaByru"
 
 
+def _send_email(subject, body_html, log_ok):
+    addr, pw = env("GMAIL_ADDRESS"), env("GMAIL_APP_PASSWORD")
+    to = env("ALERT_TO") or addr
+    if not (addr and pw):
+        return False
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+    msg = MIMEMultipart("alternative")
+    msg["Subject"], msg["From"], msg["To"] = subject[:140], addr, to
+    msg.attach(MIMEText(body_html, "html"))
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+            s.login(addr, pw.replace(" ", ""))
+            s.send_message(msg)
+        E.log(log_ok)
+        return True
+    except Exception as e:
+        E.log(f"Email: sending failed ({type(e).__name__}); check the Gmail app password secret")
+        return False
+
+
+def send_worth_alerts(items):
+    """Email red-flag trades not seen before (Worth a look), once each."""
+    import html
+    path = os.path.join(cfg["DATA_DIR"], "state", "worth_seen.json")
+    seen = set(json.load(open(path))) if os.path.exists(path) else set()
+    key = lambda o, w: f"{o['t']}|{w['n']}|{w['ty']}|{w['td']}"
+    new = [o for o in items if any(key(o, w) not in seen for w in o["who"])]
+    if new:
+        rows = "".join(f"<tr><td><b>{html.escape(o['t'])}</b><br><span style='color:#666'>{html.escape(o.get('co') or '')}</span></td>"
+                       f"<td>{'<br>'.join(html.escape(w['n']) + (' bought ' if w['ty'] == 'buy' else ' sold ') + w['td'] for w in o['who'])}</td>"
+                       f"<td style='font-size:13px'>{html.escape('; '.join(o['why']))}</td></tr>" for o in new)
+        body = (f"<p>{len(new)} recently disclosed trade(s) with a rare red flag. These aren't buy signals on their own; "
+                f"they're worth a look.</p><table border=1 cellpadding=6 style='border-collapse:collapse;font-family:Arial'>"
+                f"<tr><th>Stock</th><th>Members</th><th>Why</th></tr>{rows}</table><p><a href='{DASHBOARD_URL}'>Open Capitol Capital</a></p>")
+        if _send_email("Worth a look: " + ", ".join(o["t"] for o in new), body, f"Email: sent {len(new)} worth-a-look item(s)"):
+            for o in new:
+                for w in o["who"]:
+                    seen.add(key(o, w))
+            json.dump(sorted(seen), open(path, "w"))
+    elif not os.path.exists(path):
+        json.dump([], open(path, "w"))
+
+
 def send_alerts(buys, sells, new):
     """Email new BUY / avoid signals (defense picks flagged) when Gmail secrets are set."""
     addr, pw = env("GMAIL_ADDRESS"), env("GMAIL_APP_PASSWORD")
@@ -159,6 +204,7 @@ def main():
         d["unusual"] = E.unusual_activity(scored, px, cfg)
         if fr is not None:
             d["foreign"] = fr
+        d["worth"] = E.worth_a_look(scored, cfg)
         w = d.get("watchlist") or {}
         hear = E.upcoming_hearings(cfg, (w.get("buys") or []) + (w.get("sells") or []))
         for r in (w.get("buys") or []) + (w.get("sells") or []):
@@ -168,6 +214,10 @@ def main():
     except Exception as e:
         E.log(f"Unusual activity: skipped ({type(e).__name__}: {e})")
     send_alerts(buys, sells, new)
+    try:
+        send_worth_alerts(json.load(open(os.path.join(cfg["DATA_DIR"], "dashboard_data.json"))).get("worth") or [])
+    except Exception as e:
+        E.log(f"Worth a look: email skipped ({type(e).__name__})")
     try:
         last = px.ffill().iloc[-1].to_dict() if px is not None and len(px) else {}
         sm = (bt.get("small") or {}) if isinstance(bt, dict) else {}
