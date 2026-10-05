@@ -315,6 +315,9 @@ def collect_house(cfg):
         done = set()
         open(ver_path, "w").write(str(HOUSE_PARSER_VERSION))
         json.dump([], open(cache_done, "w"))
+        json.dump({"version": HOUSE_PARSER_VERSION, "rows_before": int(len(tx)),
+                   "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")},
+                  open(_p(cfg, "state", "house_reread.json"), "w"))
     fix_path = _p(cfg, "cache", "house_ticker_fix.txt")
     if not os.path.exists(fix_path) or open(fix_path).read().strip() != str(HOUSE_TICKER_FIX):
         if len(tx) and "ticker" in tx.columns:

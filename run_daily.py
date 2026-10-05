@@ -190,6 +190,22 @@ def main():
         E.check_exit_rule_once(scored, px, cfg)
     except Exception as e:
         E.log(f"Adjustments: sell-when-member-sells check skipped ({e})")
+    try:        # one email when a full House re-read has finished
+        rp = os.path.join(cfg["DATA_DIR"], "state", "house_reread.json")
+        rr = json.load(open(rp)) if os.path.exists(rp) else {"version": E.HOUSE_PARSER_VERSION}
+        bl = os.path.join(cfg["DATA_DIR"], "cache", "house_backlog.json")
+        if not rr.get("notified") and os.path.exists(bl) and E.house_backlog(cfg) == 0:
+            hx = scored[scored["chamber"] == "House"] if "chamber" in scored else scored.iloc[0:0]
+            yrs = hx.groupby(E.pd.to_datetime(hx["filed_date"]).dt.year).size().to_dict() if len(hx) else {}
+            body = (f"<p>All House trade reports have been read again with the fixed reader.</p>"
+                    f"<p>House trades on file: {len(hx):,} (before the fix: {rr.get('rows_before') or 'n/a'} raw rows).</p>"
+                    "<p>By filing year: " + ", ".join(f"{y}: {n:,}" for y, n in sorted(yrs.items())) + "</p>"
+                    "<p>The filter test starts in the next update; the weekly check will redo everything on the full data.</p>")
+            if _send_email("Capitol Capital: House trades re-read", body, "Email: sent the House re-read notice"):
+                rr["notified"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+                json.dump(rr, open(rp, "w"))
+    except Exception as e:
+        E.log(f"House re-read notice: skipped ({type(e).__name__})")
     if not E.out_of_time(cfg, 80):
         try:
             ft = E.load_filter_state(cfg)
