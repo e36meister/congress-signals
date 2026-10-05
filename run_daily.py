@@ -190,6 +190,13 @@ def main():
         E.check_exit_rule_once(scored, px, cfg)
     except Exception as e:
         E.log(f"Adjustments: sell-when-member-sells check skipped ({e})")
+    if not E.out_of_time(cfg, 80):
+        try:
+            ft = E.load_filter_state(cfg)
+            if not ft.get("complete"):
+                E.filter_rule_test(scored, px, cfg)
+        except Exception as e:
+            E.log(f"Filter test: skipped ({type(e).__name__}: {e})")
     if not E.out_of_time(cfg, 75):
         try:
             E.check_price_rules_once(scored, px, cfg)

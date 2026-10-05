@@ -3793,6 +3793,15 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
                 "trade_stats": {k: _j(v) for k, v in sbt["trade_stats"].items()},
                 "years": [{"year": int(y), **{c: _j(v) for c, v in r.items()}} for y, r in sbt["years"].iterrows()],
                 "n_picks": len(sbt["picks"]), "picks": _rows(P, _TRADE_COLS)}
+    fpath = os.path.join(cfg["DATA_DIR"], "state", FILTER_FILE)
+    if os.path.exists(fpath):
+        try:
+            ft = json.load(open(fpath))
+            data["filter_test"] = {k: ft.get(k) for k in ("summary", "updated", "complete")}
+            data["filter_test"]["years"] = {r: v["years"] for r, v in ft.get("rules", {}).items()}
+            data["filter_test"]["switches"] = {r: v["switches"] for r, v in ft.get("rules", {}).items()}
+        except Exception:
+            pass
     apath = os.path.join(cfg["DATA_DIR"], "state", ADAPT_FILE)
     if os.path.exists(apath):
         try:
@@ -6477,6 +6486,168 @@ def check_price_rules_once(scored, px, cfg):
     save_adaptive(cfg, a)
 
 
+# ---- how strict should the weekly check be? Replay the switching rule on never-seen years -------------------
+FILTER_FILE = "filter_test.json"
+FILTER_VERSION = 1
+FILTER_RULES = {
+    "strict": "Strict (now): at least +1%/yr, sure enough to rule out luck (t ≥ 1.65), and still better over the last 3 years",
+    "medium": "Middle: at least +0.5%/yr and somewhat sure (t ≥ 1.0)",
+    "loose": "Loose: any gain above zero over the past, no sureness needed",
+    "never": "Never switch: keep the starting settings",
+}
+
+
+def _rule_passes(rule, c):
+    if not c or rule == "never":
+        return False
+    if rule == "strict":
+        return clearly_better(c)
+    if rule == "medium":
+        return c["gain"] >= 0.005 and c["t"] >= 1.0
+    return c["gain"] > 0
+
+
+def load_filter_state(cfg):
+    try:
+        st = json.load(open(_p(cfg, "state", FILTER_FILE)))
+        return st if st.get("version") == FILTER_VERSION else {}
+    except Exception:
+        return {}
+
+
+def filter_rule_test(scored, px, cfg):
+    """Each year from 2017, every rule looks only at the years before it, switches settings the way it would
+    have (holding periods, stop and hold-longer rules, sell-when-member-sells, sizing, new signals), then
+    trades the next year with what it chose. Resumable: years already done are kept between runs."""
+    path = _p(cfg, "state", FILTER_FILE)
+    try:
+        st = json.load(open(path))
+        if st.get("version") != FILTER_VERSION:
+            st = {}
+    except Exception:
+        st = {}
+    start_pol = {"hold_other": 60, "hold_small": 60, "price_exit": "none", "extend": "none",
+                 "exit_on_member_sell": False, "sizing": "equal", "signals_on": []}
+    st.setdefault("version", FILTER_VERSION)
+    st.setdefault("rules", {r: {"pol": dict(start_pol), "years": {}, "switches": []} for r in FILTER_RULES})
+    settings = [("hold_other", [20, 60, 125, 250]), ("hold_small", [20, 60, 125, 250]),
+                ("price_exit", list(PRICE_EXITS)), ("extend", list(EXTENDS)),
+                ("exit_on_member_sell", [False, True]), ("sizing", list(SIZING))]
+    settings += [("sig:" + k, [False, True]) for k in TRIAL_SIGNALS
+                 if int((scored.get(f"f_{k}", pd.Series(0, index=scored.index)) > 0).sum()) >= 30]
+    spy = px["SPY"].pct_change(fill_method=None).fillna(0)
+    cache = {}
+
+    def series(pol):
+        key = json.dumps(pol, sort_keys=True, default=str)
+        if key not in cache:
+            sc = scored
+            if pol["signals_on"]:
+                bw, sw = active_weights(cfg, signals_on=list(pol["signals_on"]))
+                sc = apply_scores(scored, cfg, buy_w=bw, short_w=sw)
+            bt = run_backtest(apply_hold_policy(sc, px, cfg, pol), px, dict(cfg, _nested=True, _sizing=pol["sizing"]))
+            cache[key] = _long_daily(bt)
+        return cache[key]
+
+    def with_opt(pol, key, o):
+        p = dict(pol, signals_on=list(pol["signals_on"]))
+        if key.startswith("sig:"):
+            k = key[4:]
+            p["signals_on"] = sorted(set(p["signals_on"]) | {k}) if o else [x for x in p["signals_on"] if x != k]
+        else:
+            p[key] = o
+        return p
+
+    def current(pol, key):
+        return (key[4:] in pol["signals_on"]) if key.startswith("sig:") else pol[key]
+
+    first = max(pd.Timestamp(cfg["START_DATE"]).year + 3, 2017)
+    for y in range(first, dt.date.today().year + 1):
+        if all(str(y) in st["rules"][r]["years"] for r in FILTER_RULES):
+            continue
+        if out_of_time(cfg, 70):
+            log(f"Filter test: paused before {y}; continues next run")
+            break
+        cut = pd.Timestamp(f"{y}-01-01")
+        for r in FILTER_RULES:
+            R = st["rules"][r]
+            if str(y) in R["years"]:
+                continue
+            pol = R["pol"]
+            if r != "never":
+                for key, opts in settings:
+                    cur_v = current(pol, key)
+                    base = series(pol)
+                    past = base.index < cut
+                    best = None
+                    for o in opts:
+                        if o == cur_v:
+                            continue
+                        alt = series(with_opt(pol, key, o))
+                        c = _compare(alt[past], base[past])
+                        if _rule_passes(r, c) and (best is None or c["gain"] > best[1]["gain"]):
+                            best = (o, c)
+                    if best:
+                        R["switches"].append({"year": y, "setting": key, "from": cur_v, "to": best[0],
+                                              "gain": best[1]["gain"], "t": best[1]["t"]})
+                        pol = with_opt(pol, key, best[0])
+            R["pol"] = pol
+            d = series(pol)
+            m = d.index.year == y
+            if m.sum() < 20:
+                continue
+            ret = float((1 + d[m]).prod() - 1)
+            sr = float((1 + spy.reindex(d.index)[m].fillna(0)).prod() - 1)
+            R["years"][str(y)] = {"ret": ret, "spy": sr, "vs": ret - sr, "days": int(m.sum()), "pol": dict(pol)}
+            log(f"Filter test {y} {r}: {ret*100:+.1f}% vs S&P {sr*100:+.1f}%")
+        json.dump(st, open(path, "w"), indent=1, default=str)
+    # summary
+    summ = []
+    for r, label in FILTER_RULES.items():
+        ys = st["rules"][r]["years"]
+        if not ys:
+            continue
+        full = list(ys.values())
+        eq = float(np.prod([1 + v["ret"] for v in full])) if full else None
+        es = float(np.prod([1 + v["spy"] for v in full])) if full else None
+        n = sum(v["days"] for v in full) / 252 if full else 0
+        summ.append({"rule": r, "label": label, "years": n,
+                     "per_year": (eq ** (1 / n) - 1) if n else None, "spy_per_year": (es ** (1 / n) - 1) if n else None,
+                     "vs_per_year": ((eq ** (1 / n)) - (es ** (1 / n))) if n else None,
+                     "beat_years": sum(v["vs"] > 0 for v in full), "switches": len(st["rules"][r]["switches"])})
+    st["summary"] = summ
+    st["updated"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    st["complete"] = all(str(dt.date.today().year) in st["rules"][r]["years"] for r in FILTER_RULES)
+    json.dump(st, open(path, "w"), indent=1, default=str)
+    return st
+
+
+# ---- one-time settings the owner chose (from policy_overrides.json in the repo) ------------------------------
+def _apply_overrides(cfg, a):
+    try:
+        ov = json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy_overrides.json")))
+    except Exception:
+        return False
+    done = set(a.get("overrides_applied", []))
+    changed = False
+    for o in ov.get("overrides", []):
+        if o.get("id") in done:
+            continue
+        for k, v in (o.get("set") or {}).items():
+            old = a["policy"].get(k)
+            a["policy"][k] = v
+            lab = {"price_exit": (PRICE_EXIT_LABEL, PRICE_EXITS), "extend": (EXTEND_LABEL, EXTENDS)}.get(k)
+            a.setdefault("history", []).append({
+                "date": dt.date.today().isoformat(), "change": (lab[0] if lab else k) + " (your choice)",
+                "from": lab[1].get(old, old) if lab else old, "to": lab[1].get(v, v) if lab else v,
+                "gain_per_year": None, "sureness": None, "by": "owner", "note": o.get("note")})
+            log(f"Settings: {k} set to {v} ({o.get('note') or 'owner choice'})")
+        done.add(o.get("id"))
+        changed = True
+    a["overrides_applied"] = sorted(done)
+    return changed
+
+
 def load_adaptive(cfg):
     try:
         a = json.load(open(_p(cfg, "state", ADAPT_FILE)))
@@ -6495,6 +6666,11 @@ def load_adaptive(cfg):
     a["policy"].setdefault("main_method", "hand")       # "learned": buy weights refit from all finished trades     # small-company portfolio skips companies no analyst covers
     a.setdefault("use_tuned", False)
     a.setdefault("history", [])
+    if _apply_overrides(cfg, a):
+        try:
+            save_adaptive(cfg, a)
+        except Exception:
+            pass
     return a
 
 
