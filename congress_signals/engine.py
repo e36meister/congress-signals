@@ -68,6 +68,7 @@ DEFAULT_CONFIG = {
     "LDA_API_KEY": "",               # optional free key from lda.gov (faster lobbying downloads)
     "QUIVER_API_KEY": "",
     "FMP_API_KEY": "",
+    "OCR_SPACE_API_KEY": "",
     "TIINGO_API_KEY": "",            # free key from tiingo.com: fills in prices for delisted stocks
     "TIINGO_PER_RUN": 45,
     "USE_HOUSE": True, "USE_SENATE": True, "USE_INSIDERS": True, "USE_CONTRACTS": True,
@@ -431,6 +432,8 @@ def collect_house_paper(cfg):
         except Exception:
             pass
     nidx = PP.NameIndex(titles)
+    ocr = PP.OcrSpace(cfg["OCR_SPACE_API_KEY"], _p(cfg, "state", "ocrspace_usage.json")) if cfg.get("OCR_SPACE_API_KEY") else None
+    matcher = lambda name: nidx.match(name, known)
     idx = []
     for y in range(start.year, dt.date.today().year + 1):
         try:
@@ -443,9 +446,16 @@ def collect_house_paper(cfg):
     idx["FilingDate"] = pd.to_datetime(idx["FilingDate"], errors="coerce")
     idx = idx[(idx["FilingDate"] >= start) & idx["DocID"].astype(str).str.match(r"^[89]")]
     todo = idx[~idx["DocID"].astype(str).isin(done)].sort_values("FilingDate", ascending=False)
+    if ocr is None:
+        log("House paper: no OCR_SPACE_API_KEY; using the built-in reader (handwriting mostly unreadable)")
+    elif not ocr.can(2):
+        log("House paper: OCR.space daily/monthly allowance used up; continuing next run")
+        return tx
     log(f"House paper: {len(idx)} scanned reports since {start.date()}, {len(todo)} to read")
 
     def work(r):
+        if ocr is not None and not ocr.can(2):      # allowance used up: leave the rest for the next run
+            return r, None
         url = f"https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/{int(r['year'])}/{r['DocID']}.pdf"
         try:
             b = requests.get(url, headers=UA, timeout=60)
@@ -453,7 +463,7 @@ def collect_house_paper(cfg):
                 return r, None
             out = []
             for img in PP.render_pages(b.content):
-                out += PP.parse_page(img, r["FilingDate"])
+                out += PP.parse_page(img, r["FilingDate"], ocr=ocr, matcher=matcher)
             return r, out
         except Exception:
             return r, None
@@ -476,7 +486,7 @@ def collect_house_paper(cfg):
         first, last = str(r.get("First") or "").strip(), str(r.get("Last") or "").strip()
         for t in items:
             stats["rows"] += 1
-            tk = nidx.match(t["name"], known)
+            tk = t.get("ticker") or nidx.match(t["name"], known)
             if not tk or not t["tx_raw"] or not t["amount"]:
                 continue
             stats["matched"] += 1
