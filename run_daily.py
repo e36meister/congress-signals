@@ -193,7 +193,9 @@ def main():
     if not E.out_of_time(cfg, 80):
         try:
             ft = E.load_filter_state(cfg)
-            if not ft.get("complete"):
+            if E.house_backlog(cfg) > 100:
+                E.log(f"Filter test: waiting until House reports are re-read ({E.house_backlog(cfg)} left)")
+            elif not ft.get("complete"):
                 E.filter_rule_test(scored, px, cfg)
         except Exception as e:
             E.log(f"Filter test: skipped ({type(e).__name__}: {e})")
