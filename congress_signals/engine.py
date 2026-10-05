@@ -3158,7 +3158,13 @@ def walk_forward(scored, px, cfg, min_train=500):
         return None
     longs = pd.concat(picks, ignore_index=True)
     idx = px.index[px.index >= longs["entry_date"].min()]
-    slots = max(1, int(cfg["PICKS_PER_WEEK"] * float(longs["hold_days_row"].mean()) / 5))
+    # each year sizes its picks for its own holding period (a 20-day year holds ~20 positions, a 250-day
+    # year ~250), like the live tool would: weight per pick = 1 / that year's position count
+    per = float(cfg["PICKS_PER_WEEK"])
+    slots = max(1, int(per * 60 / 5))
+    slots_y = (per * longs["hold_days_row"].astype(float) / 5).clip(lower=1)
+    base_k = longs["size_mult"].astype(float).fillna(1.0) if "size_mult" in longs else 1.0
+    longs = longs.assign(size_mult=base_k * slots / slots_y)
     ld, _ = _portfolio_slots(longs, px, idx, slots, "spy", cost=cost)
     spy = px["SPY"].pct_change(fill_method=None).reindex(idx)
     # the regular (full-history) strategy over exactly the same years, for comparison
