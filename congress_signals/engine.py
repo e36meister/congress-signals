@@ -211,55 +211,63 @@ HOUSE_TICKER_BEFORE = re.compile(r"\(([A-Z][A-Z0-9.\-/]{0,7})\)\s*$")
 HOUSE_NOTE = re.compile(r"(?im)^\s*(?:D(?:ESCRIPTION)?|C(?:OMMENTS?)?)\s*:\s*(.+?)\s*$")
 
 
+HOUSE_PARSER_VERSION = 4     # Oct 5: case-proof parser (2014-2021 reports use a small-caps font and no [ST] tags)
+HOUSE_CORE_U = re.compile(
+    r"(?<![A-Z0-9])(P|S \(PARTIAL\)|S|E)\s+(\d{1,2}/\d{1,2}/\d{4})\s+(\d{1,2}/\d{1,2}/\d{4})\s+"
+    r"(SPOUSE/DC OVER\s+\$[\d,]+|OVER \$[\d,]+|\$[\d,]+(?:\s*-\s*\$[\d,]+)?)")
+HOUSE_TICK_U = re.compile(r"\(([A-Z][A-Z0-9.\-/]{0,7})\)")
+HOUSE_TAG_U = re.compile(r"\[([A-Z]{2})\]")
+HOUSE_STOP_U = re.compile(r"^\s*(FILING STATUS|F\s+S\s*:|SUBHOLDING OF|DESCRIPTION|COMMENTS?\s*:|D\s*:|C\s*:|L\s*:|"
+                          r"LOCATION|\* FOR THE COMPLETE|ID OWNER|TYPE DATE|ASSET CLASS DETAILS)", re.M)
+
+
+def _upper_same_len(t):
+    return "".join(c.upper() if len(c.upper()) == 1 else c for c in t)
+
+
 def parse_house_ptr_text(text):
-    """Pair the k-th transaction line with the k-th asset tag in a House PTR.
-    Also returns the owner code (SP spouse, JT joint, DC child; blank = the member)
-    and, for options, whether it is a call or a put."""
+    """Read every transaction row of a House PTR. Works on the current layout and on the 2014-2021 one, whose
+    small-caps font comes out as mixed case ("aaPL", "s", "[sT]") and which often has no asset-type tag.
+    Returns the owner code (SP spouse, JT joint, DC child; blank = the member) and, for options, call or put."""
     text = text.replace("\x00", "")
-    cores = list(HOUSE_CORE.finditer(text))
-    assets = list(HOUSE_ASSET.finditer(text))
+    U = _upper_same_len(text)
+    cores = list(HOUSE_CORE_U.finditer(U))
     out = []
-    if not cores:
-        return out
-    if len(assets) == len(cores):
-        pairs = list(zip(cores, assets))
-    else:  # fall back to nearest asset tag
-        pairs = []
-        for c in cores:
-            if not assets:
-                break
-            a = min(assets, key=lambda a: min(abs(a.start() - c.end()), abs(c.start() - a.end())))
-            pairs.append((c, a))
-    prev_end = 0
-    for k, (c, a) in enumerate(pairs):
-        typ, tdate, ndate, amt = c.groups()
-        lo, hi = parse_amount(amt)
-        row_start = text.rfind("\n", 0, min(a.start(), c.start())) + 1
-        if k + 1 < len(pairs):
-            nc, na = pairs[k + 1]
-            row_end = text.rfind("\n", 0, min(na.start(), nc.start()))
-            row_end = row_end if row_end > max(a.end(), c.end()) else max(a.end(), c.end())
+    for k, c in enumerate(cores):
+        ls = U.rfind("\n", 0, c.start()) + 1
+        if k + 1 < len(cores):
+            row_end = U.rfind("\n", 0, cores[k + 1].start())
+            row_end = row_end if row_end > c.end() else cores[k + 1].start()
         else:
-            row_end = len(text)
-        seg = text[row_start:row_end]
-        own = re.search(r"(?:^|\n)\s*(SP|JT|DC)\s", "\n" + text[max(prev_end, row_start - 200):min(a.start(), c.start())])
-        opt = None
-        if a.group(2) == "OP":
-            low = seg.lower()
-            opt = "put" if re.search(r"\bputs?\b", low) else ("call" if re.search(r"\bcalls?\b", low) else "option")
-        notes = [m.group(1).strip() for m in HOUSE_NOTE.finditer(seg)]
-        ticker = a.group(1)
+            row_end = len(U)
+        row = U[ls:row_end]
+        rel = c.start() - ls
+        head, tail = row[:rel], row[rel + len(c.group(0)):]
+        m = HOUSE_STOP_U.search(tail)
+        cont = tail[:m.start()] if m else tail
+        tm = list(HOUSE_TICK_U.finditer(head))
+        ticker = tm[-1].group(1) if tm else None
         if not ticker:
-            # short names fit on one line, so the ticker sits just before the transaction
-            # ("Apple Inc. - Common Stock (AAPL) S 06/01/2026 ...") and the [ST] tag wraps to the next line
-            pre = text[text.rfind("\n", 0, c.start()) + 1:c.start()]
-            m = HOUSE_TICKER_BEFORE.search(pre)
-            ticker = m.group(1) if m else None
-        out.append({"ticker": ticker, "asset_type": a.group(2), "tx_raw": typ,
-                    "trade_date": tdate, "notif_date": ndate, "amt_lo": lo, "amt_hi": hi,
-                    "owner": own.group(1) if own else "", "option": opt,
-                    "note": " ".join(n for n in notes if n) or None})
-        prev_end = max(a.end(), c.end())
+            t2 = HOUSE_TICK_U.search(cont)
+            ticker = t2.group(1) if t2 else None
+        tg = HOUSE_TAG_U.search(head) or HOUSE_TAG_U.search(cont)
+        own = re.match(r"\s*(SP|JT|DC)\s", head)
+        if tg:
+            atype = tg.group(1)
+        elif ticker:            # older reports have no tag: a listed ticker is a stock, or an option if it says so
+            atype = "OP" if re.search(r"\bSTRIKE\b|\bOPTIONS?\b|\b(CALL|PUT)S?\s+OPTIONS?\b", row) else "ST"
+        else:
+            atype = None
+        opt = None
+        if atype == "OP":
+            opt = "put" if re.search(r"\bPUTS?\b", row) else ("call" if re.search(r"\bCALLS?\b", row) else "option")
+        lo, hi = parse_amount(c.group(4))
+        if c.group(4).startswith("SPOUSE/DC"):
+            lo, hi = 1000001.0, 5000000.0
+        notes = [n.group(1).strip() for n in HOUSE_NOTE.finditer(text[ls:row_end])]
+        out.append({"ticker": ticker, "asset_type": atype, "tx_raw": c.group(1).replace("PARTIAL", "partial"),
+                    "trade_date": c.group(2), "notif_date": c.group(3), "amt_lo": lo, "amt_hi": hi,
+                    "owner": own.group(1) if own else "", "option": opt, "note": " ".join(n for n in notes if n) or None})
     return out
 
 
@@ -298,11 +306,15 @@ def collect_house(cfg):
     tx = pd.read_pickle(cache_tx) if os.path.exists(cache_tx) else pd.DataFrame()
     done = set(json.load(open(cache_done))) if os.path.exists(cache_done) else set()
     ver_path = _p(cfg, "cache", "house_parser_version.txt")
-    if not os.path.exists(ver_path) or open(ver_path).read().strip() != str(PARSER_VERSION):
+    ver = open(ver_path).read().strip() if os.path.exists(ver_path) else ""
+    if ver != str(HOUSE_PARSER_VERSION):
         if done:
-            log("House: parser upgraded (owners and options); re-reading all reports once")
-        tx, done = pd.DataFrame(), set()
-        open(ver_path, "w").write(str(PARSER_VERSION))
+            # re-read every report, newest first; old rows stay until their report is read again, so nothing
+            # disappears in between
+            log("House: parser upgraded (2014-2021 layout); re-reading all reports, keeping old rows meanwhile")
+        done = set()
+        open(ver_path, "w").write(str(HOUSE_PARSER_VERSION))
+        json.dump([], open(cache_done, "w"))
     fix_path = _p(cfg, "cache", "house_ticker_fix.txt")
     if not os.path.exists(fix_path) or open(fix_path).read().strip() != str(HOUSE_TICKER_FIX):
         if len(tx) and "ticker" in tx.columns:
@@ -328,16 +340,19 @@ def collect_house(cfg):
     idx = pd.concat(idx, ignore_index=True)
     idx["FilingDate"] = pd.to_datetime(idx["FilingDate"], errors="coerce")
     idx = idx[idx["FilingDate"] >= start]
-    todo = idx[~idx["DocID"].astype(str).isin(done)]
-    log(f"House: {len(idx)} reports since {start.date()}, {len(todo)} new to download")
+    todo = idx[~idx["DocID"].astype(str).isin(done)].sort_values("FilingDate", ascending=False)
+    log(f"House: {len(idx)} reports since {start.date()}, {len(todo)} to download")
 
-    rows, n = [], 0
+    rows, n, reread = [], 0, set()
 
     def work(r):
         return r, _fetch_house_pdf(int(r["year"]), str(r["DocID"]))
 
     def flush():
-        nonlocal tx, rows
+        nonlocal tx, rows, reread
+        if reread and len(tx) and "doc_id" in tx.columns:
+            tx = tx[~tx["doc_id"].astype(str).isin(reread)].reset_index(drop=True)
+        reread = set()
         if rows:
             tx = pd.concat([tx, pd.DataFrame(rows)], ignore_index=True)
             rows = []
@@ -346,8 +361,11 @@ def collect_house(cfg):
 
     if True:
         for r, text in chunked_map(work, [r for _, r in todo.iterrows()], cfg["WORKERS"], cfg):
-            done.add(str(r["DocID"]))
             n += 1
+            if text is None:            # download failed: try again next run instead of skipping it for good
+                continue
+            done.add(str(r["DocID"]))
+            reread.add(str(r["DocID"]))
             if text:
                 first = str(r.get("First") or "").strip()
                 last = str(r.get("Last") or "").strip()
@@ -365,14 +383,25 @@ def collect_house(cfg):
                 log(f"House: {n}/{len(todo)} reports processed")
                 flush()
     flush()
-    log(f"House: {len(tx)} stock transactions total")
+    left = int((~todo["DocID"].astype(str).isin(done)).sum())
+    json.dump({"left": left, "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")},
+              open(_p(cfg, "cache", "house_backlog.json"), "w"))
+    log(f"House: {len(tx)} stock transactions total; {left} reports still to read")
     return tx
+
+
+def house_backlog(cfg):
+    try:
+        return int(json.load(open(_p(cfg, "cache", "house_backlog.json"))).get("left", 0))
+    except Exception:
+        return 0
 
 
 # ----------------------------------------------------------------------------
 # SOURCE 2: Senate eFD periodic transaction reports (official, free)
 # ----------------------------------------------------------------------------
 EFD = "https://efdsearch.senate.gov"
+SENATE_FIX = 1
 
 
 def _senate_session():
@@ -392,6 +421,8 @@ def parse_senate_ptr_html(html):
     if table is None:
         return []
     heads = [h.get_text(" ", strip=True).lower() for h in table.find_all("th")]
+    if not any("transaction date" in h for h in heads):
+        return None             # not a transaction table (e.g. the site's "security risk" block page)
 
     def col(*names):
         for i, h in enumerate(heads):
@@ -399,7 +430,7 @@ def parse_senate_ptr_html(html):
                 return i
         return None
 
-    ci = {"date": col("transaction date"), "owner": col("owner"), "ticker": col("ticker"),
+    ci = {"date": col("transaction date"), "owner": col("owner"), "ticker": col("ticker"), "name": col("asset name"),
           "atype": col("asset type"), "type": col("type"), "amount": col("amount"), "comment": col("comment")}
     # "type" also matches "asset type"; pick the exact 'type' column
     for i, h in enumerate(heads):
@@ -421,7 +452,14 @@ def parse_senate_ptr_html(html):
             opt = "put" if re.search(r"\bputs?\b", row_txt) else ("call" if re.search(r"\bcalls?\b", row_txt) else "option")
         lo, hi = parse_amount(g("amount"))
         cm = (g("comment") or "").strip()
-        out.append({"trade_date": g("date"), "owner": g("owner"), "ticker": g("ticker"),
+        tick = g("ticker")
+        if (tick or "").strip() in ("", "--", "-") and g("name"):
+            # ticker left blank but written in the name: "Citigroup Inc (C)", "BRK-B - Berkshire ...", "SIEGY"
+            nm = g("name").strip()
+            mm = (re.search(r"\(([A-Z][A-Z0-9.\-]{0,6})\)\s*$", nm) or re.match(r"^([A-Z][A-Z0-9.\-]{0,6})\s+-\s+", nm)
+                  or re.fullmatch(r"([A-Z]{1,5})", nm))
+            tick = mm.group(1) if mm else tick
+        out.append({"trade_date": g("date"), "owner": g("owner"), "ticker": tick,
                     "tx_raw": g("type"), "amt_lo": lo, "amt_hi": hi, "option": opt,
                     "note": None if cm in ("", "--", "-") else cm})
     return out
@@ -437,6 +475,20 @@ def collect_senate(cfg):
     if not os.path.exists(ver_path) or open(ver_path).read().strip() != str(PARSER_VERSION):
         tx, done = pd.DataFrame(), set()
         open(ver_path, "w").write(str(PARSER_VERSION))
+    fix_path = _p(cfg, "cache", "senate_fix.txt")
+    if not os.path.exists(fix_path) or open(fix_path).read().strip() != str(SENATE_FIX):
+        # Oct 5: a blocked page used to count as read (and lost that report's trades), and tickers written only
+        # in the asset name were dropped. Re-read reports that gave no rows, and ones with a row missing a ticker.
+        have = set(tx["doc_id"].astype(str)) if len(tx) and "doc_id" in tx.columns else set()
+        bad = set(tx.loc[tx["ticker"].isna(), "doc_id"].astype(str)) if len(tx) and "ticker" in tx.columns else set()
+        redo = {d for d in done if d not in have} | bad
+        if redo:
+            log(f"Senate: re-reading {len(redo)} reports (blocked pages, missing tickers)")
+            tx = tx[~tx["doc_id"].astype(str).isin(bad)].reset_index(drop=True) if len(tx) else tx
+            done -= redo
+            tx.to_pickle(cache_tx)
+            json.dump(sorted(done), open(cache_done, "w"))
+        open(fix_path, "w").write(str(SENATE_FIX))
     try:
         s = _senate_session()
     except Exception as e:
@@ -473,7 +525,9 @@ def collect_senate(cfg):
             try:
                 r = s.get(EFD + rep["link"], timeout=60)
                 if r.status_code == 200 and "<table" in r.text:
-                    return rep, parse_senate_ptr_html(r.text)
+                    items = parse_senate_ptr_html(r.text)
+                    if items is not None:
+                        return rep, items
             except Exception:
                 pass
             time.sleep(1.5 * (attempt + 1))
