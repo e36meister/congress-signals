@@ -136,7 +136,7 @@ def main():
     data["portfolio"] = {**snap, "limits": (data.get("portfolio") or {}).get("limits") or snap["limits"]}
     hist_list = [h for h in data.get("close_history", []) if h.get("date") != today]
     hist_list.append({k: report[k] for k in ("date", "equity", "day_pl", "since_start", "spy_since_start")})
-    data["close_history"] = hist_list[-120:]
+    data["close_history"] = hist_list[-2000:]          # keep the start: "since start" must not roll forward
     from googleapiclient.http import MediaIoBaseUpload
     drive.files().update(fileId=fid, media_body=MediaIoBaseUpload(io.BytesIO(json.dumps(data).encode()),
                          mimetype="application/json"), supportsAllDrives=True).execute()
