@@ -1130,6 +1130,52 @@ def unusual_activity(scored, px, cfg, days=90, min_ratio=2.5):
     return out[:40]
 
 
+PRICE_BASIS_VERSION = 1      # Oct 5: one-time full re-download of every saved price history (split/dividend drift)
+
+
+def _price_queue_add(cfg, tickers, front=False):
+    q, path = _cache_json(cfg, "price_refresh_queue.json", [])
+    have = set(q)
+    new = [t for t in tickers if t not in have]
+    q = (new + q) if front else (q + new)
+    json.dump(q, open(path, "w"))
+
+
+def _refresh_price_histories(cfg, px, start, per_run=1500):
+    """Re-download full history for queued tickers (restated by a split/dividend, or the one-time rebuild)."""
+    vpath = _p(cfg, "cache", "price_basis_version.txt")
+    if px is not None and len(px) and (not os.path.exists(vpath) or open(vpath).read().strip() != str(PRICE_BASIS_VERSION)):
+        _price_queue_add(cfg, [c for c in px.columns if c != "SPY"] + ["SPY"])
+        open(vpath, "w").write(str(PRICE_BASIS_VERSION))
+    q, path = _cache_json(cfg, "price_refresh_queue.json", [])
+    if not q or px is None:
+        return px
+    batch, done = q[:per_run], set()
+    for i in range(0, len(batch), 50):
+        if out_of_time(cfg, 60):
+            break
+        part = batch[i:i + 50]
+        f = _yf_close(part, start, tries=2)
+        if len(f):
+            f.index = pd.to_datetime(f.index)
+            if getattr(f.index, "tz", None) is not None:
+                f.index = f.index.tz_localize(None)
+            f = f.loc[:, ~f.columns.duplicated()]
+            def same_span(c):      # a reused symbol (another company) starts much later: keep the old series
+                if c not in px.columns or px[c].first_valid_index() is None:
+                    return True
+                return f[c].first_valid_index() <= px[c].first_valid_index() + pd.Timedelta(days=30)
+            cols = [c for c in f.columns if f[c].notna().sum() > 20 and same_span(c)]
+            if cols:
+                px = px.drop(columns=[c for c in cols if c in px.columns]).join(f[cols], how="outer")
+        done |= set(part)          # tried; a ticker Yahoo can't return keeps its old series
+        time.sleep(1)
+    q = [t for t in q if t not in done]
+    json.dump(q, open(path, "w"))
+    log(f"Prices: re-downloaded full history for {len(done)} tickers; {len(q)} still queued")
+    return px
+
+
 def load_prices(cfg, tickers, max_age_hours=12, priority=None):
     """Keeps a saved price table; downloads full history only for new tickers and just the last
     couple of weeks for everything else."""
@@ -1230,10 +1276,26 @@ def load_prices(cfg, tickers, max_age_hours=12, priority=None):
             if getattr(upd.index, "tz", None) is not None:
                 upd.index = upd.index.tz_localize(None)
             upd = upd.loc[:, ~upd.columns.duplicated()]
+            # Yahoo's adjusted closes restate the whole history after a split or dividend; if the overlap no
+            # longer matches what's on file, that ticker's saved history is on an old basis and is re-downloaded
+            common = upd.index.intersection(px.index)
+            cc = [c for c in upd.columns if c in px.columns]
+            if len(common) and cc:
+                ratio = (upd.loc[common, cc] / px.loc[common, cc]).median()
+                restated = [c for c, r in ratio.items() if pd.notna(r) and abs(r - 1) > 0.003]
+                if restated:
+                    _price_queue_add(cfg, restated, front=True)
             px = upd.combine_first(px)
             log(f"Prices: updated recent days for {upd.shape[1]} tickers")
+    px = _refresh_price_histories(cfg, px, start)
     px = px.loc[:, ~px.columns.duplicated()].sort_index().dropna(how="all", axis=1)
-    px.to_pickle(cache)
+    # don't save a still-forming bar for today (a run during market hours would freeze an intraday price)
+    now_et = pd.Timestamp.now(tz="America/New_York")
+    keep = px
+    if len(px) and px.index.max().normalize() == now_et.normalize().tz_localize(None) and \
+            (now_et.hour, now_et.minute) < (16, 30):
+        keep = px.iloc[:-1]
+    keep.to_pickle(cache)
     log(f"Prices: {px.shape[1]} tickers, {px.index.min().date()} to {px.index.max().date()}")
     return px
 
@@ -1246,7 +1308,10 @@ def load_meta(cfg, tickers):
     import yfinance as yf
     cache = _p(cfg, "cache", "ticker_meta.json")
     meta = json.load(open(cache)) if os.path.exists(cache) else {}
+    # caps need the date they were looked up (to scale them back in time correctly); older entries get refreshed
     todo = [t for t in set(tickers) if not isinstance(meta.get(t), dict) or "cap" not in meta[t]]
+    todo += sorted(t for t in set(tickers) if isinstance(meta.get(t), dict) and "cap" in meta[t]
+                   and meta[t].get("cap") and "cap_at" not in meta[t])
     if todo:
         log(f"Company info: looking up {len(todo)} tickers")
 
@@ -1256,7 +1321,7 @@ def load_meta(cfg, tickers):
                     i = yf.Ticker(t).info or {}
                     return t, {"sector": i.get("sector") or i.get("quoteType"), "industry": i.get("industry"),
                                "name": i.get("longName") or i.get("shortName") or "", "type": i.get("quoteType"),
-                               "cap": i.get("marketCap")}
+                               "cap": i.get("marketCap"), "cap_at": dt.date.today().isoformat()}
                 except Exception:
                     time.sleep(2)
             return t, {"sector": None, "industry": None, "name": "", "type": None, "cap": None}
@@ -1266,6 +1331,8 @@ def load_meta(cfg, tickers):
             for i, (t, m) in enumerate(chunked_map(get, todo, min(4, cfg["WORKERS"]), cfg), 1):
                 if m.get("name") or not isinstance(meta.get(t), dict):
                     meta[t] = m
+                elif isinstance(meta.get(t), dict) and m.get("cap"):
+                    meta[t].update(cap=m["cap"], cap_at=m["cap_at"])
                 if i % 300 == 0:
                     json.dump(meta, open(cache, "w"))
                     log(f"Company info: {i}/{len(todo)}")
@@ -2072,6 +2139,20 @@ def _entry_positions(px_index, dates):
     return np.searchsorted(px_index.values, pd.to_datetime(dates).values, side="right")
 
 
+_FFILL = {}
+_COST_RT = [0.0]          # round-trip trading cost of the last forward_returns call (for short-side stats)
+
+
+def _px_ffill(px):
+    """Prices carried forward over missing days (and after a stock's last trade, so a delisted stock
+    exits at its last price instead of vanishing from the results)."""
+    key = (id(px), px.shape)
+    if key not in _FFILL:
+        _FFILL.clear()
+        _FFILL[key] = px.ffill()
+    return _FFILL[key]
+
+
 def forward_returns(tx, px, hold, cost=0.0, stop=None, exit_pos=None):
     """Return after entering the day after disclosure and holding `hold` trading days, minus trading costs.
     `exit_pos` (optional, one price-index position per row) replaces the scheduled exit (price rules);
@@ -2087,8 +2168,11 @@ def forward_returns(tx, px, hold, cost=0.0, stop=None, exit_pos=None):
         stop = np.asarray(stop)
         ext = np.where(stop > ent, np.minimum(ext, stop), ext)
     col = {c: i for i, c in enumerate(px.columns)}
-    arr = px.values
-    spy = px["SPY"].values
+    _COST_RT[0] = 2 * cost
+    raw = px.values
+    pf = _px_ffill(px)
+    arr = pf.values                     # exits use the last price on or before the exit day
+    spy = pf["SPY"].values
     ci = tx["ticker"].map(col)
     ok = ci.notna().values & (ent < n)
     res = pd.DataFrame(index=tx.index, columns=["entry_date", "exit_date", "entry_px", "exit_px",
@@ -2096,7 +2180,7 @@ def forward_returns(tx, px, hold, cost=0.0, stop=None, exit_pos=None):
     e_i = np.where(ok, ent, 0)
     x_i = np.minimum(np.where(ok, ext, 0), n - 1)
     c_i = np.where(ok, ci.fillna(0).astype(int).values, 0)
-    p0, p1 = arr[e_i, c_i], arr[x_i, c_i]
+    p0, p1 = raw[e_i, c_i], arr[x_i, c_i]
     s0, s1 = spy[e_i], spy[x_i]
     res["entry_date"] = np.where(ok, idx.values[e_i], np.datetime64("NaT"))
     res["exit_date"] = np.where(ok, idx.values[x_i], np.datetime64("NaT"))
@@ -2369,6 +2453,9 @@ def compute_features(tx, px, data, cfg):
             if g is None or not s:
                 continue
             w = g[(g["date"] > e - pd.Timedelta(days=180)) & (g["date"] <= e) & g["sectors"].map(lambda x: s in x)]
+            # cosponsorships carry only the bill's introduction date, not when the member signed on (often later,
+            # possibly after this filing), so only bills the member sponsored count
+            w = w[w["role"] == "sponsor"]
             if len(w):
                 sp = (w["role"] == "sponsor").any()
                 f[i] = 1.0 if sp else 0.5
@@ -2416,6 +2503,9 @@ def active_weights(cfg, signals_on=None):
     lpath = os.path.join(cfg["DATA_DIR"], "state", "learned_weights.json")
     if load_adaptive(cfg)["policy"].get("main_method") == "learned" and os.path.exists(lpath):
         bw = {**{k: 0.0 for k in cfg["BUY_WEIGHTS"]}, **json.load(open(lpath)).get("buy", {})}
+    # trial signals follow the weekly check's on/off list whichever weight set is in use
+    for k in TRIAL_SIGNALS:
+        bw[k] = (bw.get(k) or TRIAL_SIGNALS[k]) if k in on else 0.0
     return bw, sw
 
 
@@ -2572,7 +2662,7 @@ def _perf(daily):
 def _portfolio_slots(picks, px, idx, slots, idle="spy", sign=1, cost=0.0):
     """Each pick gets 1/slots of the money; money not in a pick sits in SPY (or cash). Trading costs are
     charged when a pick is bought and sold."""
-    rets = px.pct_change(fill_method=None).reindex(idx)
+    rets = _px_ffill(px).pct_change(fill_method=None).reindex(idx)
     spy = rets["SPY"].fillna(0).values
     col = {c: i for i, c in enumerate(px.columns)}
     R = rets.values
@@ -2596,7 +2686,7 @@ def _portfolio_slots(picks, px, idx, slots, idle="spy", sign=1, cost=0.0):
 
 
 def _portfolio(picks, px, idx, sign=1):
-    rets = px.pct_change(fill_method=None).reindex(idx)
+    rets = _px_ffill(px).pct_change(fill_method=None).reindex(idx)
     col = {c: i for i, c in enumerate(px.columns)}
     R = rets.values
     acc, cnt = np.zeros(len(idx)), np.zeros(len(idx))
@@ -2777,7 +2867,10 @@ SHORT_FACTORS = [("f_sell_track_record", "Member sell track record"), ("f_sell_c
 
 
 def _trade_stats(rows, sign):
-    c = rows[rows["closed"]]
+    c = rows[rows["closed"] & rows["excess"].notna() & rows["ret"].notna()]
+    # costs hit a short too: a short's net result is the opposite of the gross move minus the round trip
+    adj = 2 * _COST_RT[0] if sign < 0 else 0.0
+    c = c.assign(ret=c["ret"] + adj, excess=c["excess"] + adj)      # sign*(ret+4c) = -gross - 2c for a short
     y = sign * c["excess"]
     return {"Trades": len(rows), "Closed trades": len(c),
             "Made money (%)": ((sign * c["ret"]) > 0).mean() * 100 if len(c) else np.nan,
@@ -3693,7 +3786,8 @@ def prepare(cfg):
     scored = apply_scores(feats, cfg)
     pol = load_adaptive(cfg)["policy"]
     if (int(pol["hold_small"]) != int(cfg["HOLD_DAYS"]) or int(pol["hold_other"]) != int(cfg["HOLD_DAYS"])
-            or pol.get("exit_on_member_sell")):
+            or pol.get("exit_on_member_sell") or pol.get("price_exit", "none") != "none"
+            or pol.get("extend", "none") != "none"):
         scored = apply_hold_policy(scored, px, cfg, pol)
         log(f"Holding periods in use: {pol['hold_other']} trading days, {pol['hold_small']} for companies under $2B")
     scored.to_pickle(_p(cfg, "cache", "scored.pkl"))
@@ -4068,7 +4162,20 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
                              "n": _j(r["Training trades with this signal"])} for i, r in tuned["buy_weights"].iterrows()],
             "short_weights": [{"signal": i, "default": _j(r["Default"]), "tuned": _j(r["Tuned"]),
                                "n": _j(r["Training trades with this signal"])} for i, r in tuned["short_weights"].iterrows()]}
-    txt = json.dumps(data, separators=(",", ":"), allow_nan=False)
+    def _clean(o):          # any NaN/inf left anywhere becomes null instead of stopping the export
+        if isinstance(o, float):
+            return o if math.isfinite(o) else None
+        if isinstance(o, dict):
+            return {k: _clean(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):
+            return [_clean(v) for v in o]
+        if isinstance(o, (np.floating,)):
+            v = float(o)
+            return v if math.isfinite(v) else None
+        if isinstance(o, np.integer):
+            return int(o)
+        return o
+    txt = json.dumps(_clean(data), separators=(",", ":"), allow_nan=False, default=str)
     open(path, "w").write(txt)
     log(f"Dashboard data saved ({len(txt)/1024:,.0f} KB)")
     return path
@@ -4980,7 +5087,7 @@ def compute_connections(tx, data, cfg, mems):
     # 23. members who share a committee with this member traded the same stock the same way
     cc = np.zeros(n)
     tmp = pd.DataFrame({"t": tx["ticker"].values, "d": fdt.values, "typ": tx["tx_type"].values,
-                        "who": key.values, "c": cids})
+                        "who": key.reindex(tx.index).values, "c": cids})      # same row order as tx
     for t, g in tmp.groupby("t"):
         if len(g) < 2:
             continue
@@ -5235,7 +5342,19 @@ def extra_features(tx, px, data, cfg, mems):
             p_then.append(px[tk].iat[j] if j >= 0 else np.nan)
         else:
             p_then.append(np.nan)
-    p_now = tx["ticker"].map(last_px).astype(float)
+    # scale by the price change between the trade and the day the cap was looked up (not today: that would
+    # leak the stock's later performance into its size). Old entries without a lookup date fall back to today.
+    def p_at(t):
+        m = meta.get(t) or {}
+        if t not in px.columns:
+            return np.nan
+        if m.get("cap_at"):
+            j = idx0.searchsorted(pd.Timestamp(m["cap_at"]), side="right") - 1
+            s_ = px[t].iloc[:j + 1].dropna() if j >= 0 else px[t].iloc[0:0]
+            return float(s_.iloc[-1]) if len(s_) else np.nan
+        return float(last_px.get(t, np.nan))
+    pc = {t: p_at(t) for t in set(tx["ticker"])}
+    p_now = tx["ticker"].map(pc).astype(float)
     with np.errstate(invalid="ignore", divide="ignore"):
         cap = cap_now * np.array(p_then, dtype=float) / p_now
     cap = pd.Series(np.where(np.isfinite(cap), cap, np.nan), index=tx.index)
@@ -5434,7 +5553,11 @@ def excess_range(daily, bench):
     d = (daily - bench).dropna()
     if len(d) < 60:
         return np.nan, np.nan, np.nan
-    ann = d.mean() * 252
+    # compound yearly return minus the benchmark's over the same days (the average daily gap overstates
+    # the edge of a bumpier portfolio); the range uses the daily gaps' spread
+    both = pd.concat([daily, bench], axis=1).dropna()
+    yrs = len(both) / 252
+    ann = float((1 + both.iloc[:, 0]).prod() ** (1 / yrs) - (1 + both.iloc[:, 1]).prod() ** (1 / yrs))
     se = d.std() * 252 / np.sqrt(len(d))
     return ann, ann - 1.96 * se, ann + 1.96 * se
 
@@ -6939,6 +7062,22 @@ def apply_hold_policy(scored, px, cfg, policy):
         out[c] = out[c].astype(float)
     out["closed"] = out["closed"].astype(bool)
     out["hold_days_row"] = h
+    if "benchmark_etf" in out:          # industry fund over the same (new) holding window
+        pf = _px_ffill(px)
+        idx, colmap = pf.index, {c: i for i, c in enumerate(pf.columns)}
+        arr = pf.values
+        ent = np.searchsorted(idx.values, out["entry_date"].values, side="left")
+        ext = np.searchsorted(idx.values, out["exit_date"].values, side="left")
+        ev = np.full(len(out), np.nan)
+        for i, e in enumerate(out["benchmark_etf"].values):
+            j = colmap.get(e) if isinstance(e, str) else None
+            if j is None or pd.isna(out["entry_date"].values[i]) or ent[i] >= len(idx) or ext[i] >= len(idx):
+                continue
+            a, b = arr[ent[i], j], arr[ext[i], j]
+            if a and b and np.isfinite(a) and np.isfinite(b):
+                ev[i] = b / a - 1
+        out["sector_ret"] = ev
+        out["excess_sector"] = out["ret"] - out["sector_ret"]
     return out
 
 
@@ -7274,7 +7413,7 @@ def analyst_features(tx, data):
 SMALL_ETF = "IWM"          # Russell 2000, the usual small-company benchmark
 
 
-def small_cap_rows(scored, coverage=False):
+def small_cap_rows(scored, coverage=False, hold=None):
     """Purchases of companies under $2B (at the time), filed on time, at most one entry per stock per 30 days.
     With coverage=True, only companies at least one Wall Street analyst covered when the member bought."""
     b = scored[(scored["tx_type"] == "buy") & scored["entry_px"].notna()]
@@ -7285,8 +7424,9 @@ def small_cap_rows(scored, coverage=False):
         b = b[b["f_no_coverage"].fillna(0) == 0]
     b = b.sort_values("filed_date")
     keep, last = [], {}
+    gap = max(30, int(hold * 7 / 5)) if hold else 30      # not again while the earlier position is still held
     for i, (t, d) in enumerate(zip(b["ticker"], b["filed_date"])):
-        if t in last and (d - last[t]).days < 30:
+        if t in last and (d - last[t]).days < gap:
             continue
         last[t] = d
         keep.append(i)
@@ -7320,10 +7460,10 @@ def export_research(scored, px, cfg, max_cap=1e10):
 def small_cap_backtest(scored, px, cfg, hold=None, coverage=None, price_exit=None, extend=None):
     pol = load_adaptive(cfg)["policy"]
     coverage = bool(pol.get("sleeve_coverage")) if coverage is None else coverage
-    rows = small_cap_rows(scored, coverage)
+    hold = int(hold or pol.get("hold_sleeve", 250))
+    rows = small_cap_rows(scored, coverage, hold=hold)
     if len(rows) < 50:
         return None
-    hold = int(hold or pol.get("hold_sleeve", 250))
     cost = cfg.get("COST_BPS", 0) / 1e4
     pe = pol.get("sleeve_price_exit", "none") if price_exit is None else price_exit
     ex = pol.get("sleeve_extend", "none") if extend is None else extend
