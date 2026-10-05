@@ -6542,7 +6542,7 @@ def check_price_rules_once(scored, px, cfg):
 
 # ---- how strict should the weekly check be? Replay the switching rule on never-seen years -------------------
 FILTER_FILE = "filter_test.json"
-FILTER_VERSION = 1
+FILTER_VERSION = 2
 FILTER_RULES = {
     "strict": "Strict (now): at least +1%/yr, sure enough to rule out luck (t ≥ 1.65), and still better over the last 3 years",
     "medium": "Middle: at least +0.5%/yr and somewhat sure (t ≥ 1.0)",
