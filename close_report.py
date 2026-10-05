@@ -69,6 +69,12 @@ def main():
     days = [dt.datetime.fromtimestamp(t, dt.timezone.utc).date().isoformat() for t in hist.get("timestamp") or []]
     eq = [float(x) if x is not None else None for x in hist.get("equity") or []]
     pts = [(d, e) for d, e in zip(days, eq) if e and d < today]
+    # Alpaca's daily bars run a day or two behind the close; the equity recorded at each close is exact,
+    # so it replaces Alpaca's value for every day we have it
+    rec = {h["date"]: float(h["equity"]) for h in data.get("close_history", []) if h.get("equity")}
+    if rec:
+        first_rec = min(rec)
+        pts = [(d, e) for d, e in pts if d < first_rec][:1] + sorted((d, e) for d, e in rec.items() if d < today)
     acct_now = float(api.get("/v2/account").get("equity") or 0)
     if acct_now:
         pts.append((today, acct_now))        # the daily history adds today's bar only later in the evening
