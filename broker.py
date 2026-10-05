@@ -244,17 +244,20 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
 
     # 2. buy new picks: the main strategy (BUY picks) and the separate small-company portfolio
     if s["auto"] and trade:
-        equity = float(acct.get("equity") or 0)
         sleeve_pct = max(0.0, min(0.9, float(env("SMALL_SLEEVE_PCT") or 30) / 100))
         is_sleeve = lambda sym: (bot.get(sym, {}).get("client_order_id") or "").startswith(PREFIX + "sm-")
         val = lambda sym: float(positions[sym].get("market_value") or 0)
-        inv_main = sum(val(p) for p in positions if not is_sleeve(p))
-        inv_sleeve = sum(val(p) for p in positions if is_sleeve(p))
+        # the tool's budget leaves out positions you bought yourself (they aren't the tool's money to plan with)
+        mine = [p for p in positions if p in bot and p not in others]
+        yours = sum(val(p) for p in positions if p not in mine)
+        equity = max(0.0, float(acct.get("equity") or 0) - yours)
+        inv_main = sum(val(p) for p in mine if not is_sleeve(p))
+        inv_sleeve = sum(val(p) for p in mine if is_sleeve(p))
         per_week = float(cfg.get("PICKS_PER_WEEK", 5))
         plan = max(5, int(per_week * int(pol["hold_other"]) / 5))     # positions open at once in the backtest
         main_cap = s["max_invested"] * (1 - sleeve_pct) * equity
         dollars = s["dollars"] or main_cap / plan
-        slots = (s["max_positions"] or plan) - len([p for p in positions if not is_sleeve(p)]) - len(pending)
+        slots = (s["max_positions"] or plan) - len([p for p in mine if not is_sleeve(p)]) - len(pending)
 
         def place(t, amount, cid):
             sym = to_alpaca(t)
