@@ -393,6 +393,114 @@ def collect_house(cfg):
     return tx
 
 
+PAPER_VERSION = 1
+
+
+def collect_house_paper(cfg):
+    """Scanned paper House PTRs (DocIDs starting 8 or 9): read the checkbox grid with OCR (congress_signals/paper.py).
+    Rows whose written company name can't be matched to a ticker are skipped. Trade dates that can't be read are
+    estimated as 30 days before filing (flagged in tx_raw). Resumable across runs."""
+    try:
+        import pytesseract, cv2  # noqa: F401
+        pytesseract.get_tesseract_version()
+    except Exception as e:
+        log(f"House paper: OCR not available ({type(e).__name__}); skipping")
+        return pd.DataFrame()
+    from congress_signals import paper as PP
+    start = pd.Timestamp(cfg["START_DATE"])
+    cache_tx = _p(cfg, "cache", "house_paper_tx.pkl")
+    cache_done = _p(cfg, "cache", "house_paper_done.json")
+    vpath = _p(cfg, "cache", "house_paper_version.txt")
+    tx = pd.read_pickle(cache_tx) if os.path.exists(cache_tx) else pd.DataFrame()
+    done = set(json.load(open(cache_done))) if os.path.exists(cache_done) else set()
+    if not os.path.exists(vpath) or open(vpath).read().strip() != str(PAPER_VERSION):
+        tx, done = pd.DataFrame(), set()
+        open(vpath, "w").write(str(PAPER_VERSION))
+    # names -> tickers: SEC's current list plus every ticker already seen in electronic filings
+    titles = {}
+    try:
+        r = requests.get("https://www.sec.gov/files/company_tickers.json", timeout=60,
+                         headers={"User-Agent": cfg.get("SEC_USER_AGENT") or "congress-signals research contact@example.com"})
+        titles = {v["ticker"].upper().replace(".", "-"): v["title"] for v in r.json().values()}
+    except Exception as e:
+        log(f"House paper: SEC ticker list failed ({type(e).__name__})")
+    known = set(titles)
+    for f in ("house_tx.pkl", "senate_tx.pkl"):
+        try:
+            known |= set(pd.read_pickle(_p(cfg, "cache", f))["ticker"].dropna().astype(str).str.upper())
+        except Exception:
+            pass
+    nidx = PP.NameIndex(titles)
+    idx = []
+    for y in range(start.year, dt.date.today().year + 1):
+        try:
+            idx.append(house_index(y))
+        except Exception:
+            pass
+    if not idx:
+        return tx
+    idx = pd.concat(idx, ignore_index=True)
+    idx["FilingDate"] = pd.to_datetime(idx["FilingDate"], errors="coerce")
+    idx = idx[(idx["FilingDate"] >= start) & idx["DocID"].astype(str).str.match(r"^[89]")]
+    todo = idx[~idx["DocID"].astype(str).isin(done)].sort_values("FilingDate", ascending=False)
+    log(f"House paper: {len(idx)} scanned reports since {start.date()}, {len(todo)} to read")
+
+    def work(r):
+        url = f"https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/{int(r['year'])}/{r['DocID']}.pdf"
+        try:
+            b = requests.get(url, headers=UA, timeout=60)
+            if b.status_code != 200:
+                return r, None
+            out = []
+            for img in PP.render_pages(b.content):
+                out += PP.parse_page(img, r["FilingDate"])
+            return r, out
+        except Exception:
+            return r, None
+
+    rows, n, stats = [], 0, {"rows": 0, "matched": 0}
+
+    def flush():
+        nonlocal tx, rows
+        if rows:
+            tx = pd.concat([tx, pd.DataFrame(rows)], ignore_index=True)
+            rows = []
+        tx.to_pickle(cache_tx)
+        json.dump(sorted(done), open(cache_done, "w"))
+
+    for r, items in chunked_map(work, [r for _, r in todo.iterrows()], min(4, cfg["WORKERS"]), cfg, chunk=16):
+        if items is None:
+            continue
+        done.add(str(r["DocID"]))
+        n += 1
+        first, last = str(r.get("First") or "").strip(), str(r.get("Last") or "").strip()
+        for t in items:
+            stats["rows"] += 1
+            tk = nidx.match(t["name"], known)
+            if not tk or not t["tx_raw"] or not t["amount"]:
+                continue
+            stats["matched"] += 1
+            td = t["trade_date"] or (r["FilingDate"] - pd.Timedelta(days=30)).date()
+            rows.append({"member": f"{first} {last}".strip(), "first": first, "last": last, "chamber": "House",
+                         "state": str(r.get("StateDst") or "")[:2], "ticker": tk, "tx_type": norm_type(t["tx_raw"]),
+                         "trade_date": td, "filed_date": r["FilingDate"], "amt_lo": t["amount"][0],
+                         "amt_hi": t["amount"][1], "owner": t["owner"], "source": "house_paper",
+                         "doc_id": str(r["DocID"]), "tx_raw": t["tx_raw"] + ("" if t["trade_date"] else " (date estimated)"),
+                         "option": None})
+        if n % 100 == 0:
+            log(f"House paper: {n}/{len(todo)} read")
+            flush()
+    flush()
+    try:
+        source_health(cfg, "house_paper", ok=True, rows=int(len(tx)), read_this_run=n,
+                      left=int((~idx["DocID"].astype(str).isin(done)).sum()),
+                      lines_seen=stats["rows"], lines_matched=stats["matched"])
+    except Exception:
+        pass
+    log(f"House paper: {len(tx)} transactions from scanned reports ({stats['matched']}/{stats['rows']} lines matched this run)")
+    return tx
+
+
 def house_backlog(cfg):
     try:
         return int(json.load(open(_p(cfg, "cache", "house_backlog.json"))).get("left", 0))
@@ -686,6 +794,11 @@ def collect_all(cfg):
         parts.append(("house_clerk", collect_house(cfg)))
     if cfg.get("USE_SENATE", True):
         parts.append(("senate_efd", collect_senate(cfg)))
+    if cfg.get("USE_HOUSE_PAPER", True) and not out_of_time(cfg, 150):
+        try:
+            parts.append(("house_paper", collect_house_paper(cfg)))
+        except Exception as e:
+            log(f"House paper: skipped ({type(e).__name__}: {e})")
     parts.append(("quiver", collect_quiver(cfg)))
     parts.append(("fmp", collect_fmp(cfg)))
     frames = [finalize_tx(d) for _, d in parts if d is not None and len(d)]
@@ -698,7 +811,15 @@ def collect_all(cfg):
     tx.loc[fix, "last"] = tx.loc[fix, "member"].map(lambda m: _split_name(m)[1])
     tx["last_key"] = tx["last"].map(lambda s: name_key(s).split(" ")[-1] if name_key(s) else "")
     # de-duplicate across sources: official sources first
-    prio = {"house_clerk": 0, "senate_efd": 0, "quiver": 1, "fmp": 2}
+    prio = {"house_clerk": 0, "senate_efd": 0, "quiver": 1, "house_paper": 2, "fmp": 3}
+    # a scanned-report row that Quiver also has (same member, stock and filing day) is dropped: Quiver's is typed
+    if (tx["source"] == "quiver").any() and (tx["source"] == "house_paper").any():
+        q = tx[tx["source"] == "quiver"]
+        qk = set(zip(q["last"].astype(str).str.lower(), q["ticker"], q["filed_date"].dt.date))
+        pm = tx["source"] == "house_paper"
+        dup = pm & pd.Series([(l.lower(), t, f.date()) in qk for l, t, f in
+                              zip(tx["last"].astype(str), tx["ticker"], tx["filed_date"])], index=tx.index)
+        tx = tx[~dup]
     tx["_p"] = tx["source"].map(prio).fillna(3)
     tx = tx.sort_values("_p")
     tx = tx.drop_duplicates(["chamber", "last_key", "ticker", "trade_date", "tx_type", "amt_lo"], keep="first")

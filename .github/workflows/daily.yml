@@ -34,6 +34,7 @@ jobs:
 
       - name: Install libraries
         run: |                  # retry: the package server occasionally hiccups
+          sudo apt-get install -y -qq tesseract-ocr >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr) || echo "tesseract not installed; scanned reports are skipped"
           for i in 1 2 3 4; do pip install --retries 5 --timeout 60 -r requirements.txt && exit 0; sleep $((i * 20)); done
           exit 1
 
