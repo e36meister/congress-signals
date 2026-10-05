@@ -107,7 +107,7 @@ def main():
     sleeves = []
     for key, (label, hgroup) in groups.items():
         ps = [p for p in snap["positions"] if (p.get("sleeve") == "small" if key == "small"
-                                                else (p.get("bot") and p.get("sleeve") != "small") if key == "main"
+                                                else (p.get("bot") and p.get("sleeve") not in ("small", "park")) if key == "main"
                                                 else not p.get("bot"))]
         rows = []
         for p in ps:

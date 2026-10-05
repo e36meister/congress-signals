@@ -12,6 +12,8 @@ import requests
 env = os.environ.get
 BASE = {"paper": "https://paper-api.alpaca.markets", "live": "https://api.alpaca.markets"}
 PREFIX = "cs-"
+PARK_PREFIX = PREFIX + "park-"          # unused tool money parked in an S&P 500 fund, like the backtest
+PARK_CHOICES = ("SPY", "VOO", "IVV")     # first one you don't hold yourself
 
 
 def settings(hold_days):
@@ -149,6 +151,9 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
               if o.get("side") == "buy" and float(o.get("filled_qty") or 0) > 0
               and not (o.get("client_order_id") or "").startswith(PREFIX)}
 
+    is_park = lambda sym: (bot.get(sym, {}).get("client_order_id") or "").startswith(PARK_PREFIX)
+    park = next((x for x in PARK_CHOICES if x not in others), None)
+
     # price rules the weekly check can turn on, set separately for main picks and the small-company portfolio
     is_sm = lambda o: (o.get("client_order_id") or "").startswith(PREFIX + "sm-")
     rule_pe = lambda o: pol.get("sleeve_price_exit" if is_sm(o) else "price_exit", "none")
@@ -167,7 +172,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
 
     # 1. sell what this tool bought once the holding period (trading days) is over
     for sym, o in (bot.items() if trade else []):
-        if sym not in positions or sym in pending or sym in others:
+        if sym not in positions or sym in pending or sym in others or is_park(sym):
             continue
         bought = dt.date.fromisoformat(o["filled_at"][:10])
         held = int(np.busday_count(bought, today))
@@ -191,7 +196,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
     fn = cfg.get("_member_sales")
     if trade and pol.get("exit_on_member_sell") and fn:
         for sym, o in bot.items():
-            if sym not in positions or sym in pending or sym in sold or sym in others:
+            if sym not in positions or sym in pending or sym in sold or sym in others or is_park(sym):
                 continue
             if (o.get("client_order_id") or "").startswith(PREFIX + "sm-"):
                 continue
@@ -209,7 +214,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
     # 1a2. stop rules: sell a position that fell X% below its buy price, or X% from its high since buying
     if trade:
         for sym, o in bot.items():
-            if sym not in positions or sym in pending or sym in sold or sym in others:
+            if sym not in positions or sym in pending or sym in sold or sym in others or is_park(sym):
                 continue
             pe = rule_pe(o)
             if pe == "none":
@@ -251,8 +256,11 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         mine = [p for p in positions if p in bot and p not in others]
         yours = sum(val(p) for p in positions if p not in mine)
         equity = max(0.0, float(acct.get("equity") or 0) - yours)
+        parked = sum(val(p) for p in mine if is_park(p))
+        mine = [p for p in mine if not is_park(p)]
         inv_main = sum(val(p) for p in mine if not is_sleeve(p))
         inv_sleeve = sum(val(p) for p in mine if is_sleeve(p))
+        inv0 = inv_main + inv_sleeve
         per_week = float(cfg.get("PICKS_PER_WEEK", 5))
         plan = max(5, int(per_week * int(pol["hold_other"]) / 5))     # positions open at once in the backtest
         main_cap = s["max_invested"] * (1 - sleeve_pct) * equity
@@ -330,6 +338,27 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                 actions.append({"side": "buy", "symbol": to_alpaca(t), "ok": ok, "hold": hold, "why": "small-company portfolio"})
                 if ok:
                     inv_sleeve += amount
+
+        # 3. park the tool's unused money in an S&P 500 fund (the backtest assumes idle money sits in SPY),
+        #    keeping a little cash for your own Buy-button orders. Sold down as picks need the money.
+        if park and park not in pending and env("PARK_IDLE", "true").lower() != "false":
+            spent = inv_main + inv_sleeve - inv0
+            open_buys = sum(float(o.get("notional") or 0) for o in open_orders if o.get("side") == "buy")
+            buffer = 0.03 * equity
+            target = max(0.0, equity - inv_main - inv_sleeve - open_buys - buffer)
+            diff = target - parked
+            cash_free = float(acct.get("cash") or 0) - spent - open_buys - 0.02 * float(acct.get("equity") or 0)
+            body = None
+            if diff > max(250.0, 0.005 * equity) and cash_free > 250:
+                body = {"symbol": park, "side": "buy", "notional": f"{min(diff, cash_free):.2f}"}
+            elif diff < -max(250.0, 0.005 * equity) and parked > 0:
+                body = {"symbol": park, "side": "sell", "notional": f"{min(-diff, parked):.2f}"}
+            if body:
+                body.update({"type": "market", "time_in_force": "day",
+                             "client_order_id": f"{PARK_PREFIX}{body['side']}-{dt.datetime.now():%Y%m%d%H%M%S}"})
+                r = api.post("/v2/orders", body)
+                actions.append({"side": body["side"], "symbol": park, "ok": r.status_code in (200, 201),
+                                "why": f"parking unused money in the S&P 500 (${float(body['notional']):,.0f})"})
     if trade:
         log(f"Broker ({s['mode']}): {sum(a['ok'] for a in actions if a['side'] == 'buy')} buy order(s), "
             f"{sum(a['ok'] for a in actions if a['side'] == 'sell')} sell order(s)"
@@ -358,8 +387,9 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                     "px": float(p.get("current_price") or 0), "mv": float(p.get("market_value") or 0),
                     "pl": float(p.get("unrealized_pl") or 0), "plpc": float(p.get("unrealized_plpc") or 0),
                     "day": float(p.get("change_today") or 0), "bot": bool(o), "bought": bought,
-                    "sleeve": "small" if o and (o.get("client_order_id") or "").startswith(PREFIX + "sm-") else None,
-                    "hold": _hold_of(o, s["hold_days"]) if o else None,
+                    "sleeve": ("small" if o and (o.get("client_order_id") or "").startswith(PREFIX + "sm-")
+                               else "park" if o and (o.get("client_order_id") or "").startswith(PARK_PREFIX) else None),
+                    "hold": (None if (o.get("client_order_id") or "").startswith(PARK_PREFIX) else _hold_of(o, s["hold_days"])) if o else None,
                     "held": int(np.busday_count(dt.date.fromisoformat(bought), today)) if bought else None})
     eq, last = float(acct.get("equity") or 0), float(acct.get("last_equity") or 0)
     try:    # the standard amount per main pick (before sizing), for the dashboard's suggested amounts
@@ -411,6 +441,19 @@ def place_tap_order(ticker, dollars, req_id, log):
         return False, "not-tradable"
     if dollars > float(acct.get("buying_power") or 0):
         return False, "not-enough-cash"
+    try:    # not enough cash: sell some of the tool's parked S&P fund first, never your own shares
+        cash = float(acct.get("cash") or 0)
+        if dollars > cash:
+            bot = _bot_buys(api)
+            pk = next((x for x, o in bot.items() if (o.get("client_order_id") or "").startswith(PARK_PREFIX)), None)
+            pos = {p["symbol"]: p for p in api.get("/v2/positions")}
+            if pk and pk in pos:
+                amt = min(float(pos[pk].get("market_value") or 0), dollars - cash + 50)
+                if amt > 1:
+                    api.post("/v2/orders", {"symbol": pk, "side": "sell", "notional": f"{amt:.2f}", "type": "market",
+                                            "time_in_force": "day", "client_order_id": f"{PARK_PREFIX}tap-{req_id}"[:48]})
+    except Exception:
+        pass
     body = {"symbol": sym, "side": "buy", "type": "market", "time_in_force": "day",
             "client_order_id": f"tap-{ticker}-{req_id}"[:48]}
     if asset.get("fractionable"):
