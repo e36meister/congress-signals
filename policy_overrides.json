@@ -1,0 +1,6 @@
+{
+  "overrides": [
+    {"id": "2026-10-05-stop15", "set": {"price_exit": "stop15"},
+     "note": "Owner turned on the 15% stop for main picks as a risk choice (about even on return, cuts the worst losses)"}
+  ]
+}
