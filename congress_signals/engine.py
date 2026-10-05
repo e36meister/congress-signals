@@ -414,9 +414,14 @@ def collect_house_paper(cfg):
     vpath = _p(cfg, "cache", "house_paper_version.txt")
     tx = pd.read_pickle(cache_tx) if os.path.exists(cache_tx) else pd.DataFrame()
     done = set(json.load(open(cache_done))) if os.path.exists(cache_done) else set()
-    if not os.path.exists(vpath) or open(vpath).read().strip() != str(PAPER_VERSION):
+    mode = "ocrspace" if cfg.get("OCR_SPACE_API_KEY") else "tesseract"
+    old = open(vpath).read().strip() if os.path.exists(vpath) else ""
+    old_ver, _, old_mode = old.partition("-")
+    if old_ver != str(PAPER_VERSION) or (old_mode != mode and mode == "ocrspace"):
+        # new reader version, or an OCR.space key was just added: read every scanned report again
         tx, done = pd.DataFrame(), set()
-        open(vpath, "w").write(str(PAPER_VERSION))
+    if old != f"{PAPER_VERSION}-{mode}" and not (old_mode == "ocrspace" and mode == "tesseract"):
+        open(vpath, "w").write(f"{PAPER_VERSION}-{mode}")
     # names -> tickers: SEC's current list plus every ticker already seen in electronic filings
     titles = {}
     try:
