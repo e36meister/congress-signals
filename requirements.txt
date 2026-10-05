@@ -10,3 +10,5 @@ plotly
 google-api-python-client
 google-auth
 pillow
+opencv-python-headless
+pytesseract
