@@ -178,9 +178,25 @@ def main():
     a = E.load_adaptive(cfg)
     due = not a.get("evaluated_at") or (dt.datetime.now(dt.timezone.utc)
                                         - dt.datetime.fromisoformat(a["evaluated_at"])).days >= 7
+    # a one-off check the owner asked for at a set time (force_checks.json in the repo)
+    forced = None
+    try:
+        fc = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "force_checks.json")))
+        at = fc.get("weekly_at")
+        if at and dt.datetime.now(dt.timezone.utc) >= dt.datetime.fromisoformat(at) and a.get("forced_done") != at:
+            forced, due = at, True
+            E.log(f"Adjustments: running the weekly check now (asked for {at})")
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        E.log(f"Adjustments: forced-check file unreadable ({type(e).__name__})")
     if due and not E.out_of_time(cfg, 90):
         try:
             E.evaluate_adjustments(scored, px, cfg, wf=(bt or {}).get("walk_forward") if isinstance(bt, dict) else None)
+            if forced:
+                a2 = E.load_adaptive(cfg)
+                a2["forced_done"] = forced
+                E.save_adaptive(cfg, a2)
         except Exception as e:
             E.log(f"Adjustments: weekly check skipped ({e})")
     try:

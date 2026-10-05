@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: "43 10 * * *"      # 6:43 AM New York time (summer): overnight filings, before the market opens
     - cron: "43 23 * * *"      # 7:43 PM New York time (summer): filings posted during the day
+    - cron: "0 16 6 10 *"      # one-off: Tue Oct 6 2026, 12:00 PM New York, weekly check on the cleaned data (remove after)
   workflow_dispatch:           # "Run workflow" button, also used to chain runs while history is filling
     inputs:
       chain:
