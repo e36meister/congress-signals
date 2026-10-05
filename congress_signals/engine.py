@@ -580,14 +580,36 @@ def _split_name(full):
     return (parts[0] if parts else "", parts[-1] if parts else "")
 
 
+def source_health(cfg, name, **info):
+    """Record whether an outside data source worked (status, rows, error text) for the dashboard."""
+    path = _p(cfg, "state", "source_health.json")
+    try:
+        h = json.load(open(path))
+    except Exception:
+        h = {}
+    h[name] = {**info, "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
+    json.dump(h, open(path, "w"), indent=1, default=str)
+
+
+def _err_text(r):
+    try:
+        return re.sub(r"[A-Za-z0-9]{24,}", "…", (r.text or "")[:200])     # never echo anything key-like
+    except Exception:
+        return ""
+
+
 def collect_quiver(cfg):
     key = cfg.get("QUIVER_API_KEY")
     if not key:
+        source_health(cfg, "quiver", ok=False, error="no QUIVER_API_KEY secret set")
         return pd.DataFrame()
     try:
         r = requests.get("https://api.quiverquant.com/beta/bulk/congresstrading", timeout=180,
                          headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
-        r.raise_for_status()
+        if r.status_code != 200:
+            source_health(cfg, "quiver", ok=False, status=r.status_code, error=_err_text(r))
+            log(f"Quiver: HTTP {r.status_code}")
+            return pd.DataFrame()
         rows = []
         for d in r.json():
             name = _pick(d, "Representative", "Name", "Politician")
@@ -602,16 +624,24 @@ def collect_quiver(cfg):
                          "filed_date": _pick(d, "ReportDate", "Filed", "Disclosed"),
                          "amt_lo": lo, "amt_hi": hi, "source": "quiver"})
         log(f"Quiver: {len(rows)} rows")
-        return pd.DataFrame(rows)
+        df = pd.DataFrame(rows)
+        yrs = pd.to_datetime(df["filed_date"], errors="coerce").dt.year.value_counts().sort_index().to_dict() if len(df) else {}
+        source_health(cfg, "quiver", ok=bool(len(df)), status=200, rows=len(df),
+                      by_year={int(k): int(v) for k, v in yrs.items() if k == k},
+                      fields=sorted(r.json()[0].keys()) if len(df) else [])
+        return df
     except Exception as e:
-        log(f"Quiver: failed ({e})")
+        source_health(cfg, "quiver", ok=False, error=f"{type(e).__name__}: {str(e)[:150]}")
+        log(f"Quiver: failed ({type(e).__name__})")
         return pd.DataFrame()
 
 
 def collect_fmp(cfg):
     key = cfg.get("FMP_API_KEY")
     if not key:
+        source_health(cfg, "fmp", ok=False, error="no FMP_API_KEY secret set")
         return pd.DataFrame()
+    first_err = None
     start = pd.Timestamp(cfg["START_DATE"])
     rows = []
     for chamber, ep in (("Senate", "senate-latest"), ("House", "house-latest")):
@@ -624,6 +654,8 @@ def collect_fmp(cfg):
                 log(f"FMP {chamber}: failed ({e})")
                 break
             if not isinstance(data, list) or not data:
+                if page == 0 and first_err is None:
+                    first_err = f"{chamber}: HTTP {r.status_code} {_err_text(r)}"
                 break
             oldest = None
             for d in data:
@@ -641,7 +673,11 @@ def collect_fmp(cfg):
             if oldest and pd.to_datetime(oldest, errors="coerce") < start:
                 break
     log(f"FMP: {len(rows)} rows")
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    yrs = pd.to_datetime(df["filed_date"], errors="coerce").dt.year.value_counts().sort_index().to_dict() if len(df) else {}
+    source_health(cfg, "fmp", ok=bool(len(df)), rows=len(df), error=first_err,
+                  by_year={int(k): int(v) for k, v in yrs.items() if k == k})
+    return df
 
 
 def collect_all(cfg):
@@ -3850,6 +3886,12 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
                 "trade_stats": {k: _j(v) for k, v in sbt["trade_stats"].items()},
                 "years": [{"year": int(y), **{c: _j(v) for c, v in r.items()}} for y, r in sbt["years"].iterrows()],
                 "n_picks": len(sbt["picks"]), "picks": _rows(P, _TRADE_COLS)}
+    hpath = os.path.join(cfg["DATA_DIR"], "state", "source_health.json")
+    if os.path.exists(hpath):
+        try:
+            data["source_health"] = json.load(open(hpath))
+        except Exception:
+            pass
     fpath = os.path.join(cfg["DATA_DIR"], "state", FILTER_FILE)
     if os.path.exists(fpath):
         try:
