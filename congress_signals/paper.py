@@ -238,46 +238,185 @@ def _date(txt, filed):
     return d
 
 
-def parse_page(img, filed):
-    """Rows of one scanned page: name text, owner, type, amount, trade date."""
+class OcrSpace:
+    """OCR.space API (free key: 25,000 requests/month, 500/day per IP, 1,000 Engine-3 pages/month).
+    Engine 2 gives word positions; Engine 3 reads handwriting much better and is used only when needed."""
+    URL = "https://api.ocr.space/parse/image"
+
+    def __init__(self, key, usage_path, day_cap=450, month_cap=24000, e3_cap=950):
+        import json, os
+        self.key, self.path = key, usage_path
+        self.caps = (day_cap, month_cap, e3_cap)
+        try:
+            self.u = json.load(open(usage_path)) if os.path.exists(usage_path) else {}
+        except Exception:
+            self.u = {}
+        import threading
+        self.lock = threading.Lock()
+
+    def _keys(self):
+        import datetime as dt
+        d = dt.date.today()
+        return d.isoformat(), d.strftime("%Y-%m")
+
+    def can(self, engine):
+        day, mon = self._keys()
+        if self.u.get("day", {}).get(day, 0) >= self.caps[0] or self.u.get("month", {}).get(mon, 0) >= self.caps[1]:
+            return False
+        return engine != 3 or self.u.get("e3", {}).get(mon, 0) < self.caps[2]
+
+    def _count(self, engine):
+        import json
+        day, mon = self._keys()
+        with self.lock:
+            self.u.setdefault("day", {})
+            self.u["day"] = {k: v for k, v in self.u["day"].items() if k >= day[:8]}
+            self.u["day"][day] = self.u["day"].get(day, 0) + 1
+            mo = self.u.setdefault("month", {})
+            mo[mon] = mo.get(mon, 0) + 1
+            if engine == 3:
+                e3 = self.u.setdefault("e3", {})
+                e3[mon] = e3.get(mon, 0) + 1
+            try:
+                json.dump(self.u, open(self.path, "w"))
+            except Exception:
+                pass
+
+    def call(self, img, engine, overlay=False):
+        import requests
+        cv2 = _cv()
+        if not self.can(engine):
+            return None
+        q = 70
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, q])
+        while ok and len(buf) > 950_000 and q > 30:
+            q -= 15
+            ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, q])
+        if not ok:
+            return None
+        self._count(engine)
+        try:
+            r = requests.post(self.URL, timeout=120, files={"file": ("p.jpg", buf.tobytes(), "image/jpeg")},
+                              data={"apikey": self.key, "OCREngine": str(engine), "scale": "true",
+                                    "isOverlayRequired": "true" if overlay else "false"})
+            d = r.json()
+            if d.get("IsErroredOnProcessing") or not d.get("ParsedResults"):
+                return None
+            return d["ParsedResults"][0]
+        except Exception:
+            return None
+
+
+def _rows_from_overlay(res, bands, g, x_off, y_off):
+    """Engine 2 words -> (name text, date text) for each row band, by position."""
+    out = [{"name": [], "date": []} for _ in bands]
+    lines = ((res or {}).get("TextOverlay") or {}).get("Lines") or []
+    d0, d1, _ = g["dates"]
+    for ln in lines:
+        for w in ln.get("Words", []):
+            cx = x_off + w["Left"] + w["Width"] / 2
+            cy = y_off + w["Top"] + w["Height"] / 2
+            bi = next((i for i, (a, b) in enumerate(bands) if a - 4 <= cy <= b + 4), None)
+            if bi is None:
+                continue
+            if g["name"][0] - 10 <= cx <= g["name"][1]:
+                out[bi]["name"].append((w["Top"], w["Left"], w["WordText"]))
+            elif d0 <= cx <= d1:
+                out[bi]["date"].append((w["Top"], w["Left"], w["WordText"]))
+    res2 = []
+    for o, (a, b) in zip(out, bands):
+        step = max(12, 0.55 * (b - a))
+        nm = " ".join(t for _, _, t in sorted(o["name"], key=lambda z: (int(z[0] // step), z[1])))
+        dt_ = "".join(t for _, _, t in sorted(o["date"], key=lambda z: (int(z[0] // step), z[1])))
+        res2.append((re.sub(r"\s+([.,])", r"\1", nm), dt_))
+    return res2
+
+
+def _rows_from_table(text):
+    """Engine 3 returns a markdown-like table: one (name, date) per data row, example row dropped."""
+    rows = []
+    for ln in (text or "").splitlines():
+        if not ln.strip().startswith("|") or re.match(r"^\|\s*-", ln.strip()):
+            continue
+        cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+        if any(re.search(r"(?i)example|mega corp", c) for c in cells):
+            continue
+        texts = [c for c in cells if re.search(r"[A-Za-z]{3,}", c) and c.upper() not in ("SP", "JT", "DC")]
+        name = max(texts, key=len) if texts else ""
+        date = next((c for c in cells if DATE.search(c.replace(" ", ""))), "")
+        rows.append((name, date))
+    return rows
+
+
+def parse_page(img, filed, ocr=None, matcher=None):
+    """Rows of one scanned page: name text, owner, type, amount, trade date (+ ticker when a matcher is given).
+    Marks are read from pixels; names and dates come from OCR.space when a key is set, else tesseract."""
     im, g = orient_and_grid(img)
     if g is None:
         return []
-    out = []
     bw = g["bw"]
     bands = _line_rows(g) or _boxes_rows(g)
     cells = []
     for y0, y1 in bands:
-        h = y1 - y0
         ink = g["ink"]
         cells.append((y0, y1, [_fill(bw, a, b, y0 + 2, y1 - 2, ink) for a, b in g["types"]],
                       [_fill(bw, a, b, y0 + 2, y1 - 2, ink) for a, b in zip(g["amt"], g["amt"][1:])]))
     allf = [f for c in cells for f in c[2] + c[3]]
     base = float(np.percentile(allf, 40)) if allf else 0.0
-    for y0, y1, tf, af in cells:
-        h = y1 - y0
-        ti, ai = _pick(tf, base), _pick(af, base)
+    picks = [(_pick(tf, base), _pick(af, base)) for _, _, tf, af in cells]
+    if not any(t is not None and a is not None for t, a in picks):
+        return []
+    # OCR the rows' names and dates
+    texts = [None] * len(bands)
+    if ocr is not None and bands:
+        x0 = int((g["owner"] or g["name"])[0]) - 5
+        y0, y1 = int(bands[0][0]) - 5, int(bands[-1][1]) + 5
+        crop = im[max(0, y0):y1, max(0, x0):int(g["dates"][2])]
+        res = ocr.call(crop, 2, overlay=True)
+        if res:
+            texts = _rows_from_overlay(res, bands, g, max(0, x0), max(0, y0))
+            need = [i for i, (t, a) in enumerate(picks) if t is not None and a is not None
+                    and matcher is not None and not matcher(texts[i][0])]
+            if need and ocr.can(3):
+                r3 = ocr.call(crop, 3)
+                t3 = _rows_from_table((r3 or {}).get("ParsedText"))
+                if len(t3) == len(bands):
+                    pairs = list(range(len(bands)))
+                else:          # line up the filled rows only
+                    filled = [i for i, (t, a) in enumerate(picks) if t is not None and a is not None]
+                    t3f = [k for k, (nm, _) in enumerate(t3) if nm]
+                    pairs = dict(zip(filled, t3f)) if len(filled) == len(t3f) else {}
+                    pairs = [pairs.get(i) for i in range(len(bands))]
+                for i in need:
+                    k = pairs[i] if i < len(pairs) else None
+                    if k is not None and k < len(t3):
+                        texts[i] = (t3[k][0] or texts[i][0], t3[k][1] or texts[i][1])
+    out = []
+    for i, ((y0, y1, tf, af), (ti, ai)) in enumerate(zip(cells, picks)):
         if ti is None or ai is None:
             continue
         ny0, ny1 = y0 + 3, y1 - 2
-        name = _ocr(im[ny0:ny1, g["name"][0] + 4:g["name"][1] - 4], "--psm 6")
-        name = re.sub(r"\s+", " ", name)
+        if texts[i] is not None:
+            name, dt_txt = texts[i]
+        else:
+            name = re.sub(r"\s+", " ", _ocr(im[ny0:ny1, g["name"][0] + 4:g["name"][1] - 4], "--psm 6"))
+            d0, d1, d2 = g["dates"]
+            dt_txt = _ocr(im[ny0:ny1, d0 + 4:d1 - 4], "--psm 7 -c tessedit_char_whitelist=0123456789/-.")
         if re.search(r"(?i)example|mega corp", name):
             continue
         own = ""
-        mo = re.match(r"\W*(SP|JT|DC)\b\W*", name)
+        # owner code written at the start of the name cell; handwriting often reads "DC" as "DB"/"D3", "SP" as "5P"
+        mo = re.match(r"\W*(SP|5P|JT|JI|DC|DB|D3|OC)\b\W*", name)
         if mo:
-            own, name = mo.group(1), name[mo.end():]
+            own = {"5P": "SP", "JI": "JT", "DB": "DC", "D3": "DC", "OC": "DC"}.get(mo.group(1), mo.group(1))
+            name = name[mo.end():]
         if not own and g["owner"]:
             ot = _ocr(im[ny0:ny1, g["owner"][0] + 3:g["owner"][1] - 3], "--psm 7").upper()
             own = next((c for c in ("SP", "JT", "DC") if c in ot.replace("5", "S").replace("0", "D")), "")
-        d0, d1, d2 = g["dates"]
-        dt_txt = _ocr(im[ny0:ny1, d0 + 4:d1 - 4], "--psm 7 -c tessedit_char_whitelist=0123456789/-.")
-        ntypes = len(g["types"])
-        labels = ["P", "S", "S (partial)", "E"] if ntypes == 4 else ["P", "S", "E"]
-        out.append({"name": name, "owner": own, "tx_raw": labels[ti] if ti is not None else None,
-                    "amount": AMOUNTS[ai] if ai is not None else None, "date_text": dt_txt,
-                    "trade_date": _date(dt_txt, filed), "fills": (round(max(tf), 2), round(max(af), 2))})
+        labels = ["P", "S", "S (partial)", "E"] if len(g["types"]) == 4 else ["P", "S", "E"]
+        out.append({"name": name, "owner": own, "tx_raw": labels[ti], "amount": AMOUNTS[ai], "date_text": dt_txt,
+                    "trade_date": _date(dt_txt, filed), "fills": (round(max(tf), 2), round(max(af), 2)),
+                    "ticker": matcher(name) if matcher else None})
     return out
 
 
@@ -290,7 +429,9 @@ _STOP = {"inc", "incorporated", "corp", "corporation", "co", "company", "compani
 
 
 def _norm(s):
-    s = re.sub(r"[^a-z0-9& ]", " ", s.lower().replace("&", " and "))
+    s = s.lower().replace("&", " and ")
+    s = re.sub(r"\bcom+[a-z]*\s*st[a-z]*\b|\bstock\b|\bshares?\b", " ", s)     # "common stock" however it's spelled
+    s = re.sub(r"[^a-z0-9 ]", " ", s)
     toks = [t for t in s.split() if t not in _STOP]
     return " ".join(toks)
 
@@ -320,7 +461,11 @@ class NameIndex:
             return None
         if n in self.by_norm:
             return self.by_norm[n]
-        cand = self.first.get(n.split()[0], [])
+        f0 = n.split()[0]
+        cand = list(self.first.get(f0, []))
+        if not cand and len(f0) >= 4:            # misspelled first word ("Walment"): try close first words
+            for fw in difflib.get_close_matches(f0, list(self.first), n=3, cutoff=0.8):
+                cand += self.first[fw]
         best = difflib.get_close_matches(n, cand, n=1, cutoff=0.82) if cand else []
         if not best and cand:
             q = set(n.split())

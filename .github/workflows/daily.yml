@@ -52,6 +52,7 @@ jobs:
           LDA_API_KEY: ${{ secrets.LDA_API_KEY }}
           QUIVER_API_KEY: ${{ secrets.QUIVER_API_KEY }}
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          OCR_SPACE_API_KEY: ${{ secrets.OCR_SPACE_API_KEY }}
           TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
