@@ -86,7 +86,17 @@ def send_worth_alerts(items):
     import html
     path = os.path.join(cfg["DATA_DIR"], "state", "worth_seen.json")
     seen = set(json.load(open(path))) if os.path.exists(path) else set()
-    key = lambda o, w: f"{o['t']}|{w['n']}|{w['ty']}|{w['td']}"
+    # keyed by the member's Congress ID when known (names are now spelled one way, so old name keys can differ)
+    key = lambda o, w: f"{o['t']}|{w.get('b') or w['n']}|{w['ty']}|{w['td']}"
+    if seen and "__v2__" not in seen:
+        # one time: trades already emailed under the old name keys (same stock, type and trade date) stay seen
+        old = {(k.split("|")[0], k.split("|")[-2], k.split("|")[-1]) for k in seen if k.count("|") >= 3}
+        for o in items:
+            for w in o["who"]:
+                if (o["t"], w["ty"], w["td"]) in old:
+                    seen.add(key(o, w))
+        seen.add("__v2__")
+        json.dump(sorted(seen), open(path, "w"))
     new = [o for o in items if any(key(o, w) not in seen for w in o["who"])]
     if new:
         rows = "".join(f"<tr><td><b>{html.escape(o['t'])}</b><br><span style='color:#666'>{html.escape(o.get('co') or '')}</span></td>"
@@ -99,9 +109,10 @@ def send_worth_alerts(items):
             for o in new:
                 for w in o["who"]:
                     seen.add(key(o, w))
+            seen.add("__v2__")
             json.dump(sorted(seen), open(path, "w"))
     elif not os.path.exists(path):
-        json.dump([], open(path, "w"))
+        json.dump(["__v2__"], open(path, "w"))
 
 
 def send_alerts(buys, sells, new):
