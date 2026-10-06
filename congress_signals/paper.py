@@ -46,13 +46,20 @@ def _vlines(bw, frac=0.12):
     return _groups(np.where(vl.sum(axis=0) > 0)[0]), vl
 
 
-def _amount_block(xs, n=12):
+def _amount_block(xs, n=12, wide=None):
     """Best run of n equally spaced vertical lines (the 11 amount columns A-K), allowing a couple of
-    missing or extra lines from scan noise and handwriting."""
+    missing or extra lines from scan noise and handwriting. Spacing comes from neighbouring lines first; only if
+    that finds nothing is it measured over several columns (uneven scans)."""
+    if wide is None:
+        return _amount_block(xs, n, False) or _amount_block(xs, n, True)
     best = None
     for i in range(len(xs)):
         cands = set()
-        for j in range(i + 1, min(i + n, len(xs))):
+        for j in range(i + 1, min(i + (n if wide else 4), len(xs))):
+            if not wide:
+                if 30 <= xs[j] - xs[i] <= 160:
+                    cands.add(xs[j] - xs[i])
+                continue
             # spacing from xs[i] to xs[j] over the lines between (one gap alone is too noisy on uneven scans),
             # allowing one missing or extra line
             for m in (j - i - 1, j - i, j - i + 1):
@@ -353,6 +360,7 @@ class OcrSpace:
             self.u = {}
         import threading
         self.lock = threading.Lock()
+        self.misses = 0            # calls that were skipped (allowance) or failed: callers can retry the report later
 
     def _keys(self):
         import datetime as dt
@@ -386,6 +394,7 @@ class OcrSpace:
         import requests
         cv2 = _cv()
         if not self.can(engine):
+            self.misses += 1
             return None
         q = 70
         ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, q])
@@ -403,9 +412,11 @@ class OcrSpace:
                                     "detectOrientation": "true" if orient else "false"})
             d = r.json()
             if d.get("IsErroredOnProcessing") or not d.get("ParsedResults"):
+                self.misses += 1
                 return None
             return d["ParsedResults"][0]
         except Exception:
+            self.misses += 1
             return None
 
 
@@ -450,7 +461,7 @@ def _rows_from_table(text):
     return rows
 
 
-EXAMPLE = re.compile(r"(?i)example|mega corp|IBM Corp\.?\s*\(stock\)|Microsoft\s*\(stock\)")
+EXAMPLE = re.compile(r"(?i)example|mega corp|IBM Corp\.?\s*\(stock\)\s*NYSE|Microsoft\s*\(stock\)\s*NASDAQ")
 
 
 def parse_page(img, filed, ocr=None, matcher=None, form="house"):
@@ -509,7 +520,8 @@ def parse_page(img, filed, ocr=None, matcher=None, form="house"):
             dt_txt = _ocr(im[ny0:ny1, d0 + 4:d1 - 4], "--psm 7 -c tessedit_char_whitelist=0123456789/-.")
         if EXAMPLE.search(name):
             continue
-        name = re.sub(r"^\s*\d{1,2}\s+", "", name)            # row number printed left of the name (Senate form)
+        if g.get("form") == "senate":
+            name = re.sub(r"^\s*\d{1,2}\s+(?=\D)", "", name)     # row number printed left of the name
         own = ""
         ms = re.match(r"^\W*(?:\S{1,3}\s+)?\(\s*(S|SP|DC|J|JT)\s*\)\W*", name, re.I)   # Senate: (S) spouse, (DC) child, (J) joint
         if ms:
@@ -588,11 +600,18 @@ def parse_statement_page(img, filed, ocr, matcher=None):
         dm = fulls[-1] if fulls else None
         head = ln[:min(x for x in (dm.start() if dm else len(ln), m.start() if m else len(ln)))]
         ty = section
-        tm = re.search(r"(?i)\b(purchase|buy|bought|sale|sell|sold|exchange)\b|\s(P|S)\s", ln)
+        # a type column sits between the asset name and the date/amount, or after the amount; words inside the
+        # name ("Best Buy", "Intercontinental Exchange") are not types
+        TY = r"(purchase|buy|bought|sale(?:\s*\(partial\))?|partial sale|sell|sold|exchange|P|S|E)"
+        tm = re.search(r"(?i)\s" + TY + r"\s*[|:]?\s*$", head)
+        tail = ln[m.end():] if m else ""
+        tm2 = None if tm else re.match(r"(?i)\s*[|:]?\s*" + TY + r"\b", tail)
+        tm = tm or tm2
         if tm:
-            w = (tm.group(1) or tm.group(2) or "").lower()
-            ty = "P" if w in ("purchase", "buy", "bought", "p") else "E" if w == "exchange" else "S"
-            head = re.sub(r"(?i)\b(purchase|buy|bought|sale|sell|sold|exchange)\b", " ", head)
+            w = tm.group(1).lower()
+            ty = "P" if w in ("purchase", "buy", "bought", "p") else "E" if w in ("exchange", "e") else "S"
+            if tm is not tm2:
+                head = head[:tm.start()]
         if not ty:
             continue
         own = ""
@@ -651,7 +670,7 @@ class NameIndex:
         known = tickers if tickers is not None else set(self.by_norm.values())
         for m in reversed(list(re.finditer(r"[({\[]([A-Z][A-Z.\-]{0,5})[)}\]]", text))):
             t = m.group(1).replace(".", "-")
-            if t in OWNER_CODES:                   # "(S)" spouse, "(J)" joint, "(DC)" child: not tickers
+            if t in OWNER_CODES and m.start() <= 6:   # "(S)" spouse, "(J)" joint, "(DC)" child at the start
                 continue
             if t in known:
                 return t

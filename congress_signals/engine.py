@@ -539,9 +539,10 @@ def collect_senate_paper(cfg, max_calls=120):
     done = set(json.load(open(cache_done))) if os.path.exists(cache_done) else set()
     mode = "ocrspace" if cfg.get("OCR_SPACE_API_KEY") else "tesseract"
     old = open(vpath).read().strip() if os.path.exists(vpath) else ""
-    if old != f"{SENATE_PAPER_VERSION}-{mode}" and not (old.endswith("ocrspace") and mode == "tesseract"):
-        if old:
-            tx, done = pd.DataFrame(), set()
+    old_ver, _, old_mode = old.partition("-")
+    if old and (old_ver != str(SENATE_PAPER_VERSION) or (old_mode != mode and mode == "ocrspace")):
+        tx, done = pd.DataFrame(), set()        # new reader version, or an OCR.space key was just added
+    if old != f"{SENATE_PAPER_VERSION}-{mode}" and not (old_ver == str(SENATE_PAPER_VERSION) and old_mode == "ocrspace"):
         open(vpath, "w").write(f"{SENATE_PAPER_VERSION}-{mode}")
     index = json.load(open(ipath))
     for r in index:
@@ -572,9 +573,11 @@ def collect_senate_paper(cfg, max_calls=120):
     except Exception as e:
         log(f"Senate paper: could not open eFD site ({e}); skipping")
         return tx
+    tries, tpath = _cache_json(cfg, "senate_paper_tries.json", {})
     rows, n, stats = [], 0, {"rows": 0, "matched": 0}
     for rep_ in todo:
-        if out_of_time(cfg, 160) or (ocr is not None and (calls() >= max_calls or not ocr.can(2))):
+        # a report can take ~20 OCR calls (8 pages, 2 engines, typed lists): stop while there's room for one
+        if out_of_time(cfg, 160) or (ocr is not None and (calls() > max_calls - 20 or not ocr.can(2))):
             break
         try:
             h = s.get(EFD + rep_["link"], timeout=60)
@@ -584,15 +587,24 @@ def collect_senate_paper(cfg, max_calls=120):
             pages = [PP.load_image(requests.get(u, headers=UA, timeout=60).content) for u in urls[:8]]
         except Exception:
             continue
+        miss0 = ocr.misses if ocr is not None else 0
         items, loose = [], []
-        for img in pages:
-            got = PP.parse_page(img, rep_["filed_ts"], ocr=ocr, matcher=matcher, form="senate")
-            items += got
-            if not got:
-                loose.append(img)
-        if not items:                        # no marked form: look for a typed list of trades instead
-            for img in loose[:4]:
-                items += PP.parse_statement_page(img, rep_["filed_ts"], ocr, matcher=matcher)
+        try:
+            for img in pages:
+                got = PP.parse_page(img, rep_["filed_ts"], ocr=ocr, matcher=matcher, form="senate")
+                items += got
+                if not got:
+                    loose.append(img)
+            if not items:                        # no marked form: look for a typed list of trades instead
+                for img in loose[:4]:
+                    items += PP.parse_statement_page(img, rep_["filed_ts"], ocr, matcher=matcher)
+        except Exception as e:
+            log(f"Senate paper: {rep_['link']} skipped ({type(e).__name__}: {e})")
+            done.add(rep_["link"])               # a scan that breaks the reader would break it every run
+            continue
+        if ocr is not None and ocr.misses > miss0 and tries.get(rep_["link"], 0) < 2:
+            tries[rep_["link"]] = tries.get(rep_["link"], 0) + 1
+            continue                             # an OCR call failed or hit the allowance: read it again next run
         done.add(rep_["link"])
         n += 1
         first, last = str(rep_.get("first") or "").strip().title(), str(rep_.get("last") or "").strip().title()
@@ -617,6 +629,7 @@ def collect_senate_paper(cfg, max_calls=120):
         tx = pd.concat([tx, pd.DataFrame(rows)], ignore_index=True)
     tx.to_pickle(cache_tx)
     json.dump(sorted(done), open(cache_done, "w"))
+    json.dump(tries, open(tpath, "w"))
     try:
         source_health(cfg, "senate_paper", ok=True, rows=int(len(tx)), read_this_run=n,
                       left=int(sum(1 for r in index if r["link"] not in done)), ocr_calls=calls(),
@@ -3029,7 +3042,8 @@ def _select(rows, score_col, pct, per_week, blocked=None, short=False, per_membe
         for _, r in cand.iterrows():
             if taken >= per_week:
                 break
-            if per_member and by_member.get(r["member"], 0) >= per_member:
+            mk = r["who"] if "who" in r and isinstance(r["who"], str) else r["member"]
+            if per_member and by_member.get(mk, 0) >= per_member:
                 continue
             t = r["ticker"]
             if (held.get(t) is not None and r["entry_date"] <= held[t]) or \
@@ -3041,7 +3055,7 @@ def _select(rows, score_col, pct, per_week, blocked=None, short=False, per_membe
             picks.append(r)
             held[t] = r["exit_date"]
             taken += 1
-            by_member[r["member"]] = by_member.get(r["member"], 0) + 1
+            by_member[mk] = by_member.get(mk, 0) + 1
     return pd.DataFrame(picks).reset_index(drop=True), held
 
 
@@ -3052,7 +3066,8 @@ def member_weights(rows, cap=100):
     No trade is dropped, and picks and the watchlist are unaffected."""
     if not cap or "member" not in rows or not len(rows):
         return np.ones(len(rows))
-    n = rows.groupby("member")["member"].transform("size").values.astype(float)
+    k = "who" if "who" in rows else "member"
+    n = rows.groupby(k)[k].transform("size").values.astype(float)
     return np.minimum(1.0, np.sqrt(cap / n))
 
 
@@ -3086,9 +3101,10 @@ def busy_check(rows, factors, cfg, top=3):
     (yes/high group minus no/low group) with and without the `top` busiest members."""
     if not len(rows):
         return pd.DataFrame(), []
-    busiest = list(rows["member"].value_counts().head(top).index)
+    mk = "who" if "who" in rows else "member"
+    busiest = list(rows[mk].value_counts().head(top).index)
     cap = cfg.get("BUSY_TRADER_SOFTCAP", 100)
-    rest = rows[~rows["member"].isin(busiest)]
+    rest = rows[~rows[mk].isin(busiest)]
     a_all = _attribution(rows, factors, 1, member_weights(rows, cap))
     a_rest = _attribution(rest, factors, 1, member_weights(rest, cap))
 
@@ -3117,7 +3133,8 @@ def busy_check(rows, factors, cfg, top=3):
             verdict = "Weaker without them"
         out.append({"Signal": sig, "Trades with signal": n, "Effect (everyone)": ea,
                     "Effect without busiest 3": er, "Verdict": verdict})
-    return pd.DataFrame(out).sort_values("Effect (everyone)", ascending=False), busiest
+    shown = [str(rows.loc[rows[mk] == b_, "member"].iloc[0]) for b_ in busiest]      # names, not IDs, for the dashboard
+    return pd.DataFrame(out).sort_values("Effect (everyone)", ascending=False), shown
 
 
 BUY_FACTORS = [("f_track_record", "Member track record"), ("f_cluster", "Cluster buying"),
@@ -3574,7 +3591,7 @@ def build_watchlist(scored, px, cfg, enrich_top=20):
             buys.loc[late, "why"] = buys.loc[late, "why"] + "; filed after the 45-day deadline, so not a buy"
         cap = cfg.get("MAX_WATCHLIST_BUYS_PER_MEMBER")
         if cap:
-            n = buys[buys["action"] == "BUY"].groupby("member").cumcount()
+            n = buys[buys["action"] == "BUY"].groupby("who" if "who" in buys else "member").cumcount()
             over = n[n >= cap].index
             buys.loc[over, "action"] = "watch"
             buys.loc[over, "why"] = buys.loc[over, "why"] + f"; this member already has {cap} buy picks"
@@ -6932,8 +6949,10 @@ def check_sizing(scored, px, cfg, a, pol, rows, today):
         rows.append({"Setting": SIZING_LABEL, "Option": names[k], "Per year vs S&P": vs(b),
                      "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
                      "Verdict": _verdict(c, True, len(SIZING) - 1), **_sure_fields(c, len(SIZING) - 1)})
-        if clearly_better(c, len(SIZING) - 1) and (best is None or _rank(c) > _rank(best[1])):
+        if wins_earlier(c, len(SIZING) - 1) and (best is None or _rank(c) > _rank(best[1])):
             best = (k, c)
+    if best and not confirmed(best[1]):      # chosen on earlier years; must also hold over the last 3
+        best = None
     if best:
         for r in rows:
             if r["Setting"] == SIZING_LABEL and r["Option"] == names[best[0]]:
@@ -7071,8 +7090,10 @@ def _price_rule_check(scored, px, cfg, a, pol, rows, today, key, options, label)
                      "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
                      "Verdict": _verdict(c, True, len(options) - 1), **_sure_fields(c, len(options) - 1), **risk(b)})
         log(f"Adjustments: {label}: {options[k]}: " + (f"{c['gain']*100:+.2f}%/yr, t={c['t']:.2f}" if c else "no data"))
-        if clearly_better(c, len(options) - 1) and (best is None or _rank(c) > _rank(best[1])):
+        if wins_earlier(c, len(options) - 1) and (best is None or _rank(c) > _rank(best[1])):
             best = (k, c)
+    if best and not confirmed(best[1]):      # chosen on earlier years; must also hold over the last 3
+        best = None
     if best:
         for r in rows:
             if r["Setting"] == label and r["Option"] == options[best[0]]:
@@ -7124,8 +7145,10 @@ def check_sleeve_price_rules(scored, px, cfg, a, pol, rows, today):
             rows.append({"Setting": label, "Option": options[k], "Per year vs S&P": sv(b),
                          "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
                          "Verdict": _verdict(c, True, len(options) - 1), **_sure_fields(c, len(options) - 1), **risk(b)})
-            if clearly_better(c, len(options) - 1) and (best is None or _rank(c) > _rank(best[1])):
+            if wins_earlier(c, len(options) - 1) and (best is None or _rank(c) > _rank(best[1])):
                 best = (k, c)
+        if best and not confirmed(best[1]):      # chosen on earlier years; must also hold over the last 3
+            best = None
         if best:
             for r in rows:
                 if r["Setting"] == label and r["Option"] == options[best[0]]:
@@ -7171,7 +7194,7 @@ def _rule_passes(rule, c, k=1):
     if not c or rule == "never":
         return False
     if rule == "strict":
-        return clearly_better(c, k)
+        return wins_earlier(c, k)
     if rule == "medium":
         return c["gain"] >= 0.005 and c["t"] >= 1.0
     return c["gain"] > 0
@@ -7257,6 +7280,8 @@ def filter_rule_test(scored, px, cfg):
                         c = _compare(alt[past], base[past])
                         if _rule_passes(r, c, len(opts) - 1) and (best is None or _rank(c) > _rank(best[1])):
                             best = (o, c)
+                    if best and r == "strict" and not confirmed(best[1]):
+                        best = None
                     if best:
                         R["switches"].append({"year": y, "setting": key, "from": cur_v, "to": best[0],
                                               "gain": best[1]["gain"], "t": best[1]["t"]})
@@ -7310,7 +7335,7 @@ def _apply_overrides(cfg, a):
             a.setdefault("history", []).append({
                 "date": dt.date.today().isoformat(), "change": (lab[0] if lab else k) + " (your choice)",
                 "from": lab[1].get(old, old) if lab else old, "to": lab[1].get(v, v) if lab else v,
-                "gain_per_year": None, "sureness": None, "by": "owner", "note": o.get("note")})
+                "gain_per_year": None, "sureness": None, "by": "owner", "key": k, "note": o.get("note")})
             log(f"Settings: {k} set to {v} ({o.get('note') or 'owner choice'})")
         done.add(o.get("id"))
         changed = True
@@ -7446,14 +7471,33 @@ def _rank(c):
     return c["train_gain"] if c.get("train_gain") is not None else c["gain"]
 
 
-def clearly_better(c, k=1):
-    """Switch only when the option won on the earlier years by enough (+1%/yr) and surely enough for the number of
-    options tried, and then also won on the last 3 years, which played no part in choosing it."""
+def wins_earlier(c, k=1):
+    """Won on the years before the last 3, by enough (+1%/yr) and surely enough for the number of options tried."""
     if not c:
         return False
     if c.get("train_gain") is None:            # short history: all years, same bar
-        return c["gain"] >= 0.01 and c["t"] >= sure_bar(k) and c["recent"] > 0
-    return c["train_gain"] >= 0.01 and c["train_t"] >= sure_bar(k) and c["recent"] > 0 and c["gain"] > 0
+        return c["gain"] >= 0.01 and c["t"] >= sure_bar(k)
+    return c["train_gain"] >= 0.01 and c["train_t"] >= sure_bar(k)
+
+
+def confirmed(c):
+    """Also better over the last 3 years, which played no part in choosing it."""
+    return bool(c) and c["recent"] > 0 and c["gain"] > 0
+
+
+def clearly_better(c, k=1):
+    """Switch only when the option won on the earlier years and then also won on the last 3 years."""
+    return wins_earlier(c, k) and confirmed(c)
+
+
+def pick_switch(cands, k):
+    """Best of several options: chosen on the earlier years only (the most gain among those that clear the bar),
+    then switched to only if that one option also holds up over the last 3 years. cands: [(option, c, ...)]."""
+    ok = [x for x in cands if wins_earlier(x[1], k)]
+    if not ok:
+        return None
+    best = max(ok, key=lambda x: _rank(x[1]))
+    return best if confirmed(best[1]) else None
 
 
 def _verdict(c, auto, k=1):
@@ -7496,9 +7540,12 @@ def recheck_past_switches(scored, px, cfg, a, pol, rows, today):
     # yours: any setting whose latest change was your choice is left alone
     last_by = {}
     for h in a.get("history", []):
+        ch = str(h.get("change", ""))
         for k_, lab in labels.items():
-            if str(h.get("change", "")).startswith(lab):
+            if h.get("key") == k_ or ch.startswith(lab) or ch.startswith(f"{k_} (your choice)"):
                 last_by[k_] = h.get("by") or "auto"
+    if pol.get("main_method") == "learned":    # the learned method sets its own holding period
+        last_by["hold_other"] = last_by["hold_small"] = "owner"
     sleeve_keys = {"hold_sleeve", "sleeve_coverage", "sleeve_price_exit", "sleeve_extend"}
 
     def series(p, sleeve):
@@ -7571,8 +7618,10 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
             rows.append({"Setting": HOLD_LABELS[key], "Option": f"{h} trading days", "Per year vs S&P": vs_spy(b),
                          "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
                          "Verdict": _verdict(c, True, len(HOLD_CHOICES) - 1), **_sure_fields(c, len(HOLD_CHOICES) - 1)})
-            if clearly_better(c, len(HOLD_CHOICES) - 1) and (best is None or _rank(c) > _rank(best[1])):
+            if wins_earlier(c, len(HOLD_CHOICES) - 1) and (best is None or _rank(c) > _rank(best[1])):
                 best = (h, c, b)
+        if best and not confirmed(best[1]):      # chosen on earlier years; must also hold over the last 3
+            best = None
         if best:
             a["history"].append({"date": today, "change": HOLD_LABELS[key], "from": f"{pol[key]} days",
                                  "to": f"{best[0]} days", "gain_per_year": best[1]["gain"], "sureness": best[1]["t"]})
@@ -7599,8 +7648,10 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
             rows.append({"Setting": HOLD_LABELS[key], "Option": f"{h} trading days", "Per year vs S&P": sv(b),
                          "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
                          "Verdict": _verdict(c, True, len(SLEEVE_HOLDS) - 1), **_sure_fields(c, len(SLEEVE_HOLDS) - 1)})
-            if clearly_better(c, len(SLEEVE_HOLDS) - 1) and (best is None or _rank(c) > _rank(best[1])):
+            if wins_earlier(c, len(SLEEVE_HOLDS) - 1) and (best is None or _rank(c) > _rank(best[1])):
                 best = (h, c)
+        if best and not confirmed(best[1]):      # chosen on earlier years; must also hold over the last 3
+            best = None
         if best:
             a["history"].append({"date": today, "change": HOLD_LABELS[key], "from": f"{pol[key]} days",
                                  "to": f"{best[0]} days", "gain_per_year": best[1]["gain"], "sureness": best[1]["t"]})
