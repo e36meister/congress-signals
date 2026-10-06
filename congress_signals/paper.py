@@ -652,11 +652,17 @@ OWNER_CODES = {"S", "J", "SP", "JT", "DC", "D"}
 
 
 class NameIndex:
-    def __init__(self, titles):          # titles: {ticker: company title}
+    def __init__(self, titles, primary=None):
+        """titles: {ticker: company title}, or a list of (ticker, title) pairs in priority order: the first
+        `primary` pairs (today's list) win ties by the shorter ticker; later ones only fill names not seen yet."""
+        pairs = list(titles.items()) if isinstance(titles, dict) else list(titles)
+        primary = len(pairs) if primary is None else primary
         self.by_norm = {}
-        for t, name in titles.items():
-            n = _norm(name)
-            if n and (n not in self.by_norm or len(t) < len(self.by_norm[n])):
+        for i, (t, name) in enumerate(pairs):
+            n = _norm(str(name or ""))
+            if not n:
+                continue
+            if n not in self.by_norm or (i < primary and len(t) < len(self.by_norm[n])):
                 self.by_norm[n] = t
         self.keys = list(self.by_norm)
         self.first = {}
