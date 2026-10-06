@@ -652,50 +652,73 @@ OWNER_CODES = {"S", "J", "SP", "JT", "DC", "D"}
 
 
 class NameIndex:
-    def __init__(self, titles, primary=None):
+    def __init__(self, titles, primary=None, spans=None):
         """titles: {ticker: company title}, or a list of (ticker, title) pairs in priority order: the first
         `primary` pairs (today's list) win ties by the shorter ticker; later ones only fill names not seen yet."""
         pairs = list(titles.items()) if isinstance(titles, dict) else list(titles)
         primary = len(pairs) if primary is None else primary
-        self.by_norm = {}
+        self.by_norm, self.span = {}, {}
         for i, (t, name) in enumerate(pairs):
             n = _norm(str(name or ""))
             if not n:
                 continue
             if n not in self.by_norm or (i < primary and len(t) < len(self.by_norm[n])):
                 self.by_norm[n] = t
+                sp = spans[i] if spans is not None and i < len(spans) else None
+                if sp:
+                    self.span[n] = sp          # (first, last) dates a past name was in use
+                else:
+                    self.span.pop(n, None)
         self.keys = list(self.by_norm)
         self.first = {}
         for k in self.keys:
             self.first.setdefault(k.split()[0], []).append(k)
 
-    def match(self, text, tickers=None):
-        """Ticker for a written asset name, or None when unsure."""
+    def match(self, text, tickers=None, when=None):
+        """Ticker for a written asset name, or None when unsure. With `when` (the filing date), a company's
+        past name only counts if it was still in use then (a ticker can be reused by another company later)."""
+        k = self._key(text, tickers)
+        if k is None or isinstance(k, tuple):
+            return k[1] if isinstance(k, tuple) else None
+        sp = self.span.get(k)
+        if sp and when is not None:
+            import pandas as pd
+            w = pd.Timestamp(when)
+            if not (pd.Timestamp(sp[0]) - pd.Timedelta(days=730) <= w <= pd.Timestamp(sp[1]) + pd.Timedelta(days=400)):
+                return None
+        return self.by_norm[k]
+
+    def _key(self, text, tickers=None):
+        """The matching normalized name, or ("ticker", T) when the ticker is written in brackets."""
         if not text:
             return None
         known = tickers if tickers is not None else set(self.by_norm.values())
         for m in reversed(list(re.finditer(r"[({\[]([A-Z][A-Z.\-]{0,5})[)}\]]", text))):
             t = m.group(1).replace(".", "-")
-            if t in OWNER_CODES and m.start() <= 6:   # "(S)" spouse, "(J)" joint, "(DC)" child at the start
+            if t in OWNER_CODES:                   # "(S)" spouse, "(SP)", "(J)" joint, "(DC)" child: never tickers
                 continue
             if t in known:
-                return t
+                return ("ticker", t)
+        # just a ticker written as the name ("RE (stock) NYSE" is Everest Re's symbol, not RE/MAX)
+        bare = re.sub(r"\s+", " ", re.sub(r"(?i)\([^)]*\)|\b(?:stock|nyse|nasdaq|otc|amex)\b|[-/]", " ", text)).strip(" .,:")
+        if re.fullmatch(r"[A-Z]{1,5}(?:\.[A-Z])?", bare) and bare.replace(".", "-") in known:
+            return ("ticker", bare.replace(".", "-"))
         n = _norm(text)
         if not n:
             return None
         if n in self.by_norm:
-            return self.by_norm[n]
+            return n
         f0 = n.split()[0]
         cand = list(self.first.get(f0, []))
         if not cand and len(f0) >= 4:            # misspelled first word ("Walment"): try close first words
             for fw in difflib.get_close_matches(f0, list(self.first), n=3, cutoff=0.8):
                 cand += self.first[fw]
         best = difflib.get_close_matches(n, cand, n=1, cutoff=0.82) if cand else []
-        if not best and cand:
+        if not best and cand and len(n) >= 5:        # too short to tell apart ("re" isn't "re max")
             q = set(n.split())
             sub = [k for k in cand if q <= set(k.split())]
             if len(sub) == 1:
                 best = sub
         if not best:
             best = difflib.get_close_matches(n, self.keys, n=1, cutoff=0.9)
-        return self.by_norm[best[0]] if best else None
+        return best[0] if best else None

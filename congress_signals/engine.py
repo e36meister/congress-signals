@@ -402,6 +402,8 @@ def historical_company_names(cfg, per_run=16):
     since the start date. Catches companies since renamed, bought or delisted ("SunTrust Banks" -> STI,
     "Halyard Health" -> HYH), which today's ticker list doesn't have. A few quarters per run, cached."""
     st, path = _cache_json(cfg, "company_names_hist.json", {"names": {}, "done": []})
+    if st.get("v") != 2:                     # v2: each name keeps the first and last date it was used
+        st = {"v": 2, "names": {}, "done": []}
     hdr = _sec_headers(cfg)
     if not hdr:
         return st["names"]
@@ -421,11 +423,16 @@ def historical_company_names(cfg, per_run=16):
                 sub = _read_tsv(zipfile.ZipFile(io.BytesIO(r.content)), "SUBMISSION.TSV",
                                 ["ISSUERNAME", "ISSUERTRADINGSYMBOL", "FILING_DATE"])
                 sub["t"] = sub["ISSUERTRADINGSYMBOL"].map(clean_ticker)
-                sub = sub.dropna(subset=["t", "ISSUERNAME"]).drop_duplicates(["t", "ISSUERNAME"])
-                for t, nm in zip(sub["t"], sub["ISSUERNAME"]):
+                sub["d"] = pd.to_datetime(sub["FILING_DATE"], format="%d-%b-%Y", errors="coerce").dt.strftime("%Y-%m-%d")
+                sub = sub.dropna(subset=["t", "ISSUERNAME", "d"])
+                g = sub.groupby(["t", "ISSUERNAME"])["d"].agg(["min", "max"]).reset_index()
+                for t, nm, d0, d1 in zip(g["t"], g["ISSUERNAME"], g["min"], g["max"]):
                     lst = st["names"].setdefault(t, [])
-                    if nm not in lst and len(lst) < 4:
-                        lst.append(nm)
+                    hit = next((x for x in lst if x[0] == nm), None)
+                    if hit:
+                        hit[1], hit[2] = min(hit[1], d0), max(hit[2], d1)
+                    elif len(lst) < 4:
+                        lst.append([nm, d0, d1])
                 if pd.Timestamp(y, 3 * q, 1) + pd.offsets.MonthEnd(0) + pd.Timedelta(days=45) < today:
                     st["done"].append(key)
                 n += 1
@@ -460,8 +467,13 @@ def paper_name_index(cfg):
         pairs += [(t, m["name"]) for t, m in meta.items() if isinstance(m, dict) and m.get("name")]
     except Exception:
         pass
+    spans = [None] * len(pairs)
     try:
-        pairs += [(t, nm) for t, lst in historical_company_names(cfg).items() for nm in lst]
+        for t, lst in historical_company_names(cfg).items():
+            for x in lst:
+                if isinstance(x, list) and len(x) == 3:
+                    pairs.append((t, x[0]))
+                    spans.append((x[1], x[2]))       # a past name only counts for trades while it was in use
     except Exception as e:
         log(f"Company names: skipped ({type(e).__name__}: {e})")
     known = {t for t, _ in pairs}
@@ -470,17 +482,28 @@ def paper_name_index(cfg):
             known |= set(pd.read_pickle(_p(cfg, "cache", f))["ticker"].dropna().astype(str).str.upper())
         except Exception:
             pass
-    nidx = PP.NameIndex(pairs, primary=n_cur)
+    nidx = PP.NameIndex(pairs, primary=n_cur, spans=spans)
     _NAME_INDEX.update({"run": id(cfg), "nidx": nidx, "known": known})
     log(f"Scanned reports: {len(nidx.keys):,} company names to match against ({n_cur:,} current)")
     return nidx, known
 
 
-def _rematch(tx, un, nidx, known, label):
-    """Lines read earlier whose company couldn't be matched: try again with today's name list."""
+def _rematch(tx, un, nidx, known, label, cfg=None):
+    """Lines read earlier whose company couldn't be matched: try again when the name list has grown."""
     if un is None or not len(un):
         return tx, un
-    tk = un["name"].map(lambda nm: nidx.match(nm, known))
+    mark = _p(cfg, "cache", f"{label.split()[0].lower()}_rematch_keys.txt") if cfg is not None else None
+    size = str(len(nidx.keys))
+    if mark and os.path.exists(mark) and open(mark).read().strip() == size:
+        return tx, un                          # same names as last time: nothing new can match
+    memo = {}
+    for nm, fd in zip(un["name"], un["filed_date"]):
+        k = (nm, str(fd)[:10])
+        if k not in memo:
+            memo[k] = nidx.match(nm, known, when=fd)
+    tk = pd.Series([memo[(nm, str(fd)[:10])] for nm, fd in zip(un["name"], un["filed_date"])], index=un.index)
+    if mark and not tk.notna().any():           # with new matches, check again next run until they're saved
+        open(mark, "w").write(size)
     hit = tk.notna()
     if hit.any():
         add = un[hit].assign(ticker=tk[hit])
@@ -521,10 +544,11 @@ def collect_house_paper(cfg):
         redo |= done
         done = set()
         json.dump(sorted(redo), open(redo_path, "w"))
+        json.dump([], open(cache_done, "w"))     # saved now, so an early return can't lose the re-read queue
     if old != f"{PAPER_VERSION}-{mode}" and not (old_mode == "ocrspace" and mode == "tesseract"):
         open(vpath, "w").write(f"{PAPER_VERSION}-{mode}")
     nidx, known = paper_name_index(cfg)
-    tx, un = _rematch(tx, un, nidx, known, "House paper")
+    tx, un = _rematch(tx, un, nidx, known, "House paper", cfg)
     ocr = PP.OcrSpace(cfg["OCR_SPACE_API_KEY"], _p(cfg, "state", "ocrspace_usage.json")) if cfg.get("OCR_SPACE_API_KEY") else None
     matcher = lambda name: nidx.match(name, known)
     idx = []
@@ -596,7 +620,7 @@ def collect_house_paper(cfg):
             stats["rows"] += 1
             if not t["tx_raw"] or not t["amount"]:
                 continue
-            tk = t.get("ticker") or nidx.match(t["name"], known)
+            tk = t.get("ticker") or nidx.match(t["name"], known, when=r["FilingDate"])
             td = t["trade_date"] or (r["FilingDate"] - pd.Timedelta(days=30)).date()
             row = {"member": f"{first} {last}".strip(), "first": first, "last": last, "chamber": "House",
                    "state": str(r.get("StateDst") or "")[:2], "ticker": tk, "tx_type": norm_type(t["tx_raw"]),
@@ -650,6 +674,8 @@ def collect_senate_paper(cfg, max_calls=120):
     old_ver, _, old_mode = old.partition("-")
     if old and (old_ver != str(SENATE_PAPER_VERSION) or (old_mode != mode and mode == "ocrspace")):
         tx, done = pd.DataFrame(), set()        # new reader version, or an OCR.space key was just added
+        tx.to_pickle(cache_tx)
+        json.dump([], open(cache_done, "w"))
     if old != f"{SENATE_PAPER_VERSION}-{mode}" and not (old_ver == str(SENATE_PAPER_VERSION) and old_mode == "ocrspace"):
         open(vpath, "w").write(f"{SENATE_PAPER_VERSION}-{mode}")
     index = json.load(open(ipath))
@@ -660,7 +686,7 @@ def collect_senate_paper(cfg, max_calls=120):
     cache_un = _p(cfg, "cache", "senate_paper_unmatched.pkl")
     un = pd.read_pickle(cache_un) if os.path.exists(cache_un) and len(done) else pd.DataFrame()
     nidx, known = paper_name_index(cfg)
-    tx, un = _rematch(tx, un, nidx, known, "Senate paper")
+    tx, un = _rematch(tx, un, nidx, known, "Senate paper", cfg)
     urows = []
     matcher = lambda name: nidx.match(name, known)
     ocr = PP.OcrSpace(cfg["OCR_SPACE_API_KEY"], _p(cfg, "state", "ocrspace_usage.json")) if cfg.get("OCR_SPACE_API_KEY") else None
@@ -711,7 +737,7 @@ def collect_senate_paper(cfg, max_calls=120):
             stats["rows"] += 1
             if not t["tx_raw"] or not t["amount"]:
                 continue
-            tk = t.get("ticker") or nidx.match(t["name"], known)
+            tk = t.get("ticker") or nidx.match(t["name"], known, when=rep_["filed_ts"])
             td = t["trade_date"] or (rep_["filed_ts"] - pd.Timedelta(days=30)).date()
             (rows if tk else urows).append({"name": t["name"],"member": f"{first} {last}".strip(), "first": first, "last": last, "chamber": "Senate",
                          "state": None, "ticker": tk, "tx_type": norm_type(t["tx_raw"]), "trade_date": td,
@@ -5675,7 +5701,9 @@ def compute_connections(tx, data, cfg, mems):
             if not len(w):
                 continue
             # the right chamber's title, and if a first name is written it must be this member's
-            title = r"(rep|representative|congressman|congresswoman)" if ch == "House" else r"(sen|senator)"
+            # senators often served in the House first, so "Rep." also counts for them; the first-name check guards
+            title = r"(rep|representative|congressman|congresswoman)" if ch == "House" else \
+                r"(sen|senator|rep|representative|congressman|congresswoman)"
             pat = re.compile(r"\b" + title + r"\.?\s+(?:([A-Za-z]+)\.?\s+)?(?:[A-Z]\.\s+)?" + re.escape(lk) + r"\b", re.I)
             firsts = {x[:3] for x in _first_tokens("", str(mem))}
             for c in w.covered:
@@ -7438,10 +7466,9 @@ def filter_rule_test(scored, px, cfg):
     def series(pol):
         key = json.dumps(pol, sort_keys=True, default=str)
         if key not in cache:
-            sc = scored
-            if pol["signals_on"]:
-                bw, sw = active_weights(cfg, signals_on=list(pol["signals_on"]))
-                sc = apply_scores(scored, cfg, buy_w=bw, short_w=sw)
+            # always rescore with this rule's own signals (the live scores carry the live signals)
+            bw, sw = active_weights(cfg, signals_on=list(pol["signals_on"]))
+            sc = apply_scores(scored, cfg, buy_w=bw, short_w=sw)
             bt = run_backtest(apply_hold_policy(sc, px, cfg, pol), px, dict(cfg, _nested=True, _sizing=pol["sizing"]))
             cache[key] = _long_daily(bt)
         return cache[key]
@@ -7757,10 +7784,8 @@ def recheck_past_switches(scored, px, cfg, a, pol, rows, today):
             b = small_cap_backtest(scored, px, cfg, hold=p["hold_sleeve"], coverage=p.get("sleeve_coverage"),
                                    price_exit=p.get("sleeve_price_exit", "none"), extend=p.get("sleeve_extend", "none"))
             return None if b is None else b["curves"]["Small-company picks"].pct_change().fillna(0)
-        sc = scored
-        if p.get("signals_on"):
-            bw, sw = active_weights(cfg, signals_on=list(p["signals_on"]))
-            sc = apply_scores(scored, cfg, buy_w=bw, short_w=sw)
+        bw, sw = active_weights(cfg, signals_on=list(p.get("signals_on") or []))
+        sc = apply_scores(scored, cfg, buy_w=bw, short_w=sw)
         b = run_backtest(apply_hold_policy(sc, px, cfg, p), px, dict(cfg, _nested=True, _sizing=p.get("sizing", "equal")))
         return _long_daily(b)
 

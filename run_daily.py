@@ -124,8 +124,8 @@ def send_weekly_summary():
     from zoneinfo import ZoneInfo
     now = dt.datetime.now(ZoneInfo("America/New_York"))
     week = f"{now.isocalendar()[0]}-W{now.isocalendar()[1]:02d}"
-    if st.get("week") == week or (st.get("week") and not (now.weekday() == 0 and now.hour >= 6)):
-        return
+    if st.get("week") == week or (now.weekday() == 0 and now.hour < 6):
+        return              # once a week: the first run from Monday 6 AM on (a later day if Monday's runs failed)
     d = json.load(open(os.path.join(cfg["DATA_DIR"], "dashboard_data.json")))
     esc = lambda x: html.escape(str(x if x is not None else ""))
     pc = lambda x, n=1: "–" if x is None else f"{x * 100:+.{n}f}%"
@@ -136,9 +136,10 @@ def send_weekly_summary():
     if ch:
         last = ch[-1]
         wk = next((r for r in reversed(ch) if r.get("date") and r["date"] <= since.isoformat()), ch[0])
-        wchg = (last["equity"] / wk["equity"] - 1) if wk.get("equity") else None
-        parts.append(f"<h3>Paper account</h3><p>${last['equity']:,.0f} · this week {pc(wchg)} · since start "
-                     f"{last.get('since_start', 0):+.2f}% vs the S&amp;P's {last.get('spy_since_start', 0):+.2f}%</p>")
+        wchg = (last["equity"] / wk["equity"] - 1) if wk.get("equity") and last.get("equity") else None
+        f2 = lambda x: "–" if x is None else f"{x:+.2f}%"
+        parts.append(f"<h3>Paper account</h3><p>${(last.get('equity') or 0):,.0f} · this week {pc(wchg)} · since start "
+                     f"{f2(last.get('since_start'))} vs the S&amp;P's {f2(last.get('spy_since_start'))}</p>")
     # trades the tool made
     orders = [o for o in ((d.get("portfolio") or {}).get("orders") or [])
               if o.get("by") == "tool" and o.get("status") == "filled" and str(o.get("at", ""))[:10] >= since.isoformat()]
