@@ -7520,10 +7520,11 @@ def recheck_past_switches(scored, px, cfg, a, pol, rows, today):
         k = fam.get(key, 1)
         s_now, s_start = series(pol, key in sleeve_keys), series(dict(pol, **{key: v0}), key in sleeve_keys)
         c = _compare(s_now, s_start) if s_now is not None and s_start is not None else None
-        keep = clearly_better(c, k)
+        keep = clearly_better(c, k) if c else True          # can't measure it: leave it as it is
         rows.append({"Setting": RECHECK_LABEL, "Option": f"{labels[key]}: {pol[key]} (vs starting {v0})",
                      "Per year vs S&P": None, "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
-                     "Verdict": "Kept: still clearly better" if keep else "Undone: back to the starting setting",
+                     "Verdict": ("Kept: still clearly better" if c else "Kept: not enough data to re-check") if keep
+                     else "Undone: back to the starting setting",
                      **_sure_fields(c, k)})
         if not keep:
             a["history"].append({"date": today, "change": labels[key] + " (undone by the stricter test)",
