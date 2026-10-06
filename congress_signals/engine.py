@@ -1076,7 +1076,7 @@ def load_legislators(cfg):
     if os.path.exists(path):
         try:
             old = json.load(open(path))
-            if _fresh(old.get("fetched", ""), 7) and old.get("v") == 2:
+            if _fresh(old.get("fetched", ""), 7) and old.get("v") == 3:
                 return old["idx"]
         except Exception:
             old = {}
@@ -1098,7 +1098,10 @@ def load_legislators(cfg):
         if not b or not terms:
             continue
         nm = p.get("name") or {}
-        short = f"{nm.get('nickname') or nm.get('first', '')} {nm.get('last', '')}".strip()
+        fst = nm.get("first", "")
+        if fst.endswith(".") and nm.get("middle"):     # "C. Scott Franklin" goes by Scott
+            fst = nm["middle"]
+        short = f"{nm.get('nickname') or fst} {nm.get('last', '')}".strip()
         rec = {"bioguide": b, "name": short or nm.get("official_full", ""),
                "first": nm.get("first", ""), "nick": nm.get("nickname", ""), "middle": nm.get("middle", ""),
                "terms": terms}
@@ -1107,7 +1110,7 @@ def load_legislators(cfg):
                 lst = idx.setdefault(f"{ch}|{k}", [])
                 if not any(x["bioguide"] == b for x in lst):
                     lst.append(rec)
-    json.dump({"v": 2, "fetched": dt.datetime.now().isoformat(timespec="seconds"), "idx": idx}, open(path, "w"))
+    json.dump({"v": 3, "fetched": dt.datetime.now().isoformat(timespec="seconds"), "idx": idx}, open(path, "w"))
     log(f"Member IDs: {len({r['bioguide'] for v in idx.values() for r in v}):,} members who served since {since[:4]}")
     return idx
 
