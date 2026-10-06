@@ -958,19 +958,25 @@ def collect_all(cfg):
     fix = tx["last"].str.strip() == ""
     tx.loc[fix, "last"] = tx.loc[fix, "member"].map(lambda m: _split_name(m)[1])
     tx["last_key"] = tx["last"].map(lambda s: name_key(s).split(" ")[-1] if name_key(s) else "")
+    # who each trade belongs to (official Congress ID), so de-duplication never merges two same-surname members
+    try:
+        tx = assign_member_ids(tx, load_legislators(cfg))
+    except Exception as e:
+        log(f"Member IDs: skipped at collection ({type(e).__name__}: {e})")
+        tx["who"], tx["bio_id"] = tx["chamber"] + "|" + tx["last_key"], None
     # de-duplicate across sources: official sources first
     prio = {"house_clerk": 0, "senate_efd": 0, "quiver": 1, "house_paper": 2, "senate_paper": 2, "fmp": 3}
     # a scanned-report row that Quiver also has (same member, stock and filing day) is dropped: Quiver's is typed
     if (tx["source"] == "quiver").any() and tx["source"].isin(["house_paper", "senate_paper"]).any():
         q = tx[tx["source"] == "quiver"]
-        qk = set(zip(q["last"].astype(str).str.lower(), q["ticker"], q["filed_date"].dt.date))
+        qk = set(zip(q["who"], q["ticker"], q["filed_date"].dt.date))
         pm = tx["source"].isin(["house_paper", "senate_paper"])
-        dup = pm & pd.Series([(l.lower(), t, f.date()) in qk for l, t, f in
-                              zip(tx["last"].astype(str), tx["ticker"], tx["filed_date"])], index=tx.index)
+        dup = pm & pd.Series([(w, t, f.date()) in qk for w, t, f in
+                              zip(tx["who"], tx["ticker"], tx["filed_date"])], index=tx.index)
         tx = tx[~dup]
     tx["_p"] = tx["source"].map(prio).fillna(3)
     tx = tx.sort_values("_p")
-    tx = tx.drop_duplicates(["chamber", "last_key", "ticker", "trade_date", "tx_type", "amt_lo"], keep="first")
+    tx = tx.drop_duplicates(["who", "ticker", "trade_date", "tx_type", "amt_lo"], keep="first")
     tx = tx.drop(columns="_p")
     tx = tx[tx["filed_date"] >= pd.Timestamp(cfg["START_DATE"])]
     tx = tx.sort_values("filed_date").reset_index(drop=True)
@@ -2627,7 +2633,8 @@ def compute_features(tx, px, data, cfg):
     history = data.get("committee_history")
     mems = committee_records(tx, history, committees)
     tx["committees"] = ["; ".join(m["committees"]) if m else "" for m in mems]
-    tx["bioguide"] = [(m.get("bioguide") if m else None) or b for m, b in zip(mems, tx["bio_id"])]
+    tx["bioguide"] = [(m.get("bioguide") if m else None) or b for m, b in
+                      zip(mems, tx["bio_id"] if "bio_id" in tx else [None] * len(tx))]
     tx["party"] = [m.get("party") if m else None for m in mems]
     try:
         save_member_tags(cfg, tx, mems)
@@ -5494,14 +5501,25 @@ def compute_connections(tx, data, cfg, mems):
     rv = np.zeros(n)
     if lb is not None and len(lb) and "covered" in lb:
         lg = {k: v for k, v in lb.dropna(subset=["posted"]).groupby("ticker")}
-        for i, (t, lk, f) in enumerate(zip(tx["ticker"], last, fdt)):
+        for i, (t, lk, f, ch, mem) in enumerate(zip(tx["ticker"], last, fdt, tx["chamber"], tx["member"])):
             g = lg.get(t)
             if g is None or not lk:
                 continue
             w = g[(g.posted <= f) & (g.posted > f - D(days=730))]
-            pat = re.compile(r"\b(rep|representative|congressman|congresswoman|sen|senator)\.?\s+(\w+\s+)?" + re.escape(lk) + r"\b", re.I)
-            if any(pat.search(c or "") for c in w.covered):
-                rv[i] = 1.0
+            if not len(w):
+                continue
+            # the right chamber's title, and if a first name is written it must be this member's
+            title = r"(rep|representative|congressman|congresswoman)" if ch == "House" else r"(sen|senator)"
+            pat = re.compile(r"\b" + title + r"\.?\s+(?:([A-Za-z]+)\.?\s+)?(?:[A-Z]\.\s+)?" + re.escape(lk) + r"\b", re.I)
+            firsts = {x[:3] for x in _first_tokens("", str(mem))}
+            for c in w.covered:
+                for mm in pat.finditer(c or ""):
+                    fw = (mm.group(2) or "").lower()
+                    if not fw or not firsts or fw[:3] in firsts:
+                        rv[i] = 1.0
+                        break
+                if rv[i]:
+                    break
     tx["f_revolving_door"] = rv
 
     # 10, 12. testimony before the member's committees; closed briefings before the trade
@@ -5565,11 +5583,15 @@ def compute_connections(tx, data, cfg, mems):
     if bs.get("accounts"):
         by_last = {}
         for h, disp in bs["accounts"].items():
-            lk = name_key(re.sub(r"^(rep|sen|senator|congressman|congresswoman)\.?\s+", "", disp or "", flags=re.I)).split(" ")[-1:]
+            nm = name_key(re.sub(r"^(rep|sen|senator|congressman|congresswoman)\.?\s+", "", disp or "", flags=re.I))
+            lk = nm.split(" ")[-1:]
             if lk and lk[0]:
-                by_last.setdefault(lk[0], []).append(h)
-        for i, (lk, t, c_, f) in enumerate(zip(last, tx["ticker"], tx["_ck"], fdt)):
-            for h in by_last.get(lk, []):
+                by_last.setdefault(lk[0], []).append((h, nm.split(" ")[0][:3] if " " in nm else ""))
+        for i, (lk, t, c_, f, mem) in enumerate(zip(last, tx["ticker"], tx["_ck"], fdt, tx["member"])):
+            firsts = {x[:3] for x in _first_tokens("", str(mem))}
+            for h, f3 in by_last.get(lk, []):
+                if f3 and firsts and f3 not in firsts:        # Tim Scott's account isn't Rick Scott's
+                    continue
                 lo_, hi_ = (f - D(days=365)).strftime("%Y-%m-%d"), f.strftime("%Y-%m-%d")
                 for d, text in (bs.get("posts", {}).get(h) or {}).get("items", []):
                     if lo_ < d <= hi_ and (("$" + t) in text or _name_hit(text.lower(), c_)):
