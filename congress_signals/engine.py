@@ -745,6 +745,42 @@ def collect_senate_paper(cfg, max_calls=120):
     return tx
 
 
+def data_progress(cfg):
+    """How complete the data is, for the dashboard's progress panel and the weekly email."""
+    def js(*a, default=None):
+        try:
+            return json.load(open(_p(cfg, *a)))
+        except Exception:
+            return default
+    h = js("state", "source_health.json", default={}) or {}
+    hb = js("cache", "house_backlog.json", default={}) or {}
+    rr = js("state", "house_reread.json", default={}) or {}
+    use = js("state", "ocrspace_usage.json", default={}) or {}
+    today, mon = dt.date.today().isoformat(), dt.date.today().strftime("%Y-%m")
+    pc = js("state", "price_coverage.json", default={}) or {}
+    names = js("cache", "company_names_hist.json", default={}) or {}
+    mid = js("state", "member_ids.json", default={}) or {}
+    ft = js("state", FILTER_FILE, default={}) or {}
+    cty = js("cache", "ticker_country.json", default={}) or {}
+    pick = lambda d, *k: {x: d.get(x) for x in k}
+    return {
+        "updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "house_reread": {"left": hb.get("left"), "at": hb.get("at"), "done_email": bool(rr.get("notified"))},
+        "house_scans": pick(h.get("house_paper") or {}, "rows", "left", "reread_left", "unmatched", "read_this_run",
+                            "lines_seen", "lines_matched", "at"),
+        "senate_scans": pick(h.get("senate_paper") or {}, "rows", "left", "unmatched", "read_this_run", "at"),
+        "ocr": {"today": (use.get("day") or {}).get(today, 0), "day_cap": 450,
+                "month": (use.get("month") or {}).get(mon, 0), "month_cap": 24000},
+        "prices": {"refresh_queue": len(js("cache", "price_refresh_queue.json", default=[]) or []),
+                   "trades": pc.get("trades"), "with_prices": pc.get("with_prices"), "missing_share": pc.get("missing_share")},
+        "company_names": {"quarters": len(names.get("done") or []), "tickers": len(names.get("names") or {})},
+        "countries": len(cty),
+        "members": mid,
+        "filter_test": {"complete": bool(ft.get("complete")), "updated": ft.get("updated")},
+        "sources": {k: {"ok": bool(v.get("ok")), "error": v.get("error")} for k, v in h.items()},
+    }
+
+
 def house_backlog(cfg):
     try:
         return int(json.load(open(_p(cfg, "cache", "house_backlog.json"))).get("left", 0))
@@ -1065,6 +1101,10 @@ def collect_all(cfg):
     # who each trade belongs to (official Congress ID), so de-duplication never merges two same-surname members
     try:
         tx = assign_member_ids(tx, load_legislators(cfg))
+        json.dump({"matched_share": float(tx["bio_id"].notna().mean()) if len(tx) else None,
+                   "members": int(tx["who"].nunique()),
+                   "unmatched_names": tx.loc[tx["bio_id"].isna(), "member"].value_counts().head(10).to_dict()},
+                  open(_p(cfg, "state", "member_ids.json"), "w"))
     except Exception as e:
         log(f"Member IDs: skipped at collection ({type(e).__name__}: {e})")
         tx["who"], tx["bio_id"] = tx["chamber"] + "|" + tx["last_key"], None
@@ -4575,6 +4615,10 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
                 "trade_stats": {k: _j(v) for k, v in sbt["trade_stats"].items()},
                 "years": [{"year": int(y), **{c: _j(v) for c, v in r.items()}} for y, r in sbt["years"].iterrows()],
                 "n_picks": len(sbt["picks"]), "picks": _rows(P, _TRADE_COLS)}
+    try:
+        data["data_progress"] = data_progress(cfg)
+    except Exception as e:
+        log(f"Data progress: skipped ({type(e).__name__}: {e})")
     hpath = os.path.join(cfg["DATA_DIR"], "state", "source_health.json")
     if os.path.exists(hpath):
         try:
