@@ -925,6 +925,138 @@ def match_member(com, chamber, last_key, first, state):
 
 
 # ----------------------------------------------------------------------------
+# Who is who: every trade gets the member's official Congress ID (bioguide), so two members with the same
+# last name (Rick Scott and Tim Scott, Barbara Lee and Susie Lee) are never treated as one person.
+# ----------------------------------------------------------------------------
+def _last_keys(last):
+    nk = name_key(last)
+    if not nk:
+        return set()
+    return {nk.split(" ")[-1], re.split(r"[\s\-]+", nk)[-1], nk.replace(" ", "-")}
+
+
+def load_legislators(cfg):
+    """Everyone who served in Congress since the start date (current and former members), indexed by
+    chamber|last name, with their terms (chamber, start, end, state). Refreshed weekly."""
+    path = _p(cfg, "cache", "legislators_index.json")
+    old = {}
+    if os.path.exists(path):
+        try:
+            old = json.load(open(path))
+            if _fresh(old.get("fetched", ""), 7) and old.get("v") == 2:
+                return old["idx"]
+        except Exception:
+            old = {}
+    since = (pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=400)).strftime("%Y-%m-%d")
+    try:
+        people = []
+        for f in ("legislators-current.json", "legislators-historical.json"):
+            r = requests.get(LEG_BASE + f, timeout=120)
+            r.raise_for_status()
+            people += r.json()
+    except Exception as e:
+        log(f"Member IDs: download failed ({type(e).__name__}); using the saved list")
+        return old.get("idx", {})
+    idx = {}
+    for p in people:
+        b = (p.get("id") or {}).get("bioguide")
+        terms = [["Senate" if t.get("type") == "sen" else "House", t.get("start", ""), t.get("end", ""),
+                  t.get("state", ""), t.get("party", "")] for t in p.get("terms") or [] if t.get("end", "") >= since]
+        if not b or not terms:
+            continue
+        nm = p.get("name") or {}
+        short = f"{nm.get('nickname') or nm.get('first', '')} {nm.get('last', '')}".strip()
+        rec = {"bioguide": b, "name": short or nm.get("official_full", ""),
+               "first": nm.get("first", ""), "nick": nm.get("nickname", ""), "middle": nm.get("middle", ""),
+               "terms": terms}
+        for ch in {t[0] for t in terms}:
+            for k in _last_keys(nm.get("last", "")):
+                lst = idx.setdefault(f"{ch}|{k}", [])
+                if not any(x["bioguide"] == b for x in lst):
+                    lst.append(rec)
+    json.dump({"v": 2, "fetched": dt.datetime.now().isoformat(timespec="seconds"), "idx": idx}, open(path, "w"))
+    log(f"Member IDs: {len({r['bioguide'] for v in idx.values() for r in v}):,} members who served since {since[:4]}")
+    return idx
+
+
+def _first_tokens(first, display=""):
+    toks = [t for t in re.split(r"[\s\-]+", name_key(first)) if len(t) >= 2]
+    if not toks and display:
+        d = [t for t in re.split(r"[\s\-]+", name_key(display)) if len(t) >= 2]
+        toks = d[:-1]
+    return toks
+
+
+def identify_member(idx, chamber, last_key, first, state, when, display=""):
+    """The legislator record for a trade (None when it can't be told apart from another member)."""
+    lk = str(last_key or "")
+    cands = idx.get(f"{chamber}|{lk}") or (idx.get(f"{chamber}|{lk.split('-')[-1]}") if "-" in lk else None) or []
+    if not cands:
+        return None
+    if len(cands) == 1:
+        return cands[0]
+    w = pd.Timestamp(when).strftime("%Y-%m-%d") if when is not None and pd.notna(when) else None
+    pool = cands
+    if w:
+        lo = (pd.Timestamp(w) - pd.Timedelta(days=60)).strftime("%Y-%m-%d")
+        hi = (pd.Timestamp(w) + pd.Timedelta(days=60)).strftime("%Y-%m-%d")
+        act = [c for c in cands if any(t[0] == chamber and t[1] <= hi and t[2] >= lo for t in c["terms"])]
+        if len(act) == 1:
+            return act[0]
+        pool = act or cands
+    if state:
+        s = [c for c in pool if any(t[0] == chamber and t[3] == state for t in c["terms"])]
+        if len(s) == 1:
+            return s[0]
+        pool = s or pool
+    toks = _first_tokens(first, display)
+    for grp in (pool, cands):             # by first name among members serving then, then among all
+        for t in toks:
+            f = t[:3]
+            s = [c for c in grp if any(name_key(x or "")[:3] == f for x in (c["first"], c["nick"], c["middle"]))
+                 or any(name_key(x or "").startswith(t) for x in (c["first"], c["nick"]))]
+            if len(s) == 1:
+                return s[0]
+    return None
+
+
+def assign_member_ids(tx, idx):
+    """Adds `who` (one key per real person: their Congress ID, or chamber|last|first when unknown) and `bio_id`;
+    matched trades also get the member's official name, so every source spells a member the same way."""
+    tx = tx.copy()
+    st = tx["state"] if "state" in tx else pd.Series([None] * len(tx), index=tx.index)
+    keys = list(zip(tx["chamber"], tx["last_key"], tx["first"].fillna("").astype(str), st.fillna("").astype(str),
+                    pd.to_datetime(tx["trade_date"], errors="coerce").fillna(pd.to_datetime(tx["filed_date"], errors="coerce")).dt.strftime("%Y-%m").fillna("2000-01"), tx["member"].fillna("").astype(str)))
+    memo, recs = {}, []
+    for k in keys:
+        if k not in memo:
+            memo[k] = identify_member(idx, k[0], k[1], k[2], k[3] or None, pd.Timestamp(k[4] + "-15"), k[5]) if idx else None
+        recs.append(memo[k])
+    bio = [r["bioguide"] if r else None for r in recs]
+    fb = [f"{ch}|{lk}|{(_first_tokens(f, m) or [''])[0][:3]}" for ch, lk, f, _, _, m in keys]
+    tx["bio_id"] = bio
+    tx["who"] = [b or x for b, x in zip(bio, fb)]
+    tx["member"] = [r["name"] if r and r.get("name") else m for r, m in zip(recs, tx["member"])]
+    log(f"Member IDs: {sum(b is not None for b in bio) / max(len(bio), 1) * 100:.1f}% of trades matched to a member's "
+        f"official ID; {tx['who'].nunique():,} distinct members")
+    return tx
+
+
+def fd_member_ids(fd, idx):
+    """`who` for yearly disclosure reports, matched the same way as trades."""
+    if fd is None or not len(fd) or "who" in fd:
+        return fd
+    fd = fd.copy()
+    out = []
+    for ch, lk, f, s, d in zip(fd["chamber"], fd["last_key"], fd["first"].fillna("").astype(str),
+                               fd["state"].fillna("").astype(str) if "state" in fd else [""] * len(fd), fd["filed"]):
+        r = identify_member(idx, ch, lk, f, s or None, d) if idx else None
+        out.append(r["bioguide"] if r else f"{ch}|{lk}|{(_first_tokens(f) or [''])[0][:3]}")
+    fd["who"] = out
+    return fd
+
+
+# ----------------------------------------------------------------------------
 # Prices & sectors (Yahoo Finance via yfinance)
 # ----------------------------------------------------------------------------
 def _days_since(iso):
@@ -2112,6 +2244,37 @@ def load_committee_history(cfg, current=None):
     return snaps
 
 
+def committee_records(tx, history, committees):
+    """Each trade's committee record. Looked up by the member's Congress ID when known (so a same-surname
+    colleague's seats are never used), by name otherwise; only rosters in force at the trade date (no peeking)."""
+    by_bio = [(d, {m["bioguide"]: m for ms in snap.values() for m in ms if m.get("bioguide")}) for d, snap in history or []]
+    cur = {m["bioguide"]: m for ms in (committees or {}).values() for m in ms if m.get("bioguide")}
+    dates = [d for d, _ in by_bio]
+    recent = pd.Timestamp.today() - pd.Timedelta(days=120)       # today's roster only stands in for recent trades
+    bio = tx["bio_id"] if "bio_id" in tx else pd.Series([None] * len(tx), index=tx.index)
+    out = []
+    for r, b in zip(tx[["chamber", "last_key", "first", "state", "trade_date"]].itertuples(index=False), bio):
+        m = None
+        if isinstance(b, str) and b:
+            if by_bio:
+                pos = int(np.searchsorted(np.array(dates, dtype="datetime64[ns]"), np.datetime64(r.trade_date), side="right")) - 1
+                for j in (pos, pos - 1):
+                    if 0 <= j < len(by_bio) and b in by_bio[j][1]:
+                        m = by_bio[j][1][b]
+                        break
+            if m is None and (not by_bio or r.trade_date >= recent):
+                m = cur.get(b)
+            out.append(m)
+            continue
+        if history:
+            m = match_member_at(history, r.trade_date, r.chamber, r.last_key, r.first, r.state) \
+                or (match_member(committees, r.chamber, r.last_key, r.first, r.state) if r.trade_date >= recent else None)
+        else:
+            m = match_member(committees, r.chamber, r.last_key, r.first, r.state)
+        out.append(m)
+    return out
+
+
 def match_member_at(history, when, chamber, last_key, first, state):
     """Committee record for this member as of `when` (latest snapshot on or before it)."""
     if not history:
@@ -2227,8 +2390,8 @@ def _member_track(tx, sign):
     done = tx[(tx["tx_type"] == typ) & tx["closed"] & tx["excess"].notna()]
     val, n = np.zeros(len(tx)), np.zeros(len(tx), dtype=int)
     pos = {ix: i for i, ix in enumerate(tx.index)}
-    for (ch, lk), g in tx.groupby(["chamber", "last_key"]):
-        past = done[(done["chamber"] == ch) & (done["last_key"] == lk)].sort_values("exit_date")
+    for w, g in tx.groupby("who"):
+        past = done[done["who"] == w].sort_values("exit_date")
         if past.empty:
             continue
         csum = np.concatenate([[0.0], np.cumsum((sign * past["excess"]).clip(-1, 3).values)])
@@ -2271,6 +2434,8 @@ def compute_features(tx, px, data, cfg):
     hold = cfg["HOLD_DAYS"]
     K = cfg["TRACK_PRIOR_TRADES"]
     tx = tx.copy().reset_index(drop=True)
+    if "who" not in tx:
+        tx = assign_member_ids(tx, data.get("legislators") or {})
     tx = tx.join(forward_returns(tx, px, hold, cost=cfg.get("COST_BPS", 0) / 1e4))
 
     # member track records (buys, and sells for the short side)
@@ -2286,7 +2451,7 @@ def compute_features(tx, px, data, cfg):
     nb, ns = np.zeros(len(tx), dtype=int), np.zeros(len(tx), dtype=int)
     for t, g in tx.groupby("ticker"):
         g = g.sort_values("filed_date")
-        d, who, typ = g["filed_date"].values, (g["chamber"] + "|" + g["last_key"]).values, g["tx_type"].values
+        d, who, typ = g["filed_date"].values, g["who"].values, g["tx_type"].values
         for j, ix in enumerate(g.index):
             lo = np.searchsorted(d, d[j] - win, side="right")
             hi = np.searchsorted(d, d[j], side="right")
@@ -2302,16 +2467,9 @@ def compute_features(tx, px, data, cfg):
     tx["sector"] = tx["ticker"].map(lambda t: (meta.get(t) or {}).get("sector"))
     tx["company"] = tx["ticker"].map(lambda t: (meta.get(t) or {}).get("name") or "")
     history = data.get("committee_history")
-    if history:
-        recent = pd.Timestamp.today() - pd.Timedelta(days=120)       # today's roster only stands in for recent trades
-        mems = [match_member_at(history, r.trade_date, r.chamber, r.last_key, r.first, r.state)
-                or (match_member(committees, r.chamber, r.last_key, r.first, r.state) if r.trade_date >= recent else None)
-                for r in tx[["chamber", "last_key", "first", "state", "trade_date"]].itertuples(index=False)]
-    else:
-        mems = [match_member(committees, r.chamber, r.last_key, r.first, r.state)
-                for r in tx[["chamber", "last_key", "first", "state"]].itertuples(index=False)]
+    mems = committee_records(tx, history, committees)
     tx["committees"] = ["; ".join(m["committees"]) if m else "" for m in mems]
-    tx["bioguide"] = [m.get("bioguide") if m else None for m in mems]
+    tx["bioguide"] = [(m.get("bioguide") if m else None) or b for m, b in zip(mems, tx["bio_id"])]
     tx["party"] = [m.get("party") if m else None for m in mems]
     try:
         save_member_tags(cfg, tx, mems)
@@ -2334,7 +2492,7 @@ def compute_features(tx, px, data, cfg):
     tx["lag_days"] = (tx["filed_date"] - tx["trade_date"]).dt.days.clip(lower=0)
     tx["f_freshness"] = (1 - tx["lag_days"] / 45).clip(0, 1)
     tx = tx.sort_values("filed_date")
-    tx["member_median_lag"] = tx.groupby(["chamber", "last_key"])["lag_days"].transform(
+    tx["member_median_lag"] = tx.groupby("who")["lag_days"].transform(
         lambda s: s.expanding().median().shift(1))
     tx["f_fast_filer"] = (1 - tx["member_median_lag"] / 45).clip(0, 1).fillna(0.5)
     tx = tx.sort_index()
@@ -3644,6 +3802,10 @@ def prepare(cfg):
     committees = load_committees(cfg)
     history = load_committee_history(cfg, committees)
     data = {"meta": meta, "committees": committees, "committee_history": history, "religion": load_religion(cfg)}
+    try:
+        data["legislators"] = load_legislators(cfg)
+    except Exception as e:
+        log(f"Member IDs: skipped ({type(e).__name__}: {e})")
     enrich = _enrich_tickers(tx, cfg)
     step = lambda flag: cfg.get(flag, True) and not out_of_time(cfg)
     if step("USE_VOLUME"):
@@ -5070,7 +5232,7 @@ def compute_connections(tx, data, cfg, mems):
 
     # 19. out of character, 20. spouse, 21. options, 22. late filing
     tx = tx.sort_values("filed_date")
-    key = tx["chamber"] + "|" + tx["last_key"]
+    key = tx["who"]
     tx["f_first_time"] = (tx.groupby([key, tx["ticker"]]).cumcount() == 0).astype(float)
     mid = (tx["amt_lo"].fillna(1001) + tx["amt_hi"].fillna(15000)) / 2
     med = mid.groupby(key).transform(lambda s: s.expanding().median().shift(1))
@@ -5121,13 +5283,13 @@ def compute_connections(tx, data, cfg, mems):
                                      else 0.0 for t, st, f in zip(tx["ticker"], mstate, fdt)]
 
     # 2, 3, 4. yearly disclosures: already owned it; company named in jobs, income, travel or gifts
-    fd = data.get("annual_fd")
+    fd = data["annual_fd"] = fd_member_ids(data.get("annual_fd"), data.get("legislators") or {})
     held, tie = np.zeros(n), np.zeros(n)
     if fd is not None and len(fd):
-        fdg = {k: g.sort_values("filed") for k, g in fd.groupby(["chamber", "last_key"])}
+        fdg = {k: g.sort_values("filed") for k, g in fd.groupby("who")}
         text_cache = {}
-        for i, (ch, lk, t, f, c_) in enumerate(zip(tx["chamber"], last, tx["ticker"], fdt, tx["_ck"])):
-            g = fdg.get((ch, lk))
+        for i, (wk, t, f, c_) in enumerate(zip(tx["who"], tx["ticker"], fdt, tx["_ck"])):
+            g = fdg.get(wk)
             if g is None:
                 continue
             w = g[(g.filed <= f) & (g.filed > f - D(days=1100))]
@@ -5318,8 +5480,8 @@ def _running_stats(tx, typ, sign, value_col="excess"):
     done = tx[(tx["tx_type"] == typ) & tx["closed"] & tx[value_col].notna()]
     n, mean, tstat = np.zeros(len(tx)), np.zeros(len(tx)), np.zeros(len(tx))
     pos = {ix: i for i, ix in enumerate(tx.index)}
-    for (ch, lk), g in tx.groupby(["chamber", "last_key"]):
-        past = done[(done["chamber"] == ch) & (done["last_key"] == lk)].sort_values("exit_date")
+    for w, g in tx.groupby("who"):
+        past = done[done["who"] == w].sort_values("exit_date")
         if len(past) < 2:
             continue
         x = (sign * past[value_col]).clip(-1, 3).values
@@ -5504,7 +5666,8 @@ def persistence_table(scored, min_trades=10):
     if b.empty:
         return pd.DataFrame(), {}
     b["year"] = b["filed_date"].dt.year
-    b["who"] = b["chamber"] + "|" + b["last_key"]
+    if "who" not in b:
+        b["who"] = b["chamber"] + "|" + b["last_key"]
     by = b.groupby(["who", "year"])["excess"].agg(["mean", "count"]).reset_index()
     rows, pairs = [], []
     for y in sorted(b["year"].unique())[2:]:
@@ -6034,9 +6197,10 @@ def _fd_kinds(text_lower, ck):
 def trading_pairs(tx, window_days=7, popular_top=60):
     """Pairs of members who keep trading the same stocks the same way within a week of each other.
     Very widely traded stocks (the most-traded 60) are left out, so pairs aren't just two people buying Apple."""
-    d = tx[["member", "chamber", "last_key", "ticker", "tx_type", "trade_date", "filed_date"]].dropna(
-        subset=["trade_date", "filed_date"]).copy()
-    d["who"] = d["chamber"] + "|" + d["last_key"]
+    d = tx[[c for c in ("member", "chamber", "last_key", "who", "ticker", "tx_type", "trade_date", "filed_date")
+            if c in tx]].dropna(subset=["trade_date", "filed_date"]).copy()
+    if "who" not in d:
+        d["who"] = d["chamber"] + "|" + d["last_key"]
     popular = set(d["ticker"].value_counts().head(popular_top).index)
     d = d[~d["ticker"].isin(popular)].drop_duplicates(["who", "ticker", "tx_type", "trade_date"])
     names = d.groupby("who")["member"].agg(lambda s: s.mode().iloc[0]).to_dict()
@@ -6140,15 +6304,15 @@ def relationship_features(tx, data, cfg, mems):
         tx["vendor_paid"], tx["f_campaign_vendor"] = paid, f
 
     # yearly disclosures, by schedule: spouse's employer, sponsored travel, outside positions
-    fd = data.get("annual_fd")
+    fd = data["annual_fd"] = fd_member_ids(data.get("annual_fd"), data.get("legislators") or {})
     if fd is not None and len(fd):
-        fdg = {k: g.sort_values("filed") for k, g in fd.groupby(["chamber", "last_key"])}
+        fdg = {k: g.sort_values("filed") for k, g in fd.groupby("who")}
         memo, texts = {}, {}
         sj, tr, po = np.zeros(n), np.zeros(n), np.zeros(n)
-        for i, (ch, lk, f, ck) in enumerate(zip(tx["chamber"], tx["last_key"], fdt, tx["_ck"])):
+        for i, (wk, f, ck) in enumerate(zip(tx["who"], fdt, tx["_ck"])):
             if not ck or len(ck) < 4:
                 continue
-            g = fdg.get((ch, lk))
+            g = fdg.get(wk)
             if g is None:
                 continue
             w = g[(g.filed <= f) & (g.filed > f - D(days=1100))]
@@ -6171,7 +6335,7 @@ def relationship_features(tx, data, cfg, mems):
         for p, g in ev.sort_values("known").groupby("pair"):
             g = g.drop_duplicates("ticker")
             pair_first[p] = list(g["known"])                     # when each distinct shared stock became known
-        whoS = tx["chamber"] + "|" + tx["last_key"]
+        whoS = tx["who"]
         who = whoS.values
         partners = {}
         for p in pair_first:
