@@ -2733,6 +2733,18 @@ def compute_features(tx, px, data, cfg):
 
     # member info: committees, sectors they oversee, lobbying issues, IDs
     tx["sector"] = tx["ticker"].map(lambda t: (meta.get(t) or {}).get("sector"))
+    # foreign company (Yahoo's company country; OTC symbols ending F/Y are foreign shares). A fixed fact about the
+    # company, so no look-ahead. Funds don't count.
+    cty = data.get("countries") or {}
+
+    def _foreign(t):
+        c = cty.get(t) or {}
+        if (c.get("type") or "").upper() in ("ETF", "MUTUALFUND"):
+            return 0.0
+        if c.get("c"):
+            return float(c["c"] != "United States")
+        return float(bool(re.fullmatch(r"[A-Z]{4}[FY]", str(t))))
+    tx["f_foreign"] = tx["ticker"].map(_foreign).astype(float)
     tx["company"] = tx["ticker"].map(lambda t: (meta.get(t) or {}).get("name") or "")
     history = data.get("committee_history")
     mems = committee_records(tx, history, committees)
@@ -2906,13 +2918,15 @@ def _score(tx, weights):
 
 # New signals start switched off; the weekly check turns one on (with this weight) only when it's clearly better.
 TRIAL_SIGNALS = {"relative_tie": 0.5, "unusual_volume": 0.4, "reg_action": 0.3, "witness_after": 0.4,
-                 "markup_after": 0.3, "major_8k_after": 0.3}
+                 "markup_after": 0.3, "major_8k_after": 0.3,
+                 "foreign": -0.3}      # negative: a foreign company's purchase scores lower (they've lagged US ones)
 TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "unusual_volume": "Signal: unusual trading volume before the trade",
                 "reg_action": "Signal: federal rule naming the company soon after the trade",
                 "witness_after": "Signal: company testified to their committee soon after the trade",
                 "markup_after": "Signal: their committee marked up an industry bill soon after the trade",
-                "major_8k_after": "Signal: major company announcement (8-K) soon after the trade"}
+                "major_8k_after": "Signal: major company announcement (8-K) soon after the trade",
+                "foreign": "Signal: score foreign companies lower (they've lagged US purchases)"}
 
 
 def active_weights(cfg, signals_on=None):
@@ -4075,6 +4089,10 @@ def prepare(cfg):
     committees = load_committees(cfg)
     history = load_committee_history(cfg, committees)
     data = {"meta": meta, "committees": committees, "committee_history": history, "religion": load_religion(cfg)}
+    try:
+        data["countries"] = json.load(open(_p(cfg, "cache", "ticker_country.json")))   # filled by the daily run
+    except Exception:
+        data["countries"] = {}
     try:
         data["legislators"] = load_legislators(cfg)
     except Exception as e:
@@ -7107,6 +7125,19 @@ def check_sizing_once(scored, px, cfg):
     save_adaptive(cfg, a)
 
 
+def check_trial_signals_once(scored, px, cfg):
+    """A newly added trial signal is tested right away instead of waiting for the weekly check."""
+    a = load_adaptive(cfg)
+    seen = set(a.get("trial_checked") or [])
+    if all(k in seen for k in TRIAL_SIGNALS):
+        return
+    pol = dict(a["policy"])
+    rows = list(a.get("evaluation") or [])
+    check_trial_signals(scored, px, cfg, a, pol, rows, dt.date.today().isoformat())
+    a["policy"], a["evaluation"], a["trial_checked"] = pol, rows, sorted(TRIAL_SIGNALS)
+    save_adaptive(cfg, a)
+
+
 def check_exit_rule_once(scored, px, cfg):
     """First run after this rule was added: test it right away instead of waiting for the weekly check."""
     a = load_adaptive(cfg)
@@ -7310,7 +7341,7 @@ def check_price_rules_once(scored, px, cfg):
 
 # ---- how strict should the weekly check be? Replay the switching rule on never-seen years -------------------
 FILTER_FILE = "filter_test.json"
-FILTER_VERSION = 3
+FILTER_VERSION = 4
 FILTER_RULES = {
     "strict": "Strict (now): at least +1%/yr on earlier years, sure enough for the number of options tried (t ≥ 1.65 for one, higher for more), then confirmed on the last 3 years",
     "medium": "Middle: at least +0.5%/yr and somewhat sure (t ≥ 1.0)",
@@ -7843,6 +7874,7 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
         log(f"Adjustments: sell-when-member-sells check skipped ({e})")
     try:
         check_trial_signals(scored, px, cfg, a, pol, rows, today)
+        a["trial_checked"] = sorted(TRIAL_SIGNALS)
     except Exception as e:
         log(f"Adjustments: new-signal check skipped ({e})")
     try:
