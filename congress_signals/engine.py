@@ -1498,12 +1498,34 @@ def load_countries(cfg, tickers, priority=None, per_run=1500):
     return cache
 
 
-def _ci(x):
-    x = pd.Series(x, dtype=float).dropna()
-    if len(x) < 2:
+def _cluster_se(x, when):
+    """Standard error of the average trade result when trades in the same quarter move together (a market
+    swing hits every holding at once, and members often buy the same stock): trades are grouped by the quarter
+    they were filed, and the spread is measured between groups, not between single trades."""
+    x = pd.Series(np.asarray(x, dtype=float))
+    q = pd.Series(pd.to_datetime(pd.Series(when).values, errors="coerce")).dt.to_period("Q").astype(str).values
+    ok = x.notna().values
+    x, q = x[ok].values, q[ok]
+    n = len(x)
+    if n < 2:
+        return np.nan
+    naive = x.std(ddof=1) / np.sqrt(n)
+    e = pd.Series(x - x.mean()).groupby(q).sum().values
+    G = len(e)
+    if G < 8:                                     # too few quarters to measure: fall back, never narrower
+        return naive
+    se = np.sqrt((e ** 2).sum() * G / (G - 1)) / n
+    return float(max(se, naive))
+
+
+def _ci(x, when=None):
+    x = pd.Series(x, dtype=float)
+    keep = x.notna()
+    if keep.sum() < 2:
         return None, None
-    se = x.std() / np.sqrt(len(x))
-    return float(x.mean() - 1.96 * se), float(x.mean() + 1.96 * se)
+    se = _cluster_se(x[keep].values, pd.Series(when).values[keep.values]) if when is not None else x.std() / np.sqrt(keep.sum())
+    m = x[keep].mean()
+    return float(m - 1.96 * se), float(m + 1.96 * se)
 
 
 def foreign_report(scored, countries, cfg):
@@ -1527,7 +1549,7 @@ def foreign_report(scored, countries, cfg):
     closed = b[b["closed"].astype(bool) & b["excess"].notna()]
     for g in ("United States", "Foreign", "Fund", "Unknown"):
         x, c = b[b["origin"] == g], closed[closed["origin"] == g]
-        lo, hi = _ci(c["excess"])
+        lo, hi = _ci(c["excess"], c["filed_date"] if "filed_date" in c else None)
         out["groups"].append({"group": g, "purchases": int(len(x)), "share": float(len(x) / max(len(b), 1)),
                               "stocks": int(x["ticker"].nunique()), "finished": int(len(c)),
                               "avg_vs_spy": float(c["excess"].mean()) if len(c) else None,
@@ -3037,8 +3059,8 @@ def _trade_stats(rows, sign):
             "Avg vs SPY per trade (%)": y.mean() * 100 if len(c) else np.nan,
             "Median vs SPY (%)": y.median() * 100 if len(c) else np.nan,
             "Avg vs its industry (%)": (sign * c["excess_sector"]).mean() * 100 if len(c) and "excess_sector" in c else np.nan,
-            "Range low (%)": (y.mean() - 1.96 * y.std() / np.sqrt(len(y))) * 100 if len(c) > 1 else np.nan,
-            "Range high (%)": (y.mean() + 1.96 * y.std() / np.sqrt(len(y))) * 100 if len(c) > 1 else np.nan}
+            "Range low (%)": (y.mean() - 1.96 * _cluster_se(y.values, c["filed_date"].values)) * 100 if len(c) > 1 else np.nan,
+            "Range high (%)": (y.mean() + 1.96 * _cluster_se(y.values, c["filed_date"].values)) * 100 if len(c) > 1 else np.nan}
 
 
 # Position sizing by confidence: a pick's size grows with how far its score sits above the buy bar
@@ -5653,7 +5675,7 @@ def horizons_table(scored, px, cfg):
             x = fr.loc[m[m].index, "excess"].dropna()
             if len(x) < 20:
                 continue
-            se = x.std() / np.sqrt(len(x))
+            se = _cluster_se(x.values, buys.loc[x.index, "filed_date"].values)
             rows.append({"Holding period": labels.get(h, f"{h} days"), "Group": name, "Trades": len(x),
                          "Avg vs SPY": x.mean(), "Range low": x.mean() - 1.96 * se, "Range high": x.mean() + 1.96 * se,
                          "Beat SPY (%)": (x > 0).mean() * 100})
@@ -5727,7 +5749,7 @@ def excess_range(daily, bench):
     both = pd.concat([daily, bench], axis=1).dropna()
     yrs = len(both) / 252
     ann = float((1 + both.iloc[:, 0]).prod() ** (1 / yrs) - (1 + both.iloc[:, 1]).prod() ** (1 / yrs))
-    se = d.std() * 252 / np.sqrt(len(d))
+    se = _nw_se(d.values) * 252
     return ann, ann - 1.96 * se, ann + 1.96 * se
 
 
@@ -6722,7 +6744,7 @@ def check_exit_rule(scored, px, cfg, a, pol, rows, today):
                  "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
     rows.append({"Setting": EXIT_LABEL, "Option": "Off" if on else "On", "Per year vs S&P": vs(alt),
                  "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
-                 "Verdict": "Switched automatically" if clearly_better(c) else _verdict(c, True)})
+                 "Verdict": "Switched automatically" if clearly_better(c) else _verdict(c, True), **_sure_fields(c)})
     if clearly_better(c):
         a["history"].append({"date": today, "change": EXIT_LABEL, "from": "on" if on else "off",
                              "to": "off" if on else "on", "gain_per_year": c["gain"], "sureness": c["t"]})
@@ -6760,7 +6782,7 @@ def check_trial_signals(scored, px, cfg, a, pol, rows, today):
                      "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
         rows.append({"Setting": label, "Option": "Off" if on else "On", "Per year vs S&P": vs(alt),
                      "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
-                     "Verdict": "Switched automatically" if clearly_better(c) else _verdict(c, True)})
+                     "Verdict": "Switched automatically" if clearly_better(c) else _verdict(c, True), **_sure_fields(c)})
         if clearly_better(c):
             a["history"].append({"date": today, "change": label, "from": "on" if on else "off", "to": "off" if on else "on",
                                  "gain_per_year": c["gain"], "sureness": c["t"]})
@@ -6789,8 +6811,8 @@ def check_sizing(scored, px, cfg, a, pol, rows, today):
         c = _compare(_long_daily(b), r_cur)
         rows.append({"Setting": SIZING_LABEL, "Option": names[k], "Per year vs S&P": vs(b),
                      "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
-                     "Verdict": _verdict(c, True)})
-        if clearly_better(c) and (best is None or c["gain"] > best[1]["gain"]):
+                     "Verdict": _verdict(c, True, len(SIZING) - 1), **_sure_fields(c, len(SIZING) - 1)})
+        if clearly_better(c, len(SIZING) - 1) and (best is None or _rank(c) > _rank(best[1])):
             best = (k, c)
     if best:
         for r in rows:
@@ -6927,9 +6949,9 @@ def _price_rule_check(scored, px, cfg, a, pol, rows, today, key, options, label)
         c = _compare(_long_daily(b), r_cur)
         rows.append({"Setting": label, "Option": options[k], "Per year vs S&P": vs(b),
                      "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
-                     "Verdict": _verdict(c, True), **risk(b)})
+                     "Verdict": _verdict(c, True, len(options) - 1), **_sure_fields(c, len(options) - 1), **risk(b)})
         log(f"Adjustments: {label}: {options[k]}: " + (f"{c['gain']*100:+.2f}%/yr, t={c['t']:.2f}" if c else "no data"))
-        if clearly_better(c) and (best is None or c["gain"] > best[1]["gain"]):
+        if clearly_better(c, len(options) - 1) and (best is None or _rank(c) > _rank(best[1])):
             best = (k, c)
     if best:
         for r in rows:
@@ -6981,8 +7003,8 @@ def check_sleeve_price_rules(scored, px, cfg, a, pol, rows, today):
             c = _compare(sd(b), r_cur)
             rows.append({"Setting": label, "Option": options[k], "Per year vs S&P": sv(b),
                          "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
-                         "Verdict": _verdict(c, True), **risk(b)})
-            if clearly_better(c) and (best is None or c["gain"] > best[1]["gain"]):
+                         "Verdict": _verdict(c, True, len(options) - 1), **_sure_fields(c, len(options) - 1), **risk(b)})
+            if clearly_better(c, len(options) - 1) and (best is None or _rank(c) > _rank(best[1])):
                 best = (k, c)
         if best:
             for r in rows:
@@ -7016,20 +7038,20 @@ def check_price_rules_once(scored, px, cfg):
 
 # ---- how strict should the weekly check be? Replay the switching rule on never-seen years -------------------
 FILTER_FILE = "filter_test.json"
-FILTER_VERSION = 2
+FILTER_VERSION = 3
 FILTER_RULES = {
-    "strict": "Strict (now): at least +1%/yr, sure enough to rule out luck (t ≥ 1.65), and still better over the last 3 years",
+    "strict": "Strict (now): at least +1%/yr on earlier years, sure enough for the number of options tried (t ≥ 1.65 for one, higher for more), then confirmed on the last 3 years",
     "medium": "Middle: at least +0.5%/yr and somewhat sure (t ≥ 1.0)",
     "loose": "Loose: any gain above zero over the past, no sureness needed",
     "never": "Never switch: keep the starting settings",
 }
 
 
-def _rule_passes(rule, c):
+def _rule_passes(rule, c, k=1):
     if not c or rule == "never":
         return False
     if rule == "strict":
-        return clearly_better(c)
+        return clearly_better(c, k)
     if rule == "medium":
         return c["gain"] >= 0.005 and c["t"] >= 1.0
     return c["gain"] > 0
@@ -7113,7 +7135,7 @@ def filter_rule_test(scored, px, cfg):
                             continue
                         alt = series(with_opt(pol, key, o))
                         c = _compare(alt[past], base[past])
-                        if _rule_passes(r, c) and (best is None or c["gain"] > best[1]["gain"]):
+                        if _rule_passes(r, c, len(opts) - 1) and (best is None or _rank(c) > _rank(best[1])):
                             best = (o, c)
                     if best:
                         R["switches"].append({"year": y, "setting": key, "from": cur_v, "to": best[0],
@@ -7255,27 +7277,145 @@ def _long_daily(bt):
     return bt["curves"]["Long picks"].pct_change().fillna(0)
 
 
+HOLDOUT_DAYS = 756          # the last 3 years: never used to pick a setting, only to confirm it
+
+
+def _nw_se(d, lags=10):
+    """Standard error of a daily average, allowing for runs of good or bad days (Newey-West); never below the
+    plain one."""
+    x = np.asarray(d, dtype=float)
+    x = x[np.isfinite(x)]
+    n = len(x)
+    if n < 2:
+        return np.nan
+    e = x - x.mean()
+    s = e @ e / n
+    for l in range(1, min(lags, n - 1) + 1):
+        s += 2 * (1 - l / (lags + 1)) * (e[l:] @ e[:-l]) / n
+    return float(max(np.sqrt(max(s, 0) / n), x.std(ddof=1) / np.sqrt(n)))
+
+
+def _nw_t(d, lags=10):
+    x = np.asarray(d, dtype=float)
+    if len(x) < 30:
+        return 0.0
+    se = _nw_se(x, lags)
+    return float(np.nanmean(x) / se) if se and np.isfinite(se) and se > 0 else 0.0
+
+
 def _compare(r_new, r_cur):
-    """Yearly gain of switching, how sure (t-stat on daily differences), and whether it also held in the last 3 years."""
+    """Yearly gain of switching and how sure it is (on daily differences, allowing for runs of days), measured
+    three ways: all years, the years before the last 3 (used to choose), and the last 3 (held back to confirm)."""
     d = (r_new - r_cur).dropna()
     if len(d) < 250 or d.std() == 0:
         return None
-    return {"gain": float(d.mean() * 252), "t": float(d.mean() / d.std() * np.sqrt(len(d))),
-            "recent": float(d.iloc[-756:].mean() * 252)}
+    tr, ho = d.iloc[:-HOLDOUT_DAYS], d.iloc[-HOLDOUT_DAYS:]
+    ok = len(tr) >= 500 and tr.std() > 0
+    return {"gain": float(d.mean() * 252), "t": _nw_t(d), "recent": float(ho.mean() * 252),
+            "train_gain": float(tr.mean() * 252) if ok else None, "train_t": _nw_t(tr) if ok else None}
 
 
-def clearly_better(c):
-    return bool(c) and c["gain"] >= 0.01 and c["t"] >= 1.65 and c["recent"] > 0
+def sure_bar(k=1):
+    """How sure a switch must be when the best of k options is picked (one option: 1.65; three: 2.13; five: 2.33).
+    Picking the best of several makes a lucky winner more likely, so the bar rises with the number tried."""
+    from statistics import NormalDist
+    return float(NormalDist().inv_cdf(1 - 0.05 / max(int(k), 1)))
 
 
-def _verdict(c, auto):
+def _rank(c):
+    return c["train_gain"] if c.get("train_gain") is not None else c["gain"]
+
+
+def clearly_better(c, k=1):
+    """Switch only when the option won on the earlier years by enough (+1%/yr) and surely enough for the number of
+    options tried, and then also won on the last 3 years, which played no part in choosing it."""
+    if not c:
+        return False
+    if c.get("train_gain") is None:            # short history: all years, same bar
+        return c["gain"] >= 0.01 and c["t"] >= sure_bar(k) and c["recent"] > 0
+    return c["train_gain"] >= 0.01 and c["train_t"] >= sure_bar(k) and c["recent"] > 0 and c["gain"] > 0
+
+
+def _verdict(c, auto, k=1):
     if not c:
         return "Not enough data"
-    if clearly_better(c):
+    if clearly_better(c, k):
         return "Switched automatically" if auto else "Clearly better: ask Claude to apply"
+    tg, tt = (c["train_gain"], c["train_t"]) if c.get("train_gain") is not None else (c["gain"], c["t"])
+    if tg >= 0.01 and tt >= sure_bar(k) and c["recent"] <= 0:
+        return "Better before, but not in the last 3 years"
     if c["gain"] > 0:
         return "Slightly better, not sure enough to switch"
     return "Worse"
+
+
+def _sure_fields(c, k=1):
+    """Extra columns for the dashboard: the sureness used to decide and the bar it had to clear."""
+    if not c:
+        return {"Bar": sure_bar(k), "Options tried": int(k)}
+    return {"Bar": sure_bar(k), "Options tried": int(k), "Sureness (earlier years)": c.get("train_t"),
+            "Gain (last 3 years)": c.get("recent")}
+
+
+RECHECK_LABEL = "Earlier automatic switches, re-checked with the stricter test"
+
+
+def recheck_past_switches(scored, px, cfg, a, pol, rows, today):
+    """A setting the weekly check switched on its own (not one you chose) stays only while it still clearly beats
+    the starting setting under today's test; otherwise it goes back to the start."""
+    start = {"hold_other": int(cfg["HOLD_DAYS"]), "hold_small": int(cfg["HOLD_DAYS"]), "hold_sleeve": 250,
+             "sleeve_coverage": False, "exit_on_member_sell": False, "price_exit": "none", "extend": "none",
+             "sleeve_price_exit": "none", "sleeve_extend": "none", "sizing": "equal"}
+    fam = {"hold_other": len(HOLD_CHOICES) - 1, "hold_small": len(HOLD_CHOICES) - 1, "hold_sleeve": len(SLEEVE_HOLDS) - 1,
+           "price_exit": len(PRICE_EXITS) - 1, "extend": len(EXTENDS) - 1, "sleeve_price_exit": len(PRICE_EXITS) - 1,
+           "sleeve_extend": len(SLEEVE_EXTENDS) - 1, "sizing": len(SIZING) - 1}
+    labels = dict(HOLD_LABELS, sleeve_coverage="Small-company portfolio: skip companies no analyst covers",
+                  exit_on_member_sell=EXIT_LABEL, price_exit=PRICE_EXIT_LABEL, extend=EXTEND_LABEL,
+                  sleeve_price_exit="Small-company portfolio: " + PRICE_EXIT_LABEL.lower(),
+                  sleeve_extend="Small-company portfolio: " + EXTEND_LABEL.lower(), sizing=SIZING_LABEL)
+    # yours: any setting whose latest change was your choice is left alone
+    last_by = {}
+    for h in a.get("history", []):
+        for k_, lab in labels.items():
+            if str(h.get("change", "")).startswith(lab):
+                last_by[k_] = h.get("by") or "auto"
+    sleeve_keys = {"hold_sleeve", "sleeve_coverage", "sleeve_price_exit", "sleeve_extend"}
+
+    def series(p, sleeve):
+        if sleeve:
+            b = small_cap_backtest(scored, px, cfg, hold=p["hold_sleeve"], coverage=p.get("sleeve_coverage"),
+                                   price_exit=p.get("sleeve_price_exit", "none"), extend=p.get("sleeve_extend", "none"))
+            return None if b is None else b["curves"]["Small-company picks"].pct_change().fillna(0)
+        sc = scored
+        if p.get("signals_on"):
+            bw, sw = active_weights(cfg, signals_on=list(p["signals_on"]))
+            sc = apply_scores(scored, cfg, buy_w=bw, short_w=sw)
+        b = run_backtest(apply_hold_policy(sc, px, cfg, p), px, dict(cfg, _nested=True, _sizing=p.get("sizing", "equal")))
+        return _long_daily(b)
+
+    rows[:] = [r for r in rows if r.get("Setting") != RECHECK_LABEL]
+    for key, v0 in start.items():
+        if pol.get(key, v0) == v0 or last_by.get(key) == "owner":
+            continue
+        k = fam.get(key, 1)
+        s_now, s_start = series(pol, key in sleeve_keys), series(dict(pol, **{key: v0}), key in sleeve_keys)
+        c = _compare(s_now, s_start) if s_now is not None and s_start is not None else None
+        keep = clearly_better(c, k)
+        rows.append({"Setting": RECHECK_LABEL, "Option": f"{labels[key]}: {pol[key]} (vs starting {v0})",
+                     "Per year vs S&P": None, "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
+                     "Verdict": "Kept: still clearly better" if keep else "Undone: back to the starting setting",
+                     **_sure_fields(c, k)})
+        if not keep:
+            a["history"].append({"date": today, "change": labels[key] + " (undone by the stricter test)",
+                                 "from": f"{pol[key]} days" if key.startswith("hold") else pol[key],
+                                 "to": f"{v0} days" if key.startswith("hold") else v0, "gain_per_year": c["gain"] if c else None,
+                                 "sureness": c["train_t"] if c else None})
+            log(f"Adjustments: {labels[key]}: {pol[key]} -> {v0} (didn't pass the stricter test"
+                + (f": {c['gain']*100:+.1f}%/yr, earlier-years t={c['train_t'] or 0:.2f} vs bar {sure_bar(k):.2f}, "
+                   f"last 3 years {c['recent']*100:+.1f}%/yr)" if c else ")"))
+            pol[key] = v0
+        else:
+            log(f"Adjustments: {labels[key]}: keeps {pol[key]} (passes the stricter test)")
 
 
 def evaluate_adjustments(scored, px, cfg, wf=None):
@@ -7283,6 +7423,11 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
     a = load_adaptive(cfg)
     pol = dict(a["policy"])
     base = dict(cfg, _nested=True)
+    recheck_rows = []
+    try:
+        recheck_past_switches(scored, px, cfg, a, pol, recheck_rows, dt.date.today().isoformat())
+    except Exception as e:
+        log(f"Adjustments: re-check of earlier switches skipped ({type(e).__name__}: {e})")
 
     def run(policy, **over):
         return run_backtest(apply_hold_policy(scored, px, cfg, policy), px, dict(base, **over))
@@ -7304,8 +7449,8 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
             c = _compare(_long_daily(b), r_cur)
             rows.append({"Setting": HOLD_LABELS[key], "Option": f"{h} trading days", "Per year vs S&P": vs_spy(b),
                          "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
-                         "Verdict": _verdict(c, True)})
-            if clearly_better(c) and (best is None or c["gain"] > best[1]["gain"]):
+                         "Verdict": _verdict(c, True, len(HOLD_CHOICES) - 1), **_sure_fields(c, len(HOLD_CHOICES) - 1)})
+            if clearly_better(c, len(HOLD_CHOICES) - 1) and (best is None or _rank(c) > _rank(best[1])):
                 best = (h, c, b)
         if best:
             a["history"].append({"date": today, "change": HOLD_LABELS[key], "from": f"{pol[key]} days",
@@ -7332,8 +7477,8 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
             c = _compare(sd(b), r_cur)
             rows.append({"Setting": HOLD_LABELS[key], "Option": f"{h} trading days", "Per year vs S&P": sv(b),
                          "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
-                         "Verdict": _verdict(c, True)})
-            if clearly_better(c) and (best is None or c["gain"] > best[1]["gain"]):
+                         "Verdict": _verdict(c, True, len(SLEEVE_HOLDS) - 1), **_sure_fields(c, len(SLEEVE_HOLDS) - 1)})
+            if clearly_better(c, len(SLEEVE_HOLDS) - 1) and (best is None or _rank(c) > _rank(best[1])):
                 best = (h, c)
         if best:
             a["history"].append({"date": today, "change": HOLD_LABELS[key], "from": f"{pol[key]} days",
@@ -7353,7 +7498,7 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
                          "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
             rows.append({"Setting": label, "Option": "On" if not cov else "Off", "Per year vs S&P": sv(alt_b),
                          "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
-                         "Verdict": "Switched automatically" if clearly_better(c) else _verdict(c, True)})
+                         "Verdict": "Switched automatically" if clearly_better(c) else _verdict(c, True), **_sure_fields(c)})
             if clearly_better(c):
                 a["history"].append({"date": today, "change": label, "from": "on" if cov else "off",
                                      "to": "off" if cov else "on", "gain_per_year": c["gain"], "sureness": c["t"]})
@@ -7379,7 +7524,7 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
                      "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
         rows.append({"Setting": label, "Option": names_[alt], "Per year vs S&P": ann(new),
                      "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
-                     "Verdict": "Switched automatically" if clearly_better(c) else _verdict(c, True)})
+                     "Verdict": "Switched automatically" if clearly_better(c) else _verdict(c, True), **_sure_fields(c)})
         if clearly_better(c):
             a["history"].append({"date": today, "change": label, "from": names_[cur_m], "to": names_[alt],
                                  "gain_per_year": c["gain"], "sureness": c["t"]})
@@ -7408,6 +7553,7 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
     except Exception as e:
         log(f"Adjustments: price-rule check skipped ({e})")
     a["policy"] = pol
+    rows = recheck_rows + rows
 
     # proposals: measured the same way, never applied without the user's go-ahead
     props, r_cur = [], _long_daily(cur)
@@ -7420,7 +7566,7 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
             c = _compare(_long_daily(b), r_cur)
             props.append({"Setting": name, "Option": str(o), "Per year vs S&P": vs_spy(b),
                           "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
-                          "Verdict": _verdict(c, False)})
+                          "Verdict": _verdict(c, False, len(opts)), **_sure_fields(c, len(opts))})
     a.update({"evaluated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
               "evaluation": rows, "proposals": props})
     save_adaptive(cfg, a)
