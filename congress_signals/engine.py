@@ -394,7 +394,100 @@ def collect_house(cfg):
     return tx
 
 
-PAPER_VERSION = 1
+PAPER_VERSION = 2      # 2: unmatched lines kept for re-matching; older reports re-read after the backlog
+
+
+def historical_company_names(cfg, per_run=16):
+    """Company names with the ticker they used at the time, from the SEC's quarterly insider-filing data sets
+    since the start date. Catches companies since renamed, bought or delisted ("SunTrust Banks" -> STI,
+    "Halyard Health" -> HYH), which today's ticker list doesn't have. A few quarters per run, cached."""
+    st, path = _cache_json(cfg, "company_names_hist.json", {"names": {}, "done": []})
+    hdr = _sec_headers(cfg)
+    if not hdr:
+        return st["names"]
+    start = pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=120)
+    today = pd.Timestamp.today()
+    n = 0
+    for y in range(start.year, today.year + 1):
+        for q in range(1, 5):
+            key = f"{y}q{q}"
+            if key in st["done"] or pd.Timestamp(y, 3 * q - 2, 1) > today or n >= per_run or out_of_time(cfg, 160):
+                continue
+            try:
+                r = requests.get(f"https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/"
+                                 f"{key}_form345.zip", headers=hdr, timeout=180)
+                if r.status_code != 200:
+                    continue
+                sub = _read_tsv(zipfile.ZipFile(io.BytesIO(r.content)), "SUBMISSION.TSV",
+                                ["ISSUERNAME", "ISSUERTRADINGSYMBOL", "FILING_DATE"])
+                sub["t"] = sub["ISSUERTRADINGSYMBOL"].map(clean_ticker)
+                sub = sub.dropna(subset=["t", "ISSUERNAME"]).drop_duplicates(["t", "ISSUERNAME"])
+                for t, nm in zip(sub["t"], sub["ISSUERNAME"]):
+                    lst = st["names"].setdefault(t, [])
+                    if nm not in lst and len(lst) < 4:
+                        lst.append(nm)
+                if pd.Timestamp(y, 3 * q, 1) + pd.offsets.MonthEnd(0) + pd.Timedelta(days=45) < today:
+                    st["done"].append(key)
+                n += 1
+                time.sleep(0.2)
+            except Exception as e:
+                log(f"Company names: {key} failed ({type(e).__name__})")
+    if n:
+        json.dump(st, open(path, "w"))
+        log(f"Company names: {len(st['names']):,} tickers with past names ({len(st['done'])} quarters read)")
+    return st["names"]
+
+
+_NAME_INDEX = {}
+
+
+def paper_name_index(cfg):
+    """Written company name -> ticker for scanned reports: today's SEC list first, then names seen in price data,
+    then past names from SEC insider filings. Built once per run."""
+    from congress_signals import paper as PP
+    if _NAME_INDEX.get("run") == id(cfg):
+        return _NAME_INDEX["nidx"], _NAME_INDEX["known"]
+    pairs = []
+    try:
+        r = requests.get("https://www.sec.gov/files/company_tickers.json", timeout=60,
+                         headers={"User-Agent": cfg.get("SEC_USER_AGENT") or "congress-signals research contact@example.com"})
+        pairs += [(v["ticker"].upper().replace(".", "-"), v["title"]) for v in r.json().values()]
+    except Exception as e:
+        log(f"Scanned reports: SEC ticker list failed ({type(e).__name__})")
+    n_cur = len(pairs)
+    try:
+        meta = json.load(open(_p(cfg, "cache", "ticker_meta.json")))
+        pairs += [(t, m["name"]) for t, m in meta.items() if isinstance(m, dict) and m.get("name")]
+    except Exception:
+        pass
+    try:
+        pairs += [(t, nm) for t, lst in historical_company_names(cfg).items() for nm in lst]
+    except Exception as e:
+        log(f"Company names: skipped ({type(e).__name__}: {e})")
+    known = {t for t, _ in pairs}
+    for f in ("house_tx.pkl", "senate_tx.pkl"):
+        try:
+            known |= set(pd.read_pickle(_p(cfg, "cache", f))["ticker"].dropna().astype(str).str.upper())
+        except Exception:
+            pass
+    nidx = PP.NameIndex(pairs, primary=n_cur)
+    _NAME_INDEX.update({"run": id(cfg), "nidx": nidx, "known": known})
+    log(f"Scanned reports: {len(nidx.keys):,} company names to match against ({n_cur:,} current)")
+    return nidx, known
+
+
+def _rematch(tx, un, nidx, known, label):
+    """Lines read earlier whose company couldn't be matched: try again with today's name list."""
+    if un is None or not len(un):
+        return tx, un
+    tk = un["name"].map(lambda nm: nidx.match(nm, known))
+    hit = tk.notna()
+    if hit.any():
+        add = un[hit].assign(ticker=tk[hit])
+        tx = pd.concat([tx, add], ignore_index=True)
+        un = un[~hit].reset_index(drop=True)
+        log(f"{label}: {int(hit.sum())} earlier unmatched line(s) now matched")
+    return tx, un
 
 
 def collect_house_paper(cfg):
@@ -414,29 +507,24 @@ def collect_house_paper(cfg):
     vpath = _p(cfg, "cache", "house_paper_version.txt")
     tx = pd.read_pickle(cache_tx) if os.path.exists(cache_tx) else pd.DataFrame()
     done = set(json.load(open(cache_done))) if os.path.exists(cache_done) else set()
+    cache_un, redo_path = _p(cfg, "cache", "house_paper_unmatched.pkl"), _p(cfg, "cache", "house_paper_redo.json")
+    un = pd.read_pickle(cache_un) if os.path.exists(cache_un) else pd.DataFrame()
+    redo = set(json.load(open(redo_path))) if os.path.exists(redo_path) else set()
     mode = "ocrspace" if cfg.get("OCR_SPACE_API_KEY") else "tesseract"
     old = open(vpath).read().strip() if os.path.exists(vpath) else ""
     old_ver, _, old_mode = old.partition("-")
-    if old_ver != str(PAPER_VERSION) or (old_mode != mode and mode == "ocrspace"):
-        # new reader version, or an OCR.space key was just added: read every scanned report again
-        tx, done = pd.DataFrame(), set()
+    if old and old_mode != mode and mode == "ocrspace":
+        # an OCR.space key was just added: read every scanned report again
+        tx, done, un, redo = pd.DataFrame(), set(), pd.DataFrame(), set()
+    elif old and old_ver != str(PAPER_VERSION):
+        # newer reader: reports already read are read again once the backlog is done; their rows stay till then
+        redo |= done
+        done = set()
+        json.dump(sorted(redo), open(redo_path, "w"))
     if old != f"{PAPER_VERSION}-{mode}" and not (old_mode == "ocrspace" and mode == "tesseract"):
         open(vpath, "w").write(f"{PAPER_VERSION}-{mode}")
-    # names -> tickers: SEC's current list plus every ticker already seen in electronic filings
-    titles = {}
-    try:
-        r = requests.get("https://www.sec.gov/files/company_tickers.json", timeout=60,
-                         headers={"User-Agent": cfg.get("SEC_USER_AGENT") or "congress-signals research contact@example.com"})
-        titles = {v["ticker"].upper().replace(".", "-"): v["title"] for v in r.json().values()}
-    except Exception as e:
-        log(f"House paper: SEC ticker list failed ({type(e).__name__})")
-    known = set(titles)
-    for f in ("house_tx.pkl", "senate_tx.pkl"):
-        try:
-            known |= set(pd.read_pickle(_p(cfg, "cache", f))["ticker"].dropna().astype(str).str.upper())
-        except Exception:
-            pass
-    nidx = PP.NameIndex(titles)
+    nidx, known = paper_name_index(cfg)
+    tx, un = _rematch(tx, un, nidx, known, "House paper")
     ocr = PP.OcrSpace(cfg["OCR_SPACE_API_KEY"], _p(cfg, "state", "ocrspace_usage.json")) if cfg.get("OCR_SPACE_API_KEY") else None
     matcher = lambda name: nidx.match(name, known)
     idx = []
@@ -450,11 +538,16 @@ def collect_house_paper(cfg):
     idx = pd.concat(idx, ignore_index=True)
     idx["FilingDate"] = pd.to_datetime(idx["FilingDate"], errors="coerce")
     idx = idx[(idx["FilingDate"] >= start) & idx["DocID"].astype(str).str.match(r"^[89]")]
-    todo = idx[~idx["DocID"].astype(str).isin(done)].sort_values("FilingDate", ascending=False)
+    ids = idx["DocID"].astype(str)
+    # new reports first (newest first), then ones read by an older reader version
+    todo = pd.concat([idx[~ids.isin(done) & ~ids.isin(redo)].sort_values("FilingDate", ascending=False),
+                      idx[ids.isin(redo) & ~ids.isin(done)].sort_values("FilingDate", ascending=False)])
     if ocr is None:
         log("House paper: no OCR_SPACE_API_KEY; using the built-in reader (handwriting mostly unreadable)")
     elif not ocr.can(2):
         log("House paper: OCR.space daily/monthly allowance used up; continuing next run")
+        tx.to_pickle(cache_tx)
+        un.to_pickle(cache_un)
         return tx
     log(f"House paper: {len(idx)} scanned reports since {start.date()}, {len(todo)} to read")
 
@@ -473,42 +566,57 @@ def collect_house_paper(cfg):
         except Exception:
             return r, None
 
-    rows, n, stats = [], 0, {"rows": 0, "matched": 0}
+    rows, urows, n, stats = [], [], 0, {"rows": 0, "matched": 0}
 
     def flush():
-        nonlocal tx, rows
+        nonlocal tx, rows, un, urows
         if rows:
             tx = pd.concat([tx, pd.DataFrame(rows)], ignore_index=True)
             rows = []
+        if urows:
+            un = pd.concat([un, pd.DataFrame(urows)], ignore_index=True)
+            urows = []
         tx.to_pickle(cache_tx)
+        un.to_pickle(cache_un)
         json.dump(sorted(done), open(cache_done, "w"))
+        json.dump(sorted(redo - done), open(redo_path, "w"))
 
     for r, items in chunked_map(work, [r for _, r in todo.iterrows()], min(4, cfg["WORKERS"]), cfg, chunk=16):
         if items is None:
             continue
-        done.add(str(r["DocID"]))
+        doc = str(r["DocID"])
+        if doc in redo:                      # read again by the newer reader: replace its old lines
+            flush()
+            tx = tx[tx["doc_id"].astype(str) != doc].reset_index(drop=True) if len(tx) else tx
+            un = un[un["doc_id"].astype(str) != doc].reset_index(drop=True) if len(un) else un
+        done.add(doc)
         n += 1
         first, last = str(r.get("First") or "").strip(), str(r.get("Last") or "").strip()
         for t in items:
             stats["rows"] += 1
-            tk = t.get("ticker") or nidx.match(t["name"], known)
-            if not tk or not t["tx_raw"] or not t["amount"]:
+            if not t["tx_raw"] or not t["amount"]:
                 continue
-            stats["matched"] += 1
+            tk = t.get("ticker") or nidx.match(t["name"], known)
             td = t["trade_date"] or (r["FilingDate"] - pd.Timedelta(days=30)).date()
-            rows.append({"member": f"{first} {last}".strip(), "first": first, "last": last, "chamber": "House",
-                         "state": str(r.get("StateDst") or "")[:2], "ticker": tk, "tx_type": norm_type(t["tx_raw"]),
-                         "trade_date": td, "filed_date": r["FilingDate"], "amt_lo": t["amount"][0],
-                         "amt_hi": t["amount"][1], "owner": t["owner"], "source": "house_paper",
-                         "doc_id": str(r["DocID"]), "tx_raw": t["tx_raw"] + ("" if t["trade_date"] else " (date estimated)"),
-                         "option": None})
+            row = {"member": f"{first} {last}".strip(), "first": first, "last": last, "chamber": "House",
+                   "state": str(r.get("StateDst") or "")[:2], "ticker": tk, "tx_type": norm_type(t["tx_raw"]),
+                   "trade_date": td, "filed_date": r["FilingDate"], "amt_lo": t["amount"][0],
+                   "amt_hi": t["amount"][1], "owner": t["owner"], "source": "house_paper",
+                   "doc_id": doc, "tx_raw": t["tx_raw"] + ("" if t["trade_date"] else " (date estimated)"),
+                   "option": None, "name": t["name"]}
+            if tk:
+                stats["matched"] += 1
+                rows.append(row)
+            elif len(re.sub(r"[^A-Za-z]", "", t["name"] or "")) >= 3:
+                urows.append(row)            # kept: matched later if a name list learns the company
         if n % 100 == 0:
             log(f"House paper: {n}/{len(todo)} read")
             flush()
     flush()
     try:
         source_health(cfg, "house_paper", ok=True, rows=int(len(tx)), read_this_run=n,
-                      left=int((~idx["DocID"].astype(str).isin(done)).sum()),
+                      left=int((~idx["DocID"].astype(str).isin(done | redo)).sum()),
+                      reread_left=int(idx["DocID"].astype(str).isin(redo - done).sum()), unmatched=int(len(un)),
                       lines_seen=stats["rows"], lines_matched=stats["matched"])
     except Exception:
         pass
@@ -516,7 +624,7 @@ def collect_house_paper(cfg):
     return tx
 
 
-SENATE_PAPER_VERSION = 1
+SENATE_PAPER_VERSION = 2      # 2: unmatched lines kept for re-matching
 
 
 def collect_senate_paper(cfg, max_calls=120):
@@ -549,20 +657,11 @@ def collect_senate_paper(cfg, max_calls=120):
         r["filed_ts"] = pd.to_datetime(r.get("filed"), errors="coerce")
     index = [r for r in index if pd.notna(r["filed_ts"])]
     todo = sorted([r for r in index if r["link"] not in done], key=lambda r: r["filed_ts"], reverse=True)
-    titles = {}
-    try:
-        rq = requests.get("https://www.sec.gov/files/company_tickers.json", timeout=60,
-                          headers={"User-Agent": cfg.get("SEC_USER_AGENT") or "congress-signals research contact@example.com"})
-        titles = {v["ticker"].upper().replace(".", "-"): v["title"] for v in rq.json().values()}
-    except Exception as e:
-        log(f"Senate paper: SEC ticker list failed ({type(e).__name__})")
-    known = set(titles)
-    for f in ("house_tx.pkl", "senate_tx.pkl"):
-        try:
-            known |= set(pd.read_pickle(_p(cfg, "cache", f))["ticker"].dropna().astype(str).str.upper())
-        except Exception:
-            pass
-    nidx = PP.NameIndex(titles)
+    cache_un = _p(cfg, "cache", "senate_paper_unmatched.pkl")
+    un = pd.read_pickle(cache_un) if os.path.exists(cache_un) and len(done) else pd.DataFrame()
+    nidx, known = paper_name_index(cfg)
+    tx, un = _rematch(tx, un, nidx, known, "Senate paper")
+    urows = []
     matcher = lambda name: nidx.match(name, known)
     ocr = PP.OcrSpace(cfg["OCR_SPACE_API_KEY"], _p(cfg, "state", "ocrspace_usage.json")) if cfg.get("OCR_SPACE_API_KEY") else None
     used0 = sum((ocr.u.get("day") or {}).values()) if ocr else 0
@@ -610,29 +709,34 @@ def collect_senate_paper(cfg, max_calls=120):
         first, last = str(rep_.get("first") or "").strip().title(), str(rep_.get("last") or "").strip().title()
         for t in items:
             stats["rows"] += 1
-            tk = t.get("ticker") or nidx.match(t["name"], known)
-            if not tk or not t["tx_raw"] or not t["amount"]:
+            if not t["tx_raw"] or not t["amount"]:
                 continue
-            stats["matched"] += 1
+            tk = t.get("ticker") or nidx.match(t["name"], known)
             td = t["trade_date"] or (rep_["filed_ts"] - pd.Timedelta(days=30)).date()
-            rows.append({"member": f"{first} {last}".strip(), "first": first, "last": last, "chamber": "Senate",
+            (rows if tk else urows).append({"name": t["name"],"member": f"{first} {last}".strip(), "first": first, "last": last, "chamber": "Senate",
                          "state": None, "ticker": tk, "tx_type": norm_type(t["tx_raw"]), "trade_date": td,
                          "filed_date": rep_["filed_ts"], "amt_lo": t["amount"][0], "amt_hi": t["amount"][1],
                          "owner": t["owner"], "source": "senate_paper", "doc_id": rep_["link"],
                          "tx_raw": t["tx_raw"] + ("" if t["trade_date"] else " (date estimated)"), "option": None})
+            stats["matched"] += bool(tk)
         if n % 20 == 0:
             tx = pd.concat([tx, pd.DataFrame(rows)], ignore_index=True) if rows else tx
-            rows = []
+            un = pd.concat([un, pd.DataFrame(urows)], ignore_index=True) if urows else un
+            rows, urows = [], []
             tx.to_pickle(cache_tx)
+            un.to_pickle(cache_un)
             json.dump(sorted(done), open(cache_done, "w"))
     if rows:
         tx = pd.concat([tx, pd.DataFrame(rows)], ignore_index=True)
+    if urows:
+        un = pd.concat([un, pd.DataFrame(urows)], ignore_index=True)
     tx.to_pickle(cache_tx)
+    un.to_pickle(cache_un)
     json.dump(sorted(done), open(cache_done, "w"))
     json.dump(tries, open(tpath, "w"))
     try:
         source_health(cfg, "senate_paper", ok=True, rows=int(len(tx)), read_this_run=n,
-                      left=int(sum(1 for r in index if r["link"] not in done)), ocr_calls=calls(),
+                      left=int(sum(1 for r in index if r["link"] not in done)), ocr_calls=calls(), unmatched=int(len(un)),
                       lines_seen=stats["rows"], lines_matched=stats["matched"])
     except Exception:
         pass
