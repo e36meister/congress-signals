@@ -115,6 +115,82 @@ def send_worth_alerts(items):
         json.dump(["__v2__"], open(path, "w"))
 
 
+def send_weekly_summary():
+    """Once a week (the first run each Monday from 6 AM New York time, and once right after this was added):
+    paper account, new picks, trades the tool made, what the weekly check changed, backtest headline, data progress."""
+    import html
+    path = os.path.join(cfg["DATA_DIR"], "state", "weekly_email.json")
+    st = json.load(open(path)) if os.path.exists(path) else {}
+    from zoneinfo import ZoneInfo
+    now = dt.datetime.now(ZoneInfo("America/New_York"))
+    week = f"{now.isocalendar()[0]}-W{now.isocalendar()[1]:02d}"
+    if st.get("week") == week or (st.get("week") and not (now.weekday() == 0 and now.hour >= 6)):
+        return
+    d = json.load(open(os.path.join(cfg["DATA_DIR"], "dashboard_data.json")))
+    esc = lambda x: html.escape(str(x if x is not None else ""))
+    pc = lambda x, n=1: "–" if x is None else f"{x * 100:+.{n}f}%"
+    since = now.date() - dt.timedelta(days=7)
+    parts = []
+    # paper account
+    ch = d.get("close_history") or []
+    if ch:
+        last = ch[-1]
+        wk = next((r for r in reversed(ch) if r.get("date") and r["date"] <= since.isoformat()), ch[0])
+        wchg = (last["equity"] / wk["equity"] - 1) if wk.get("equity") else None
+        parts.append(f"<h3>Paper account</h3><p>${last['equity']:,.0f} · this week {pc(wchg)} · since start "
+                     f"{last.get('since_start', 0):+.2f}% vs the S&amp;P's {last.get('spy_since_start', 0):+.2f}%</p>")
+    # trades the tool made
+    orders = [o for o in ((d.get("portfolio") or {}).get("orders") or [])
+              if o.get("by") == "tool" and o.get("status") == "filled" and str(o.get("at", ""))[:10] >= since.isoformat()]
+    if orders:
+        park = ("SPY", "VOO", "IVV")
+        lst = lambda side, pk: ", ".join(sorted({esc(o["t"]) for o in orders if o["side"] == side and (o["t"] in park) == pk}))
+        lines = [f"Bought: {lst('buy', False)}" if lst("buy", False) else "",
+                 f"Sold: {lst('sell', False)}" if lst("sell", False) else "",
+                 "Moved unused money into the S&amp;P 500 fund" if lst("buy", True) else "",
+                 "Took money out of the S&amp;P 500 fund for new picks" if lst("sell", True) else ""]
+        parts.append("<h3>Trades the tool made</h3><p>" + "<br>".join(x for x in lines if x) + "</p>")
+    # new buy picks this week
+    w = d.get("watchlist") or {}
+    picks = [r for r in (w.get("buys") or []) if r.get("action") == "BUY" and str(r.get("d") or "")[:10] >= since.isoformat()]
+    if picks:
+        parts.append("<h3>New buy picks</h3><table border=1 cellpadding=5 style='border-collapse:collapse'>"
+                     "<tr><th>Stock</th><th>Member</th><th>Main reasons</th></tr>" + "".join(
+                         f"<tr><td><b>{esc(r['t'])}</b><br><span style='color:#666'>{esc(r.get('co'))}</span></td><td>{esc(r.get('m'))}</td>"
+                         f"<td style='font-size:13px'>{esc('; '.join(str(r.get('why') or '').split('; ')[:3]))}</td></tr>" for r in picks[:15]) + "</table>")
+    else:
+        top = [r for r in (w.get("buys") or []) if r.get("action") == "BUY"][:5]
+        parts.append("<h3>New buy picks</h3><p>None this week." + (" Current top picks: " + ", ".join(
+            f"<b>{esc(r['t'])}</b> ({esc(r.get('co'))})" for r in top) if top else "") + "</p>")
+    # weekly check
+    a = d.get("adaptive") or {}
+    ch_ = [h for h in a.get("history") or [] if str(h.get("date", "")) >= since.isoformat()]
+    parts.append("<h3>Weekly check</h3><p>" + ("<br>".join(f"{esc(h['change'])}: {esc(h.get('from'))} → {esc(h.get('to'))}" for h in ch_)
+                                              if ch_ else "No settings changed.") + "</p>")
+    # backtest headline
+    def vs(block, name):
+        for r in (block or {}).get("perf") or []:
+            if r.get("name") == name:
+                return r.get("Per year vs S&P 500"), r.get("Likely range low"), r.get("Likely range high")
+        return None, None, None
+    m_, ml, mh = vs(d.get("backtest"), "Long picks")
+    s_, sl, sh = vs(d.get("small"), "Small-company picks")
+    parts.append(f"<h3>Backtest since 2014, per year vs the S&amp;P 500</h3><p>Main picks {pc(m_)} (likely {pc(ml)} to {pc(mh)})"
+                 f"<br>Small-company portfolio {pc(s_)} (likely {pc(sl)} to {pc(sh)})</p>")
+    # data progress
+    g = d.get("data_progress") or {}
+    if g:
+        hs, ss, hr = g.get("house_scans") or {}, g.get("senate_scans") or {}, g.get("house_reread") or {}
+        parts.append(f"<h3>Data</h3><p>House reports left to re-read: {esc(hr.get('left'))}<br>"
+                     f"Scanned reports left: House {esc(hs.get('left'))}, Senate {esc(ss.get('left'))} "
+                     f"({esc(hs.get('rows'))} + {esc(ss.get('rows'))} trades read from scans so far)</p>")
+    body = ("<div style='font-family:Arial;max-width:640px'>" + "".join(parts)
+            + f"<p><a href='{DASHBOARD_URL}'>Open Capitol Capital</a></p></div>")
+    if _send_email(f"Capitol Capital weekly: {now:%b %d}", body, "Email: sent the weekly summary"):
+        st["week"] = week
+        json.dump(st, open(path, "w"))
+
+
 def send_alerts(buys, sells, new):
     """Email new BUY / avoid signals (defense picks flagged) when Gmail secrets are set."""
     addr, pw = env("GMAIL_ADDRESS"), env("GMAIL_APP_PASSWORD")
@@ -305,6 +381,10 @@ def main():
     except Exception as e:
         E.log(f"Broker: skipped this run ({type(e).__name__})")
     upload_to_drive(os.path.join(cfg["DATA_DIR"], "dashboard_data.json"), "dashboard_data.json")
+    try:
+        send_weekly_summary()
+    except Exception as e:
+        E.log(f"Weekly summary: skipped ({type(e).__name__}: {e})")
     try:      # price charts with member trades for the tickers on Today, Defense and My portfolio
         d = json.load(open(os.path.join(cfg["DATA_DIR"], "dashboard_data.json")))
         w = d.get("watchlist") or {}
