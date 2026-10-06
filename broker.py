@@ -395,7 +395,10 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
     try:    # the standard amount per main pick (before sizing), for the dashboard's suggested amounts
         sp_ = max(0.0, min(0.9, float(env("SMALL_SLEEVE_PCT") or 30) / 100))
         plan_ = max(5, int(float(cfg.get("PICKS_PER_WEEK", 5)) * int(pol["hold_other"]) / 5))
-        per_pick = s["dollars"] or s["max_invested"] * (1 - sp_) * eq / plan_
+        # the tool's budget: account value minus positions you bought yourself (same as when it places orders)
+        yours_ = sum(float(p.get("market_value") or 0) for p in positions
+                     if p["symbol"] not in bot or p["symbol"] in others)
+        per_pick = s["dollars"] or s["max_invested"] * (1 - sp_) * max(0.0, eq - yours_) / plan_
     except Exception:
         per_pick = None
     return {"mode": s["mode"], "auto": s["auto"], "updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
