@@ -228,7 +228,7 @@ svg text{fill:var(--muted);font:11px var(--mono)}
         <div class="seal">The Purpose of a System is What It Does · STOCK Act</div>
         <h1>Capitol Capital</h1>
       </div>
-      <div class="status" id="status"><span class="dot" id="dot"></span><span id="statusText">Loading…</span><button class="link" id="refresh" type="button" hidden>Refresh</button><button class="link" id="alerts" type="button" hidden>Turn on alerts</button></div>
+      <div class="status" id="status"><span class="dot" id="dot"></span><span id="statusText">Loading…</span><button class="link" id="refresh" type="button" hidden>Refresh</button><button class="link" id="alerts" type="button" hidden>Turn on alerts</button><button class="link" id="widgetBtn" type="button">Widget</button></div>
     </div>
     <nav class="tabs" role="tablist" aria-label="Sections">
       <button role="tab" id="tab-today" aria-selected="true" data-tab="today" type="button">Today</button>
@@ -1324,6 +1324,53 @@ addEventListener("hashchange", () => {
   const h = location.hash.slice(1);
   if (/^(today|record|defense|small|works|real|port)$/.test(h)) { state.tab = h; render(); scrollTo(0, 0); }
 });
+
+// ---------- home-screen widget (Scriptable) ----------
+let widgetJs = null;
+async function fetchWidget(renew) {
+  const r = await fetch("/api/widget/script", renew ? { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" } : {});
+  if (r.status === 401) { showLogin(); throw { code: "login" }; }
+  if (!r.ok) throw { message: "error " + r.status };
+  return r.text();
+}
+function widgetModal() {
+  let bg = document.getElementById("wbg");
+  if (!bg) {
+    bg = document.createElement("div"); bg.id = "wbg"; bg.className = "mbg";
+    bg.addEventListener("click", ev => { if (ev.target === bg || ev.target.closest(".mx")) bg.hidden = true; });
+    document.body.appendChild(bg);
+  }
+  bg.hidden = false;
+  bg.innerHTML = `<div class="modal"><div class="mh"><div><div class="t" style="font-size:18px">Home-screen widget</div>
+    <div class="co">A large widget: account value, today's change, you vs the S&amp;P, newest buys. Read-only.</div></div>
+    <button class="mx" aria-label="Close">×</button></div>
+    <ol style="margin:0;padding-left:20px;display:grid;gap:6px;font-size:14px">
+      <li>Install <b>Scriptable</b> (free) from the App Store.</li>
+      <li>Tap <b>Copy widget script</b> below.</li>
+      <li>In Scriptable tap <b>+</b>, paste, and name it <b>Capitol Capital</b>.</li>
+      <li>On your home screen: hold an empty spot → <b>Edit</b> → <b>Add Widget</b> → <b>Scriptable</b> → the <b>large</b> size → <b>Add</b>.</li>
+      <li>Hold the new widget → <b>Edit Widget</b> → Script: <b>Capitol Capital</b>. Tapping it opens this app.</li>
+    </ol>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <button type="button" class="buybtn" id="wCopy" disabled>Loading…</button>
+      <button type="button" class="link" id="wNew">Make a new key</button>
+      <span class="foot" id="wMsg"></span></div>
+    <p class="foot" style="margin:0">The script holds its own key, which only reads this summary; "Make a new key" turns off any copy you've shared.</p></div>`;
+  const btn = document.getElementById("wCopy"), msg = document.getElementById("wMsg");
+  const ready = () => { btn.disabled = false; btn.textContent = "Copy widget script"; };
+  fetchWidget(false).then(t => { widgetJs = t; ready(); }, e => { msg.textContent = e.code === "login" ? "Log in first." : "Couldn't load the script."; });
+  btn.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(widgetJs); msg.textContent = "Copied. Now paste it in Scriptable."; }
+    catch (e) { msg.textContent = "Copy didn't work here; long-press and copy from the text below."; 
+      const ta = document.createElement("textarea"); ta.value = widgetJs; ta.style.cssText = "width:100%;height:120px;font:11px var(--mono)"; btn.closest(".modal").appendChild(ta); ta.select(); }
+  });
+  document.getElementById("wNew").addEventListener("click", async () => {
+    if (!confirm("Make a new widget key? The widget stops working until you paste the new script into Scriptable.")) return;
+    btn.disabled = true; btn.textContent = "Loading…";
+    try { widgetJs = await fetchWidget(true); ready(); msg.textContent = "New key made. Copy the script again."; } catch (e) { msg.textContent = "Couldn't make a new key."; }
+  });
+}
+$("#widgetBtn").addEventListener("click", widgetModal);
 
 state.folderId = "cloud";       // turns on the Buy buttons
 // preview hook for local screenshots only
