@@ -89,9 +89,29 @@ def main():
         e0 = pts[0][1]
         before = [k for k in spy if k <= pts[0][0]]           # the last S&P close on or before the start (weekends)
         s0 = spy[max(before)] if before else next((spy[d] for d, _ in pts if d in spy), None)
+        # the account sat in cash until its first trade, so the S&P is measured from that moment, not from
+        # the close before the start (otherwise its moves while the account held cash count against it)
+        t0 = None
+        try:
+            t0 = min(o["filled_at"] for o in broker._bot_buys(api, any_buyer=True).values())
+            if t0[:10] > pts[0][0]:
+                t0d = dt.datetime.strptime(t0[:19], "%Y-%m-%dT%H:%M:%S")      # Alpaca times are UTC
+                r = requests.get("https://data.alpaca.markets/v2/stocks/SPY/bars", headers=api.h, timeout=30,
+                                 params={"timeframe": "1Min", "feed": "iex", "adjustment": "all", "limit": 30,
+                                         "start": (t0d - dt.timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                         "end": t0d.strftime("%Y-%m-%dT%H:%M:%SZ")})
+                bars = r.json().get("bars") or []
+                if bars:
+                    s0 = float(bars[-1]["c"])
+                else:
+                    t0 = None
+            else:
+                t0 = None
+        except Exception:
+            t0 = None
         last_s = s0
         for d, e in pts:
-            last_s = spy.get(d, last_s)
+            last_s = s0 if (t0 and d < t0[:10]) else spy.get(d, last_s)
             series["dates"].append(d)
             series["account"].append(round((e / e0 - 1) * 100, 3))
             series["spy"].append(round((last_s / s0 - 1) * 100, 3) if s0 and last_s else None)
@@ -136,6 +156,11 @@ def main():
     data["portfolio"] = {**snap, "limits": (data.get("portfolio") or {}).get("limits") or snap["limits"]}
     hist_list = [h for h in data.get("close_history", []) if h.get("date") != today]
     hist_list.append({k: report[k] for k in ("date", "equity", "day_pl", "since_start", "spy_since_start")})
+    # keep past days on the same S&P starting point as today's series
+    by_day = dict(zip(series["dates"], series["spy"]))
+    for h in hist_list:
+        if by_day.get(h.get("date")) is not None:
+            h["spy_since_start"] = by_day[h["date"]]
     data["close_history"] = hist_list[-2000:]          # keep the start: "since start" must not roll forward
     from googleapiclient.http import MediaIoBaseUpload
     drive.files().update(fileId=fid, media_body=MediaIoBaseUpload(io.BytesIO(json.dumps(data).encode()),
