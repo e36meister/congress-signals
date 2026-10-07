@@ -80,6 +80,8 @@ def _bot_buys(api, any_buyer=False, owner=False):
     return out
 
 
+AHEAD_RULES = ("ahead", "ahead_daily")
+AHEAD_MAX = 250            # trading days: the longest the "ahead of the S&P" rules keep a pick (same as the backtest)
 NEAR_END_DAYS = 5          # a position this close to its sell date is re-checked against the current hold every run
 
 
@@ -216,6 +218,17 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             hi = high_since(sym, o["filled_at"][:10], now_px)
             if hi is None or (now_px > entry and now_px >= hi * (1 - pct(ext))):
                 continue
+        if ext in AHEAD_RULES and hold <= held < max(AHEAD_MAX, hold):
+            # keep a pick that's ahead of the S&P (since the close of the day it was bought): "ahead" decides once,
+            # on the close before its scheduled sale; "ahead_daily" re-checks every run and sells once it's behind
+            try:
+                P, S = hist(from_alpaca(sym), o["filled_at"][:10]), hist("SPY", o["filled_at"][:10])
+            except Exception:
+                P = S = None
+            if P is not None and S is not None and len(P) > 1 and len(S) > 1:
+                j = min(hold - 1, len(P) - 1, len(S) - 1) if ext == "ahead" else min(len(P), len(S)) - 1
+                if P[j] / P[0] - S[j] / S[0] > 0:
+                    continue
         if held >= hold:
             r = api.delete(f"/v2/positions/{sym}")
             actions.append({"side": "sell", "symbol": sym, "ok": r.status_code in (200, 207),
