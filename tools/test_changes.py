@@ -28,6 +28,11 @@ for d in pd.bdate_range("2025-06-02", "2025-09-30", freq="7B"):
     ok += got == exp
     bad += got != exp
 print(f"2. live picks match the backtest's picks on {ok} of {ok + bad} sample days")
+if bad:
+    d = pd.Timestamp("2025-06-02")
+    lp = E.live_picks(sc, px, cfg, grace_days=0, today=d)
+    exp = set(bt_picks.loc[pd.to_datetime(bt_picks["entry_date"]) >= d, "ticker"])
+    print("   example difference:", sorted(set(lp["ticker"]) - exp)[:5], sorted(exp - set(lp["ticker"]))[:5])
 lp = E.live_picks(sc, px, cfg)
 sf = E.fresh_small_rows(sc, cfg)
 print(f"   today: {len(lp)} fresh main pick(s) {list(lp['ticker'])}, {len(sf)} fresh small-company buy(s)")
@@ -65,7 +70,7 @@ for t in set(sub["ticker"]):
         c_y = (meta.get(t) or {}).get("cap")
         good[t] = c_sec is not None and (not c_y or 1 / 3 < c_sec / float(c_y) < 3)
 new = np.array([E.cap_at_time(t, d, px[t], shares, acts) if good.get(t) else np.nan for t, d in zip(sub["ticker"], sub["filed_date"])])
-old = sub["market_cap"].values
+old = pd.to_numeric(sub["market_cap"], errors="coerce").values.astype(float)
 m = np.isfinite(new) & np.isfinite(old)
 print(f"5. size from SEC shares then: {np.isfinite(new).mean() * 100:.0f}% of purchases; matched companies {sum(good.values())}")
 r = new[m] / old[m]
