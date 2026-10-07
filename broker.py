@@ -56,8 +56,9 @@ def from_alpaca(s):
     return s.replace(".", "-")
 
 
-def _bot_buys(api, any_buyer=False):
-    """First filled buy per symbol that this tool placed (or anyone, with any_buyer), from Alpaca's order history."""
+def _bot_buys(api, any_buyer=False, owner=False):
+    """First filled buy per symbol that this tool placed (or anyone, with any_buyer; or you, with owner:
+    the Buy button or Alpaca itself), from Alpaca's order history."""
     out, after = {}, (dt.datetime.utcnow() - dt.timedelta(days=500)).strftime("%Y-%m-%dT%H:%M:%SZ")
     until = None
     for _ in range(20):
@@ -68,7 +69,8 @@ def _bot_buys(api, any_buyer=False):
         if not page:
             break
         for o in page:
-            if (any_buyer or (o.get("client_order_id") or "").startswith(PREFIX)) and o.get("side") == "buy" and o.get("filled_at"):
+            mine = (o.get("client_order_id") or "").startswith(PREFIX)
+            if (any_buyer or (not mine if owner else mine)) and o.get("side") == "buy" and o.get("filled_at"):
                 sym = o["symbol"]
                 if sym not in out or o["filled_at"] < out[sym]["filled_at"]:
                     out[sym] = o
@@ -147,9 +149,9 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
     bot = _bot_buys(api)
     actions, sold = [], set()
     # symbols you (or the Buy button) also bought: selling would close your shares too, so the tool leaves them
-    others = {o["symbol"] for o in api.get("/v2/orders", status="all", limit=500, direction="desc")
-              if o.get("side") == "buy" and float(o.get("filled_qty") or 0) > 0
-              and not (o.get("client_order_id") or "").startswith(PREFIX)}
+    # stocks you bought yourself, from the whole order history (the last 500 orders alone would forget
+    # your older buys once the tool has traded a lot, and then a stock you both own could be sold)
+    others = set(_bot_buys(api, owner=True))
 
     is_park = lambda sym: (bot.get(sym, {}).get("client_order_id") or "").startswith(PARK_PREFIX)
     park = next((x for x in PARK_CHOICES if x not in others), None)
@@ -379,9 +381,14 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
     except Exception:
         first = {}
     pos = []
+    try:
+        yours_first = _bot_buys(api, owner=True)
+    except Exception:
+        yours_first = {}
     for p in positions:
-        o = bot.get(p["symbol"])
-        f0 = o or first.get(p["symbol"])
+        # a stock you also bought counts as yours (the tool never sells it), dated from your first buy
+        o = None if p["symbol"] in yours_first else bot.get(p["symbol"])
+        f0 = o or yours_first.get(p["symbol"]) or first.get(p["symbol"])
         bought = f0["filled_at"][:10] if f0 else None
         pos.append({"t": from_alpaca(p["symbol"]), "qty": float(p["qty"]), "avg": float(p["avg_entry_price"]),
                     "px": float(p.get("current_price") or 0), "mv": float(p.get("market_value") or 0),
