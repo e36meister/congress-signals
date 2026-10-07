@@ -211,7 +211,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                 actions.append({"side": "hold", "symbol": sym, "ok": True,
                                 "why": f"holding {now_hold} trading days instead of {orig}: the weekly check now favors the longer hold"})
         ext = rule_ext(o)
-        if ext != "none" and hold <= held < 2 * hold:
+        if ext != "none" and ext not in AHEAD_RULES and hold <= held < 2 * hold:
             # keep holding while it's in profit and within X% of its high since buying
             now_px = float(positions[sym].get("current_price") or 0)
             entry = float(positions[sym].get("avg_entry_price") or 0)
@@ -232,7 +232,9 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         if held >= hold:
             r = api.delete(f"/v2/positions/{sym}")
             actions.append({"side": "sell", "symbol": sym, "ok": r.status_code in (200, 207),
-                            "why": f"held {held} trading days" + (f" (the weekly check moved this group to {hold})" if hold != orig else "")})
+                            "why": (("behind the S&P at the end of its hold" if held < hold + 2 else "fell behind the S&P")
+                                    if ext in AHEAD_RULES and held < max(AHEAD_MAX, hold) else f"held {held} trading days")
+                                   + (f" (the weekly check moved this group to {hold})" if hold != orig else "")})
             sold.add(sym)
 
     # 1a. the weekly check can turn on "sell when a member who bought discloses a sale" (main picks only;
