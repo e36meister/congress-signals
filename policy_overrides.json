@@ -1,6 +1,18 @@
 {
-  "overrides": [
-    {"id": "2026-10-05-stop15", "set": {"price_exit": "stop15"},
-     "note": "Owner turned on the 15% stop for main picks as a risk choice (about even on return, cuts the worst losses)"}
-  ]
+ "overrides": [
+  {
+   "id": "2026-10-05-stop15",
+   "set": {
+    "price_exit": "stop15"
+   },
+   "note": "Owner turned on the 15% stop for main picks as a risk choice (about even on return, cuts the worst losses)"
+  },
+  {
+   "id": "2026-10-07-ahead-daily",
+   "set": {
+    "extend": "ahead_daily"
+   },
+   "note": "Owner asked Claude to judge holds from the trend study (Oct 7): main picks still ahead of the S&P at the end of their 60-day hold are kept, re-checked every day, up to 1 year; picks behind are sold on schedule. Backtest: -1.26%/yr -> -0.35%/yr vs the S&P (not worse before the last 3 years, +4%/yr in them); per pick, ahead at day 60 added +4.4% over days 60-250 (t 2.2)."
+  }
+ ]
 }
