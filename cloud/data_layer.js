@@ -100,7 +100,7 @@ $("#loginForm").addEventListener("submit", async ev => {
   try {
     await api("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: $("#pc").value }) });
     $("#login").hidden = true; $("#pc").value = "";
-    loadData();
+    loadData(); alertsState();
   } catch (e) {
     $("#pcMsg").textContent = e.code === "offline" ? "You're offline." : (e.message || "Couldn't log in.");
   } finally { go.disabled = false; }
@@ -113,9 +113,48 @@ document.addEventListener("visibilitychange", () => {
 });
 setInterval(() => { if (document.visibilityState === "visible" && $("#login").hidden) loadData(); }, 5 * 60000);
 
+// ---------- alerts (push notifications; iPhone: only from the home-screen app) ----------
+function keyBytes(s) { const b = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)); return Uint8Array.from(b, c => c.charCodeAt(0)); }
+async function alertsState() {
+  const btn = $("#alerts");
+  if (!btn || !("serviceWorker" in navigator)) return;
+  const reg = await navigator.serviceWorker.register("/sw.js").catch(() => null);
+  if (!reg || !("PushManager" in window) || !("Notification" in window)) {
+    // an iPhone Safari tab can't get alerts; the home-screen app can
+    if (/iPhone|iPad/.test(navigator.userAgent)) { btn.textContent = "Alerts"; btn.dataset.mode = "info"; btn.hidden = false; }
+    return;
+  }
+  const sub = await reg.pushManager.getSubscription();
+  btn.dataset.mode = "on"; btn.textContent = "Turn on alerts";
+  btn.hidden = !!(sub && Notification.permission === "granted");
+}
+$("#alerts").addEventListener("click", async () => {
+  const btn = $("#alerts");
+  if (btn.dataset.mode === "info") { alert("Alerts work in the home-screen app. Open Capitol Capital from its icon, then tap “Turn on alerts”."); return; }
+  btn.disabled = true;
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") { alert("Notifications are off for Capitol Capital. Turn them on in iPhone Settings → Notifications → Capitol Capital, then tap the button again."); return; }
+    const reg = await navigator.serviceWorker.ready;
+    const { js } = await api("/api/push/key");
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(js.key) });
+    await api("/api/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sub: sub.toJSON() }) });
+    btn.hidden = true;
+  } catch (e) {
+    if (e.code !== "login") alert("Couldn't turn on alerts: " + (e.message || e.code || e));
+  } finally { btn.disabled = false; }
+});
+// tapping an alert opens a tab (e.g. /#port)
+addEventListener("hashchange", () => {
+  const h = location.hash.slice(1);
+  if (/^(today|record|defense|small|works|real|port)$/.test(h)) { state.tab = h; render(); scrollTo(0, 0); }
+});
+
 state.folderId = "cloud";       // turns on the Buy buttons
 // preview hook for local screenshots only
 if (window.__CTD_SAMPLE) { state.data = window.__CTD_SAMPLE; state.confirm = window.__CTD_CONFIRM || null; state.taps = window.__CTD_TAPS || [];
   if (window.__CTD_LOGIN) showLogin(); setStatus("ok", "Results updated " + ago(state.data.updated), true); render(); return; }
 render();
-api("/api/session").then(() => loadData(), e => { if (e.code !== "login") { state.error = errorText(e); setStatus("err", "Can't reach the server", true); render(); } });
+api("/api/session").then(() => { loadData(); alertsState(); }, e => { if (e.code !== "login") { state.error = errorText(e); setStatus("err", "Can't reach the server", true); render(); } });
+

@@ -7,6 +7,7 @@ const SESSION_DAYS = 180;
 const MAX_FAILS = 10;            // wrong passcodes allowed per hour before locking
 const PREFIX = "cs-", PARK_PREFIX = "cs-park-", PARK_CHOICES = ["SPY", "VOO", "IVV"];
 const enc = new TextEncoder();
+import { vapid, saveSub, sendAll, getSubs } from "./push.js";
 
 export default {
   async fetch(req, env) {
@@ -17,6 +18,11 @@ export default {
     } catch (e) {
       return json({ error: "server", message: String(e && e.message || e).slice(0, 200) }, 500);
     }
+  },
+  // every minute: send alerts the GitHub runs queued; every 2 minutes in market hours: alert on new fills
+  async scheduled(ev, env, ctx) {
+    await drainOutbox(env);
+    if (new Date(ev.scheduledTime).getUTCMinutes() % 2 === 0) await checkFills(env);
   },
 };
 
@@ -37,6 +43,14 @@ async function api(req, env, url) {
   if (p === "/api/charts" && req.method === "GET") return fromR2(req, env, "ticker_charts.json");
   if (p === "/api/live" && req.method === "GET") return live(env);
   if (p === "/api/buy" && req.method === "POST") return buy(req, env);
+  if (p === "/api/push/key" && req.method === "GET") return json({ key: (await vapid(env)).pub, phones: (await getSubs(env)).length });
+  if (p === "/api/push/subscribe" && req.method === "POST") {
+    let b = {};
+    try { b = await req.json(); } catch (e) {}
+    try { await saveSub(env, b.sub, url.origin); } catch (e) { return json({ error: "bad-subscription" }, 400); }
+    const r = await sendAll(env, { title: "Alerts are on", body: "You'll get the daily close report, Buy-button fills, the tool's own trades and Worth a look flags.", tag: "welcome", url: "/" });
+    return json({ ok: true, ...r });
+  }
   return json({ error: "not-found" }, 404);
 }
 
@@ -193,4 +207,72 @@ async function buy(req, env) {
   if (!r.ok) return json({ ok: false, why: "rejected-" + r.status, message: r.data && r.data.message }, 400);
   return json({ ok: true, status: r.data.status, market_open: !!(clock.data && clock.data.is_open), next_open: clock.data && clock.data.next_open,
     qty: order.qty ? +order.qty : null });
+}
+
+// ---------- alerts ----------
+const ET = () => new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+const money0 = v => "$" + Math.round(v).toLocaleString("en-US");
+
+async function drainOutbox(env) {
+  const list = await env.DATA.list({ prefix: "push/outbox/", limit: 50 });
+  for (const o of list.objects) {
+    try {
+      const age = Date.now() - o.uploaded.getTime();
+      if (age < 6 * 3600e3) {
+        const msg = await (await env.DATA.get(o.key))?.json();
+        if (msg && msg.title) await sendAll(env, msg);
+      }
+    } catch (e) {}
+    await env.DATA.delete(o.key);
+  }
+}
+
+async function reasons(env) {
+  // the daily run saves why the tool bought or sold each stock (newest files win)
+  const out = {};
+  const list = await env.DATA.list({ prefix: "push/why/", limit: 100 });
+  const keys = list.objects.map(o => o.key).sort().slice(-6);
+  for (const k of keys) {
+    try { Object.assign(out, await (await env.DATA.get(k)).json()); } catch (e) {}
+  }
+  return out;
+}
+
+async function checkFills(env) {
+  const et = ET(), h = et.getHours() + et.getMinutes() / 60, wd = et.getDay();
+  if (wd === 0 || wd === 6 || h < 9 || h > 20.5) return;
+  const a = alpaca(env);
+  if (!a.ready) return;
+  const stObj = await env.DATA.get("push/fills_state.json");
+  const st = stObj ? await stObj.json() : null;
+  const after = new Date(Date.now() - 4 * 864e5).toISOString();
+  const r = await a.get(`/v2/orders?status=closed&direction=desc&limit=500&after=${encodeURIComponent(after)}`);
+  if (!r.ok || !Array.isArray(r.data)) return;
+  const filled = r.data.filter(o => o.status === "filled");
+  if (!st) {     // first check: remember what's already filled, alert on nothing old
+    await env.DATA.put("push/fills_state.json", JSON.stringify({ seen: filled.map(o => o.id) }));
+    return;
+  }
+  const seen = new Set(st.seen || []);
+  const fresh = filled.filter(o => !seen.has(o.id)).reverse();
+  if (!fresh.length) return;
+  const why = await reasons(env);
+  const msgs = [];
+  for (const o of fresh) {
+    seen.add(o.id);
+    const cid = o.client_order_id || "";
+    if (cid.startsWith("cs-park-")) continue;              // the tool parking spare cash in the S&P fund
+    const t = o.symbol.replace(/\./g, "-"), q = +o.filled_qty, p = +o.filled_avg_price;
+    const sh = `${q % 1 ? q.toFixed(4).replace(/0+$/, "") : q} share${q === 1 ? "" : "s"} at $${p.toFixed(2)} (${money0(q * p)})`;
+    const w = why[`${t}|${o.side}`];
+    if (o.side === "buy" && cid.startsWith("tap-")) msgs.push({ s: `bought ${t}`, title: `Bought ${t}`, body: `Your Buy-button order filled: ${sh}.` });
+    else if (o.side === "buy" && cid.startsWith("cs-")) msgs.push({ s: `bought ${t}`, title: `Tool bought ${t}`, body: sh + (w ? ` · ${w}` : "") + "." });
+    else if (o.side === "sell") msgs.push({ s: `sold ${t}`, title: `Sold ${t}`, body: sh + (w ? ` · ${w}` : "") + "." });
+  }
+  await env.DATA.put("push/fills_state.json", JSON.stringify({ seen: [...seen].slice(-1500) }));
+  if (msgs.length > 3) {
+    await sendAll(env, { title: `${msgs.length} trades filled`, body: msgs.map(m => m.s).join(", ").replace(/^./, c => c.toUpperCase()) + ".", tag: "fills", url: "/#port" });
+  } else {
+    for (const m of msgs) await sendAll(env, { title: m.title, body: m.body, tag: "fill-" + m.title, url: "/#port" });
+  }
 }
