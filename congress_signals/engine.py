@@ -2870,16 +2870,15 @@ def forward_returns(tx, px, hold, cost=0.0, stop=None, exit_pos=None):
     sell day (when the live tool's morning run sells), minus trading costs. Where an opening price is missing the
     day's close stands in (entry) or the previous close (exit), which is what the older version used.
     `stop` (optional, one price-index position per row: the first trading day after a buying member's sale is
-    disclosed) sells at that day's open; `exit_pos` (optional, price rules: the day whose close broke the rule)
-    sells at the next open, the first chance after seeing that close."""
+    disclosed) sells at that day's open; `exit_pos` (optional, from price_exit_positions) is the day of the sale,
+    also at its open (a rule broken by a day's close sells at the next open)."""
     idx = px.index
     n = len(idx)
     ent = _entry_positions(idx, tx["filed_date"])
     ext = ent + hold
     if exit_pos is not None:
         exit_pos = np.asarray(exit_pos)
-        timed = (exit_pos == ent + hold) | (exit_pos == ent + 2 * hold)        # the schedule or the 2x-hold cap
-        ext = np.where(exit_pos > ent, np.where(timed, exit_pos, exit_pos + 1), ext)
+        ext = np.where(exit_pos > ent, exit_pos, ext)          # already the day of the sale (at its open)
     if stop is not None:
         stop = np.asarray(stop)
         ext = np.where(stop > ent, np.minimum(ext, stop), ext)
@@ -7580,7 +7579,8 @@ def check_exit_rule_once(scored, px, cfg):
 
 
 # ---- price rules: sell early when a stock falls, or keep holding while it keeps rising ----------------------
-# Applied to purchases (main picks). Decisions use daily closes; a sale happens at that day's close.
+# Applied to purchases (main picks). Decisions use daily closes; the sale happens at the next open (the live tool's
+# morning run sees the evening's close and sells at the open).
 PRICE_EXITS = {"none": "Hold the full period",
                "stop10": "Sell if it falls 10% below the buy price",
                "stop15": "Sell if it falls 15% below the buy price",
@@ -7588,7 +7588,13 @@ PRICE_EXITS = {"none": "Hold the full period",
                "trail15": "Sell after a 15% drop from its high since buying"}
 EXTENDS = {"none": "Sell on the scheduled day",
            "ride10": "Keep holding while rising (sell after a 10% drop from its high, at most 2x the hold)",
-           "ride15": "Keep holding while rising (sell after a 15% drop from its high, at most 2x the hold)"}
+           "ride15": "Keep holding while rising (sell after a 15% drop from its high, at most 2x the hold)",
+           # Oct 7 study: main picks ahead of the S&P at day 60 added +4.4% vs the S&P over days 60-250 (t 2.2);
+           # picks behind lost -1.4%. Before 2022 and since, the same direction. Tested here like every option.
+           "ahead": "Keep a pick that's ahead of the S&P at the end of its hold, up to 1 year; sell the rest on schedule",
+           "ahead_daily": "Keep holding while ahead of the S&P, re-checked every day near and after the end (at most 1 year)"}
+AHEAD_RULES = ("ahead", "ahead_daily")
+AHEAD_MAX = 250            # trading days: the longest a pick is kept by the "ahead of the S&P" rules
 PRICE_EXIT_LABEL = "Sell early when a stock falls"
 EXTEND_LABEL = "Hold longer while a stock keeps rising"
 _PEXIT_CACHE = {}
@@ -7635,18 +7641,38 @@ def price_exit_positions(rows, px, hold, price_exit="none", extend="none"):
             if len(seg):
                 ref = np.fmax.accumulate(np.concatenate([[p0], seg]))[:-1] if trail else p0
                 hit = np.nonzero(seg <= ref * (1 - sx))[0]
-                if len(hit):
-                    out[i] = e + 1 + int(hit[0])
+                if len(hit) and e + 2 + int(hit[0]) < base:       # broken on a close: sold at the next open
+                    out[i] = e + 2 + int(hit[0])
                     stopped = True
+        if extend in AHEAD_RULES and not stopped and base < n and "SPY" in col:
+            # decided on the close the evening before the scheduled sale (what the morning run sees)
+            sc_ = col["SPY"]
+            s0 = arr[e, sc_]
+            if O is not None and np.isfinite(O[e, sc_]) and np.isfinite(O[e, c]):
+                s0 = O[e, sc_]
+            j = base - 1
+            ahead = np.isfinite(arr[j, c]) and arr[j, c] / p0 - arr[j, sc_] / s0 > 0
+            cap = e + max(AHEAD_MAX, int(hold))
+            if not ahead:
+                out[i] = base                                   # sold on schedule
+            elif extend == "ahead":
+                out[i] = cap                                    # kept to the 1-year mark
+            else:
+                seg = np.arange(base, min(cap, n))              # every evening after: still ahead?
+                exs = arr[seg, c] / p0 - arr[seg, sc_] / s0
+                hit = np.nonzero(~(exs > 0))[0]
+                out[i] = int(seg[hit[0]]) + 1 if len(hit) else cap   # behind on that close: sold at the next open
+            continue
         if ex and not stopped and base < n:
-            pb = arr[base, c]
-            hi = np.nanmax(arr[e:base + 1, c])
+            # decided on the close the evening before the scheduled sale (what the morning run sees)
+            pb = arr[base - 1, c]
+            hi = np.nanmax(arr[e:base, c])
             if np.isfinite(pb) and pb > p0 and pb >= hi * (1 - ex):
                 cap = e + 2 * int(hold)
-                seg = arr[base + 1:min(cap, n - 1) + 1, c]
+                seg = arr[base:min(cap, n), c]                   # closes from the scheduled day on
                 run_hi = np.fmax.accumulate(np.concatenate([[hi], seg]))[1:]
                 hit = np.nonzero(seg <= run_hi * (1 - ex))[0] if len(seg) else []
-                out[i] = base + 1 + int(hit[0]) if len(hit) else cap
+                out[i] = base + 1 + int(hit[0]) if len(hit) else cap    # broken on that close: next open
     _PEXIT_CACHE.clear()
     _PEXIT_CACHE[key] = out
     return out
