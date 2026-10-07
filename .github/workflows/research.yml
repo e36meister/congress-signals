@@ -1,0 +1,27 @@
+name: Research (read-only)
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "Script in tools/ to run"
+        default: "hold_study.py"
+permissions:
+  contents: read
+jobs:
+  study:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: for i in 1 2 3; do pip install -q -r requirements.txt && exit 0; sleep 20; done; exit 1
+      - name: Restore the saved data (read-only; nothing is saved back)
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: data-${{ github.run_id }}
+          restore-keys: data-
+      - run: python tools/${{ github.event.inputs.script }}
