@@ -100,3 +100,18 @@ for lab, s_ in (("old sizes", sc_open), ("SEC sizes then", s2)):
         p = r_["perf"]["Small-company picks"]
         print(f"   small-company portfolio, {lab}: {p['Per year vs S&P 500'] * 100:+.2f}%/yr vs S&P "
               f"(range {p['Likely range low'] * 100:+.1f} to {p['Likely range high'] * 100:+.1f}), {len(r_['picks'])} picks")
+
+# 7. portfolio level: the hold-longer options, earlier years vs the last 3 (what the weekly check will weigh)
+print("7. hold-longer options (main picks, opens timing, current settings otherwise)")
+idx_cut = px.index[-1] - pd.Timedelta(days=3 * 365)
+for ext in ("none", "ride10", "ahead", "ahead_daily"):
+    p2 = dict(pol, extend=ext)
+    s_ = E.apply_hold_policy(sc, px, cfg, p2)
+    bt = E.run_backtest(s_, px, cfg)
+    d = bt["curves"]["Long picks"].pct_change().fillna(0)
+    spy = bt["curves"]["S&P 500 (SPY)"].pct_change().fillna(0)
+    def ann(m):
+        x = (d[m] - spy[m])
+        return x.mean() * 252 * 100
+    early, late = d.index < idx_cut, d.index >= idx_cut
+    print(f"   {ext:12s}: all {ann(d.index == d.index):+.2f}%/yr vs S&P | before the last 3 yrs {ann(early):+.2f} | last 3 yrs {ann(late):+.2f}")
