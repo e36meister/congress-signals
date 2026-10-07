@@ -1805,7 +1805,7 @@ def _save_actions(cfg):
             new.index = new.index.tz_localize(None)
         new = new.loc[:, ~new.columns[::-1].duplicated()[::-1]]
         new = new.where(new != 0)                               # keep only the days something happened
-        new = new.dropna(how="all")
+        new = new.dropna(how="all").dropna(axis=1, how="all")
         out = new if old is None else new.combine_first(old)
         out.sort_index().to_pickle(path)
     have = pd.read_pickle(_p(cfg, "cache", "splits.pkl")).shape[1] if os.path.exists(_p(cfg, "cache", "splits.pkl")) else 0
@@ -3550,7 +3550,7 @@ def live_picks(scored, px, cfg, grace_days=2, today=None):
     hold = row_holds(b.loc[newish], load_adaptive(cfg)["policy"]) if newish.any() else []
     if newish.any():
         b.loc[newish, "exit_date"] = [d + BD(int(h)) for d, h in zip(b.loc[newish, "entry_date"], hold)]
-    b = b[b["entry_date"].notna()]
+    b = b[b["entry_px"].notna() | newish]           # the same rows the backtest picks from, plus the newest
     earliest = today - BD(grace_days)
     picks, _ = _select(b, "score", cfg["PICK_PERCENTILE"], cfg["PICKS_PER_WEEK"],
                        per_member=cfg.get("MAX_PICKS_PER_MEMBER_WEEK"), skip_late=cfg.get("SKIP_LATE_FILINGS"),
