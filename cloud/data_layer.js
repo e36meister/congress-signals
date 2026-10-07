@@ -181,13 +181,13 @@ function widgetModal() {
   }
   bg.hidden = false;
   bg.innerHTML = `<div class="modal"><div class="mh"><div><div class="t" style="font-size:18px">Home-screen widget</div>
-    <div class="co">A large widget: account value, today's change, you vs the S&amp;P, newest buys. Read-only.</div></div>
+    <div class="co">A medium widget: account value, today's change, you vs the S&amp;P, newest buys. Read-only.</div></div>
     <button class="mx" aria-label="Close">×</button></div>
     <ol style="margin:0;padding-left:20px;display:grid;gap:6px;font-size:14px">
       <li>Install <b>Scriptable</b> (free) from the App Store.</li>
       <li>Tap <b>Copy widget script</b> below.</li>
       <li>In Scriptable tap <b>+</b>, paste, and name it <b>Capitol Capital</b>.</li>
-      <li>On your home screen: hold an empty spot → <b>Edit</b> → <b>Add Widget</b> → <b>Scriptable</b> → the <b>large</b> size → <b>Add</b>.</li>
+      <li>On your home screen: hold an empty spot → <b>Edit</b> → <b>Add Widget</b> → <b>Scriptable</b> → the <b>medium</b> size (the wide one) → <b>Add</b>.</li>
       <li>Hold the new widget → <b>Edit Widget</b> → Script: <b>Capitol Capital</b>. Tapping it opens this app.</li>
     </ol>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">

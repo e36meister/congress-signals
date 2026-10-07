@@ -352,7 +352,7 @@ async function widgetScript(env, url, renew) {
   return new Response(js, { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
 }
 
-const WIDGET_JS = `// Capitol Capital widget for Scriptable (large size). Read-only: it can't trade.
+const WIDGET_JS = `// Capitol Capital widget for Scriptable (medium size). Read-only: it can't trade.
 const URL_ = "__URL__", KEY = "__KEY__";
 const BG = new Color("#07090A"), GREEN = new Color("#39FF88"), RED = new Color("#FF3B4E"),
       INK = new Color("#E9EEF2"), DIM = new Color("#7C8696"), GRID = new Color("#1A2027");
@@ -382,38 +382,34 @@ function spark(a, b, w, h) {
   return dc.getImage();
 }
 const d = await load();
-const w = new ListWidget(); w.backgroundColor = BG; w.url = URL_; w.setPadding(16, 16, 16, 16);
+const w = new ListWidget(); w.backgroundColor = BG; w.url = URL_; w.setPadding(12, 14, 12, 14);
 w.refreshAfterDate = new Date(Date.now() + 15 * 60 * 1000);
-const head = w.addStack(); head.centerAlignContent();
-const t = head.addText("CAPITOL CAPITAL"); t.font = Font.semiboldMonospacedSystemFont(11); t.textColor = GREEN;
-head.addSpacer();
-const st = head.addText(d ? (d.stale ? "offline · " : "") + (d.market_open ? "market open" : "market closed") : ""); st.font = Font.systemFont(10); st.textColor = DIM;
-w.addSpacer(8);
-if (!d) { const e = w.addText("Can't reach the app yet"); e.textColor = INK; }
+if (!d) { const e = w.addText("Capitol Capital: can't reach the app yet"); e.textColor = INK; e.font = Font.systemFont(13); }
 else {
-  const row = w.addStack(); row.bottomAlignContent();
-  const eq = row.addText(money(d.equity)); eq.font = Font.boldMonospacedSystemFont(30); eq.textColor = INK; eq.minimumScaleFactor = 0.6;
-  row.addSpacer(10);
-  const dy = row.addText((d.day_pl > 0 ? "+" : "") + money(d.day_pl) + " · " + pct(d.day_pct) + " today"); dy.font = Font.mediumMonospacedSystemFont(13); dy.textColor = col(d.day_pl);
-  w.addSpacer(10);
-  if (d.spark) { const img = w.addImage(spark(d.spark.acct, d.spark.spy, 320, 120)); img.imageSize = new Size(320, 120); }
+  const top = w.addStack(); top.centerAlignContent();
+  const left = top.addStack(); left.layoutVertically();
+  const t = left.addText("CAPITOL CAPITAL" + (d.stale ? " · offline" : "")); t.font = Font.semiboldMonospacedSystemFont(9); t.textColor = GREEN;
+  left.addSpacer(2);
+  const eq = left.addText(money(d.equity)); eq.font = Font.boldMonospacedSystemFont(24); eq.textColor = INK; eq.minimumScaleFactor = 0.6; eq.lineLimit = 1;
+  const dy = left.addText((d.day_pl > 0 ? "+" : "") + money(d.day_pl) + " · " + pct(d.day_pct) + " today"); dy.font = Font.mediumMonospacedSystemFont(11); dy.textColor = col(d.day_pl); dy.lineLimit = 1; dy.minimumScaleFactor = 0.7;
+  top.addSpacer(8);
+  if (d.spark) { const img = top.addImage(spark(d.spark.acct, d.spark.spy, 120, 58)); img.imageSize = new Size(120, 58); }
   w.addSpacer(6);
   if (d.since) {
-    const s = w.addStack();
-    const a = s.addText("You " + pct(d.since.acct)); a.font = Font.mediumMonospacedSystemFont(12); a.textColor = GREEN;
-    s.addSpacer(10);
-    const b = s.addText("S&P " + pct(d.since.spy)); b.font = Font.mediumMonospacedSystemFont(12); b.textColor = DIM;
+    const s = w.addStack(); s.centerAlignContent();
+    const a = s.addText("You " + pct(d.since.acct)); a.font = Font.mediumMonospacedSystemFont(11); a.textColor = GREEN;
+    s.addSpacer(8);
+    const b = s.addText("S&P " + pct(d.since.spy)); b.font = Font.mediumMonospacedSystemFont(11); b.textColor = DIM;
     s.addSpacer();
-    const g = s.addText((d.since.gap >= 0 ? "ahead " : "behind ") + Math.abs(d.since.gap ?? 0).toFixed(2) + " pts"); g.font = Font.mediumMonospacedSystemFont(12); g.textColor = col(d.since.gap);
+    const g = s.addText((d.since.gap >= 0 ? "ahead " : "behind ") + Math.abs(d.since.gap ?? 0).toFixed(2)); g.font = Font.mediumMonospacedSystemFont(11); g.textColor = col(d.since.gap);
   }
   w.addSpacer();
-  const nb = w.addText("NEW BUYS"); nb.font = Font.semiboldMonospacedSystemFont(10); nb.textColor = DIM;
-  w.addSpacer(3);
-  const list = (d.buys || []).map(b => b.t).join("   ") || "none yet";
-  const l = w.addText(list); l.font = Font.boldMonospacedSystemFont(16); l.textColor = INK;
-  w.addSpacer(6);
-  const up = w.addText("since start = last close" + (d.since && d.since.date ? " (" + d.since.date + ")" : "")); up.font = Font.systemFont(9); up.textColor = DIM;
+  const nb = w.addStack(); nb.centerAlignContent();
+  const lab = nb.addText("NEW BUYS  "); lab.font = Font.semiboldMonospacedSystemFont(9); lab.textColor = DIM;
+  const l = nb.addText((d.buys || []).map(b => b.t).join("  ") || "none yet"); l.font = Font.boldMonospacedSystemFont(13); l.textColor = INK; l.lineLimit = 1; l.minimumScaleFactor = 0.7;
+  nb.addSpacer();
+  const mk = nb.addText(d.market_open ? "open" : "closed"); mk.font = Font.systemFont(9); mk.textColor = DIM;
 }
-if (config.runsInWidget) Script.setWidget(w); else await w.presentLarge();
+if (config.runsInWidget) Script.setWidget(w); else await w.presentMedium();
 Script.complete();
 `;
