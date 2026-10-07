@@ -69,7 +69,7 @@ for t in set(sub["ticker"]):
         c_sec = E.cap_at_time(t, px.index[-1], px[t], shares, acts, lag_days=0)
         c_y = (meta.get(t) or {}).get("cap")
         good[t] = c_sec is not None and (not c_y or 1 / 3 < c_sec / float(c_y) < 3)
-new = np.array([E.cap_at_time(t, d, px[t], shares, acts) if good.get(t) else np.nan for t, d in zip(sub["ticker"], sub["filed_date"])])
+new = np.array([E.cap_at_time(t, d, px[t], shares, acts) if good.get(t) else np.nan for t, d in zip(sub["ticker"], sub["filed_date"])], dtype=float)
 old = pd.to_numeric(sub["market_cap"], errors="coerce").values.astype(float)
 m = np.isfinite(new) & np.isfinite(old)
 print(f"5. size from SEC shares then: {np.isfinite(new).mean() * 100:.0f}% of purchases; matched companies {sum(good.values())}")
