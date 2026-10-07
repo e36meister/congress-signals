@@ -1,0 +1,18 @@
+name = "capitol-capital"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+preview_urls = false
+
+[assets]
+directory = "./app"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+not_found_handling = "single-page-application"
+
+[[r2_buckets]]
+binding = "DATA"
+bucket_name = "capitol-capital-data"
+
+[observability]
+enabled = false   # don't keep request logs

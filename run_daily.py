@@ -3,6 +3,7 @@ and update dashboard_data.json in your Google Drive so the dashboard refreshes."
 import os, json, datetime as dt, traceback
 import congress_signals.engine as E
 import broker
+import cloud_store
 
 env = os.environ.get
 cfg = {**E.DEFAULT_CONFIG,
@@ -382,6 +383,7 @@ def main():
     except Exception as e:
         E.log(f"Broker: skipped this run ({type(e).__name__})")
     upload_to_drive(os.path.join(cfg["DATA_DIR"], "dashboard_data.json"), "dashboard_data.json")
+    cloud_store.put("dashboard_data.json", os.path.join(cfg["DATA_DIR"], "dashboard_data.json"), E.log)   # phone app
     try:
         send_weekly_summary()
     except Exception as e:
@@ -392,7 +394,9 @@ def main():
         ts = {r.get("t") for r in (w.get("buys") or []) + (w.get("sells") or [])}
         ts |= {r.get("t") for r in ((d.get("defense") or {}).get("longs") or [])}
         ts |= {p.get("t") for p in ((d.get("portfolio") or {}).get("positions") or [])}
-        upload_to_drive(E.export_ticker_charts(cfg, scored, px, ts), "ticker_charts.json")
+        charts_path = E.export_ticker_charts(cfg, scored, px, ts)
+        upload_to_drive(charts_path, "ticker_charts.json")
+        cloud_store.put("ticker_charts.json", charts_path, E.log)
     except Exception as e:
         E.log(f"Ticker charts: skipped ({type(e).__name__}: {e})")
     E.log(f"Finished. {len(new)} new signal(s).")
