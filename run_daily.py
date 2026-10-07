@@ -387,7 +387,16 @@ def main():
         msales = lambda t, bought: E.member_sales(mt, t, bought)
         pxf = px.ffill() if px is not None else None
         phist = lambda t, since: pxf.loc[E.pd.Timestamp(since):, t].dropna().values if pxf is not None and t in pxf else None
+        try:       # the backtest's pick rule on the newest filings: bought as soon as seen, stale picks skipped
+            live_p, small_f = E.live_picks(scored, px, cfg), E.fresh_small_rows(scored, cfg)
+            E.log(f"Live picks: {len(live_p)} fresh main pick(s), {len(small_f)} fresh small-company buy(s)")
+        except Exception as e:
+            live_p = small_f = None
+            E.log(f"Live picks: fell back to the BUY list ({type(e).__name__}: {e})")
         snap = broker.sync(dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=sm.get("slots"),
+                                _live_picks=live_p, _small_fresh=small_f,
+                                _caps=scored.sort_values("filed_date").drop_duplicates("ticker", keep="last")
+                                      .set_index("ticker")["market_cap"].dropna().to_dict() if "market_cap" in scored else {},
                                 _member_sales=msales, _price_hist=phist), buys, new, last, E.log)
         path = os.path.join(cfg["DATA_DIR"], "dashboard_data.json")
         d = json.load(open(path))
