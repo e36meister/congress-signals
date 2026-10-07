@@ -45,3 +45,22 @@ def save_reasons(actions, log=print):
            if a.get("symbol") and a.get("side") and a.get("why") and a.get("ok", True)}
     if why:
         put(f"push/why/{dt.datetime.utcnow():%Y%m%d%H%M}.json", json.dumps(why), log=lambda m: log("Cloudflare: saved trade reasons for alerts" if "updated" in m else m))
+
+
+_phones = None
+
+
+def has_phones():
+    """True when at least one phone has alerts turned on, so the matching emails can be skipped."""
+    global _phones
+    if _phones is None:
+        _phones = False
+        tok, acc = os.environ.get("CLOUDFLARE_API_TOKEN"), os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+        if tok and acc:
+            try:
+                r = requests.get(f"https://api.cloudflare.com/client/v4/accounts/{acc}/r2/buckets/{BUCKET}/objects/push/subs.json",
+                                 headers={"Authorization": f"Bearer {tok}"}, timeout=30)
+                _phones = r.status_code == 200 and isinstance(r.json(), list) and len(r.json()) > 0
+            except Exception:
+                _phones = False
+    return _phones

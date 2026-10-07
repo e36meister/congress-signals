@@ -143,14 +143,18 @@ def main():
     E.log("Close report: saved to the dashboard")
     import cloud_store
     cloud_store.put("dashboard_data.json", json.dumps(data).encode(), E.log)   # phone app
-    email(report, snap["mode"], snap, data)
+    pushed = False
     try:      # phone alert: same headline as the email
         subject = build_email(report, snap["mode"], snap, data)[0]
         a, s = report.get("since_start"), report.get("spy_since_start")
         body = f"Account ${(report.get('equity') or 0):,.0f}" + (f" · since start {a:+.2f}% vs S&P {s:+.2f}%" if a is not None and s is not None else "")
-        cloud_store.notify(subject, body, "close", "/#port", E.log)
+        pushed = cloud_store.has_phones() and cloud_store.notify(subject, body, "close", "/#port", E.log)
     except Exception as e:
         E.log(f"Close report: phone alert skipped ({type(e).__name__})")
+    if pushed:                 # the phone alert replaces the email
+        E.log("Close report: email skipped (phone alerts are on)")
+    else:
+        email(report, snap["mode"], snap, data)
 
 
 LUCK_TE, LUCK_Z = 0.15, 1.96          # same 95% luck range as the dashboard chart
