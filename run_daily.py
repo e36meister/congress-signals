@@ -99,6 +99,25 @@ def send_worth_alerts(items):
         seen.add("__v2__")
         json.dump(sorted(seen), open(path, "w"))
     new = [o for o in items if any(key(o, w) not in seen for w in o["who"])]
+    try:      # phone alert, once per flagged trade (tracked apart from the email so a failed email doesn't repeat it)
+        ppath = os.path.join(cfg["DATA_DIR"], "state", "worth_pushed.json")
+        pushed = set(json.load(open(ppath))) if os.path.exists(ppath) else None
+        if pushed is None:                       # first time: don't alert on everything already emailed
+            pushed = set(seen) | {key(o, w) for o in items for w in o["who"] if key(o, w) in seen}
+        fresh = [o for o in items if any(key(o, w) not in pushed for w in o["who"])]
+        if fresh:
+            ts = ", ".join(o["t"] for o in fresh[:6]) + ("…" if len(fresh) > 6 else "")
+            first = fresh[0]
+            body = (f"{first['t']}: " + "; ".join(first.get("why") or [])[:180]) if len(fresh) == 1 else \
+                   f"{len(fresh)} recent trades with a rare red flag. Not buy signals on their own."
+            if cloud_store.notify(f"Worth a look: {ts}", body, "worth", "/#today", E.log):
+                for o in fresh:
+                    for w in o["who"]:
+                        pushed.add(key(o, w))
+        os.makedirs(os.path.dirname(ppath), exist_ok=True)
+        json.dump(sorted(pushed), open(ppath, "w"))
+    except Exception as e:
+        E.log(f"Worth a look: phone alert skipped ({type(e).__name__})")
     if new:
         rows = "".join(f"<tr><td><b>{html.escape(o['t'])}</b><br><span style='color:#666'>{html.escape(o.get('co') or '')}</span></td>"
                        f"<td>{'<br>'.join(html.escape(w['n']) + (' bought ' if w['ty'] == 'buy' else ' sold ') + w['td'] for w in o['who'])}</td>"
@@ -371,6 +390,7 @@ def main():
         d = json.load(open(path))
         if snap is not None:
             d["portfolio"] = snap
+            cloud_store.save_reasons(snap.get("this_run"), E.log)       # phone trade alerts say why
         # members who bought a stock you hold and have since disclosed a sale (shown on My portfolio)
         ms = {}
         for p in (d.get("portfolio") or {}).get("positions") or []:

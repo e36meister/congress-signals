@@ -16,3 +16,6 @@ bucket_name = "capitol-capital-data"
 
 [observability]
 enabled = false   # don't keep request logs
+
+[triggers]
+crons = ["* * * * *"]
