@@ -14,6 +14,7 @@ cfg = {**E.DEFAULT_CONFIG,
        "QUIVER_API_KEY": env("QUIVER_API_KEY", ""),
        "FMP_API_KEY": env("FMP_API_KEY", ""),
        "OCR_SPACE_API_KEY": env("OCR_SPACE_API_KEY", ""),
+       "GOOGLE_VISION_API_KEY": env("GOOGLE_VISION_API_KEY", ""),
        "TIINGO_API_KEY": env("TIINGO_API_KEY", ""),
        # true / false forces tuned weights on or off; unset lets the weekly check decide
        "USE_TUNED_WEIGHTS": {"true": True, "false": False}.get((env("USE_TUNED_WEIGHTS") or "").strip().lower(), "auto"),

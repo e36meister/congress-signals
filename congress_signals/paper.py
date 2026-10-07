@@ -722,3 +722,113 @@ class NameIndex:
         if not best:
             best = difflib.get_close_matches(n, self.keys, n=1, cutoff=0.9)
         return best[0] if best else None
+
+
+class GoogleVision:
+    """Google Cloud Vision (DOCUMENT_TEXT_DETECTION), the free tier only: 1,000 pages a month, capped here at 950
+    so a month never goes over (a count kept in a file, like OCR.space's). Reads handwriting well. Returns results
+    shaped like OCR.space's (word boxes as TextOverlay, the text as ParsedText), so the page readers use either."""
+    URL = "https://vision.googleapis.com/v1/images:annotate"
+
+    def __init__(self, key, usage_path, month_cap=950):
+        import json, os, threading
+        self.key, self.path, self.cap = key, usage_path, month_cap
+        try:
+            self.u = json.load(open(usage_path)) if os.path.exists(usage_path) else {}
+        except Exception:
+            self.u = {}
+        self.lock = threading.Lock()
+        self.misses = 0
+
+    def _mon(self):
+        import datetime as dt
+        return dt.date.today().strftime("%Y-%m")
+
+    def can(self, engine=2):
+        # engine 3 means "give me OCR.space's handwriting table", which Vision doesn't produce: not offered
+        return engine != 3 and self.u.get("month", {}).get(self._mon(), 0) < self.cap
+
+    def used(self):
+        return self.u.get("month", {}).get(self._mon(), 0)
+
+    def _count(self):
+        import json
+        with self.lock:
+            mo = self.u.setdefault("month", {})
+            m = self._mon()
+            mo[m] = mo.get(m, 0) + 1
+            try:
+                json.dump(self.u, open(self.path, "w"))
+            except Exception:
+                pass
+
+    def call(self, img, engine=2, overlay=False, table=False, orient=False):
+        import base64, requests
+        cv2 = _cv()
+        if not self.can():
+            self.misses += 1
+            return None
+        ok, buf = cv2.imencode(".png", img)
+        if not ok or len(buf) > 9_000_000:
+            ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if not ok:
+            return None
+        self._count()
+        try:
+            r = requests.post(self.URL, params={"key": self.key}, timeout=120, json={"requests": [{
+                "image": {"content": base64.b64encode(buf.tobytes()).decode()},
+                "features": [{"type": "DOCUMENT_TEXT_DETECTION"}],
+                "imageContext": {"languageHints": ["en"]}}]})
+            d = (r.json().get("responses") or [{}])[0]
+            if r.status_code != 200 or d.get("error"):
+                self.misses += 1
+                return None
+            fta = d.get("fullTextAnnotation") or {}
+            lines = []
+            for page in fta.get("pages", []):
+                for block in page.get("blocks", []):
+                    for para in block.get("paragraphs", []):
+                        words = []
+                        for w in para.get("words", []):
+                            txt = "".join(s.get("text", "") for s in w.get("symbols", []))
+                            vs = (w.get("boundingBox") or {}).get("vertices") or []
+                            xs = [v.get("x", 0) for v in vs] or [0]
+                            ys = [v.get("y", 0) for v in vs] or [0]
+                            words.append({"WordText": txt, "Left": min(xs), "Top": min(ys),
+                                          "Width": max(xs) - min(xs), "Height": max(ys) - min(ys)})
+                        if words:
+                            lines.append({"Words": words})
+            return {"ParsedText": fta.get("text", ""), "TextOverlay": {"Lines": lines}}
+        except Exception:
+            self.misses += 1
+            return None
+
+
+class OcrChain:
+    """OCR.space first (its free daily allowance), then Google Vision's free monthly pages once that's used up."""
+
+    def __init__(self, *readers):
+        self.readers = [r for r in readers if r is not None]
+
+    @property
+    def misses(self):
+        return sum(r.misses for r in self.readers)
+
+    def can(self, engine=2):
+        return any(r.can(engine) for r in self.readers)
+
+    def call(self, img, engine=2, **kw):
+        for r in self.readers:
+            if r.can(engine):
+                res = r.call(img, engine, **kw)
+                if res:
+                    return res
+        return None
+
+
+def make_ocr(space_key, space_usage, vision_key, vision_usage):
+    sp = OcrSpace(space_key, space_usage) if space_key else None
+    gv = GoogleVision(vision_key, vision_usage) if vision_key else None
+    if sp and gv:
+        return OcrChain(sp, gv)
+    return sp or gv

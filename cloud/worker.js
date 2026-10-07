@@ -22,7 +22,9 @@ export default {
   // every minute: send alerts the GitHub runs queued; every 2 minutes in market hours: alert on new fills
   async scheduled(ev, env, ctx) {
     await drainOutbox(env);
-    if (new Date(ev.scheduledTime).getUTCMinutes() % 2 === 0) await checkFills(env);
+    const min = new Date(ev.scheduledTime).getUTCMinutes();
+    if (min % 2 === 0) await checkFills(env);
+    await startQuickCheck(env, min);
   },
 };
 
@@ -275,4 +277,23 @@ async function checkFills(env) {
   } else {
     for (const m of msgs) await sendAll(env, { title: m.title, body: m.body, tag: "fill-" + m.title, url: "/#port" });
   }
+}
+
+// ---------- fast filing check ----------
+// GitHub's own 15-minute schedule often runs 15-40 minutes late. This starts the quick check (new House and Senate
+// filings, Buy orders, portfolio) on time: every 5 minutes on weekdays 6 AM-9 PM Eastern, every 30 minutes otherwise.
+// A new filing then starts the full update within a few minutes of being posted.
+async function startQuickCheck(env, min) {
+  if (!env.GH_DISPATCH_TOKEN) return;
+  const et = ET(), h = et.getHours(), wd = et.getDay();
+  const busy = wd >= 1 && wd <= 5 && h >= 6 && h < 21;
+  if (min % (busy ? 5 : 30) !== 0) return;
+  try {
+    await fetch(`https://api.github.com/repos/${env.GH_REPO || "e36meister/congress-signals"}/actions/workflows/quick.yml/dispatches`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`, Accept: "application/vnd.github+json",
+                 "User-Agent": "capitol-capital-worker", "Content-Type": "application/json" },
+      body: JSON.stringify({ ref: "main" }),
+    });
+  } catch (e) {}
 }
