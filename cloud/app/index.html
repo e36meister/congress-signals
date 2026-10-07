@@ -1183,21 +1183,34 @@ const WHY_BUY = { "amount-over-limit": "the amount is over your per-order limit"
   "not-tradable": "Alpaca can't trade this stock", "not-found": "stock not found on Alpaca", "no-price": "no current price",
   "amount-too-small": "the amount is less than one share", "no-keys": "no Alpaca keys are set up", "bad-request": "the request couldn't be read" };
 
-let loading = false, lastData = 0, lastLive = null, liveTimer = null;
+let loading = false, lastEtag = null, lastData = 0, lastLive = null, liveTimer = null;
 async function loadData() {
   if (loading) return; loading = true;
+  let redraw = true;
   try {
-    const { js } = await api("/api/data");
+    const { js, headers } = await api("/api/data");
+    const etag = headers.get("ETag");
+    if (etag && etag === lastEtag && state.data) {          // nothing new: keep the page as it is (no jump)
+      lastData = Date.now();
+      const synced = headers.get("X-Uploaded");
+      if (synced) $("#statusText").textContent = $("#statusText").textContent.replace(/ · synced .*$/, "") + " · synced " + ago(synced);
+      redraw = false;
+      loadLive();
+      return;
+    }
+    lastEtag = etag;
     state.data = js; state.error = null; lastData = Date.now();
+    const synced = headers.get("X-Uploaded");
     if (lastLive) applyLive(lastLive);
     const upd = js.updated;
     const hours = (Date.now() - Date.parse(upd)) / 3.6e6;
-    setStatus(hours > 36 ? "stale" : "ok", "Results updated " + ago(upd) + " (" + fmtET(upd) + ")" + (hours > 36 ? " · the daily update hasn't run since then" : ""), true);
+    setStatus(hours > 36 ? "stale" : "ok", "Results updated " + ago(upd) + " (" + fmtET(upd) + ")" + (hours > 36 ? " · the daily update hasn't run since then" : "") +
+      (synced ? " · synced " + ago(synced) : ""), true);
   } catch (e) {
     if (e.code === "login") return;
     if (state.data) setStatus("stale", e.code === "offline" ? "Offline · showing the last results" : "Couldn't refresh · showing the last results", true);
     else { state.error = errorText(e); setStatus("err", e.code === "no_file" ? "Waiting for the first upload" : "Couldn't load results", true); }
-  } finally { loading = false; render(); }
+  } finally { loading = false; if (redraw) render(); }
   loadLive();
 }
 
@@ -1270,9 +1283,9 @@ $("#loginForm").addEventListener("submit", async ev => {
 // refresh when the app comes back to the screen
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible" || !$("#login").hidden) return;
-  if (Date.now() - lastData > 5 * 60000) loadData(); else loadLive();
+  loadData();
 });
-setInterval(() => { if (document.visibilityState === "visible" && $("#login").hidden) loadData(); }, 5 * 60000);
+setInterval(() => { if (document.visibilityState === "visible" && $("#login").hidden) loadData(); }, 2 * 60000);
 
 // ---------- alerts (push notifications; iPhone: only from the home-screen app) ----------
 function keyBytes(s) { const b = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)); return Uint8Array.from(b, c => c.charCodeAt(0)); }
