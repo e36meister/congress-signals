@@ -141,6 +141,8 @@ def main():
     drive.files().update(fileId=fid, media_body=MediaIoBaseUpload(io.BytesIO(json.dumps(data).encode()),
                          mimetype="application/json"), supportsAllDrives=True).execute()
     E.log("Close report: saved to the dashboard")
+    import cloud_store
+    cloud_store.put("dashboard_data.json", json.dumps(data).encode(), E.log)   # phone app
     email(report, snap["mode"], snap, data)
 
 

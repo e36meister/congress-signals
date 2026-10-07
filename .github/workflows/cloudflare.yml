@@ -1,0 +1,112 @@
+name: Deploy phone app
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths: ["cloud/**", ".github/workflows/cloudflare.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the secrets are set
+        env:
+          APP_PASSCODE: ${{ secrets.APP_PASSCODE }}
+        run: |
+          missing=""
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          [ -n "$APP_PASSCODE" ] || missing="$missing APP_PASSCODE"
+          if [ -n "$missing" ]; then echo "::error::Add these GitHub secrets first:$missing"; exit 1; fi
+          if [ ${#APP_PASSCODE} -lt 8 ]; then echo "::error::APP_PASSCODE must be at least 8 characters"; exit 1; fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install libraries
+        run: pip install --retries 5 requests google-auth google-api-python-client
+
+      - name: Build the app page
+        run: python cloud/build_app.py
+
+      - name: Set up storage and the app address
+        id: setup
+        env:
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+        run: python cloud/setup.py
+
+      - name: Deploy
+        working-directory: cloud
+        run: npx --yes wrangler@4 deploy 2>&1 | sed -E 's#[A-Za-z0-9./:-]*workers\.dev#(address hidden; the run log is public)#g'
+
+      - name: Give the app its passcode and Alpaca keys
+        working-directory: cloud
+        env:
+          APP_PASSCODE: ${{ secrets.APP_PASSCODE }}
+          TRADING_MODE: ${{ vars.TRADING_MODE }}
+          MAX_TAP_DOLLARS: ${{ vars.MAX_TAP_DOLLARS }}
+          ALPACA_PAPER_KEY_ID: ${{ secrets.ALPACA_PAPER_KEY_ID }}
+          ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
+          ALPACA_LIVE_KEY_ID: ${{ secrets.ALPACA_LIVE_KEY_ID }}
+          ALPACA_LIVE_SECRET_KEY: ${{ secrets.ALPACA_LIVE_SECRET_KEY }}
+        run: |
+          umask 077
+          python3 - <<'EOF'
+          import os, json
+          live = (os.environ.get("TRADING_MODE") or "paper").strip().lower() == "live"
+          m = "LIVE" if live else "PAPER"
+          json.dump({"APP_PASSCODE": os.environ["APP_PASSCODE"],
+                     "TRADING_MODE": "live" if live else "paper",
+                     "MAX_TAP_DOLLARS": os.environ.get("MAX_TAP_DOLLARS") or "25000",
+                     "ALPACA_KEY": os.environ.get(f"ALPACA_{m}_KEY_ID") or "",
+                     "ALPACA_SECRET": os.environ.get(f"ALPACA_{m}_SECRET_KEY") or ""},
+                    open(os.path.join(os.environ["RUNNER_TEMP"], "s.json"), "w"))
+          EOF
+          npx --yes wrangler@4 secret bulk "$RUNNER_TEMP/s.json" 2>&1 | sed -E 's#[A-Za-z0-9./:-]*workers\.dev#(hidden)#g'
+          rm -f "$RUNNER_TEMP/s.json"
+
+      - name: Email the app's address
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          APP_URL: ${{ steps.setup.outputs.url }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_TO: ${{ secrets.ALERT_TO }}
+        run: |
+          python3 - <<'EOF'
+          import os, smtplib
+          from email.mime.text import MIMEText
+          addr, pw, url = os.environ.get("GMAIL_ADDRESS"), os.environ.get("GMAIL_APP_PASSWORD"), os.environ["APP_URL"]
+          if not (addr and pw):
+              raise SystemExit("Gmail isn't set up; find the address in Cloudflare under Workers & Pages → capitol-capital")
+          msg = MIMEText(f"""<p>Your Capitol Capital app is live.</p>
+          <p><a href="{url}">{url}</a></p>
+          <p>On your iPhone: open the link in <b>Safari</b>, log in with your passcode, then tap
+          <b>Share → Add to Home Screen</b>. Open it from the new icon and log in once more
+          (home-screen apps keep their own login).</p>""", "html")
+          msg["Subject"], msg["From"], msg["To"] = "Capitol Capital: your phone app", addr, os.environ.get("ALERT_TO") or addr
+          with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+              s.login(addr, pw.replace(" ", ""))
+              s.send_message(msg)
+          print("Emailed the app's address")
+          EOF

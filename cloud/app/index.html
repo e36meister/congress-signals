@@ -1,0 +1,1286 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style><meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Capitol Capital">
+<meta name="theme-color" content="#F3F5F8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E131A" media="(prefers-color-scheme: dark)">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+</head><body>
+<title>Capitol Capital</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#F3F5F8; --surface:#FFFFFF; --sunken:#EEF1F5; --ink:#152033; --ink2:#46536A; --muted:#6B778A; --rule:#DCE1E8;
+  --accent:#1D4F91; --accent-soft:#E3ECF8;
+  --good:#0B7A4B; --good-soft:#E2F3EA; --bad:#B42318; --bad-soft:#FBE7E5; --warn:#95590A; --warn-soft:#FBF0DC;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#c98500; --spy:#8A93A3; --grid:#E6E9EE;
+  --body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --head:"IBM Plex Sans Condensed","IBM Plex Sans",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --ground:#0E131A; --surface:#151C26; --sunken:#1B2330; --ink:#E6EBF2; --ink2:#B4BECC; --muted:#8B97A8; --rule:#27303D;
+    --accent:#7FAEEA; --accent-soft:#1C2B40;
+    --good:#4CC38A; --good-soft:#12291E; --bad:#F2877B; --bad-soft:#331816; --warn:#E3A857; --warn-soft:#2E2210;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --spy:#7C8696; --grid:#222B37;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ground:#0E131A; --surface:#151C26; --sunken:#1B2330; --ink:#E6EBF2; --ink2:#B4BECC; --muted:#8B97A8; --rule:#27303D;
+  --accent:#7FAEEA; --accent-soft:#1C2B40;
+  --good:#4CC38A; --good-soft:#12291E; --bad:#F2877B; --bad-soft:#331816; --warn:#E3A857; --warn-soft:#2E2210;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --spy:#7C8696; --grid:#222B37;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font:15px/1.5 var(--body);padding-inline:16px;padding-block:0 48px}
+.wrap{max-width:1180px;margin:0 auto}
+h1,h2,h3{font-family:var(--head);text-wrap:balance;margin:0}
+.num,td.n,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+header.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--ground);padding-block:16px 0;border-bottom:1px solid var(--rule)}
+.brand{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px 16px}
+.brand h1{font-size:24px;font-weight:600;letter-spacing:.2px}
+.brand .seal{font:500 11px var(--mono);letter-spacing:1.2px;text-transform:uppercase;color:var(--muted)}
+.status{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink2)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.dot.ok{background:var(--good)} .dot.stale{background:var(--warn)} .dot.err{background:var(--bad)}
+button.link{background:none;border:0;color:var(--accent);font:inherit;cursor:pointer;padding:2px 4px;border-radius:4px}
+button.link:hover{text-decoration:underline}
+nav.tabs{display:flex;gap:4px;margin-top:12px;overflow-x:auto}
+nav.tabs button{font:600 14px var(--head);letter-spacing:.3px;color:var(--ink2);background:none;border:0;border-bottom:3px solid transparent;padding:8px 12px 10px;cursor:pointer;white-space:nowrap}
+nav.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+main{padding-top:20px;display:grid;gap:24px}
+.note{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:12px 14px;font-size:14px;color:var(--ink2)}
+.note.warn{background:var(--warn-soft);border-color:transparent;color:var(--ink)}
+.note.err{background:var(--bad-soft);border-color:transparent;color:var(--ink)}
+section.panel{display:grid;gap:12px;align-content:start}
+.ph{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 12px}
+.ph h2{font-size:19px;font-weight:600}
+.ph .sub{font-size:13px;color:var(--muted)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.tile{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:14px 16px;display:grid;gap:2px}
+.tile .v{font:500 26px var(--mono);letter-spacing:-.5px}
+.tile .l{font-size:12.5px;color:var(--muted)}
+.tile .c{font-size:12.5px;color:var(--ink2)}
+.pos{color:var(--good)} .neg{color:var(--bad)}
+/* pick rows */
+.picks{display:grid;gap:8px}
+.pick{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:12px 14px;display:grid;grid-template-columns:92px 1fr auto;gap:4px 16px;align-items:start}
+.pick .tk{display:grid;gap:4px}
+.pick .tk b{font:600 19px var(--mono);letter-spacing:.3px}
+.chip{display:inline-block;font:600 11px var(--body);letter-spacing:.8px;text-transform:uppercase;padding:2px 8px;border-radius:999px;justify-self:start}
+.chip.BUY{background:var(--good-soft);color:var(--good)}
+.chip.SHORT{background:var(--bad-soft);color:var(--bad)}
+.chip.avoid,.chip.mixed{background:var(--warn-soft);color:var(--warn)}
+.chip.watch{background:var(--sunken);color:var(--ink2)}
+.chip.new{background:var(--accent-soft);color:var(--accent)}
+.pick .co{font-weight:600}
+.pick .who{font-size:13px;color:var(--ink2)}
+.ppl{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin-top:8px}
+.ppl .lbl{font-size:12px;color:var(--muted);letter-spacing:.3px}
+.person{display:inline-flex;align-items:center;gap:8px;min-width:0}
+.person .pn{display:block;font-size:13.5px;font-weight:500;color:var(--ink);line-height:1.25}
+.person .pr{display:block;font-size:11.5px;color:var(--muted);line-height:1.25}
+.av{width:36px;height:36px;border-radius:50%;object-fit:cover;object-position:50% 20%;flex:none;background:var(--sunken);border:1px solid var(--rule);display:inline-grid;place-items:center;font:600 12px var(--body);color:var(--ink2)}
+.av.sm{width:24px;height:24px;font-size:9.5px}
+.ptag{display:inline-block;font:600 10.5px var(--mono);letter-spacing:.3px;padding:0 5px;border-radius:4px;margin-left:5px;vertical-align:1px;background:var(--sunken);color:var(--ink2);white-space:nowrap}
+.ptag.R{background:#FBE7E5;color:#B42318}.ptag.D{background:#E3ECF8;color:#1D4F91}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .ptag.R{background:#331816;color:#F2877B}:root:not([data-theme="light"]) .ptag.D{background:#1C2B40;color:#7FAEEA}}
+:root[data-theme="dark"] .ptag.R{background:#331816;color:#F2877B}:root[data-theme="dark"] .ptag.D{background:#1C2B40;color:#7FAEEA}
+.legend i.band{height:10px;background:var(--accent-soft)!important;border:1px solid var(--rule)}
+.who-cell{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center}
+.who-cell span.nm{display:inline-flex;align-items:center;gap:6px}
+.pick .why{font-size:13.5px;color:var(--ink2);margin-top:4px}
+.pick .ctx{font-size:12.5px;color:var(--muted);margin-top:4px;display:flex;flex-wrap:wrap;gap:4px 14px}
+.pick .side{text-align:right;display:grid;gap:4px;justify-items:end}
+.meter{width:120px;height:6px;background:var(--sunken);border-radius:3px;overflow:hidden}
+.meter i{display:block;height:100%;background:var(--accent)}
+.pick .side .sc{font:500 13px var(--mono);color:var(--ink2)}
+.pick .side .mv{font:500 13px var(--mono)}
+.buybtn{font:600 13px var(--body);padding:6px 14px;border-radius:6px;border:1px solid var(--good);background:var(--good-soft);color:var(--good);cursor:pointer}
+.buybtn:disabled{opacity:.55;cursor:default}
+.subh{font-size:15px;font-weight:600;margin:4px 0 -4px}
+.confirm{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;background:var(--sunken);border-radius:8px;padding:10px 12px;margin-top:6px;font-size:13.5px}
+.confirm input{font:500 14px var(--mono);width:110px;padding:6px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--surface);color:var(--ink)}
+.confirm .real{color:var(--bad);font-weight:600}
+.tapmsg{grid-column:1/-1;font-size:13px;margin-top:4px}
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.seg{display:inline-flex;border:1px solid var(--rule);border-radius:6px;overflow:hidden;background:var(--surface)}
+.seg button{background:none;border:0;padding:6px 12px;font:500 13px var(--body);color:var(--ink2);cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent)}
+input[type=search]{font:14px var(--body);padding:6px 10px;border:1px solid var(--rule);border-radius:6px;background:var(--surface);color:var(--ink);min-width:0;width:220px;max-width:100%}
+/* tables */
+.tbl{overflow-x:auto;background:var(--surface);border:1px solid var(--rule);border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font:600 11.5px var(--body);letter-spacing:.6px;text-transform:uppercase;color:var(--muted);background:var(--sunken);white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td.n,th.n{text-align:right;white-space:nowrap}
+td.why{min-width:240px;color:var(--ink2)}
+td.nw{white-space:nowrap}
+.scroll{max-height:560px;overflow:auto}
+.alp{font-size:13px;font-weight:600;color:inherit;text-decoration:underline;text-underline-offset:2px;white-space:nowrap;align-self:center}
+/* chart */
+.chart{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:12px 12px 8px;position:relative}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:var(--ink2);margin:0 4px 6px}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:14px;height:3px;border-radius:2px;display:inline-block}
+.legend i.dash{background:repeating-linear-gradient(90deg,var(--spy) 0 4px,transparent 4px 7px)!important}
+svg text{fill:var(--muted);font:11px var(--mono)}
+.tip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:8px 10px;font-size:12.5px;box-shadow:0 4px 14px rgba(0,0,0,.12);min-width:170px}
+.tip .d{font:500 12px var(--mono);color:var(--muted);margin-bottom:4px}
+.tip .r{display:flex;justify-content:space-between;gap:12px}
+.tip .r b{font:500 12.5px var(--mono)}
+/* factor bars */
+.fac{display:grid;gap:14px}
+.fgroup{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:12px 14px}
+.fgroup h3{font-size:15px;font-weight:600;margin-bottom:6px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.verdict{font:600 11px var(--body);letter-spacing:.6px;text-transform:uppercase;padding:2px 8px;border-radius:999px}
+.verdict.yes{background:var(--good-soft);color:var(--good)} .verdict.no{background:var(--sunken);color:var(--muted)} .verdict.rev{background:var(--bad-soft);color:var(--bad)}
+.frow{display:grid;grid-template-columns:64px 1fr 150px;gap:10px;align-items:center;font-size:13px;padding-block:3px}
+.frow .g{color:var(--ink2)}
+.frow .bar{position:relative;height:14px;background:linear-gradient(var(--rule),var(--rule)) center/1px 100% no-repeat}
+.frow .bar i{position:absolute;top:2px;height:10px;border-radius:2px}
+.frow .val{font:500 12.5px var(--mono);text-align:right;white-space:nowrap}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px}
+.empty{padding:28px 16px;text-align:center;color:var(--muted);background:var(--surface);border:1px dashed var(--rule);border-radius:8px}
+.foot{font-size:12.5px;color:var(--muted)}
+
+/* ticker popup */
+.tkl{font:inherit;font-weight:600;color:inherit;background:none;border:0;padding:0;margin:0;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px;cursor:pointer;letter-spacing:inherit}
+.tkl:hover{text-decoration-thickness:2px}
+.mbg{position:fixed;inset:0;z-index:50;background:rgba(10,15,25,.45);display:grid;grid-template-columns:minmax(0,900px);justify-content:center;align-items:start;padding:max(24px,env(safe-area-inset-top,0px)) 12px 24px;overflow:auto}
+.modal{background:var(--surface);color:var(--ink);border:1px solid var(--rule);border-radius:10px;width:100%;min-width:0;padding:14px 16px 16px;box-shadow:0 12px 40px rgba(0,0,0,.25);display:grid;gap:10px}
+.modal>*{min-width:0}
+#tlist,#tdet{min-width:0;overflow:hidden}
+.mh{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.mh .t{font:600 22px var(--mono);letter-spacing:.3px}
+.mh .co{font-size:13.5px;color:var(--ink2)}
+.mh .px{font:500 15px var(--mono);text-align:right}
+.mx{background:none;border:0;font-size:22px;line-height:1;color:var(--muted);cursor:pointer;padding:2px 6px;border-radius:6px}
+.mx:hover{color:var(--ink);background:var(--sunken)}
+.spans{display:flex;gap:2px;align-items:center;flex-wrap:wrap}
+.spans button{font:500 12px var(--mono);padding:2px 7px;border:0;border-radius:4px;background:none;color:var(--ink2);cursor:pointer}
+.spans button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent)}
+.spans .lg{margin-left:auto;display:flex;gap:12px;font-size:12px;color:var(--muted)}
+.spans .lg i{display:inline-block;width:10px;height:10px;border-radius:50%;border:2px solid;vertical-align:-1px;margin-right:4px}
+.tc{position:relative;user-select:none;-webkit-user-select:none}
+.tc svg{display:block;overflow:visible}
+.mk{position:absolute;transform:translate(-50%,-50%);border-radius:50%;border:2px solid;background:var(--sunken);padding:0;cursor:pointer;display:grid;place-items:center;font:600 9px var(--body);color:var(--ink2);overflow:hidden;z-index:2}
+.mk img{width:100%;height:100%;object-fit:cover;object-position:50% 20%;display:block}
+.mk.on{z-index:4;box-shadow:0 0 0 3px var(--surface),0 0 0 5px var(--accent)}
+.mk.dot{width:10px;height:10px;border-width:0}
+.dz{position:absolute;transform:translateX(-50%);font:600 9.5px var(--mono);letter-spacing:.2px;padding:0 2px;background:var(--surface);cursor:pointer;z-index:2;white-space:nowrap}
+.dz.on{z-index:4;outline:1.5px solid var(--accent);border-radius:3px}
+.tcip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:5px 8px;font:500 12px var(--mono);box-shadow:0 4px 14px rgba(0,0,0,.12);white-space:nowrap;z-index:5}
+.tdet{background:var(--sunken);border-radius:8px;padding:10px 12px;font-size:13.5px;display:flex;gap:10px;align-items:flex-start}
+.tdet .av{width:40px;height:40px}
+.tlist{max-height:240px}
+.tlist td{padding:6px 8px;font-size:13px}
+.tlist tr{cursor:pointer}
+.tlist tr.on td{background:var(--accent-soft)}
+.bs{font:600 11px var(--body);letter-spacing:.5px;text-transform:uppercase}
+.bs.buy{color:var(--good)} .bs.sell{color:var(--bad)}
+@media (max-width:620px){
+  .pick{grid-template-columns:1fr;}
+  .pick .tk{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px}
+  .pick .side{text-align:left;justify-items:start;grid-auto-flow:column;align-items:center;gap:12px}
+  .frow{grid-template-columns:52px 1fr 110px}
+  .cols{grid-template-columns:1fr}
+}
+@media (prefers-reduced-motion:no-preference){ .pick,.tile{transition:border-color .15s} .pick:hover{border-color:var(--accent)} }
+
+.login{position:fixed;inset:0;z-index:100;background:var(--ground);display:grid;place-items:center;padding:24px 16px}
+.login form{width:100%;max-width:340px;display:grid;gap:14px;text-align:center}
+.login img{width:84px;height:84px;border-radius:20px;justify-self:center;box-shadow:0 6px 20px rgba(0,0,0,.15)}
+.login h1{font:600 26px var(--head)}
+.login p{margin:0;color:var(--ink2);font-size:14px}
+.login input{font:500 18px var(--mono);padding:12px 14px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);color:var(--ink);text-align:center;width:100%}
+.login button{font:600 16px var(--body);padding:12px;border-radius:10px;border:0;background:var(--accent);color:#fff;cursor:pointer}
+:root[data-theme="dark"] .login button{color:#0E131A}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .login button{color:#0E131A}}
+.login button:disabled{opacity:.6}
+.login .msg{min-height:20px;font-size:13.5px;color:var(--bad)}
+@media (display-mode: standalone){ header.top{padding-top:max(16px,env(safe-area-inset-top,0px))} }
+</style>
+
+<div class="login" id="login" hidden><form id="loginForm" autocomplete="on">
+  <img src="/icon-180.png" alt="">
+  <h1>Capitol Capital</h1>
+  <p>Enter your passcode. This phone stays logged in for 6 months.</p>
+  <input type="text" name="username" value="Capitol Capital" autocomplete="username" hidden>
+  <input type="password" id="pc" name="password" autocomplete="current-password" placeholder="Passcode" required aria-label="Passcode">
+  <button type="submit" id="pcGo">Log in</button>
+  <div class="msg" id="pcMsg" role="alert"></div>
+</form></div>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <div>
+        <div class="seal">The Purpose of a System is What It Does · STOCK Act</div>
+        <h1>Capitol Capital</h1>
+      </div>
+      <div class="status" id="status"><span class="dot" id="dot"></span><span id="statusText">Loading…</span><button class="link" id="refresh" type="button" hidden>Refresh</button></div>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button role="tab" id="tab-today" aria-selected="true" data-tab="today" type="button">Today</button>
+      <button role="tab" id="tab-record" aria-selected="false" data-tab="record" type="button">Track record</button>
+      <button role="tab" id="tab-defense" aria-selected="false" data-tab="defense" type="button">Defense</button>
+      <button role="tab" id="tab-small" aria-selected="false" data-tab="small" type="button">Small caps</button>
+      <button role="tab" id="tab-works" aria-selected="false" data-tab="works" type="button">What works</button>
+      <button role="tab" id="tab-real" aria-selected="false" data-tab="real" type="button">Reality check</button>
+      <button role="tab" id="tab-port" aria-selected="false" data-tab="port" type="button">My portfolio</button>
+    </nav>
+  </header>
+  <main id="main"><div class="empty">Loading your latest results…</div></main>
+</div>
+
+<script>
+(() => {
+"use strict";
+const SERVER = "Google Drive";
+const FILE_TITLE = "dashboard_data.json";
+const state = { data: null, tab: "today", fileId: null, modified: null, error: null, tradeSide: "longs", tradeFilter: "all", q: "",
+  folderId: null, requests: [], confirm: null, amounts: {}, tapMsg: {}, sending: false };
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const pct = (v, d = 1, signed = true) => v == null || isNaN(v) ? "–" : (signed && v > 0 ? "+" : "") + (v * 100).toFixed(d) + "%";
+const pnum = (v, d = 1) => v == null || isNaN(v) ? "–" : (v > 0 ? "+" : "") + Number(v).toFixed(d) + "%";
+const cls = v => v == null || isNaN(v) ? "" : v > 0 ? "pos" : v < 0 ? "neg" : "";
+const fmtDate = s => { if (!s) return "–"; const d = new Date(s + (s.length === 10 ? "T12:00:00" : "")); return isNaN(d) ? s : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }); };
+const ET = "America/New_York";
+function toDate(iso) { if (!iso) return null; const s = String(iso); const d = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(s) || s.length <= 10 ? s : s + "Z"); return isNaN(d) ? null : d; }
+function fmtET(iso) {
+  const d = toDate(iso); if (!d) return "–";
+  return d.toLocaleString("en-US", { timeZone: ET, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) + " ET";
+}
+function dateET(iso) {
+  const d = toDate(iso); if (!d) return "–";
+  return d.toLocaleDateString("en-US", { timeZone: ET, month: "short", day: "numeric", year: "numeric" });
+}
+function ago(iso) {
+  const t = Date.parse(iso); if (isNaN(t)) return "";
+  const m = Math.round((Date.now() - t) / 60000);
+  if (m < 2) return "just now"; if (m < 60) return m + " min ago";
+  const h = Math.round(m / 60); if (h < 36) return h + " hr ago";
+  return Math.round(h / 24) + " days ago";
+}
+try { const t = localStorage.getItem("ctd-tab"); if (t) state.tab = t; } catch (e) {}
+if (/^#(today|record|defense|small|works|real|port)$/.test(location.hash)) state.tab = location.hash.slice(1);
+
+// ---------- status ----------
+function setStatus(kind, text, showRefresh) {
+  $("#dot").className = "dot " + (kind || "");
+  $("#statusText").textContent = text;
+  $("#refresh").hidden = !showRefresh;
+}
+
+// ---------- tabs ----------
+document.querySelectorAll("nav.tabs button").forEach(b => b.addEventListener("click", () => {
+  state.tab = b.dataset.tab;
+  try { localStorage.setItem("ctd-tab", state.tab); } catch (e) {}
+  render();
+}));
+
+// ---------- rendering ----------
+function render() {
+  document.querySelectorAll("nav.tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === state.tab)));
+  const main = $("#main");
+  const d = state.data;
+  if (!d) {
+    main.innerHTML = state.error ? `<div class="note err">${state.error}</div>` : `<div class="empty">Loading your latest results…</div>`;
+    return;
+  }
+  let html = "";
+  if (d.version === 1) html += `<div class="note warn"><b>Showing results from the first version (5 signals).</b> Run the new notebook (Run all) and this page switches to the full version with buy, short and avoid picks.</div>`;
+  if (state.tab === "today") html += renderToday(d);
+  if (state.tab === "record") html += renderRecord(d);
+  if (state.tab === "defense") html += renderDefense(d);
+  if (state.tab === "small") html += renderSmall(d);
+  if (state.tab === "works") html += renderWorks(d);
+  if (state.tab === "real") html += renderReal(d);
+  if (state.tab === "port") html += renderPortfolio(d);
+  main.innerHTML = html;
+  bind();
+  try { document.querySelector('nav.tabs button[aria-selected="true"]')?.scrollIntoView({ inline: "nearest", block: "nearest" }); } catch (e) {}
+}
+
+function peopleOf(r) {
+  if (Array.isArray(r.ppl) && r.ppl.length) return r.ppl;
+  return String(r.m || "").split(/,\s*(?![^()]*\))/).filter(Boolean).map(x => {
+    const m = x.match(/^(.*?)\s*\(([^)]+)\)\s*$/); return m ? { n: m[1], r: m[2] } : { n: x.trim() };
+  });
+}
+function tagOf(p) {
+  const T = state.data?.member_tags || {};
+  return (p.b && T.bio?.[p.b]) || T.names?.[p.n] || "";
+}
+function tagHtml(p) { const t = tagOf(p); return t ? `<span class="ptag ${esc(t[0])}">${esc(t)}</span>` : ""; }
+function membersText(m) {
+  return String(m || "").split(/,\s*(?![^()]*\))/).filter(Boolean).map(x => {
+    const mm = x.match(/^(.*?)\s*\(([^)]+)\)\s*$/); const n = (mm ? mm[1] : x).trim();
+    return esc(x.trim()) + tagHtml({ n });
+  }).join(", ");
+}
+function avatar(p, small) {
+  const src = p.b && state.data?.photos?.[p.b];
+  const cls = "av" + (small ? " sm" : "");
+  if (src) return `<img class="${cls}" src="${src}" alt="" loading="lazy">`;
+  const parts = String(p.n || "?").replace(/\b(Mr|Mrs|Ms|Dr|Hon|Jr|Sr|II|III)\b\.?/g, "").trim().split(/\s+/);
+  const ini = ((parts[0] || "?")[0] + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
+  return `<span class="${cls}" aria-hidden="true">${esc(ini)}</span>`;
+}
+function peopleRow(r, side) {
+  const ps = peopleOf(r);
+  return `<div class="ppl"><span class="lbl">${side === "sell" ? "Sold by" : "Bought by"}</span>${ps.map(p => `<span class="person">${avatar(p)}<span><span class="pn">${esc(p.n)}${tagHtml(p)}</span>${p.r ? `<span class="pr">${esc(p.r)}</span>` : ""}</span></span>`).join("")}</div>`;
+}
+function peopleCell(r) {
+  return `<div class="who-cell">${peopleOf(r).map(p => `<span class="nm">${avatar(p, true)}${esc(p.n)}${tagHtml(p)}</span>`).join("")}</div>`;
+}
+
+const OPEN = ["new", "accepted", "pending_new", "partially_filled", "accepted_for_bidding", "held", "calculated"];
+const tickerOf = name => (name.match(/^order_(?:request|done|failed)_([A-Z][A-Z0-9-]{0,6})_/) || [])[1];
+function pendingFor(t) { return (state.taps || []).find(o => o.t === t && OPEN.includes(o.status)); }
+function buyArea(r) {
+  const p = state.data?.portfolio;
+  if (!p || !state.folderId) return "";
+  const held = (p.positions || []).some(x => x.t === r.t);
+  if (pendingFor(r.t)) return `<span class="chip new">Order placed · waiting to fill</span>`;
+  return `<button type="button" class="buybtn" data-buy="${esc(r.t)}"${held ? " title=\"You already hold this\"" : ""}>${held ? "Buy more" : "Buy"}</button>`;
+}
+function suggestion(r) {
+  const L = state.data?.portfolio?.limits || {};
+  const base = L.per_pick || L.dollars;
+  if (!base) return null;
+  const on = (L.sizing || state.data?.adaptive?.policy?.sizing || "equal") !== "equal";
+  const k = on && r.sz != null ? r.sz : 1;
+  const amt = Math.max(10, Math.round(base * k / 10) * 10);
+  return { amt, k, on, sh: r.px ? amt / r.px : null };
+}
+function suggestLine(r) {
+  const g = suggestion(r); if (!g) return "";
+  const sh = g.sh == null ? "" : ` ≈ ${g.sh >= 10 ? Math.round(g.sh).toLocaleString() : g.sh.toFixed(1)} sh`;
+  const why = !g.on ? "standard size" : g.k > 1.02 ? `${g.k.toFixed(2)}× · stronger pick` : g.k < 0.98 ? `${g.k.toFixed(2)}× · near the bar` : "standard size";
+  return `<div class="sc" title="Suggested amount for this pick">Suggested ${money(g.amt)}${sh}<div class="foot" style="text-align:inherit">${why}</div></div>`;
+}
+function confirmBox(r) {
+  if (state.confirm !== r.t) return state.tapMsg[r.t] ? `<div class="tapmsg ${state.tapMsg[r.t].ok ? "pos" : "neg"}">${esc(state.tapMsg[r.t].text)}</div>` : "";
+  const p = state.data.portfolio, real = p.mode === "live";
+  const amt = state.amounts[r.t] ?? (suggestion(r)?.amt || p.limits?.dollars || 5000);
+  return `<div class="confirm"><span>Buy <b>${esc(r.t)}</b> for $</span>
+    <input type="number" inputmode="decimal" min="1" step="100" id="amt-${esc(r.t)}" value="${esc(amt)}" aria-label="Dollar amount">
+    <span class="${real ? "real" : ""}">${real ? "Real money account" : "Paper account (fake money)"}</span>
+    <button type="button" class="buybtn" data-send="${esc(r.t)}"${state.sending ? " disabled" : ""}>${state.sending ? "Sending…" : "Send order"}</button>
+    <button type="button" class="link" data-cancel="1">Cancel</button>
+    <span class="foot">Sent to Alpaca right away; fills now if the market is open, otherwise at the next open.</span>${state.tapMsg[r.t] ? `<div class="tapmsg neg">${esc(state.tapMsg[r.t].text)}</div>` : ""}</div>`;
+}
+
+function tradeLine(r) {
+  const d = r.d ? String(r.d).slice(0, 10) : null, td = r.td ? String(r.td).slice(0, 10) : null;
+  if (!td) return `Disclosed ${esc(fmtDate(d))}`;
+  const lag = r.lag != null ? Math.round(r.lag) : (d ? Math.round((Date.parse(d) - Date.parse(td)) / 864e5) : null);
+  return `${r.action === "SHORT" || r.action === "avoid" ? "Sold" : "Bought"} ${esc(fmtDate(td))} · disclosed ${esc(fmtDate(d))}${lag != null ? ` (${lag} day${lag === 1 ? "" : "s"} later)` : ""}`;
+}
+function pickRow(r, side) {
+  const isNew = (state.data.watchlist?.new || []).some(n => n.t === r.t && (side === "sell" ? n.action === "SHORT" : n.action === "BUY"));
+  const ctx = [];
+  if (r.an) ctx.push("Analysts: " + esc(r.an.replace(/_/g, " ")));
+  if (r.up != null) ctx.push("Target upside " + pnum(r.up, 0));
+  if (r.earn) ctx.push("Earnings " + esc(fmtDate(String(r.earn).slice(0, 10))));
+  if (r.news != null) ctx.push(esc(r.news) + " news stories this week");
+  if (r.nwm) ctx.push(esc(r.nwm) + " stories mention the member and company together");
+  (r.hear || []).forEach(h => ctx.push(`<b>Testifies before Congress ${esc(fmtDate(h.date))}</b>: ${esc(h.title.length > 90 ? h.title.slice(0, 88) + "…" : h.title)}`));
+  const pctTop = r.pct != null ? Math.max(1, Math.round(100 - r.pct)) : null;
+  return `<article class="pick">
+    <div class="tk"><b>${tkBtn(r.t)}</b><span class="chip ${esc(r.action)}">${esc(r.action)}</span>${isNew ? `<span class="chip new">New</span>` : ""}${r.def ? `<span class="chip watch">Defense</span>` : ""}${r.ags ? `<span class="chip avoid" title="The member bought while most analysts rated it hold or worse">Against Wall Street</span>` : ""}</div>
+    <div>
+      <div class="co">${esc(r.co || r.t)}${r.sec ? ` <span class="who">· ${esc(r.sec)}</span>` : ""}</div>
+      <div class="who">${tradeLine(r)}</div>
+      ${peopleRow(r, side)}
+      <div class="why">${esc(r.why)}</div>
+      ${ctx.length ? `<div class="ctx">${ctx.map(c => `<span>${c}</span>`).join("")}</div>` : ""}
+    </div>
+    <div class="side">
+      <div class="meter" title="Score ${r.s}"><i style="width:${Math.max(3, Math.min(100, r.s || 0))}%"></i></div>
+      <div class="sc">Score ${r.s != null ? Number(r.s).toFixed(0) : "–"}${pctTop != null ? ` · top ${pctTop}%` : ""}</div>
+      ${r.mt != null ? `<div class="mv ${cls(r.mt)}">${pct(r.mt)} since purchase</div>` : ""}<div class="mv ${cls(r.move)}">${pct(r.move)} since disclosure</div>
+      ${side === "buy" && r.action === "BUY" ? suggestLine(r) : ""}
+      ${side === "buy" ? buyArea(r) : ""}
+    </div>
+    ${side === "buy" ? confirmBox(r) : ""}
+  </article>`;
+}
+
+function renderToday(d) {
+  const w = d.watchlist;
+  if (!w) return `<div class="empty">No watchlist yet. Run the new notebook through <b>Step 3</b> and today's picks show up here.</div>`;
+  const buys = w.buys || [], sells = w.sells || [];
+  const nb = buys.filter(r => r.action === "BUY").length, ns = sells.filter(r => r.action === "SHORT").length, na = sells.filter(r => r.action === "avoid").length;
+  const topBuys = buys.filter(r => r.action === "BUY"), watch = buys.filter(r => r.action !== "BUY");
+  return `
+  <div class="tiles">
+    <div class="tile"><span class="v">${nb}</span><span class="l">Buy candidates</span></div>
+    ${ns ? `<div class="tile"><span class="v">${ns}</span><span class="l">Short candidates</span></div>` : ""}
+    <div class="tile"><span class="v">${na}</span><span class="l">Stocks to avoid</span></div>
+    <div class="tile"><span class="v">${(w.new || []).length}</span><span class="l">New since the last run</span></div>
+  </div>
+  <section class="panel">
+    <div class="ph"><h2>Buy candidates</h2><span class="sub">Purchases disclosed in the last ${w.lookback} days that score in the top of all past buy signals</span></div>
+    ${topBuys.length ? `<div class="picks">${topBuys.map(r => pickRow(r, "buy")).join("")}</div>` : `<div class="empty">No purchase cleared the bar right now.</div>`}
+  </section>
+  ${worthSection(d)}
+  <section class="panel">
+    <div class="ph"><h2>${sells.some(r => r.action === "SHORT") ? "Short and avoid" : "Stocks to avoid"}</h2><span class="sub">Sales that look like the ones that were followed by drops</span></div>
+    ${sells.length ? `<div class="picks">${sells.map(r => pickRow(r, "sell")).join("")}</div>` : `<div class="empty">No strong sell signals right now.</div>`}
+  </section>
+  ${unusualSection(d)}
+  ${watch.length ? `<section class="panel"><div class="ph"><h2>Also bought recently</h2><span class="sub">Below the bar; for reference</span></div>
+    <div class="tbl scroll"><table><thead><tr><th>Ticker</th><th>Company</th><th class="n">Score</th><th>Bought by</th><th>Disclosed</th><th class="n">Since</th></tr></thead><tbody>
+    ${watch.map(r => `<tr><td class="mono">${tkBtn(r.t)}</td><td>${esc(r.co || "")}</td><td class="n">${r.s != null ? Number(r.s).toFixed(0) : "–"}</td><td>${peopleCell(r)}</td><td class="nw">${esc(fmtDate(r.d))}</td><td class="n ${cls(r.move)}">${pct(r.move)}</td></tr>`).join("")}
+    </tbody></table></div></section>` : ""}
+  <p class="foot">Analyst, earnings and news details are context only; they aren't part of the score. Watchlist built ${esc(ago(w.updated))} (${esc(fmtET(w.updated))}).</p>`;
+}
+
+function worthSection(d) {
+  const u = d.worth || [];
+  if (!u.length) return "";
+  const picks = new Set([...(d.watchlist?.buys || []).filter(r => r.action === "BUY"), ...(d.watchlist?.sells || []).filter(r => r.action !== "watch")].map(r => r.t));
+  const buyList = new Set((d.watchlist?.buys || []).filter(r => r.action === "BUY").map(r => r.t));
+  // Buy button here too; a stock already on the buy list keeps its button up there (one order form per stock)
+  const side = r => buyList.has(r.t) ? `<span class="foot">Buy it from Buy candidates above</span>` : buyArea({ t: r.t });
+  return `<section class="panel"><div class="ph"><h2>Worth a look</h2><span class="sub">Recent disclosures with a rare red flag, whatever their score</span></div>
+    <div class="picks">${u.map(r => `<article class="pick">
+      <div class="tk"><b>${tkBtn(r.t)}</b>${picks.has(r.t) ? `<span class="chip new">On the list</span>` : ""}</div>
+      <div><div class="co">${esc(r.co || infoFor(r.t).co || r.t)}</div>
+        <div class="ppl">${(r.who || []).map(w => `<span class="person">${avatar({ n: w.n, b: w.b })}<span><span class="pn">${esc(w.n)}${tagHtml({ n: w.n, b: w.b })}</span><span class="pr"><span class="bs ${w.ty}">${w.ty === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(w.td))} · disclosed ${esc(fmtDate(w.d))}</span></span></span>`).join("")}</div>
+        <div class="why">${(r.why || []).map(esc).join("; ")}</div></div>
+      <div class="side">${side(r)}</div>
+      ${buyList.has(r.t) ? "" : confirmBox({ t: r.t })}</article>`).join("")}</div>
+    <p class="foot">These aren't buy or sell signals on their own: the backtest hasn't shown these flags help yet. They're here so nothing unusual slips by. New ones are also emailed to you.</p></section>`;
+}
+function unusualSection(d) {
+  const u = d.unusual || [];
+  if (!u.length) return "";
+  const xf = v => v == null ? "–" : v.toFixed(1) + "×";
+  return `<section class="panel"><div class="ph"><h2>Unusual activity</h2><span class="sub">Stocks members traded in the last 90 days with unusually heavy trading this past week</span></div>
+    <div class="tbl scroll"><table><thead><tr><th>Ticker</th><th>Company</th><th class="n">Volume, last week</th><th class="n">Busiest day</th><th class="n">Price, 5 days</th><th>Members who traded</th></tr></thead><tbody>
+    ${u.map(r => `<tr><td class="mono">${tkBtn(r.t)}</td><td>${esc(r.co || infoFor(r.t).co || "")}</td><td class="n">${xf(r.ratio)} normal</td><td class="n">${xf(r.peak)}</td><td class="n ${cls(r.move5)}">${pct(r.move5)}</td>
+      <td><div class="who-cell">${(r.who || []).map(w => `<span class="nm">${avatar({ n: w.n, b: w.b }, true)}${esc(w.n)}${tagHtml({ n: w.n, b: w.b })} <span class="bs ${w.ty}">${w.ty === "buy" ? "bought" : "sold"}</span> <span class="foot">${esc(fmtDate(w.td))}</span></span>`).join("")}</div></td></tr>`).join("")}
+    </tbody></table></div>
+    <p class="foot">Heavy trading can mean others are acting on news before it's public, but it also follows earnings, index changes and ordinary headlines. Treat it as a reason to look closer, not a signal on its own. Volume as of ${esc(fmtDate(u[0].asof))}.</p></section>`;
+}
+function statRow(ts, name) { return (ts || []).find(x => x.name === name) || {}; }
+
+function renderRecord(d) {
+  const b = d.backtest;
+  if (!b) return `<div class="empty">No backtest yet. Run the new notebook through <b>Step 2</b>.</div>`;
+  const perf = Object.fromEntries((b.perf || []).map(p => [p.name, p]));
+  const L = perf["Long picks"] || {}, S = perf["S&P 500 (SPY)"] || {};
+  const st = statRow(b.trade_stats, "Long picks");
+  const beat = (L["Annual return (CAGR)"] ?? -1) > (S["Annual return (CAGR)"] ?? 0);
+  const shortSt = statRow(b.trade_stats, "Short picks");
+  const tiles = `
+  <div class="tiles">
+    <div class="tile"><span class="v ${beat ? "pos" : "neg"}">${pct(L["Annual return (CAGR)"])}</span><span class="l">Long picks, per year</span><span class="c">S&amp;P 500: ${pct(S["Annual return (CAGR)"])}</span></div>
+    <div class="tile"><span class="v">${st["Beat SPY (%)"] != null ? Math.round(st["Beat SPY (%)"]) + "%" : "–"}</span><span class="l">Picks that beat the S&amp;P 500</span><span class="c">${st["Closed trades"] ?? "–"} finished picks</span></div>
+    <div class="tile"><span class="v ${cls(st["Avg vs SPY per trade (%)"])}">${pnum(st["Avg vs SPY per trade (%)"])}</span><span class="l">Average pick vs S&amp;P 500</span><span class="c">Typical pick: ${pnum(st["Median vs SPY (%)"])}</span></div>
+    ${shortSt["Closed trades"] ? `<div class="tile"><span class="v">${Math.round(shortSt["Beat SPY (%)"])}%</span><span class="l">Short picks that worked</span><span class="c">${shortSt["Closed trades"]} finished shorts</span></div>` : ""}
+    <div class="tile"><span class="v neg">${pct(L["Worst drawdown"])}</span><span class="l">Worst drop, long picks</span><span class="c">S&amp;P 500: ${pct(S["Worst drawdown"])}</span></div>
+  </div>`;
+  const sizing = b.slots ? `Each pick gets 1/${b.slots} of the money; the rest sits in the S&amp;P 500.` : `Money not in a pick sat in cash.`;
+  const perfRows = perfTable(b.perf);
+  const side = state.tradeSide;
+  const list = (b[side] || []).filter(t => {
+    if (state.tradeFilter === "won" && !(t.ex != null && (side === "shorts" ? t.ex < 0 : t.ex > 0) && t.res !== "open")) return false;
+    if (state.tradeFilter === "lost" && !(t.ex != null && (side === "shorts" ? t.ex >= 0 : t.ex <= 0) && t.res !== "open")) return false;
+    if (state.tradeFilter === "open" && t.res !== "open") return false;
+    if (state.q) { const q = state.q.toLowerCase(); return [t.t, t.co, t.m, t.sec].some(x => String(x || "").toLowerCase().includes(q)); }
+    return true;
+  });
+  const total = side === "longs" ? b.n_longs : b.n_shorts;
+  return `${tiles}
+  <section class="panel">
+    <div class="ph"><h2>Growth of $1 vs the S&amp;P 500</h2><span class="sub">${esc(fmtDate(b.span?.[0]))} to ${esc(fmtDate(b.span?.[1]))} · hold ${b.settings?.HOLD_DAYS ?? 60} trading days · ${sizing}</span></div>
+    <div class="chart" id="chart"></div>
+  </section>
+  <section class="panel">
+    <div class="ph"><h2>Portfolio results</h2></div>
+    ${perfRows}
+  </section>
+  <section class="panel">
+    <div class="ph"><h2>Every pick the strategy would have made</h2><span class="sub">Bought the trading day after each trade was disclosed${total > (b[side] || []).length ? ` · latest ${(b[side] || []).length} of ${total} shown; the full list is in your Drive reports folder` : ""}</span></div>
+    <div class="filters">
+      ${b.shorts && b.shorts.length ? `<div class="seg" role="group" aria-label="Side"><button type="button" data-side="longs" aria-pressed="${side === "longs"}">Buys</button><button type="button" data-side="shorts" aria-pressed="${side === "shorts"}">Shorts</button></div>` : ""}
+      <div class="seg" role="group" aria-label="Result"><button type="button" data-f="all" aria-pressed="${state.tradeFilter === "all"}">All</button><button type="button" data-f="won" aria-pressed="${state.tradeFilter === "won"}">Beat S&amp;P</button><button type="button" data-f="lost" aria-pressed="${state.tradeFilter === "lost"}">Lagged</button><button type="button" data-f="open" aria-pressed="${state.tradeFilter === "open"}">Still open</button></div>
+      <input type="search" id="q" placeholder="Search ticker, member, sector" value="${esc(state.q)}" aria-label="Search picks">
+      <span class="sub foot">${list.length} shown</span>
+    </div>
+    <div class="tbl scroll"><table><thead><tr><th>Disclosed</th><th>Ticker</th><th>Members</th><th class="n">Score</th><th>Why</th><th class="n">Stock</th><th class="n">S&amp;P 500</th><th class="n">Difference</th><th>Result</th></tr></thead><tbody>
+    ${list.map(t => `<tr><td class="nw">${esc(fmtDate(t.d))}</td><td class="mono">${esc(t.t)}</td><td>${membersText(t.m)}</td><td class="n">${t.s != null ? Number(t.s).toFixed(0) : "–"}</td><td class="why">${esc(t.why)}</td><td class="n ${cls(t.r)}">${pct(t.r)}</td><td class="n">${pct(t.spy)}</td><td class="n ${cls(side === "shorts" ? -t.ex : t.ex)}">${pct(t.ex)}</td><td class="nw">${esc(t.res)}</td></tr>`).join("") || `<tr><td colspan="9" class="foot">No picks match.</td></tr>`}
+    </tbody></table></div>
+  </section>`;
+}
+
+function perfTable(perf) {
+  const rows = (perf || []).map(p => `<tr><td>${esc(p.name)}</td><td class="n ${cls(p["Total return"])}">${pct(p["Total return"], 0)}</td><td class="n ${cls(p["Annual return (CAGR)"])}">${pct(p["Annual return (CAGR)"])}</td><td class="n ${cls(p["Per year vs S&P 500"])}">${p["Per year vs S&P 500"] != null ? pct(p["Per year vs S&P 500"]) : "–"}</td><td class="n foot">${p["Likely range low"] != null ? pct(p["Likely range low"], 0) + " to " + pct(p["Likely range high"], 0) : ""}</td><td class="n">${pct(p["Volatility"], 1, false)}</td><td class="n neg">${pct(p["Worst drawdown"])}</td></tr>`).join("");
+  return `<div class="tbl"><table><thead><tr><th>Portfolio</th><th class="n">Total</th><th class="n">Per year</th><th class="n">vs S&amp;P per year</th><th class="n">Likely range</th><th class="n">Volatility</th><th class="n">Worst drop</th></tr></thead><tbody>${rows}</tbody></table></div>
+  <p class="foot">The likely range is where the true yearly difference probably sits (95% confidence). If it includes 0%, the result could be luck. Results include a 0.1% trading cost on every buy and sell.</p>`;
+}
+
+function simpleTable(rows, cols) {
+  if (!rows || !rows.length) return `<div class="empty">Not enough data yet.</div>`;
+  return `<div class="tbl"><table><thead><tr>${cols.map(c => `<th class="${c.n ? "n" : ""}">${esc(c.h)}</th>`).join("")}</tr></thead><tbody>${rows.map(r => `<tr>${cols.map(c => {
+    const v = r[c.k];
+    if (c.p) return `<td class="n ${cls(v)}">${v == null ? "–" : pct(v)}</td>`;
+    if (c.pp) return `<td class="n">${v == null ? "–" : Math.round(v) + "%"}</td>`;
+    if (c.f) return `<td class="n">${v == null ? "–" : Number(v).toFixed(2)}</td>`;
+    if (c.n) return `<td class="n">${v == null ? "–" : Number(v).toLocaleString()}</td>`;
+    return `<td>${esc(v)}</td>`; }).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+
+function renderSmall(d) {
+  const x = d.small, w = d.watchlist;
+  let h = `<p class="note">Companies worth under $2 billion when the member bought. The idea: members may know more about smaller companies, and their prices have further to move. This portfolio buys every purchase of one that was disclosed on time, once per stock, and holds it ${x?.hold ?? 250} trading days (about ${Math.round((x?.hold ?? 250) / 21)} months). ${d.adaptive?.policy?.sleeve_coverage ? "It skips companies no Wall Street analyst covered at the time, because those did worse. " : ""}The weekly check can change the holding period${d.adaptive?.policy?.sleeve_coverage ? " and that rule" : " and whether to skip companies no analyst covers"}. Delisted small companies are the most likely to be missing prices, which can make results look better than they were.</p>`;
+  const cov = !!d.adaptive?.policy?.sleeve_coverage;
+  const cands = (w?.buys || []).filter(r => (r.sm ?? 0) >= 1 && (r.lag ?? 999) <= 45 && !(cov && r.nc));
+  h += `<section class="panel"><div class="ph"><h2>Small-company candidates</h2><span class="sub">Disclosed in the last ${w?.lookback ?? 30} days</span></div>
+    ${cands.length ? `<div class="picks">${cands.map(r => pickRow(r, "buy")).join("")}</div>` : `<div class="empty">No small-company purchases disclosed recently.</div>`}</section>`;
+  if (!x) return h + `<div class="empty">The small-company backtest appears after the next update.</div>`;
+  const perf = Object.fromEntries((x.perf || []).map(p => [p.name, p]));
+  const L = perf["Small-company picks"] || {}, S = perf["S&P 500 (SPY)"] || {}, I = perf["Small-company index (IWM)"] || {};
+  const st = x.trade_stats || {};
+  h += `<div class="tiles">
+    <div class="tile"><span class="v ${cls((L["Annual return (CAGR)"] ?? 0) - (S["Annual return (CAGR)"] ?? 0))}">${pct(L["Annual return (CAGR)"])}</span><span class="l">Small-company picks, per year</span><span class="c">S&amp;P 500: ${pct(S["Annual return (CAGR)"])} · Russell 2000: ${pct(I["Annual return (CAGR)"])}</span></div>
+    <div class="tile"><span class="v ${cls(st["Avg vs SPY per trade (%)"])}">${pnum(st["Avg vs SPY per trade (%)"])}</span><span class="l">Average pick vs S&amp;P over its hold</span><span class="c">Likely ${pnum(st["Range low (%)"], 0)} to ${pnum(st["Range high (%)"], 0)}</span></div>
+    <div class="tile"><span class="v">${st["Beat SPY (%)"] != null ? Math.round(st["Beat SPY (%)"]) + "%" : "–"}</span><span class="l">Picks that beat the S&amp;P 500</span><span class="c">${Number(x.n_picks).toLocaleString()} picks · about ${Math.round(x.per_year)} a year</span></div>
+  </div>
+  <section class="panel"><div class="ph"><h2>Growth of $1</h2><span class="sub">About ${x.slots} positions open at once; money not in a pick sits in the S&amp;P 500</span></div><div class="chart" id="schart"></div></section>
+  <section class="panel"><div class="ph"><h2>Results</h2></div>${perfTable(x.perf)}</section>`;
+  if ((x.years || []).length) h += `<section class="panel"><div class="ph"><h2>Year by year</h2><span class="sub">Does it hold up, or is it one lucky year?</span></div>
+    <div class="tbl"><table><thead><tr><th>Year</th><th class="n">Small-company picks</th><th class="n">S&amp;P 500</th><th class="n">Russell 2000</th><th class="n">Picks vs S&amp;P</th></tr></thead><tbody>
+    ${x.years.map(y => { const a = y["Small-company picks"], b = y["S&P 500 (SPY)"], c = y["Small-company index (IWM)"]; return `<tr><td>${y.year}</td><td class="n ${cls(a)}">${pct(a)}</td><td class="n ${cls(b)}">${pct(b)}</td><td class="n ${cls(c)}">${pct(c)}</td><td class="n ${cls(a - b)}">${a != null && b != null ? pct(a - b) : "–"}</td></tr>`; }).join("")}
+    </tbody></table></div></section>`;
+  h += `<section class="panel"><div class="ph"><h2>Recent small-company picks</h2><span class="sub">${Number(x.n_picks).toLocaleString()} in total</span></div>
+    <div class="tbl scroll"><table><thead><tr><th>Disclosed</th><th>Ticker</th><th>Members</th><th>Why</th><th class="n">Stock</th><th class="n">S&amp;P 500</th><th class="n">Difference</th><th>Result</th></tr></thead><tbody>
+    ${(x.picks || []).map(t => `<tr><td class="nw">${esc(fmtDate(t.d))}</td><td class="mono">${esc(t.t)}</td><td>${membersText(t.m)}</td><td class="why">${esc(t.why)}</td><td class="n ${cls(t.r)}">${pct(t.r)}</td><td class="n">${pct(t.spy)}</td><td class="n ${cls(t.ex)}">${pct(t.ex)}</td><td class="nw">${esc(t.res)}</td></tr>`).join("")}
+    </tbody></table></div></section>`;
+  return h;
+}
+
+function renderDefense(d) {
+  const x = d.defense, w = d.watchlist;
+  let h = `<p class="note">Defense companies: aerospace and defense makers, known defense contractors, and industrial companies that get most of their federal contract money from the Defense Department. The Defense Department announces every award of $7.5 million or more on the day it is made.</p>`;
+  const db = (w?.buys || []).filter(r => r.def), ds = (w?.sells || []).filter(r => r.def);
+  h += `<section class="panel"><div class="ph"><h2>Defense buy candidates</h2><span class="sub">Disclosed in the last ${w?.lookback ?? 30} days</span></div>
+    ${db.length ? `<div class="picks">${db.map(r => pickRow(r, "buy")).join("")}</div>` : `<div class="empty">No defense purchases disclosed recently.</div>`}</section>`;
+  if (ds.length) h += `<section class="panel"><div class="ph"><h2>Defense stocks to avoid</h2></div><div class="picks">${ds.map(r => pickRow(r, "sell")).join("")}</div></section>`;
+  if (!x) return h + `<div class="empty">The defense backtest appears after the next daily run.</div>`;
+  const perf = Object.fromEntries((x.perf || []).map(p => [p.name, p]));
+  const L = perf["Long picks"] || {}, S = perf["S&P 500 (SPY)"] || {}, I = perf["Defense fund (ITA)"] || {};
+  const st = statRow(x.trade_stats, "Long picks");
+  h += `<div class="tiles">
+    <div class="tile"><span class="v ${cls((L["Annual return (CAGR)"] ?? 0) - (S["Annual return (CAGR)"] ?? 0))}">${pct(L["Annual return (CAGR)"])}</span><span class="l">Defense picks, per year</span><span class="c">S&amp;P 500: ${pct(S["Annual return (CAGR)"])} · defense fund: ${pct(I["Annual return (CAGR)"])}</span></div>
+    <div class="tile"><span class="v">${st["Beat SPY (%)"] != null ? Math.round(st["Beat SPY (%)"]) + "%" : "–"}</span><span class="l">Picks that beat the S&amp;P 500</span><span class="c">${st["Closed trades"] ?? "–"} finished picks</span></div>
+    <div class="tile"><span class="v ${cls(st["Avg vs its industry (%)"])}">${pnum(st["Avg vs its industry (%)"])}</span><span class="l">Average pick vs the defense fund</span><span class="c">vs S&amp;P 500: ${pnum(st["Avg vs SPY per trade (%)"])}</span></div>
+  </div>
+  <section class="panel"><div class="ph"><h2>Defense picks vs the market</h2></div><div class="chart" id="dchart"></div></section>
+  <section class="panel"><div class="ph"><h2>Defense portfolio results</h2></div>${perfTable(x.perf)}</section>
+  <section class="panel"><div class="ph"><h2>Which signals worked for defense stocks</h2></div>${factorBlock(x.buy_factors)}</section>
+  <section class="panel"><div class="ph"><h2>Recent defense picks</h2><span class="sub">${x.n_longs} picks in total</span></div>
+    <div class="tbl scroll"><table><thead><tr><th>Disclosed</th><th>Ticker</th><th>Members</th><th>Why</th><th class="n">Stock</th><th class="n">S&amp;P 500</th><th class="n">Difference</th><th>Result</th></tr></thead><tbody>
+    ${(x.longs || []).map(t => `<tr><td class="nw">${esc(fmtDate(t.d))}</td><td class="mono">${tkBtn(t.t)}</td><td>${membersText(t.m)}</td><td class="why">${esc(t.why)}</td><td class="n ${cls(t.r)}">${pct(t.r)}</td><td class="n">${pct(t.spy)}</td><td class="n ${cls(t.ex)}">${pct(t.ex)}</td><td class="nw">${esc(t.res)}</td></tr>`).join("")}
+    </tbody></table></div></section>`;
+  return h;
+}
+
+function verdictFor(rows) {
+  const byG = Object.fromEntries(rows.map(r => [r.group, r]));
+  const hi = byG.high || byG.yes, lo = byG.low || byG.no;
+  if (!hi || !lo || hi.avg == null || lo.avg == null) return ["no", "Not enough data"];
+  const diff = hi.avg - lo.avg;
+  if (hi.n < 30) return ["no", "Too few trades"];
+  if (diff > 0.01) return ["yes", "Helps"];
+  if (diff < -0.01) return ["rev", "Works backwards"];
+  return ["no", "No clear effect"];
+}
+
+function factorBlock(rows, title) {
+  if (!rows || !rows.length) return `<div class="empty">No data yet.</div>`;
+  const groups = {};
+  rows.forEach(r => (groups[r.signal] = groups[r.signal] || []).push(r));
+  const max = Math.max(0.02, ...rows.map(r => Math.abs(r.avg || 0)));
+  const order = ["no", "yes", "low", "mid", "high"];
+  return `<div class="fac">${Object.entries(groups).map(([sig, rs]) => {
+    rs.sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group));
+    const [vk, vt] = verdictFor(rs);
+    return `<div class="fgroup"><h3><span>${esc(sig)}</span><span class="verdict ${vk}">${vt}</span></h3>
+      ${rs.map(r => { const w = Math.abs(r.avg || 0) / max * 50; const left = r.avg >= 0 ? 50 : 50 - w;
+        return `<div class="frow"><span class="g">${esc(r.group)}</span><span class="bar"><i style="left:${left}%;width:${w}%;background:${r.avg >= 0 ? "var(--good)" : "var(--bad)"}"></i></span><span class="val ${cls(r.avg)}">${pct(r.avg)} · ${Math.round(r.hit)}% · ${r.n.toLocaleString()}</span></div>`; }).join("")}
+    </div>`;
+  }).join("")}</div>`;
+}
+
+function money(v, d = 0) { return v == null || isNaN(v) ? "–" : (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }); }
+const WHY = { "expired": "request was over 2 days old", "amount-over-limit": "amount is over your per-order limit", "not-enough-cash": "not enough buying power",
+  "not-tradable": "Alpaca can't trade this stock", "not-found": "stock not found on Alpaca", "no-price": "no current price", "amount-too-small": "amount is less than one share",
+  "no-keys": "no Alpaca keys for this account", "bad-request": "request couldn't be read" };
+function reqSection() {
+  const rs = state.taps || [];
+  if (!rs.length) return "";
+  const st = o => o.status === "filled" ? `<span class="pos">Bought ${Number(o.filled_qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} at ${money(o.filled_px, 2)}</span>`
+    : OPEN.includes(o.status) ? "Waiting to fill" + (state.data?.portfolio?.market_open ? "" : " at the market open")
+    : `<span class="neg">${esc(String(o.status).replace(/_/g, " "))}</span>`;
+  return `<section class="panel"><div class="ph"><h2>From the Buy button</h2><span class="sub">Last 7 days · live from Alpaca</span></div>
+  <div class="tbl"><table><thead><tr><th>When</th><th>Ticker</th><th class="n">Amount</th><th>Status</th></tr></thead><tbody>
+  ${rs.map(o => `<tr><td class="nw">${esc(fmtET(o.at))}</td><td class="mono">${esc(o.t)}</td><td class="n">${o.notional ? money(o.notional) : (o.qty ? Number(o.qty).toLocaleString() + " sh" : "–")}</td><td>${st(o)}</td></tr>`).join("")}
+  </tbody></table></div></section>`;
+}
+function addTradingDays(iso, n) {
+  const d = new Date(iso + "T12:00:00");
+  let left = n;
+  while (left > 0) { d.setDate(d.getDate() + 1); const w = d.getDay(); if (w !== 0 && w !== 6) left--; }
+  return d.toISOString().slice(0, 10);
+}
+function suggestedHold(t) {
+  const d = state.data, pol = d.adaptive?.policy || {}, L = d.portfolio?.limits || {};
+  const row = [...(d.watchlist?.buys || []), ...(d.watchlist?.sells || [])].find(r => r.t === t);
+  const small = !!(row && row.cap != null && row.cap < 2e9);
+  return { days: small ? (pol.hold_small ?? L.hold_small ?? L.hold_days ?? 60) : (pol.hold_other ?? L.hold_days ?? 60), small };
+}
+function soldNote(x) {
+  const m = state.data?.member_sold?.[x.t];
+  if (!m || !(m.sales || []).length) return "";
+  const seen = new Set(), list = m.sales.filter(s => !seen.has(s.n) && seen.add(s.n));
+  const auto = state.data?.adaptive?.policy?.exit_on_member_sell && x.bot && x.sleeve !== "small";
+  return `<div><span class="chip avoid" title="A member whose purchase was behind this buy has disclosed a sale">Member sold</span></div>
+    <div class="foot" style="font-family:var(--body);white-space:normal;min-width:160px">${list.map(s => `${esc(s.n)}${tagHtml({ n: s.n, b: s.b })} sold ${esc(fmtDate(s.td))}, disclosed ${esc(fmtDate(s.d))}`).join("<br>")}${auto ? "<br>The tool sells it at the next update." : ""}</div>`;
+}
+function heldCell(x, L) {
+  if (x.sleeve === "park") return `Tool's unused money<div class="foot">Parked in the S&amp;P 500 until picks need it</div>`;
+  if (x.bot) {
+    const h = x.hold ?? L.hold_days ?? 60;
+    return `${x.sleeve === "small" ? "Small-co. portfolio · " : ""}${x.held ?? 0} of ${h} days${x.bought ? `<div class="foot">Tool sells ~${esc(fmtDate(addTradingDays(x.bought, h)))}</div>` : ""}`;
+  }
+  const s = suggestedHold(x.t);
+  if (!x.bought) return `Yours<div class="foot">Suggested hold ${s.days} days${s.small ? " (small company)" : ""}</div>`;
+  const when = addTradingDays(x.bought, s.days), due = (x.held ?? 0) >= s.days;
+  return `Yours · ${x.held ?? 0} of ${s.days} days<div class="foot ${due ? "neg" : ""}">${due ? "Past the suggested hold: consider selling" : "Suggested sell ~" + esc(fmtDate(when))}</div>`;
+}
+function closeSection(d) {
+  const c = d.close_report;
+  if (!c) return `<section class="panel"><div class="ph"><h2>Paper account vs the backtest</h2></div><div class="empty">The first market-close report arrives after today's close (about 4:15 PM ET).</div></section>`;
+  const hist = (d.close_history || []).slice(-10).reverse();
+  const expCell = e => e && e.avg != null ? `${pct(e.avg)}<div class="foot">likely ${pct(e.low)} to ${pct(e.high)}</div>` : "–";
+  return `<section class="panel"><div class="ph"><h2>Paper account vs the backtest</h2><span class="sub">Market close ${esc(fmtDate(c.date))} · since ${esc(fmtDate(c.start))}</span></div>
+  <div class="tiles">
+    <div class="tile"><span class="v ${cls(c.since_start)}">${pnum(c.since_start, 2)}</span><span class="l">Paper account since start</span><span class="c">S&amp;P 500: ${pnum(c.spy_since_start, 2)}</span></div>
+    <div class="tile"><span class="v ${cls((c.since_start ?? 0) - (c.spy_since_start ?? 0))}">${c.spy_since_start == null ? "–" : pnum(c.since_start - c.spy_since_start, 2)}</span><span class="l">Ahead of or behind the S&amp;P</span></div>
+    <div class="tile"><span class="v ${cls(c.day_pl)}">${c.day_pl == null ? "–" : (c.day_pl > 0 ? "+" : "") + money(c.day_pl)}</span><span class="l">Change on ${esc(fmtDate(c.date))}</span></div>
+  </div>
+  <div class="chart" id="pchart"></div>
+  <p class="foot">Shaded: the luck range, where an account with no real edge lands 95% of the time (about ±29% from the S&amp;P after a year, less early on). Inside it, results can't be told apart from luck. Early on, one stock's big day can push the account outside it.</p>
+  ${(c.sleeves || []).length ? `<div class="tbl"><table><thead><tr><th>Strategy</th><th class="n">Positions</th><th class="n">Avg days</th><th class="n">Since bought</th><th class="n">S&amp;P same days</th><th class="n">Difference</th><th class="n">Backtest expects</th></tr></thead><tbody>
+  ${c.sleeves.map(x => `<tr><td>${esc(x.name)}</td><td class="n">${x.positions}</td><td class="n">${x.avg_days}</td><td class="n ${cls(x.ret)}">${pct(x.ret)}</td><td class="n">${pct(x.spy)}</td><td class="n ${cls(x.diff)}">${pct(x.diff)}</td><td class="n">${expCell(x.expected)}</td></tr>`).join("")}
+  </tbody></table></div>` : ""}
+  <p class="foot">"Backtest expects" is how the backtest's average pick in that group did against the S&amp;P after about the same number of days. Over the first few weeks, day-to-day swings swamp any edge, so the comparison means more with time.</p>
+  ${hist.length > 1 ? `<div class="tbl"><table><thead><tr><th>Close</th><th class="n">Account</th><th class="n">That day</th><th class="n">Since start</th><th class="n">S&amp;P since start</th></tr></thead><tbody>
+  ${hist.map(x => `<tr><td class="nw">${esc(fmtDate(x.date))}</td><td class="n">${money(x.equity)}</td><td class="n ${cls(x.day_pl)}">${x.day_pl == null ? "–" : (x.day_pl > 0 ? "+" : "") + money(x.day_pl)}</td><td class="n ${cls(x.since_start)}">${pnum(x.since_start, 2)}</td><td class="n ${cls(x.spy_since_start)}">${pnum(x.spy_since_start, 2)}</td></tr>`).join("")}
+  </tbody></table></div>` : ""}
+  </section>`;
+}
+function renderPortfolio(d) {
+  const p = d.portfolio;
+  if (!p) return `<div class="empty">No brokerage account connected yet. Add your Alpaca paper keys as GitHub secrets (ALPACA_PAPER_KEY_ID and ALPACA_PAPER_SECRET_KEY); the next update fills this tab in.</div>`;
+  const L = p.limits || {};
+  const mode = p.mode === "live" ? `<span class="chip SHORT">Real money</span>` : `<span class="chip watch">Paper · fake money</span>`;
+  const auto = p.auto ? `<span class="chip BUY">Auto-buying on</span>` : `<span class="chip avoid">Auto-buying off</span>`;
+  const pos = p.positions || [], ords = p.orders || [];
+  const invested = pos.reduce((a, x) => a + (x.mv || 0), 0), gain = pos.reduce((a, x) => a + (x.pl || 0), 0);
+  const alp = p.mode === "live" ? "https://app.alpaca.markets/" : "https://app.alpaca.markets/paper/dashboard/overview";
+  const alpLink = `<a class="alp" href="${alp}" target="_blank" rel="noopener">Live prices in Alpaca ↗</a>`;
+  let h = `<div class="filters">${mode}${auto}${alpLink}<span class="foot">Updated ${esc(ago(p.updated))} (${esc(fmtET(p.updated))}) · market ${p.market_open ? "open" : "closed"}</span></div>
+  <div class="tiles">
+    <div class="tile"><span class="v">${money(p.equity)}</span><span class="l">Account value</span><span class="c">Cash ${money(p.cash)}</span></div>
+    <div class="tile"><span class="v ${cls(p.day_pl)}">${p.day_pl == null ? "–" : (p.day_pl > 0 ? "+" : "") + money(p.day_pl)}</span><span class="l">Change today</span></div>
+    <div class="tile"><span class="v ${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain)}</span><span class="l">Gain on open positions</span><span class="c">${money(invested)} invested</span></div>
+    <div class="tile"><span class="v">${pos.length}</span><span class="l">Open positions</span>${L.max_positions ? `<span class="c">Limit ${L.max_positions}</span>` : ""}</div>
+  </div>
+  ${L.small_pct ? `<p class="note">${Math.round(L.small_pct)}% of the account runs the small-company portfolio (see the Small caps tab), holding each pick ${L.hold_sleeve ?? 250} trading days. The rest follows the main BUY picks.</p>` : ""}
+  ${closeSection(d)}
+  <p class="note">Each new BUY pick gets ${L.dollars ? "about " + money(L.dollars) : "an equal share of the account, sized like the backtest"} and is sold after ${L.hold_days ?? 60} trading days${L.hold_small && L.hold_small !== L.hold_days ? ` (${L.hold_small} for companies under $2B)` : ""}. Up to ${Math.round(L.max_invested_pct ?? 90)}% of the account is invested at once${L.max_positions ? `, in at most ${L.max_positions} positions` : ""}. Positions you buy yourself, including with the Buy button, are never sold by the tool.</p>
+  <section class="panel"><div class="ph"><h2>Positions</h2>${alpLink}</div>
+    ${pos.length ? `<div class="tbl"><table><thead><tr><th>Ticker</th><th class="n">Shares</th><th class="n">Avg cost</th><th class="n">Price</th><th class="n">Value</th><th class="n">Gain</th><th>Held</th></tr></thead><tbody>
+    ${pos.map(x => `<tr><td class="mono">${tkBtn(x.t)}${soldNote(x)}</td><td class="n">${Number(x.qty).toLocaleString()}</td><td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.px, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${heldCell(x, L)}</td></tr>`).join("")}
+    </tbody></table></div>
+    <p class="foot">Suggested sell dates for your own positions use the current best holding period from the weekly check (What works → Automatic adjustments): ${(state.data.adaptive?.policy?.hold_other) ?? L.hold_days ?? 60} trading days for most stocks, ${(state.data.adaptive?.policy?.hold_small) ?? L.hold_small ?? L.hold_days ?? 60} for companies under $2B. They update if the check changes. The tool never sells your own positions.</p>` : `<div class="empty">No open positions yet. New BUY picks are bought at the next market open.</div>`}</section>
+  ${reqSection()}
+  <section class="panel"><div class="ph"><h2>Recent orders</h2></div>
+    ${ords.length ? `<div class="tbl scroll"><table><thead><tr><th>When</th><th>Ticker</th><th>Side</th><th class="n">Shares</th><th class="n">Fill price</th><th>Status</th><th>Placed by</th></tr></thead><tbody>
+    ${ords.map(o => `<tr><td class="nw">${esc(fmtET(o.at))}</td><td class="mono">${esc(o.t)}</td><td>${esc(o.side)}</td><td class="n">${esc(o.qty ?? "–")}</td><td class="n">${o.filled_px ? money(+o.filled_px, 2) : "–"}</td><td>${esc(String(o.status).replace(/_/g, " "))}</td><td>${o.by === "tool" || (o.by == null && o.bot) ? "This tool" : o.by === "tap" ? "Buy button" : "You"}</td></tr>`).join("")}
+    </tbody></table></div>` : `<div class="empty">No orders yet.</div>`}</section>`;
+  return h;
+}
+
+function sureWord(t) { return t == null ? "–" : t >= 3 ? "Very sure" : t >= 1.65 ? "Sure" : t >= 1 ? "Somewhat" : "Not sure"; }
+function sureFoot(r) {
+  if (r.Bar == null) return sureWord(r.Sureness);
+  const t = r["Sureness (earlier years)"] ?? r.Sureness, bar = r.Bar;
+  const w = t == null ? "–" : t >= bar ? "Sure enough" : t >= 1 ? "Somewhat sure" : "Not sure";
+  const rec = r["Gain (last 3 years)"];
+  return `${w}${(r["Options tried"] || 1) > 1 ? ` (bar ${bar.toFixed(1)}: ${r["Options tried"]} options tried)` : ""}${rec != null ? ` · last 3 yrs ${pct(rec)}` : ""}`;
+}
+function verdictChip(v) {
+  const k = /^Switched|Clearly better|^Kept/.test(v) ? "BUY" : /^Current/.test(v) ? "watch" : /^Worse|^Undone/.test(v) ? "SHORT" : "avoid";
+  return `<span class="chip ${k}">${esc(v)}</span>`;
+}
+function adjTable(rows) {
+  const groups = [];
+  rows.forEach(r => { let g = groups.find(x => x.name === r.Setting); if (!g) groups.push(g = { name: r.Setting, rows: [] }); g.rows.push(r); });
+  return groups.map(g => { const rk = g.rows.some(r => r["Worst drop"] != null);
+  return `<h3 class="subh">${esc(g.name)}</h3><div class="tbl${rk ? " scroll" : ""}"><table><thead><tr><th>Option</th><th class="n">vs S&amp;P / yr</th><th class="n">Gain</th>${rk ? `<th class="n">Worst drop</th><th class="n">Worst trade</th>` : ""}<th>Result</th></tr></thead><tbody>
+  ${g.rows.map(r => `<tr><td>${esc(r.Option.replace(" trading days", " days"))}</td><td class="n ${cls(r["Per year vs S&P"])}">${pct(r["Per year vs S&P"])}</td><td class="n ${cls(r["Gain vs current"])}">${r.Verdict === "Current" ? "–" : pct(r["Gain vs current"])}</td>${rk ? `<td class="n ${cls(r["Worst drop"])}">${pct(r["Worst drop"])}</td><td class="n ${cls(r["Worst trade"])}">${pct(r["Worst trade"])}</td>` : ""}<td>${verdictChip(r.Verdict)}${r.Verdict === "Current" ? "" : `<div class="foot">${sureFoot(r)}</div>`}</td></tr>`).join("")}
+  </tbody></table></div>${rk ? `<p class="note">Worst drop: the strategy's biggest fall from a high. Worst trade: the single pick that lost the most.</p>` : ""}`; }).join("");
+}
+function renderAdjust(d) {
+  const a = d.adaptive;
+  if (!a) return "";
+  const p = a.policy || {}, hist = (a.history || []).slice().reverse();
+  let h = `<section class="panel"><div class="ph"><h2>Automatic adjustments</h2><span class="sub">Checked weekly${a.evaluated_at ? " · last check " + esc(fmtET(a.evaluated_at)) : ""}</span></div>
+  <div class="tiles">
+    <div class="tile"><span class="v">${p.hold_other ?? "–"}<span class="l"> days</span></span><span class="l">Holding period, most stocks</span></div>
+    <div class="tile"><span class="v">${p.hold_small ?? "–"}<span class="l"> days</span></span><span class="l">Holding period, companies under $2B</span></div>
+    <div class="tile"><span class="v">${p.main_method === "learned" ? "Learned" : "Hand-set"}</span><span class="l">How buy picks are scored</span><span class="c">${p.main_method === "learned" ? "Weights refit from every finished trade" : "Switches if learning each year is clearly better"}</span></div>
+    <div class="tile"><span class="v">${p.hold_sleeve ?? "–"}<span class="l"> days</span></span><span class="l">Small-company portfolio hold</span><span class="c">Skip uncovered companies: ${p.sleeve_coverage ? "on" : "off"} · Sell early: ${{none: "off", stop10: "−10%", stop15: "−15%", stop20: "−20%", trail15: "−15% from high"}[p.sleeve_price_exit || "none"] || esc(p.sleeve_price_exit)} · Hold longer while rising: ${(p.sleeve_extend || "none") === "none" ? "off" : "on"}</span></div>
+    <div class="tile"><span class="v">${p.exit_on_member_sell ? "On" : "Off"}</span><span class="l">Sell when a buying member sells</span><span class="c">Main picks only; switches if clearly better</span></div>
+    <div class="tile"><span class="v">${{none: "Off", stop10: "−10%", stop15: "−15%", stop20: "−20%", trail15: "−15% from high"}[p.price_exit || "none"] || esc(p.price_exit)}</span><span class="l">Sell early when a stock falls</span><span class="c">Main picks; switches if clearly better</span></div>
+    <div class="tile"><span class="v">${{none: "Off", ride10: "On (10%)", ride15: "On (15%)"}[p.extend || "none"] || esc(p.extend)}</span><span class="l">Hold longer while rising</span><span class="c">Main picks; switches if clearly better</span></div>
+    <div class="tile"><span class="v">${a.use_tuned ? "On" : "Off"}</span><span class="l">Tuned signal weights</span>${a.tuned_eval ? `<span class="c">${esc(a.tuned_eval.verdict || "")}</span>` : ""}</div>
+  </div>
+  <p class="note">A setting switches on its own only when the new choice is clearly better. It is chosen on the years before the last 3: at least 1% a year more, and sure enough to rule out luck. The bar is higher when more options were tried, because the best of five is more likely a lucky winner than one option alone. It must then also win the last 3 years, which played no part in choosing it. Earlier automatic switches are re-checked the same way each week and undone if they no longer pass. Positions already open keep the holding period they were bought with. Holding periods count trading days (about 21 a month).</p>
+  ${hist.length ? `<div class="tbl"><table><thead><tr><th>Date</th><th>What changed</th><th>From</th><th>To</th><th class="n">Gain per year</th><th>How sure</th></tr></thead><tbody>
+  ${hist.map(x => `<tr><td class="nw">${esc(fmtDate(x.date))}</td><td>${esc(x.change)}</td><td>${esc(x.from)}</td><td>${esc(x.to)}</td><td class="n ${cls(x.gain_per_year)}">${pct(x.gain_per_year)}</td><td>${sureWord(x.sureness)}</td></tr>`).join("")}
+  </tbody></table></div>` : `<div class="empty">No automatic changes yet.</div>`}
+  </section>`;
+  if ((a.evaluation || []).length) h += `<section class="panel"><div class="ph"><h2>This week's check</h2><span class="sub">Every holding period tried on the full history</span></div>${adjTable(a.evaluation)}</section>`;
+  const ft = d.filter_test;
+  if (ft && (ft.summary || []).length) {
+    const names = { strict: "Strict (now)", medium: "Middle", loose: "Loose", never: "Never switch" };
+    const yrs = Object.keys((ft.years || {}).strict || {}).sort();
+    h += `<section class="panel"><div class="ph"><h2>How strict should switching be?</h2><span class="sub">${ft.complete ? "Replayed on never-seen years" : "Still running: " + yrs.length + " years done so far"}</span></div>
+    <p class="note">Each year, every rule looks only at the years before it, switches settings the way it would have (holding periods, stop and hold-longer rules, sell-when-member-sells, sizing, new signals), then trades the next year with what it chose.</p>
+    <div class="tbl"><table><thead><tr><th>Rule</th><th class="n">vs S&amp;P / yr</th><th class="n">Years ahead</th><th class="n">Switches</th></tr></thead><tbody>
+    ${ft.summary.map(r => `<tr><td><b>${esc(names[r.rule] || r.rule)}</b><div class="foot">${esc(r.label.replace(/^[^:]+:\s*/, ""))}</div></td><td class="n ${cls(r.vs_per_year)}">${pct(r.vs_per_year)}</td><td class="n">${r.beat_years} of ${yrs.length}</td><td class="n">${r.switches}</td></tr>`).join("")}
+    </tbody></table></div>
+    ${yrs.length ? `<div class="tbl scroll"><table><thead><tr><th>Year</th>${ft.summary.map(r => `<th class="n">${esc(names[r.rule] || r.rule)}</th>`).join("")}</tr></thead><tbody>
+    ${yrs.map(y => `<tr><td>${esc(y)}</td>${ft.summary.map(r => { const v = ((ft.years || {})[r.rule] || {})[y]; return `<td class="n ${cls(v?.vs)}">${v ? pct(v.vs) : "–"}</td>`; }).join("")}</tr>`).join("")}
+    </tbody></table></div><p class="foot">Each year's return minus the S&amp;P 500's. The current year is partial.</p>` : ""}
+    </section>`;
+  }
+  if ((a.proposals || []).length) h += `<section class="panel"><div class="ph"><h2>Proposals</h2><span class="sub">Measured the same way, but only changed if you say so. Ask Claude to apply one.</span></div>${adjTable(a.proposals)}</section>`;
+  return h;
+}
+
+function renderProgress(d) {
+  const g = d.data_progress;
+  if (!g) return "";
+  const n = v => v == null ? "–" : Number(v).toLocaleString();
+  const meter = (done, total) => total ? `<span class="meter" style="width:100%;margin-top:6px"><i style="width:${Math.max(0, Math.min(100, done / total * 100)).toFixed(1)}%"></i></span>` : "";
+  const hs = g.house_scans || {}, ss = g.senate_scans || {}, hr = g.house_reread || {}, o = g.ocr || {}, pr = g.prices || {}, m = g.members || {};
+  const hsTotal = (hs.left ?? 0) + (hs.reread_left ?? 0);
+  const src = Object.entries(g.sources || {});
+  return `<section class="panel"><div class="ph"><h2>How complete the data is</h2><span class="sub">As of ${esc(fmtET(g.updated))}</span></div>
+  <div class="tiles">
+    <div class="tile"><span class="v">${hr.left === 0 ? "Done" : n(hr.left)}</span><span class="l">House reports left to re-read</span><span class="c">${hr.left === 0 ? "Every electronic House report read with the fixed reader" : "Read a batch each run"}</span></div>
+    <div class="tile"><span class="v">${n(hs.left)}</span><span class="l">Scanned House reports left</span><span class="c">${n(hs.rows)} trades so far${hs.reread_left ? ` · ${n(hs.reread_left)} older ones to read again after` : ""}${hs.unmatched ? ` · ${n(hs.unmatched)} lines waiting for a company match` : ""}</span></div>
+    <div class="tile"><span class="v">${n(ss.left)}</span><span class="l">Scanned Senate reports left</span><span class="c">${n(ss.rows)} trades so far${ss.unmatched ? ` · ${n(ss.unmatched)} lines waiting for a company match` : ""}</span></div>
+    <div class="tile"><span class="v">${n(o.today)}<span class="l"> / ${n(o.day_cap)}</span></span><span class="l">Scan reads used today</span><span class="c">${n(o.month)} of ${n(o.month_cap)} this month (free OCR.space plan)</span>${meter(o.today, o.day_cap)}</div>
+    <div class="tile"><span class="v">${pr.trades ? Math.round(pr.with_prices / pr.trades * 100) + "%" : "–"}</span><span class="l">Trades with price data</span><span class="c">${pr.refresh_queue ? n(pr.refresh_queue) + " price histories queued for re-download" : "No price re-downloads waiting"}</span>${meter(pr.with_prices, pr.trades)}</div>
+    <div class="tile"><span class="v">${m.matched_share != null ? (m.matched_share * 100).toFixed(1) + "%" : "–"}</span><span class="l">Trades tied to a member's official ID</span><span class="c">${n(m.members)} members</span>${meter(m.matched_share, 1)}</div>
+    <div class="tile"><span class="v">${g.filter_test?.complete ? "Done" : "Running"}</span><span class="l">"How strict" replay</span><span class="c">${g.company_names?.tickers ? n(g.company_names.tickers) + " past company names for scan matching" : ""}</span></div>
+  </div>
+  ${src.length ? `<p class="foot">Sources: ${src.map(([k, v]) => `${esc({ house_paper: "House scans", senate_paper: "Senate scans", quiver: "Quiver", fmp: "FMP" }[k] || k)} ${v.ok ? "working" : "off" + (v.error ? " (" + esc(v.error) + ")" : "")}`).join(" · ")}</p>` : ""}
+  </section>`;
+}
+
+const REASON = { "bought out": "Bought out", "bankrupt": "Bankrupt", "failed": "Delisted (failed listing rules)", "moved": "Moved or went dark", "unknown": "Unknown" };
+function renderReal(d) {
+  const wf = d.walk_forward, m = d.backtest?.missing;
+  let h = renderProgress(d) + `<p class="note">These are three checks that keep the numbers honest. First, results using only what was known at the time. Second, what the stocks we have no prices for could do to the results. Third, the fixes made so no signal uses information from after the disclosure date.</p>`;
+  if (wf) {
+    const P = Object.fromEntries((wf.perf || []).map(p => [p.name, p]));
+    const W = P["Never-seen-years picks"] || {}, R = P["Regular backtest, same years"] || {}, S = P["S&P 500 (SPY)"] || {};
+    const ts = wf.trade_stats || {};
+    h += `<section class="panel"><div class="ph"><h2>Never-seen years</h2><span class="sub">Each year picked using only trades that had finished before it</span></div>
+    <div class="tiles">
+      <div class="tile"><span class="v ${cls(W["Per year vs S&P 500"])}">${pct(W["Per year vs S&P 500"])}</span><span class="l">Honest picks vs S&amp;P, per year</span><span class="c">Likely ${pct(W["Likely range low"], 0)} to ${pct(W["Likely range high"], 0)}</span></div>
+      <div class="tile"><span class="v ${cls(R["Per year vs S&P 500"])}">${pct(R["Per year vs S&P 500"])}</span><span class="l">Regular backtest, same years</span><span class="c">The gap is how much hindsight helped</span></div>
+      <div class="tile"><span class="v ${cls(ts["Avg vs SPY per trade (%)"])}">${pnum(ts["Avg vs SPY per trade (%)"])}</span><span class="l">Average honest pick vs S&amp;P</span><span class="c">${Number(wf.n_picks).toLocaleString()} picks · ${ts["Beat SPY (%)"] != null ? Math.round(ts["Beat SPY (%)"]) + "% beat it" : ""}</span></div>
+      <div class="tile"><span class="v">${pct(W["Annual return (CAGR)"])}</span><span class="l">Honest picks, per year</span><span class="c">S&amp;P 500: ${pct(S["Annual return (CAGR)"])}</span></div>
+    </div>
+    <div class="chart" id="wchart"></div>
+    ${(wf.years || []).length ? `<div class="tbl"><table><thead><tr><th>Year</th><th class="n">Honest picks</th><th class="n">Regular backtest</th><th class="n">S&amp;P 500</th><th class="n">Honest vs S&amp;P</th></tr></thead><tbody>
+    ${wf.years.map(y => { const a = y["Never-seen-years picks"], b = y["Regular backtest, same years"], c = y["S&P 500 (SPY)"]; return `<tr><td>${y.year}</td><td class="n ${cls(a)}">${pct(a)}</td><td class="n ${cls(b)}">${pct(b)}</td><td class="n ${cls(c)}">${pct(c)}</td><td class="n ${cls(a - c)}">${pct(a - c)}</td></tr>`; }).join("")}</tbody></table></div>` : ""}
+    ${(wf.log || []).length ? `<h3 class="subh">What each year learned from earlier years</h3>${simpleTable(wf.log, [{ h: "Year", k: "Year" }, { h: "Learned from", k: "Learned from trades", n: 1 }, { h: "Hold", k: "Holding period" }, { h: "Picks", k: "Picks", n: 1 }, { h: "Strongest signals", k: "Main signals" }])}` : ""}
+    <p class="foot">The same rules as the regular backtest, except that for each year the signal weights and holding period are learned only from earlier trades, and signals with too little history get no weight. The regular line uses the hand-set weights. The weekly check compares the two, and switches buy picks to the learned method only if it is clearly better.</p></section>`;
+  } else h += `<div class="empty">The never-seen-years test appears after the next full update.</div>`;
+  if (m && m.missing_buys != null) {
+    const reasons = Object.entries(m.by_reason || {}).sort((a, b) => b[1] - a[1]);
+    h += `<section class="panel"><div class="ph"><h2>Stocks with no price data</h2><span class="sub">${Number(m.missing_buys).toLocaleString()} of ${Number(m.all_buys).toLocaleString()} purchases (${(m.share * 100).toFixed(1)}%) can't be tested</span></div>
+    <div class="tbl"><table><thead><tr><th>Why the stock vanished</th><th class="n">Purchases</th><th class="n">Assumed result vs S&amp;P</th></tr></thead><tbody>
+    ${reasons.map(([k, v]) => `<tr><td>${esc(REASON[k] || k)}</td><td class="n">${v}</td><td class="n">${m.assumptions?.[k] != null ? pct(m.assumptions[k], 0) : "0% best · -50% worst"}</td></tr>`).join("")}</tbody></table></div>
+    ${m.reported != null ? `<div class="tiles">
+      <div class="tile"><span class="v ${cls(m.reported)}">${pct(m.reported, 2)}</span><span class="l">Average purchase, 3 months, as reported</span></div>
+      <div class="tile"><span class="v ${cls(m.with_missing_best)}">${pct(m.with_missing_best, 2)}</span><span class="l">Including them, best case</span></div>
+      <div class="tile"><span class="v ${cls(m.with_missing_worst)}">${pct(m.with_missing_worst, 2)}</span><span class="l">Including them, worst case</span></div></div>` : ""}
+    <p class="foot">The reason comes from each company's SEC filings: merger documents mean bought out, a bankruptcy notice means bankrupt, and a delisting notice without a merger means it failed the exchange's rules. Stocks that kept trading under a new ticker get their prices on the next update.</p></section>`;
+  }
+  h += `<section class="panel"><div class="ph"><h2>No peeking</h2><span class="sub">Every signal must use only what was public on the disclosure day</span></div>
+  <p class="note">Every signal was checked. Fixed on Sep 29, 2026:
+  <br>• Picks are now made day by day as filings arrive. Before, a Monday filing could be ranked against filings made later that week.
+  <br>• Grants and large contracts count only once they were public, not from the day they were awarded.
+  <br>• Committee seats come from the roster at the time, never a later one.
+  <br>• Bill backers count only from the date they signed on.
+  <br>• Donations count only once the campaign report would have been filed.
+  <br>• "No analyst coverage" is only called when the rating record reaches back far enough to know.
+  <br>Still approximate: a company's sector and share count come from today's data.</p></section>`;
+  return h;
+}
+
+function renderWorks(d) {
+  const b = d.backtest, tu = d.tuning;
+  let h = "";
+  if (!b) return `<div class="empty">No backtest yet. Run the new notebook through <b>Step 2</b>.</div>`;
+  h += renderAdjust(d);
+  h += `<p class="note">Each signal splits every past disclosed trade into groups (low, mid, high or no, yes). A signal is useful when its high or yes group clearly beats its low or no group. Numbers read: average result vs the S&amp;P 500 · share of trades that worked · number of trades.</p>`;
+  if (b.lag && b.lag.length) {
+    const k2 = Object.keys(b.lag[0]);
+    h += `<section class="panel"><div class="ph"><h2>The 45-day disclosure delay</h2><span class="sub">How much of the move happens before the public can see the trade</span></div>
+    <div class="tbl"><table><thead><tr><th>Disclosed after</th><th class="n">Purchases</th><th class="n">Move before disclosure</th><th class="n">Move after disclosure</th><th class="n">Beat S&amp;P after</th></tr></thead><tbody>
+    ${b.lag.map(r => `<tr><td>${esc(r[k2[0]])}</td><td class="n">${Number(r[k2[1]]).toLocaleString()}</td><td class="n ${cls(r[k2[2]])}">${pct(r[k2[2]])}</td><td class="n ${cls(r[k2[3]])}">${pct(r[k2[3]])}</td><td class="n">${Math.round(r[k2[4]])}%</td></tr>`).join("")}
+    </tbody></table></div></section>`;
+  }
+  if (b.horizons && b.horizons.length) h += `<section class="panel"><div class="ph"><h2>How long to hold</h2><span class="sub">Average result vs the S&amp;P 500 for different holding periods. The range shows where the true average probably sits.</span></div>
+    ${simpleTable(b.horizons, [{ h: "Holding period", k: "Holding period" }, { h: "Group", k: "Group" }, { h: "Trades", k: "Trades", n: 1 }, { h: "Avg vs S&P", k: "Avg vs SPY", p: 1 }, { h: "Range low", k: "Range low", p: 1 }, { h: "Range high", k: "Range high", p: 1 }, { h: "Beat S&P", k: "Beat SPY (%)", pp: 1 }])}</section>`;
+  if (b.persistence && b.persistence.length) {
+    const pv = b.persistence_verdict || {};
+    h += `<section class="panel"><div class="ph"><h2>Do skilled members stay skilled?</h2><span class="sub">Each year, members' results over the prior two years vs their results that year</span></div>
+    <div class="note ${pv.persists ? "" : "warn"}"><b>${pv.persists ? "Yes: members who did well kept doing better than the rest." : "Not reliably: a member's past results barely predicted their next year."}</b> Average gap: ${pct(pv.avg_gap)} per trade.</div>
+    ${simpleTable(b.persistence, [{ h: "Year", k: "Year" }, { h: "Members", k: "Members compared", n: 1 }, { h: "Rank correlation", k: "Rank correlation", f: 1 }, { h: "Past top 20%, next year", k: "Past top 20%: next year vs SPY", p: 1 }, { h: "Everyone else", k: "Everyone else: next year vs SPY", p: 1 }])}</section>`;
+  }
+  if (b.sizes && b.sizes.length) h += `<section class="panel"><div class="ph"><h2>Company size</h2><span class="sub">Politicians may know more about smaller companies that fewer analysts follow</span></div>
+    ${simpleTable(b.sizes, [{ h: "Company size", k: "Company size" }, { h: "Purchases", k: "Purchases", n: 1 }, { h: "Avg vs S&P", k: "Avg vs SPY", p: 1 }, { h: "Avg vs its industry", k: "Avg vs its industry", p: 1 }, { h: "Beat S&P", k: "Beat SPY (%)", pp: 1 }])}</section>`;
+  if (b.busy_check && b.busy_check.length) h += `<section class="panel"><div class="ph"><h2>Busiest traders check</h2><span class="sub">Does each signal still work without the 3 most active traders${b.busiest && b.busiest.length ? " (" + esc(b.busiest.join(", ")) + ")" : ""}?</span></div>
+    ${simpleTable(b.busy_check, [{ h: "Signal", k: "Signal" }, { h: "Trades", k: "Trades with signal", n: 1 }, { h: "Effect, everyone", k: "Effect (everyone)", p: 1 }, { h: "Without busiest 3", k: "Effect without busiest 3", p: 1 }, { h: "Verdict", k: "Verdict" }])}
+    <p class="note">Effect = how much better trades with the signal did than trades without it, vs the S&P over 3 months. Each member's first 100 trades count fully and later ones count a bit less, so very active members still weigh the most without drowning out everyone else.</p></section>`;
+  if (b.pairs && b.pairs.length) h += `<section class="panel"><div class="ph"><h2>Trading partners</h2><span class="sub">Members who keep buying or selling the same stocks within a week of each other (the 60 most widely traded stocks don't count)</span></div>
+    ${simpleTable(b.pairs, [{ h: "Members", k: "Members" }, { h: "Shared stocks", k: "Shared stocks", n: 1 }, { h: "Usually first", k: "Usually first" }, { h: "Typical gap (days)", k: "Typical gap (days)", n: 1 }, { h: "Last shared trade", k: "Last shared trade" }])}</section>`;
+  if (b.spouse_ties && b.spouse_ties.length) {
+    const conf = c => c === "Needs review" ? `<span class="chip avoid">Needs review</span>` : `<span class="chip BUY">${esc(c)}</span>`;
+    h += `<section class="panel"><div class="ph"><h2>Family ties to companies</h2><span class="sub">Spouses, and relatives who are public figures. Only confirmed ties can count in scores. "Needs review" means the name matches but the location doesn't confirm it; open the filings to check.</span></div>
+    <div class="tbl"><table><thead><tr><th>Member</th><th>Family member</th><th>Company</th><th>Role</th><th>Since</th><th>Confidence</th><th>Check it</th></tr></thead><tbody>
+    ${b.spouse_ties.map(r => `<tr><td>${esc(r.Member)}</td><td>${esc(r.Spouse || "–")}</td><td>${esc(r.Company)}</td><td>${esc(r.Role)}</td><td class="nw">${esc(r.Since ? fmtDate(r.Since) : "–")}</td><td>${conf(r.Confidence)}</td><td class="nw">${r.link ? `<a href="${esc(r.link)}" target="_blank" rel="noopener">SEC filings</a>` : esc(r.Source)}</td></tr>`).join("")}
+    </tbody></table></div></section>`;
+  }
+  if (b.crowding && b.crowding.length) h += `<section class="panel"><div class="ph"><h2>Copycat traders</h2><span class="sub">Did stocks that jumped on the day a trade was disclosed keep going, or fade?</span></div>
+    ${simpleTable(b.crowding, [{ h: "Disclosure day", k: "Disclosure day" }, { h: "Purchases", k: "Purchases", n: 1 }, { h: "Move that day", k: "Disclosure-day move vs SPY", p: 1 }, { h: "Next 3 months", k: "Next 3 months vs SPY", p: 1 }, { h: "Beat S&P", k: "Beat SPY (%)", pp: 1 }])}</section>`;
+  h += `<div class="cols"><section class="panel"><div class="ph"><h2>Buy signals</h2><span class="sub">Did the stock beat the S&amp;P 500 after the purchase was disclosed?</span></div>${factorBlock(b.buy_factors)}</section>
+  <section class="panel"><div class="ph"><h2>Sell signals</h2><span class="sub">Would shorting the stock have beaten the S&amp;P 500?</span></div>${b.short_factors && b.short_factors.length ? factorBlock(b.short_factors) : `<div class="empty">${d.extra?.sales_note ? esc(d.extra.sales_note) : "No sell-side results yet."}</div>`}</section></div>`;
+  if (tu) {
+    const t = Object.fromEntries((tu.comparison || []).map(c => [c.name, c]));
+    const D = t["Default weights"] || {}, T = t["Tuned weights"] || {};
+    h += `<section class="panel"><div class="ph"><h2>Weight tuning</h2><span class="sub">Learned from trades before ${esc(fmtDate(tu.split))}, tested only on trades after it</span></div>
+      <div class="note ${tu.better ? "" : "warn"}"><b>${tu.better ? "Tuned weights did better on the unseen years." : "Tuned weights did not beat the defaults on the unseen years, so the defaults stay."}</b>${tu.better ? " Set USE_TUNED_WEIGHTS = True in the notebook's Settings to use them." : ""}</div>
+      <div class="tbl"><table><thead><tr><th></th><th class="n">Per year</th><th class="n">Picks</th><th class="n">Avg pick vs S&amp;P</th><th class="n">Beat S&amp;P</th></tr></thead><tbody>
+      ${[["Default weights", D], ["Tuned weights", T], ["S&P 500", t["S&P 500 (SPY)"] || {}]].map(([n, r]) => `<tr><td>${esc(n)}</td><td class="n ${cls(r["Long annual return"])}">${pct(r["Long annual return"])}</td><td class="n">${r["Long picks"] ?? "–"}</td><td class="n ${cls(r["Long avg vs SPY"])}">${pct(r["Long avg vs SPY"])}</td><td class="n">${r["Long beat SPY"] != null ? Math.round(r["Long beat SPY"] * 100) + "%" : "–"}</td></tr>`).join("")}
+      </tbody></table></div></section>`;
+  }
+  const pc = b.price_coverage;
+  if (pc && pc.trades) h += `<section class="panel"><div class="ph"><h2>Missing price data</h2><span class="sub">Mostly companies that were delisted, bankrupt or bought out</span></div>
+    <div class="note ${pc.missing_share > 0.05 ? "warn" : ""}"><b>${Math.round(pc.with_prices).toLocaleString()} of ${pc.trades.toLocaleString()} trades (${(100 - pc.missing_share * 100).toFixed(1)}%) have prices.</b> The other ${pc.missing.toLocaleString()} can't be tested yet${pc.missing_tickers ? " (" + pc.missing_tickers.toLocaleString() + " different stocks)" : ""}, which can make results look a little better than they were. ${(pc.top_missing || []).length ? "Most-traded missing: " + pc.top_missing.slice(0, 10).map(([t, n]) => esc(t) + " (" + n + ")").join(", ") + "." : ""}</div></section>`;
+  if (b.coverage) h += `<p class="foot">Data behind these results: ${Object.entries(b.coverage).map(([k, v]) => `${esc(k.toLowerCase())} ${Number(v).toLocaleString()}`).join(" · ")}.</p>`;
+  return h;
+}
+
+// ---------- chart ----------
+const SERIES_VAR = { "Never-seen-years picks": "--s1", "Regular backtest, same years": "--s4", "Paper account": "--s1", "Small-company picks": "--s1", "Small-company index (IWM)": "--s3", "Long picks": "--s1", "Short picks": "--s2", "Copy every purchase": "--s4", "Defense fund (ITA)": "--s3", "S&P 500 (SPY)": "--spy" };
+function drawChart(b = state.data?.backtest, sel = "#chart") {
+  const host = $(sel);
+  if (!host || !b?.curve?.dates?.length) { if (host) host.innerHTML = `<div class="empty">No growth curve in this data.</div>`; return; }
+  const css = getComputedStyle(document.documentElement);
+  const dates = b.curve.dates;
+  const names = Object.keys(b.curve.series).filter(n => n in SERIES_VAR || /Long \d+% \/ short/.test(n));
+  const colorOf = n => css.getPropertyValue(SERIES_VAR[n] || "--s3").trim();
+  const W = Math.max(320, host.clientWidth - 24), H = W < 520 ? 240 : 320, m = { l: 48, r: 12, t: 10, b: 26 };
+  let lo = 0, hi = 0;
+  names.forEach(n => b.curve.series[n].forEach(v => { if (v != null) { lo = Math.min(lo, v); hi = Math.max(hi, v); } }));
+  const band = b.band && b.curve.series[b.band.around] ? (() => {
+    const base = b.curve.series[b.band.around], t0 = Date.parse(dates[0]);
+    const up = [], dn = [];
+    base.forEach((v, i) => {
+      if (v == null) { up.push(null); dn.push(null); return; }
+      const yrs = Math.max(0, (Date.parse(dates[i]) - t0) / 31557600000), w = (b.band.z || 1) * b.band.te * Math.sqrt(yrs) * 100;
+      up.push(v + w); dn.push(v - w); lo = Math.min(lo, v - w); hi = Math.max(hi, v + w);
+    });
+    return { up, dn };
+  })() : null;
+  const span = hi - lo || 1; const step = [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000].find(s => span / s <= 6) || 2000;
+  lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step;
+  const x = i => m.l + (W - m.l - m.r) * (i / Math.max(1, dates.length - 1));
+  const y = v => m.t + (H - m.t - m.b) * (1 - (v - lo) / (hi - lo));
+  let g = "";
+  for (let v = lo; v <= hi + 1e-9; v += step) g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="${css.getPropertyValue(v === 0 ? "--rule" : "--grid")}" stroke-width="1"/><text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${v > 0 ? "+" : ""}${v}%</text>`;
+  const years = []; dates.forEach((d, i) => { const yy = d.slice(0, 4); if (!years.length || years[years.length - 1][0] !== yy) years.push([yy, i]); });
+  years.forEach(([yy, i], k) => { if (k === 0 && years.length > 1 && years[1][1] - i < dates.length / 12) return; g += `<text x="${x(i)}" y="${H - 6}" text-anchor="middle">${yy}</text>`; });
+  let paths = "";
+  if (band) {
+    const idx = band.up.map((v, i) => v == null ? -1 : i).filter(i => i >= 0);
+    if (idx.length > 1) paths += `<path d="${idx.map((i, k) => (k ? "L" : "M") + x(i).toFixed(1) + "," + y(band.up[i]).toFixed(1)).join("")}${idx.slice().reverse().map(i => "L" + x(i).toFixed(1) + "," + y(band.dn[i]).toFixed(1)).join("")}Z" fill="${css.getPropertyValue("--accent-soft")}" stroke="none"/>`;
+  }
+  names.forEach(n => {
+    const s = b.curve.series[n]; let dstr = "", pen = false;
+    s.forEach((v, i) => { if (v == null) { pen = false; return; } dstr += (pen ? "L" : "M") + x(i).toFixed(1) + "," + y(v).toFixed(1); pen = true; });
+    const spy = /SPY/.test(n);
+    paths += `<path d="${dstr}" fill="none" stroke="${colorOf(n)}" stroke-width="2" ${spy ? 'stroke-dasharray="5 4"' : ""} stroke-linejoin="round"/>`;
+    const lastI = s.length - 1 - [...s].reverse().findIndex(v => v != null);
+    if (lastI >= 0 && lastI < s.length) paths += `<circle cx="${x(lastI)}" cy="${y(s[lastI])}" r="3.5" fill="${colorOf(n)}" stroke="${css.getPropertyValue("--surface")}" stroke-width="2"/>`;
+  });
+  host.innerHTML = `<div class="legend">${band ? `<span><i class="band"></i>Luck range</span>` : ""}${names.map(n => `<span><i class="${/SPY/.test(n) ? "dash" : ""}" style="background:${colorOf(n)}"></i>${esc(n.replace(" (SPY)", ""))} <b class="mono ${cls(b.curve.series[n].filter(v => v != null).slice(-1)[0])}">${pnum(b.curve.series[n].filter(v => v != null).slice(-1)[0], 0)}</b></span>`).join("")}</div>
+  <svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Growth of each portfolio compared with the S&P 500">${g}${paths}<line id="xh" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" stroke="${css.getPropertyValue("--muted")}" stroke-width="1" visibility="hidden"/><rect x="${m.l}" y="${m.t}" width="${W - m.l - m.r}" height="${H - m.t - m.b}" fill="transparent" id="hit"/></svg><div class="tip" id="tip" hidden></div>`;
+  const hit = $("#hit", host), tip = $("#tip", host), xh = $("#xh", host);
+  const move = ev => {
+    const r = hit.getBoundingClientRect(); const px = (ev.touches ? ev.touches[0].clientX : ev.clientX) - r.left;
+    const i = Math.max(0, Math.min(dates.length - 1, Math.round(px / r.width * (dates.length - 1))));
+    xh.setAttribute("x1", x(i)); xh.setAttribute("x2", x(i)); xh.setAttribute("visibility", "visible");
+    tip.innerHTML = `<div class="d">${esc(fmtDate(dates[i]))}</div>` + names.map(n => `<div class="r"><span style="color:${colorOf(n)}">●</span><span style="flex:1">${esc(n.replace(" (SPY)", ""))}</span><b>${pnum(b.curve.series[n][i], 1)}</b></div>`).join("") + (band && band.up[i] != null ? `<div class="r"><span style="flex:1;color:var(--muted)">Luck range</span><b>${pnum(band.dn[i], 1)} to ${pnum(band.up[i], 1)}</b></div>` : "");
+    tip.hidden = false;
+    const tx = x(i) + 16 + 190 > W ? x(i) - 200 : x(i) + 16; tip.style.left = tx + "px"; tip.style.top = "48px";
+  };
+  hit.addEventListener("mousemove", move); hit.addEventListener("touchmove", move, { passive: true });
+  hit.addEventListener("mouseleave", () => { tip.hidden = true; xh.setAttribute("visibility", "hidden"); });
+}
+
+function bind() {
+  if (state.tab === "defense" && state.data?.defense) drawChart(state.data.defense, "#dchart");
+  if (state.tab === "small" && state.data?.small) drawChart(state.data.small, "#schart");
+  if (state.tab === "real" && state.data?.walk_forward) drawChart(state.data.walk_forward, "#wchart");
+  if (state.tab === "port" && state.data?.close_report?.series?.dates?.length) drawChart(portCurve(), "#pchart");
+  if (state.tab === "record") {
+    drawChart();
+    document.querySelectorAll("[data-side]").forEach(b => b.addEventListener("click", () => { state.tradeSide = b.dataset.side; render(); }));
+    document.querySelectorAll("[data-f]").forEach(b => b.addEventListener("click", () => { state.tradeFilter = b.dataset.f; render(); }));
+    const q = $("#q"); if (q) q.addEventListener("input", () => { state.q = q.value; const pos = q.selectionStart; render(); const n = $("#q"); n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) {} });
+  }
+}
+const LUCK_TE = 0.15; // how far the account typically drifts from the S&P in a year by chance alone (from the backtest)
+function portCurve() { const c = state.data.close_report.series; return { curve: { dates: c.dates, series: { "Paper account": c.account, "S&P 500 (SPY)": c.spy } }, band: { around: "S&P 500 (SPY)", te: state.data.close_report.luck_te ?? LUCK_TE, z: 1.96 } }; }
+function redraw() { if (state.tab === "port" && state.data?.close_report?.series?.dates?.length) drawChart(portCurve(), "#pchart"); if (state.tab === "record") drawChart(); if (state.tab === "defense" && state.data?.defense) drawChart(state.data.defense, "#dchart"); if (state.tab === "small" && state.data?.small) drawChart(state.data.small, "#schart"); if (state.tab === "real" && state.data?.walk_forward) drawChart(state.data.walk_forward, "#wchart"); }
+let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => redraw(), 150); });
+matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => redraw());
+new MutationObserver(() => redraw()).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+// ---------- ticker popup: price chart with member trades ----------
+const CHART_FILE = "ticker_charts.json";
+const SPANS = [["1M", 1], ["3M", 3], ["6M", 6], ["1Y", 12], ["5Y", 60]];
+const pop = { t: null, span: "3M", sel: null, charts: null, loading: null, err: null };
+function tkBtn(t) { return `<button type="button" class="tkl" data-chart="${esc(t)}" title="Show ${esc(t)} chart">${esc(t)}</button>`; }
+function infoFor(t) {
+  const d = state.data || {}, w = d.watchlist || {};
+  return [...(w.buys || []), ...(w.sells || []), ...((d.defense || {}).longs || [])].find(r => r.t === t) || {};
+}
+async function loadCharts() {
+  if (pop.charts) return pop.charts;
+  if (window.__CTD_CHARTS) return (pop.charts = window.__CTD_CHARTS);
+  if (!pop.loading) pop.loading = api("/api/charts").then(r => (pop.charts = r.js)).finally(() => { pop.loading = null; });
+  return pop.loading;
+}
+function openChart(t) {
+  pop.t = t; pop.sel = null; pop.err = null;
+  let bg = document.getElementById("mbg");
+  if (!bg) {
+    bg = document.createElement("div"); bg.id = "mbg"; bg.className = "mbg";
+    bg.addEventListener("click", ev => { if (ev.target === bg || ev.target.closest(".mx")) closeChart(); });
+    document.body.appendChild(bg);
+  }
+  bg.hidden = false; document.body.style.overflow = "hidden";
+  drawPopup();
+  if (!pop.charts) loadCharts().then(drawPopup, e => { pop.err = e; drawPopup(); });
+}
+function closeChart() { const bg = document.getElementById("mbg"); if (bg) { bg.hidden = true; bg.innerHTML = ""; } document.body.style.overflow = ""; pop.t = null; }
+addEventListener("keydown", ev => { if (ev.key === "Escape" && pop.t) closeChart(); });
+document.addEventListener("click", ev => { const b = ev.target.closest("[data-chart]"); if (b) { ev.preventDefault(); openChart(b.dataset.chart); } });
+
+const money2 = v => v == null ? "–" : "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const kfmt = v => v == null ? "?" : v >= 1e6 ? "$" + (v / 1e6).toLocaleString(undefined, { maximumFractionDigits: 1 }) + "M" : v >= 1e3 ? "$" + Math.round(v / 1e3).toLocaleString() + "K" : "$" + Math.round(v);
+function shares(tr) {
+  if (tr.nsh) return `${Number(tr.nsh).toLocaleString()} shares (from the filing)`;
+  const hiPx = tr.dh || tr.p, loPx = tr.dl || tr.p;
+  if (!hiPx || tr.lo == null) return null;
+  const a = Math.max(1, Math.round(tr.lo / hiPx)), b = tr.hi ? Math.round(tr.hi / loPx) : null;
+  return b == null ? `over ${a.toLocaleString()} shares` : a === b ? `about ${a.toLocaleString()} shares` : `about ${a.toLocaleString()}–${b.toLocaleString()} shares`;
+}
+function priceText(tr) {
+  if (tr.npx) return `${money2(tr.npx)} a share (from the filing)`;
+  if (tr.dl && tr.dh) return `between ${money2(tr.dl)} and ${money2(tr.dh)} a share that day (close ${money2(tr.p)})`;
+  return tr.p ? `${money2(tr.p)} a share (that day's close)` : "No price that day";
+}
+function priceCell(tr) {
+  if (tr.npx) return `${money2(tr.npx)}<div class="foot">from the filing</div>`;
+  if (tr.dl && tr.dh) return `${money2(tr.dl)}–${money2(tr.dh)}<div class="foot">close ${money2(tr.p)}</div>`;
+  return money2(tr.p);
+}
+const OWN = { SP: "spouse's own account", JT: "joint account with spouse", DC: "dependent child's account", Spouse: "spouse's own account", Joint: "joint account with spouse", Child: "dependent child's account" };
+function photoFor(tr) { return (tr.b && ((pop.charts?.photos || {})[tr.b] || (state.data?.photos || {})[tr.b])) || null; }
+function initials(n) { const p = String(n || "?").replace(/\b(Mr|Mrs|Ms|Dr|Hon|Jr|Sr|II|III)\b\.?/g, "").trim().split(/\s+/); return ((p[0] || "?")[0] + (p.length > 1 ? p[p.length - 1][0] : "")).toUpperCase(); }
+function headshot(tr, cls, size) {
+  const src = photoFor(tr);
+  return src ? `<img class="${cls}" src="${src}" alt="" ${size ? `style="width:${size}px;height:${size}px"` : ""}>` : `<span class="${cls}" aria-hidden="true" ${size ? `style="width:${size}px;height:${size}px"` : ""}>${esc(initials(tr.n))}</span>`;
+}
+function tradeLineText(tr) {
+  const lag = tr.d ? Math.round((Date.parse(tr.d) - Date.parse(tr.td)) / 864e5) : null;
+  const sh = shares(tr);
+  return `<b>${esc(tr.n)}</b>${tagHtml({ n: tr.n, b: tr.b })} <span class="bs ${tr.ty}">${tr.ty === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(tr.td))}
+    <div>${priceText(tr)} · ${kfmt(tr.lo)}${tr.hi ? "–" + kfmt(tr.hi) : "+"} reported${sh ? ` · ${sh}` : ""}</div>
+    ${tr.note ? `<div style="margin-top:2px">Filing note: “${esc(tr.note)}”</div>` : ""}
+    <div class="foot">Disclosed ${esc(fmtDate(tr.d))}${lag != null ? ` (${lag} days later)` : ""}${tr.own && OWN[tr.own] ? " · " + OWN[tr.own] : ""}</div>`;
+}
+function drawPopup() {
+  const bg = document.getElementById("mbg"); if (!bg || !pop.t) return;
+  const t = pop.t, info = infoFor(t), C = pop.charts;
+  const head = `<div class="mh"><div><div class="t">${esc(t)}</div><div class="co">${esc(info.co || "")}${info.sec ? " · " + esc(info.sec) : ""}</div></div>
+    <div style="display:flex;gap:10px;align-items:flex-start"><div class="px" id="mpx"></div><button type="button" class="mx" aria-label="Close">×</button></div></div>`;
+  let body;
+  if (!C) {
+    const e = pop.err;
+    body = `<div class="empty">${e ? (e.code === "no_file" ? "Charts appear after the next full update." : esc(errorText(e))) : "Loading chart…"}</div>`;
+  } else if (!C.px || !C.px[t]) {
+    body = `<div class="empty">No chart for ${esc(t)} yet. It's added on the next full update.</div>`;
+  } else {
+    body = `<div class="spans" role="group" aria-label="Timespan">${SPANS.map(([k]) => `<button type="button" data-span="${k}" aria-pressed="${pop.span === k}">${k}</button>`).join("")}
+      <span class="lg"><span><i style="border-color:var(--good)"></i>Bought</span><span><i style="border-color:var(--bad)"></i>Sold</span><span><b style="font:600 10px var(--mono)">disc.</b> disclosed</span></span></div>
+      <div class="tc" id="tc"></div><div id="tdet"></div><div id="tlist"></div>
+      <p class="foot" style="margin:0">The line shows daily closes; all prices are adjusted for splits and dividends, so a note's price can differ after a split. The forms give the trade date and a dollar range, not the time, price or share count. So the price shown is that day's low-to-high range and the share count is estimated from it, unless the member wrote the shares or price in the filing.</p>`;
+  }
+  bg.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="${esc(t)} price chart">${head}${body}</div>`;
+  bg.querySelectorAll("[data-span]").forEach(b => b.addEventListener("click", () => { pop.span = b.dataset.span; pop.sel = null; drawPopup(); }));
+  if (C && C.px && C.px[t]) drawTickerChart();
+}
+function drawTickerChart() {
+  const C = pop.charts, t = pop.t, host = document.getElementById("tc");
+  const css = getComputedStyle(document.documentElement), cv = k => css.getPropertyValue(k).trim();
+  const dates = C.dates, all = C.px[t];
+  const months = (SPANS.find(s => s[0] === pop.span) || SPANS[1])[1];
+  const endD = new Date(dates[dates.length - 1] + "T12:00:00"); const startD = new Date(endD); startD.setMonth(startD.getMonth() - months);
+  const s0 = dates.findIndex(d => new Date(d + "T12:00:00") >= startD);
+  const idx = []; for (let i = Math.max(0, s0); i < dates.length; i++) if (all[i] != null) idx.push(i);
+  if (idx.length < 2) { host.innerHTML = `<div class="empty">Not enough price history for this span.</div>`; return; }
+  const first = dates[idx[0]], last = dates[idx[idx.length - 1]];
+  const trades = (C.trades[t] || []).filter(x => x.td >= first && x.td <= last).map((x, k) => ({ ...x, k }));
+  let lo = Infinity, hi = -Infinity; idx.forEach(i => { lo = Math.min(lo, all[i]); hi = Math.max(hi, all[i]); });
+  const pad = (hi - lo) * 0.08 || hi * 0.05; lo -= pad; hi += pad;
+  const W = Math.max(300, host.clientWidth), H = W < 520 ? 250 : 330, m = { l: 56, r: 10, t: 20, b: 40 };
+  const pos = i => idx.indexOf(i);
+  const xOfI = i => m.l + (W - m.l - m.r) * (idx.indexOf(i) / (idx.length - 1));
+  const dayIndex = d => { let j = dates.findIndex(x => x >= d); if (j < 0) j = dates.length - 1; while (j < dates.length && all[j] == null) j++; return Math.min(j, idx[idx.length - 1]); };
+  const xOfD = d => { const j = dayIndex(d); return idx.indexOf(j) >= 0 ? xOfI(j) : null; };
+  const y = v => m.t + (H - m.t - m.b) * (1 - (v - lo) / (hi - lo));
+  const step = (() => { const r = (hi - lo) / 5, p = Math.pow(10, Math.floor(Math.log10(r))); return [1, 2, 2.5, 5, 10].map(k => k * p).find(k => r <= k) || 10 * p; })();
+  let g = "";
+  for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="${cv("--grid")}"/><text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${v >= 1000 ? "$" + Math.round(v).toLocaleString() : "$" + (+v.toFixed(2))}</text>`;
+  const nT = W < 520 ? 3 : 5; for (let k = 0; k <= nT; k++) { const i = idx[Math.round(k * (idx.length - 1) / nT)]; const d = new Date(dates[i] + "T12:00:00");
+    g += `<text x="${xOfI(i)}" y="${H - m.b + 16}" text-anchor="${k === 0 ? "start" : k === nT ? "end" : "middle"}">${d.toLocaleDateString(undefined, months <= 12 ? { month: "short", day: "numeric" } : { month: "short", year: "numeric" })}</text>`; }
+  const line = idx.map((i, k) => (k ? "L" : "M") + xOfI(i).toFixed(1) + "," + y(all[i]).toFixed(1)).join("");
+  const up = all[idx[idx.length - 1]] >= all[idx[0]];
+  const chg = all[idx[idx.length - 1]] / all[idx[0]] - 1;
+  document.getElementById("mpx").innerHTML = `${money2(all[idx[idx.length - 1]])}<div class="${cls(chg)}" style="font-size:12.5px">${pct(chg)} · ${pop.span}</div>`;
+  const many = trades.length > 30;
+  // markers: headshot at the trade date on the price line, stacked when they'd overlap; "disc." on the disclosure date
+  const size = W < 520 ? 22 : 26, used = [];
+  const mk = trades.map(tr => {
+    const x = xOfD(tr.td); const j = dayIndex(tr.td); const yy = y(all[j] ?? tr.p ?? lo);
+    let off = 0; const sz = many ? 10 : size;
+    while (used.some(u => Math.abs(u.x - x) < sz * 0.9 && Math.abs(u.y - (yy - off)) < sz * 0.9)) off += sz * 0.95;
+    used.push({ x, y: yy - off });
+    return { tr, x, y: yy - off, base: yy };
+  });
+  const dz = trades.filter(tr => tr.d && tr.d <= last).map(tr => ({ tr, x: xOfD(tr.d) }));
+  const dzUsed = []; dz.forEach(o => { let row = 0; while (dzUsed.some(u => u.r === row && Math.abs(u.x - o.x) < 28)) row++; dzUsed.push({ x: o.x, r: row }); o.row = row; });
+  const stems = mk.filter(o => o.y !== o.base).map(o => `<line x1="${o.x}" x2="${o.x}" y1="${o.base}" y2="${o.y}" stroke="${cv(o.tr.ty === "buy" ? "--good" : "--bad")}" stroke-width="1" opacity=".6"/>`).join("");
+  host.innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(t)} price, ${pop.span}">${g}
+    <path d="${line}" fill="none" stroke="${cv("--s1")}" stroke-width="2" stroke-linejoin="round"/>${stems}
+    ${mk.map(o => `<circle cx="${o.x}" cy="${o.base}" r="3" fill="${cv(o.tr.ty === "buy" ? "--good" : "--bad")}"/>`).join("")}
+    <line id="tln" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" stroke="${cv("--accent")}" stroke-dasharray="3 3" visibility="hidden"/>
+    <line id="txh" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" stroke="${cv("--muted")}" visibility="hidden"/>
+    <rect id="thit" x="${m.l}" y="${m.t}" width="${W - m.l - m.r}" height="${H - m.t - m.b}" fill="transparent"/></svg>
+    ${mk.map(o => `<button type="button" class="mk ${many ? "dot" : ""}" data-k="${o.tr.k}" style="left:${o.x}px;top:${o.y}px;width:${many ? 10 : size}px;height:${many ? 10 : size}px;border-color:var(--${o.tr.ty === "buy" ? "good" : "bad"});${many ? `background:var(--${o.tr.ty === "buy" ? "good" : "bad"})` : ""}" title="${esc(o.tr.n)}: ${o.tr.ty === "buy" ? "bought" : "sold"} ${esc(fmtDate(o.tr.td))}">${many ? "" : headshot(o.tr, "", 0)}</button>`).join("")}
+    ${many && !pop.sel ? "" : dz.filter(o => !many || (pop.sel && pop.sel.k === o.tr.k)).map(o => `<span class="dz" data-k="${o.tr.k}" style="left:${o.x}px;top:${H - m.b + 22 + o.row * 0}px;color:var(--${o.tr.ty === "buy" ? "good" : "bad"})" title="${esc(o.tr.n)} disclosed ${esc(fmtDate(o.tr.d))}">disc.</span>`).join("")}
+    <div class="tcip" id="tcip" hidden></div>`;
+  // the disclosure marks share one row; overlapping ones are thinned out so labels stay readable
+  if (!many) { const seen = []; host.querySelectorAll(".dz").forEach(el => { const x = parseFloat(el.style.left); if (seen.some(v => Math.abs(v - x) < 26)) el.style.visibility = "hidden"; else seen.push(x); }); }
+  const det = document.getElementById("tdet"), list = document.getElementById("tlist");
+  const select = k => {
+    pop.sel = k == null ? null : trades.find(x => x.k === k) || null;
+    host.querySelectorAll(".mk,.dz").forEach(el => el.classList.toggle("on", pop.sel && +el.dataset.k === pop.sel.k));
+    list.querySelectorAll("tr[data-k]").forEach(el => el.classList.toggle("on", pop.sel && +el.dataset.k === pop.sel.k));
+    const ln = host.querySelector("#tln");
+    if (pop.sel && pop.sel.d && pop.sel.d <= last) { const x = xOfD(pop.sel.d); ln.setAttribute("x1", x); ln.setAttribute("x2", x); ln.setAttribute("stroke", cv(pop.sel.ty === "buy" ? "--good" : "--bad")); ln.setAttribute("visibility", "visible"); }
+    else ln.setAttribute("visibility", "hidden");
+    if (many && pop.sel) { const dzs = host.querySelectorAll(".dz"); dzs.forEach(e => e.remove());
+      if (pop.sel.d && pop.sel.d <= last) host.insertAdjacentHTML("beforeend", `<span class="dz on" data-k="${pop.sel.k}" style="left:${xOfD(pop.sel.d)}px;top:${H - m.b + 22}px;color:var(--${pop.sel.ty === "buy" ? "good" : "bad"})">disc.</span>`); }
+    det.innerHTML = pop.sel ? `<div class="tdet">${headshot(pop.sel, "av", 0)}<div>${tradeLineText(pop.sel)}</div></div>` : "";
+  };
+  host.querySelectorAll(".mk,.dz").forEach(el => el.addEventListener("click", ev => { ev.stopPropagation(); const k = +el.dataset.k; select(pop.sel && pop.sel.k === k ? null : k); }));
+  // trades in this span, newest first
+  const rows = trades.slice().sort((a, b) => b.td.localeCompare(a.td));
+  list.innerHTML = rows.length ? `<div class="tbl scroll tlist"><table><thead><tr><th>Member</th><th></th><th>Traded</th><th class="n">Price</th><th class="n">Amount</th><th>Disclosed</th></tr></thead><tbody>
+    ${rows.map(tr => `<tr data-k="${tr.k}"><td><span class="nm" style="display:inline-flex;align-items:center;gap:6px">${headshot(tr, "av sm", 0)}${esc(tr.n)}${tagHtml({ n: tr.n, b: tr.b })}</span></td><td><span class="bs ${tr.ty}">${tr.ty === "buy" ? "Buy" : "Sell"}</span></td><td class="nw">${esc(fmtDate(tr.td))}</td><td class="n">${priceCell(tr)}</td><td class="n">${kfmt(tr.lo)}${tr.hi ? "–" + kfmt(tr.hi) : "+"}<div class="foot">${esc(shares(tr) || "")}</div></td><td class="nw">${esc(fmtDate(tr.d))}</td></tr>`).join("")}
+    </tbody></table></div>` : `<div class="foot">No member trades of ${esc(t)} in this period${(C.trades[t] || []).length ? "; try a longer timespan" : ""}.</div>`;
+  list.querySelectorAll("tr[data-k]").forEach(el => el.addEventListener("click", () => { const k = +el.dataset.k; select(pop.sel && pop.sel.k === k ? null : k); }));
+  // crosshair with the day's close
+  const hit = host.querySelector("#thit"), tip = host.querySelector("#tcip"), xh = host.querySelector("#txh");
+  const move = ev => {
+    const r = hit.getBoundingClientRect(), px_ = (ev.touches ? ev.touches[0].clientX : ev.clientX) - r.left;
+    const k = Math.max(0, Math.min(idx.length - 1, Math.round(px_ / r.width * (idx.length - 1)))), i = idx[k], x = xOfI(i);
+    xh.setAttribute("x1", x); xh.setAttribute("x2", x); xh.setAttribute("visibility", "visible");
+    tip.innerHTML = `${esc(fmtDate(dates[i]))} · <b>${money2(all[i])}</b>`; tip.hidden = false;
+    tip.style.left = Math.min(Math.max(0, x - 70), W - 160) + "px"; tip.style.top = "0px";
+  };
+  hit.addEventListener("mousemove", move); hit.addEventListener("touchmove", move, { passive: true });
+  hit.addEventListener("mouseleave", () => { tip.hidden = true; xh.setAttribute("visibility", "hidden"); });
+  hit.addEventListener("click", () => select(null));
+  if (pop.sel) select(pop.sel.k);
+}
+addEventListener("resize", () => { if (pop.t && pop.charts) { clearTimeout(pop.rt); pop.rt = setTimeout(drawTickerChart, 150); } });
+
+// ---------- data from Cloudflare ----------
+function errorText(e) {
+  switch (e?.code) {
+    case "login": return "Please log in.";
+    case "no_file": return "No results on Cloudflare yet. They arrive with the next update (within about 15 minutes).";
+    case "offline": return "You're offline. Connect to the internet and tap Refresh.";
+    default: return "Couldn't load results" + (e?.message ? ": " + esc(e.message) : ".");
+  }
+}
+async function api(path, opts = {}) {
+  let r;
+  try { r = await fetch(path, { credentials: "same-origin", ...opts }); }
+  catch (e) { throw { code: "offline" }; }
+  if (r.status === 401 && path !== "/api/login") { showLogin(); throw { code: "login" }; }
+  let js = null;
+  try { js = await r.json(); } catch (e) { if (r.ok) throw { code: "bad_json", message: "the results file is incomplete; try Refresh in a minute" }; }
+  if (r.status === 404 && js?.error === "no-file") throw { code: "no_file" };
+  if (!r.ok) throw { code: js?.error || "http", why: js?.why, message: js?.message || ("error " + r.status), status: r.status };
+  return { js, headers: r.headers };
+}
+const WHY_BUY = { "amount-over-limit": "the amount is over your per-order limit", "not-enough-cash": "not enough buying power",
+  "not-tradable": "Alpaca can't trade this stock", "not-found": "stock not found on Alpaca", "no-price": "no current price",
+  "amount-too-small": "the amount is less than one share", "no-keys": "no Alpaca keys are set up", "bad-request": "the request couldn't be read" };
+
+let loading = false, lastData = 0, lastLive = null, liveTimer = null;
+async function loadData() {
+  if (loading) return; loading = true;
+  try {
+    const { js } = await api("/api/data");
+    state.data = js; state.error = null; lastData = Date.now();
+    if (lastLive) applyLive(lastLive);
+    const upd = js.updated;
+    const hours = (Date.now() - Date.parse(upd)) / 3.6e6;
+    setStatus(hours > 36 ? "stale" : "ok", "Results updated " + ago(upd) + " (" + fmtET(upd) + ")" + (hours > 36 ? " · the daily update hasn't run since then" : ""), true);
+  } catch (e) {
+    if (e.code === "login") return;
+    if (state.data) setStatus("stale", e.code === "offline" ? "Offline · showing the last results" : "Couldn't refresh · showing the last results", true);
+    else { state.error = errorText(e); setStatus("err", e.code === "no_file" ? "Waiting for the first upload" : "Couldn't load results", true); }
+  } finally { loading = false; render(); }
+  loadLive();
+}
+
+// live account numbers straight from Alpaca, laid over the last full update
+function applyLive(L) {
+  const p = state.data?.portfolio;
+  state.taps = L.taps || [];
+  if (!p) return;
+  const old = Object.fromEntries((p.positions || []).map(x => [x.t, x]));
+  p.positions = (L.positions || []).map(x => ({ bot: false, sleeve: null, hold: null, bought: null, held: null, ...(old[x.t] || {}), ...x }))
+    .sort((a, b) => (b.mv || 0) - (a.mv || 0));
+  if (L.equity != null) { p.equity = L.equity; p.cash = L.cash; if (L.last_equity) p.day_pl = L.equity - L.last_equity; }
+  p.market_open = L.market_open; p.next_open = L.next_open; p.updated = L.at;
+}
+async function loadLive() {
+  clearTimeout(liveTimer);
+  if (document.visibilityState === "visible" && state.data && !window.__CTD_SAMPLE) {
+    try { lastLive = (await api("/api/live")).js; applyLive(lastLive); render(); } catch (e) {}
+  }
+  liveTimer = setTimeout(loadLive, 60000);
+}
+
+async function sendOrder(t) {
+  const inp = document.getElementById("amt-" + t);
+  const dollars = Math.round(parseFloat(inp ? inp.value : state.amounts[t]) * 100) / 100;
+  if (!(dollars >= 1)) { state.tapMsg[t] = { ok: false, text: "Enter a dollar amount." }; render(); return; }
+  state.sending = true; render();
+  try {
+    const { js } = await api("/api/buy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t, dollars }) });
+    state.tapMsg[t] = { ok: true, text: `Order placed: ${money(dollars)} of ${t}` + (js.qty ? ` (${js.qty} shares)` : "") +
+      (js.market_open ? "." : `. It fills when the market opens (${fmtET(js.next_open)}).`) };
+    state.confirm = null;
+    loadLive();
+  } catch (e) {
+    state.tapMsg[t] = { ok: false, text: e.code === "offline" ? "You're offline; the order wasn't sent." :
+      e.code === "login" ? "Log in again, then tap Buy." :
+      "Not placed: " + (WHY_BUY[e.why] || (e.why || "").replace(/-/g, " ") || e.message || "unknown reason") + "." };
+  } finally { state.sending = false; render(); }
+}
+document.getElementById("main").addEventListener("click", ev => {
+  const b = ev.target.closest("[data-buy],[data-send],[data-cancel]");
+  if (!b) return;
+  if (b.dataset.buy) { state.confirm = b.dataset.buy; delete state.tapMsg[b.dataset.buy]; render(); document.getElementById("amt-" + b.dataset.buy)?.focus(); }
+  else if (b.dataset.send) { if (!state.sending) sendOrder(b.dataset.send); }
+  else if (b.dataset.cancel) { state.confirm = null; render(); }
+});
+document.getElementById("main").addEventListener("input", ev => {
+  if (ev.target.id && ev.target.id.startsWith("amt-")) state.amounts[ev.target.id.slice(4)] = ev.target.value;
+});
+$("#refresh").addEventListener("click", () => { setStatus("", "Checking for new results…", false); loadData(); });
+
+// ---------- login ----------
+function showLogin(msg) {
+  $("#login").hidden = false;
+  $("#pcMsg").textContent = msg || "";
+  setTimeout(() => $("#pc").focus(), 50);
+}
+$("#loginForm").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const go = $("#pcGo"); go.disabled = true; $("#pcMsg").textContent = "";
+  try {
+    await api("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: $("#pc").value }) });
+    $("#login").hidden = true; $("#pc").value = "";
+    loadData();
+  } catch (e) {
+    $("#pcMsg").textContent = e.code === "offline" ? "You're offline." : (e.message || "Couldn't log in.");
+  } finally { go.disabled = false; }
+});
+
+// refresh when the app comes back to the screen
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible" || !$("#login").hidden) return;
+  if (Date.now() - lastData > 5 * 60000) loadData(); else loadLive();
+});
+setInterval(() => { if (document.visibilityState === "visible" && $("#login").hidden) loadData(); }, 5 * 60000);
+
+state.folderId = "cloud";       // turns on the Buy buttons
+// preview hook for local screenshots only
+if (window.__CTD_SAMPLE) { state.data = window.__CTD_SAMPLE; state.confirm = window.__CTD_CONFIRM || null; state.taps = window.__CTD_TAPS || [];
+  if (window.__CTD_LOGIN) showLogin(); setStatus("ok", "Results updated " + ago(state.data.updated), true); render(); return; }
+render();
+api("/api/session").then(() => loadData(), e => { if (e.code !== "login") { state.error = errorText(e); setStatus("err", "Can't reach the server", true); render(); } });
+})();
+</script>
+
+</body></html>

@@ -129,6 +129,8 @@ def refresh_portfolio():
     drive.files().update(fileId=fid, media_body=MediaIoBaseUpload(body, mimetype="application/json"),
                          supportsAllDrives=True).execute()
     E.log("Quick check: portfolio refreshed on the dashboard")
+    import cloud_store
+    cloud_store.put("dashboard_data.json", body.getvalue(), E.log)   # phone app
 
 
 def main():
