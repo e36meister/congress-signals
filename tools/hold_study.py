@@ -49,3 +49,17 @@ print("\nBy filing year: 60-day vs 250-day vs S&P, and what days 60-250 added:")
 for y, g in d.groupby("y"):
     print(f"  {y}: n {len(g):3d}  60d {g.x60.mean() * 100:+6.2f}%  250d {g.x250.mean() * 100:+6.2f}%  added {g.later.mean() * 100:+6.2f}%")
 # market backdrop: small vs large, growth of the whole market in each year
+
+print("\nTrend rule detail (days 60-250 added), before 2022 vs 2022 on:")
+for k, g in d.groupby("ahead60"):
+    print(f"  {k}: before 2022 {agg(g[g.y < 2022], 'later')} | 2022 on {agg(g[g.y >= 2022], 'later')}")
+d["rule"] = np.where(d["x60"] > 0, d["x250"], d["x60"])       # keep if ahead at day 60, else sell at 60
+for lab, g in (("all", d), ("before 2022", d[d.y < 2022]), ("2022 on", d[d.y >= 2022])):
+    print(f"  {lab}: always 60d {g.x60.mean() * 100:+.2f}% | always 250d {g.x250.mean() * 100:+.2f}% | "
+          f"keep-if-ahead {g.rule.mean() * 100:+.2f}%  (n {len(g)})")
+# a stricter version: ahead by 5%+
+for th in (0.0, 0.05, 0.10):
+    r = np.where(d["x60"] > th, d["x250"], d["x60"])
+    print(f"  keep if ahead by more than {th * 100:.0f}% at day 60: {np.mean(r) * 100:+.2f}%  (kept {np.mean(d['x60'] > th) * 100:.0f}%)")
+# per-year for keep-if-ahead minus always-60
+print("  by year, keep-if-ahead minus always-60:", ", ".join(f"{y}: {(g.rule - g.x60).mean() * 100:+.1f}" for y, g in d.groupby("y")))
