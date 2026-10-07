@@ -1378,17 +1378,31 @@ def _days_since(iso):
         return 999
 
 
+_OPEN_BUF = []           # opening prices from every Yahoo download this run (saved by load_prices)
+_ACT_BUF = []            # dividends and splits from the same downloads (for company size at the time)
+
+
 def _yf_close(tickers, start, tries=3):
     import yfinance as yf
     logging.getLogger("yfinance").setLevel(logging.CRITICAL)
     for a in range(tries):
         try:
-            d = yf.download(tickers, start=start, auto_adjust=True, progress=False, threads=True)
+            d = yf.download(tickers, start=start, auto_adjust=True, actions=True, progress=False, threads=True)
             if d is None or d.empty or d.dropna(how="all", axis=1).empty:
                 if len(tickers) <= 3 and a == tries - 1:
                     return pd.DataFrame()
                 raise ValueError("empty result")
             c = d["Close"] if isinstance(d.columns, pd.MultiIndex) else d[["Close"]].rename(columns={"Close": tickers[0]})
+            try:       # same download, same split/dividend basis: the open is what a market order at the open pays
+                o = d["Open"] if isinstance(d.columns, pd.MultiIndex) else d[["Open"]].rename(columns={"Open": tickers[0]})
+                _OPEN_BUF.append(o.dropna(how="all", axis=1))
+                for k in ("Dividends", "Stock Splits"):
+                    if isinstance(d.columns, pd.MultiIndex) and k in d.columns.get_level_values(0):
+                        _ACT_BUF.append((k, d[k]))
+                    elif k in d.columns:
+                        _ACT_BUF.append((k, d[[k]].rename(columns={k: tickers[0]})))
+            except Exception:
+                pass
             return c.dropna(how="all", axis=1)
         except Exception as e:
             log(f"Prices: Yahoo attempt {a+1} failed ({e}); retrying")
@@ -1574,7 +1588,7 @@ def unusual_activity(scored, px, cfg, days=90, min_ratio=2.5):
     return out[:40]
 
 
-PRICE_BASIS_VERSION = 1      # Oct 5: one-time full re-download of every saved price history (split/dividend drift)
+PRICE_BASIS_VERSION = 2      # Oct 5: one-time full re-download (split/dividend drift); Oct 7: again, to collect opening prices
 
 
 def _price_queue_add(cfg, tickers, front=False):
@@ -1624,6 +1638,8 @@ def load_prices(cfg, tickers, max_age_hours=12, priority=None):
     """Keeps a saved price table; downloads full history only for new tickers and just the last
     couple of weeks for everything else."""
     cache = _p(cfg, "cache", "prices.pkl")
+    _OPEN_BUF.clear()
+    _ACT_BUF.clear()
     tickers = sorted(set(tickers) | {"SPY"})
     start = (pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
     px = pd.read_pickle(cache) if os.path.exists(cache) else None
@@ -1740,8 +1756,206 @@ def load_prices(cfg, tickers, max_age_hours=12, priority=None):
             (now_et.hour, now_et.minute) < (16, 30):
         keep = px.iloc[:-1]
     keep.to_pickle(cache)
+    try:
+        _save_opens(cfg, keep)
+    except Exception as e:
+        log(f"Opening prices: not saved ({type(e).__name__}: {e})")
+    try:
+        _save_actions(cfg)
+    except Exception as e:
+        log(f"Dividends and splits: not saved ({type(e).__name__}: {e})")
     log(f"Prices: {px.shape[1]} tickers, {px.index.min().date()} to {px.index.max().date()}")
     return px
+
+
+def _save_opens(cfg, closes):
+    """Opening prices on the same basis as the saved closes: what the backtest pays to enter at the first open
+    after a filing and to exit at the open of the sell day, like the live tool's market orders."""
+    path = _p(cfg, "cache", "opens.pkl")
+    old = pd.read_pickle(path) if os.path.exists(path) else None
+    frames = [f for f in _OPEN_BUF if f is not None and len(f)]
+    if frames:
+        new = pd.concat(frames, axis=1)
+        new.index = pd.to_datetime(new.index)
+        if getattr(new.index, "tz", None) is not None:
+            new.index = new.index.tz_localize(None)
+        new = new.loc[:, ~new.columns[::-1].duplicated()[::-1]]          # the latest download of a ticker wins
+        op = new if old is None else new.combine_first(old)
+    elif old is not None:
+        op = old
+    else:
+        return
+    op = op.reindex(index=closes.index, columns=[c for c in closes.columns if c in op.columns])
+    op.to_pickle(path)
+    have = int(op.notna().any().sum())
+    log(f"Opening prices: {have} of {closes.shape[1]} tickers")
+
+
+def _save_actions(cfg):
+    """Dividends and stock splits per ticker (only the days they happened), merged into the saved table."""
+    for kind, fname in (("Dividends", "dividends.pkl"), ("Stock Splits", "splits.pkl")):
+        path = _p(cfg, "cache", fname)
+        old = pd.read_pickle(path) if os.path.exists(path) else None
+        frames = [f for k, f in _ACT_BUF if k == kind and f is not None and len(f)]
+        if not frames:
+            continue
+        new = pd.concat(frames, axis=1)
+        new.index = pd.to_datetime(new.index)
+        if getattr(new.index, "tz", None) is not None:
+            new.index = new.index.tz_localize(None)
+        new = new.loc[:, ~new.columns[::-1].duplicated()[::-1]]
+        new = new.where(new != 0)                               # keep only the days something happened
+        new = new.dropna(how="all")
+        out = new if old is None else new.combine_first(old)
+        out.sort_index().to_pickle(path)
+    have = pd.read_pickle(_p(cfg, "cache", "splits.pkl")).shape[1] if os.path.exists(_p(cfg, "cache", "splits.pkl")) else 0
+    log(f"Dividends and splits: saved ({have} tickers with a split on record)")
+
+
+def load_actions(cfg):
+    out = {}
+    for kind, fname in (("div", "dividends.pkl"), ("split", "splits.pkl")):
+        path = _p(cfg, "cache", fname)
+        out[kind] = pd.read_pickle(path) if os.path.exists(path) else pd.DataFrame()
+    return out
+
+
+SHARES_TAG = "dei/EntityCommonStockSharesOutstanding/shares"
+
+
+def collect_share_counts(cfg):
+    """Shares outstanding per company over time, from the SEC's quarterly XBRL frames (the count on each annual and
+    quarterly report's cover page). Lets a company's size at the time of a trade be measured with the shares it had
+    then, not today's count (today's count would leak later buybacks and share issuance into the past).
+    Returns {ticker: [(as_of_date, shares), ...]}, cached."""
+    hdr = _sec_headers(cfg)
+    qdir = _p(cfg, "cache", "share_frames")
+    os.makedirs(qdir, exist_ok=True)
+    start = pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=400)
+    now = pd.Timestamp.today()
+    if hdr:
+        for p in pd.period_range(start, now, freq="Q"):
+            name = f"CY{p.year}Q{p.quarter}I"
+            path = os.path.join(qdir, name + ".json")
+            recent = p.end_time >= now - pd.Timedelta(days=200)        # still filling in: refresh weekly
+            if os.path.exists(path) and not (recent and (time.time() - os.path.getmtime(path)) / 86400 > 7):
+                continue
+            if p.start_time > now or out_of_time(cfg, 70):
+                continue
+            js = _get_json(f"https://data.sec.gov/api/xbrl/frames/{SHARES_TAG}/{name}.json", headers=hdr)
+            time.sleep(0.15)
+            if js and js.get("data") is not None:
+                rows = [[r["cik"], r["end"], r["val"], r.get("accn", "")] for r in js["data"] if r.get("val")]
+                json.dump(rows, open(path, "w"))
+    by_cik = {}
+    for fn in sorted(os.listdir(qdir)):
+        try:
+            for cik, end, val, accn in json.load(open(os.path.join(qdir, fn))):
+                by_cik.setdefault(int(cik), {})[end] = float(val)
+        except Exception:
+            continue
+    # ticker -> CIK from the SEC's current list (plus any already looked up)
+    tmap, tpath = _cache_json(cfg, "sec_ticker_cik.json", {})
+    if hdr and (not tmap or not _fresh(tmap.get("_at", ""), 7)):
+        js = _get_json("https://www.sec.gov/files/company_tickers.json", headers=hdr)
+        if js:
+            tmap = {v["ticker"].upper().replace(".", "-"): int(v["cik_str"]) for v in js.values()}
+            tmap["_at"] = dt.datetime.now().isoformat()
+            json.dump(tmap, open(tpath, "w"))
+    out = {}
+    for t, cik in tmap.items():
+        if t == "_at" or cik not in by_cik:
+            continue
+        out[t] = sorted((pd.Timestamp(d), v) for d, v in by_cik[cik].items())
+    log(f"Share counts: {len(out)} companies with SEC cover-page share counts ({len(os.listdir(qdir))} quarters)")
+    return out
+
+
+_CAP_CACHE = {}
+
+
+def _suffix_factors(dates, factors):
+    """Dates ascending and, for each, the product of that day's factor and every later one."""
+    if not len(dates):
+        return np.array([], dtype="datetime64[ns]"), np.array([])
+    return np.asarray(dates, dtype="datetime64[ns]"), np.cumprod(np.asarray(factors, float)[::-1])[::-1]
+
+
+def _later_product(prep, when):
+    d, p = prep
+    if not len(d):
+        return 1.0
+    k = np.searchsorted(d, np.datetime64(when), side="right")      # factors dated after `when`
+    return float(p[k]) if k < len(p) else 1.0
+
+
+def cap_at_time(ticker, when, px_col, shares, acts, lag_days=14):
+    """Market value on `when` = shares on the latest cover page dated at least `lag_days` before (public by then)
+    x the price that day. Prices here are adjusted for later splits and dividends; the shares are scaled by the
+    splits since the cover-page date, and the dividend adjustment is undone, so both are on the day's own basis.
+    None when there's no usable share count."""
+    ser = shares.get(ticker)
+    if not ser or px_col is None:
+        return None
+    c = _CAP_CACHE.get(ticker)
+    if c is None:
+        sd = np.array([d for d, _ in ser], dtype="datetime64[ns]")
+        sv = np.array([v for _, v in ser], dtype=float)
+        spl = acts.get("split")
+        s_ = spl[ticker].dropna() if spl is not None and ticker in getattr(spl, "columns", []) else pd.Series(dtype=float)
+        s_ = s_[(s_ > 0) & np.isfinite(s_)]
+        sp = _suffix_factors(s_.index.values, s_.values)
+        dv = acts.get("div")
+        d_ = dv[ticker].dropna() if dv is not None and ticker in getattr(dv, "columns", []) else pd.Series(dtype=float)
+        d_ = d_[d_ > 0].sort_index()
+        # dividend factors, newest first: raw close before each ex-date = adjusted close / later factors + dividend
+        fac, facs = 1.0, []
+        for exd, amt in zip(d_.index[::-1], d_.values[::-1]):
+            pre = px_col.asof(exd - pd.Timedelta(days=1))
+            f_ = 1.0
+            if np.isfinite(pre) and pre > 0:
+                raw_pre = pre / fac + amt
+                f_ = max(1e-6, 1 - amt / raw_pre)
+            facs.append(f_)
+            fac *= f_
+        dp = _suffix_factors(d_.index.values, facs[::-1])
+        c = _CAP_CACHE[ticker] = (sd, sv, sp, dp)
+    sd, sv, sp, dp = c
+    k = np.searchsorted(sd, np.datetime64(when - pd.Timedelta(days=lag_days)), side="right") - 1
+    if k < 0 or (np.datetime64(when) - sd[k]) > np.timedelta64(500, "D"):     # none yet, or too old to use
+        return None
+    p = px_col.asof(when)
+    if not np.isfinite(p) or p <= 0:
+        return None
+    sh = sv[k] * _later_product(sp, pd.Timestamp(sd[k]))          # on today's split basis, like the prices
+    p = p / _later_product(dp, when)                               # the day's price before dividend adjustment
+    return float(sh * p)
+
+
+_OPEN_REG = {}
+
+
+def register_opens(cfg, px):
+    """Line the saved opening prices up with this run's price table (same dates and tickers). The backtest uses
+    them only with this exact table; any other table (a copy, another index) falls back to closes."""
+    _OPEN_REG.clear()
+    path = _p(cfg, "cache", "opens.pkl")
+    if not os.path.exists(path):
+        return
+    op = pd.read_pickle(path).reindex(index=px.index, columns=px.columns)
+    o, c = op.values.astype(float), px.values.astype(float)
+    # an open far from the surrounding closes is a data error: treat it as missing
+    prev = np.vstack([np.full((1, c.shape[1]), np.nan), pd.DataFrame(c).ffill().values[:-1]])
+    with np.errstate(invalid="ignore", divide="ignore"):
+        bad = (o <= 0) | (np.abs(np.log(o / c)) > np.log(1.6)) & (np.abs(np.log(o / prev)) > np.log(1.6))
+    o[bad] = np.nan
+    _OPEN_REG.update({"id": id(px), "shape": px.shape, "O": o})
+    log(f"Opening prices: {int(np.isfinite(o).any(axis=0).sum())} of {px.shape[1]} tickers lined up")
+
+
+def _opens(px):
+    r = _OPEN_REG
+    return r["O"] if r and r.get("id") == id(px) and r.get("shape") == px.shape else None
 
 
 
@@ -2651,16 +2865,21 @@ def _px_ffill(px):
 
 
 def forward_returns(tx, px, hold, cost=0.0, stop=None, exit_pos=None):
-    """Return after entering the day after disclosure and holding `hold` trading days, minus trading costs.
-    `exit_pos` (optional, one price-index position per row) replaces the scheduled exit (price rules);
-    `stop` (optional, one price-index position per row) ends a trade early on that day."""
+    """Return after buying at the first open after the disclosure (the earliest a filing seen overnight can be
+    bought: the live tool's market order at the open) and holding `hold` trading days, selling at the open of the
+    sell day (when the live tool's morning run sells), minus trading costs. Where an opening price is missing the
+    day's close stands in (entry) or the previous close (exit), which is what the older version used.
+    `stop` (optional, one price-index position per row: the first trading day after a buying member's sale is
+    disclosed) sells at that day's open; `exit_pos` (optional, price rules: the day whose close broke the rule)
+    sells at the next open, the first chance after seeing that close."""
     idx = px.index
     n = len(idx)
     ent = _entry_positions(idx, tx["filed_date"])
     ext = ent + hold
     if exit_pos is not None:
         exit_pos = np.asarray(exit_pos)
-        ext = np.where(exit_pos > ent, exit_pos, ext)
+        timed = (exit_pos == ent + hold) | (exit_pos == ent + 2 * hold)        # the schedule or the 2x-hold cap
+        ext = np.where(exit_pos > ent, np.where(timed, exit_pos, exit_pos + 1), ext)
     if stop is not None:
         stop = np.asarray(stop)
         ext = np.where(stop > ent, np.minimum(ext, stop), ext)
@@ -2668,17 +2887,32 @@ def forward_returns(tx, px, hold, cost=0.0, stop=None, exit_pos=None):
     _COST_RT[0] = 2 * cost
     raw = px.values
     pf = _px_ffill(px)
-    arr = pf.values                     # exits use the last price on or before the exit day
+    arr = pf.values                     # a missing price uses the last one before it (delisted: its last price)
     spy = pf["SPY"].values
+    O = _opens(px)
     ci = tx["ticker"].map(col)
     ok = ci.notna().values & (ent < n)
     res = pd.DataFrame(index=tx.index, columns=["entry_date", "exit_date", "entry_px", "exit_px",
                                                 "ret", "spy_ret", "excess", "closed"], dtype=object)
     e_i = np.where(ok, ent, 0)
+    closed = ok & (ext < n)
     x_i = np.minimum(np.where(ok, ext, 0), n - 1)
     c_i = np.where(ok, ci.fillna(0).astype(int).values, 0)
-    p0, p1 = raw[e_i, c_i], arr[x_i, c_i]
-    s0, s1 = spy[e_i], spy[x_i]
+    sc = col["SPY"]
+    if O is not None:
+        o_e, s_oe = O[e_i, c_i], O[e_i, sc]
+        use_e = np.isfinite(o_e) & np.isfinite(s_oe)                 # stock and S&P both bought at the open
+        p0 = np.where(use_e, o_e, raw[e_i, c_i])
+        s0 = np.where(use_e, s_oe, spy[e_i])
+        o_x, s_ox = O[x_i, c_i], O[x_i, sc]
+        use_x = closed & np.isfinite(o_x) & np.isfinite(s_ox)
+        xm1 = np.maximum(x_i - 1, 0)
+        # sold at the open of the sell day; without an open, the close the evening before (same thing, roughly)
+        p1 = np.where(use_x, o_x, np.where(closed, arr[xm1, c_i], arr[x_i, c_i]))
+        s1 = np.where(use_x, s_ox, np.where(closed, spy[xm1], spy[x_i]))
+    else:
+        p0, s0 = raw[e_i, c_i], spy[e_i]
+        p1, s1 = arr[x_i, c_i], spy[x_i]
     res["entry_date"] = np.where(ok, idx.values[e_i], np.datetime64("NaT"))
     res["exit_date"] = np.where(ok, idx.values[x_i], np.datetime64("NaT"))
     res["entry_px"], res["exit_px"] = np.where(ok, p0, np.nan), np.where(ok, p1, np.nan)
@@ -2688,13 +2922,30 @@ def forward_returns(tx, px, hold, cost=0.0, stop=None, exit_pos=None):
     res["ret"] = np.where(ok, r - 2 * cost, np.nan)
     res["spy_ret"] = np.where(ok, sr, np.nan)
     res["excess"] = res["ret"].astype(float) - res["spy_ret"].astype(float)
-    res["closed"] = ok & (ext < n)
+    res["closed"] = closed
     for c in ("entry_date", "exit_date"):
         res[c] = pd.to_datetime(res[c])
     for c in ("entry_px", "exit_px", "ret", "spy_ret", "excess"):
         res[c] = res[c].astype(float)
     res["closed"] = res["closed"].astype(bool)
     return res
+
+
+def _day_parts(px, idx):
+    """Per-day return pieces for positions bought and sold at the open: (close/open - 1) on the buy day and
+    (open/previous close - 1) on the sell day, on `idx`; 0 where there's no opening price (then the old
+    close-to-close timing applies: bought at the close, sold at the close the evening before)."""
+    O = _opens(px)
+    if O is None:
+        return None, None
+    c = px.values.astype(float)
+    cf = _px_ffill(px).values.astype(float)
+    prev = np.vstack([np.full((1, c.shape[1]), np.nan), cf[:-1]])
+    with np.errstate(invalid="ignore", divide="ignore"):
+        first = np.where(np.isfinite(O) & np.isfinite(c), c / O - 1, 0.0)
+        last = np.where(np.isfinite(O) & np.isfinite(prev), O / prev - 1, 0.0)
+    pos = px.index.get_indexer(idx)
+    return np.nan_to_num(first[pos]), np.nan_to_num(last[pos])
 
 
 FACTOR_RANGE = {"track_record": (-1, 1), "sell_track_record": (-1, 1), "momentum": (-1, 1)}
@@ -3173,18 +3424,32 @@ def _portfolio_slots(picks, px, idx, slots, idle="spy", sign=1, cost=0.0):
     spy = rets["SPY"].fillna(0).values
     col = {c: i for i, c in enumerate(px.columns)}
     R = rets.values
+    F, L = _day_parts(px, idx)
     acc, cnt = np.zeros(len(idx)), np.zeros(len(idx))
     for p in picks.itertuples():
         if p.ticker not in col or pd.isna(p.entry_date):
             continue
-        a = idx.searchsorted(p.entry_date, side="right")
-        b = idx.searchsorted(p.exit_date, side="right")
+        j = col[p.ticker]
         k = float(getattr(p, "size_mult", 1.0) or 1.0)   # bigger or smaller position by confidence (1 = standard)
-        acc[a:b] += k * sign * np.nan_to_num(R[a:b, col[p.ticker]])
+        e = idx.searchsorted(p.entry_date, side="left")
+        x = idx.searchsorted(p.exit_date, side="left")
+        closed = bool(getattr(p, "closed", True))
+        if F is not None:
+            # bought at the buy day's open, sold at the sell day's open (the live tool's market orders)
+            a, b = e + 1, (x if closed else x + 1)
+            if e < len(idx):
+                acc[e] += k * sign * F[e, j]
+                cnt[e] += k
+            if closed and x < len(idx) and x > e:
+                acc[x] += k * sign * L[x, j]
+                cnt[x] += k
+        else:
+            a, b = e + 1, x + 1
+        acc[a:b] += k * sign * np.nan_to_num(R[a:b, j])
         cnt[a:b] += k
         if cost and b > a:
-            acc[a] -= k * cost
-            acc[b - 1] -= k * cost
+            acc[min(e, len(idx) - 1)] -= k * cost
+            acc[min(max(x, e), len(idx) - 1)] -= k * cost
     over = cnt > slots                      # more money wanted than there is: scale every pick down
     w = np.where(over, 1 / np.maximum(cnt, 1), 1 / slots)
     invested = np.minimum(cnt, slots) / slots
@@ -3196,13 +3461,26 @@ def _portfolio(picks, px, idx, sign=1):
     rets = _px_ffill(px).pct_change(fill_method=None).reindex(idx)
     col = {c: i for i, c in enumerate(px.columns)}
     R = rets.values
+    F, L = _day_parts(px, idx)
     acc, cnt = np.zeros(len(idx)), np.zeros(len(idx))
     for p in picks.itertuples():
         if p.ticker not in col or pd.isna(p.entry_date):
             continue
-        a = idx.searchsorted(p.entry_date, side="right")
-        b = idx.searchsorted(p.exit_date, side="right")
-        acc[a:b] += sign * np.nan_to_num(R[a:b, col[p.ticker]])
+        j = col[p.ticker]
+        e = idx.searchsorted(p.entry_date, side="left")
+        x = idx.searchsorted(p.exit_date, side="left")
+        closed = bool(getattr(p, "closed", True))
+        if F is not None:
+            a, b = e + 1, (x if closed else x + 1)
+            if e < len(idx):
+                acc[e] += sign * F[e, j]
+                cnt[e] += 1
+            if closed and x < len(idx) and x > e:
+                acc[x] += sign * L[x, j]
+                cnt[x] += 1
+        else:
+            a, b = e + 1, x + 1
+        acc[a:b] += sign * np.nan_to_num(R[a:b, j])
         cnt[a:b] += 1
     return pd.Series(np.where(cnt > 0, acc / np.maximum(cnt, 1), 0.0), index=idx)
 
@@ -3251,6 +3529,57 @@ def _select(rows, score_col, pct, per_week, blocked=None, short=False, per_membe
             taken += 1
             by_member[mk] = by_member.get(mk, 0) + 1
     return pd.DataFrame(picks).reset_index(drop=True), held
+
+
+def live_picks(scored, px, cfg, grace_days=2, today=None):
+    """The main picks the live tool buys: exactly the backtest's rule (_select: top 20% of EARLIER scores, best
+    first, at most PICKS_PER_WEEK a week first come first served, per-member cap, no late filings, net-sell
+    filter, no re-buying an open position), applied to the newest filings the moment they're seen. Only picks
+    whose first possible entry (the first trading day after the filing) is today, in the future, or at most
+    `grace_days` trading days ago are returned: a filing that only becomes a pick later (re-scored after a data
+    fix) was not a pick when it could have been bought, so the backtest's timing can't be matched and it's
+    skipped. Returns the pick rows (with prank, so sizing works like the backtest)."""
+    b = scored[scored["tx_type"] == "buy"].copy()
+    if not len(b):
+        return b
+    today = pd.Timestamp(today or pd.Timestamp.now(tz="America/New_York").date())
+    BD = pd.offsets.BDay
+    last_px = px.index.max() if len(px) else today
+    # filings too new to have a price yet: the entry is the next trading day after the filing
+    newish = b["entry_date"].isna() & (b["filed_date"] >= last_px - pd.Timedelta(days=7))
+    b.loc[newish, "entry_date"] = b.loc[newish, "filed_date"] + BD(1)
+    hold = row_holds(b.loc[newish], load_adaptive(cfg)["policy"]) if newish.any() else []
+    if newish.any():
+        b.loc[newish, "exit_date"] = [d + BD(int(h)) for d, h in zip(b.loc[newish, "entry_date"], hold)]
+    b = b[b["entry_date"].notna()]
+    earliest = today - BD(grace_days)
+    picks, _ = _select(b, "score", cfg["PICK_PERCENTILE"], cfg["PICKS_PER_WEEK"],
+                       per_member=cfg.get("MAX_PICKS_PER_MEMBER_WEEK"), skip_late=cfg.get("SKIP_LATE_FILINGS"),
+                       net_sell=cfg.get("NET_SELL_FILTER"))
+    if not len(picks):
+        return picks
+    fresh = picks[pd.to_datetime(picks["entry_date"]) >= earliest].copy()
+    scheme = load_adaptive(cfg)["policy"].get("sizing", "equal")
+    if len(fresh) and "prank" in fresh:
+        fresh["size_mult"] = size_mult(fresh["prank"], cfg, scheme)
+    return fresh.reset_index(drop=True)
+
+
+def fresh_small_rows(scored, cfg, grace_days=2, today=None):
+    """Small-company portfolio buys the live tool may make now: the backtest's small_cap_rows rule (company
+    under $2B at the time, filed on time, once per stock while held), filed recently enough that buying now
+    matches the backtest's entry (first trading day after the filing, plus `grace_days`)."""
+    b = scored[scored["tx_type"] == "buy"].copy()
+    today = pd.Timestamp(today or pd.Timestamp.now(tz="America/New_York").date())
+    BD = pd.offsets.BDay
+    if "entry_px" in b:                    # newest filings have no price yet; small_cap_rows needs one
+        b.loc[b["entry_px"].isna() & (b["filed_date"] >= today - pd.Timedelta(days=10)), "entry_px"] = 1.0
+    pol = load_adaptive(cfg)["policy"]
+    rows = small_cap_rows(b, bool(pol.get("sleeve_coverage")), hold=int(pol.get("hold_sleeve", 250)))
+    if not len(rows):
+        return rows
+    first_entry = rows["filed_date"] + BD(1)
+    return rows[first_entry >= today - BD(grace_days)].reset_index(drop=True)
 
 
 def member_weights(rows, cap=100):
@@ -4152,9 +4481,14 @@ def prepare(cfg):
         px = px.drop(columns=list(bad))
         tx = tx[~tx["ticker"].isin(bad)].reset_index(drop=True)
         log(f"Prices: set aside {len(bad)} stock(s) whose price history has clear data errors")
+    register_opens(cfg, px)
     committees = load_committees(cfg)
     history = load_committee_history(cfg, committees)
     data = {"meta": meta, "committees": committees, "committee_history": history, "religion": load_religion(cfg)}
+    try:        # company size at the time of each trade from the shares it had then (SEC), not today's count
+        data["shares"], data["actions"] = collect_share_counts(cfg), load_actions(cfg)
+    except Exception as e:
+        log(f"Share counts: skipped ({type(e).__name__}: {e})")
     try:
         data["countries"] = json.load(open(_p(cfg, "cache", "ticker_country.json")))   # filled by the daily run
     except Exception:
@@ -4457,7 +4791,8 @@ def export_ticker_charts(cfg, scored, px, tickers, years=5):
     Prices are daily closes adjusted for splits and dividends; a trade's price is that day's close."""
     tickers = sorted({t for t in tickers if isinstance(t, str) and t in px.columns})
     end = px.index[-1]
-    sub = px.loc[px.index >= end - pd.DateOffset(years=years), tickers + (["SPY"] if "SPY" in px.columns else [])]
+    # SPY once only (it's also a held position when the tool parks spare cash in it; a duplicate column broke this)
+    sub = px.loc[px.index >= end - pd.DateOffset(years=years), list(dict.fromkeys(tickers + (["SPY"] if "SPY" in px.columns else [])))]
     out = {"updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
            "dates": [d.strftime("%Y-%m-%d") for d in sub.index], "px": {}, "trades": {}, "photos": {}}
     for t in tickers:
@@ -5904,6 +6239,28 @@ def extra_features(tx, px, data, cfg, mems):
     with np.errstate(invalid="ignore", divide="ignore"):
         cap = cap_now * np.array(p_then, dtype=float) / p_now
     cap = pd.Series(np.where(np.isfinite(cap), cap, np.nan), index=tx.index)
+    # better: the shares the company had at the time (SEC cover pages) x that day's price. Today's share count
+    # scaled back by the price would leak later buybacks (winners look smaller back then) and later share issuance
+    # (losers look bigger) into the past. A ticker whose SEC count is far off Yahoo's today is a mismatch: skipped.
+    shares, acts = data.get("shares") or {}, data.get("actions") or {}
+    src = pd.Series("today's shares", index=tx.index)
+    if shares:
+        _CAP_CACHE.clear()
+        good = {}
+        for t in set(tx["ticker"]):
+            if t not in shares or t not in px.columns:
+                continue
+            c_sec = cap_at_time(t, px.index[-1], px[t], shares, acts, lag_days=0)
+            c_y = (meta.get(t) or {}).get("cap")
+            good[t] = c_sec is not None and (not c_y or 1 / 3 < c_sec / float(c_y) < 3)
+        vals = np.array([cap_at_time(t, d, px[t], shares, acts) if good.get(t) and pd.notna(d) else np.nan
+                         for t, d in zip(tx["ticker"], tx["filed_date"])], dtype=float)
+        use = np.isfinite(vals)
+        cap = pd.Series(np.where(use, vals, cap.values), index=tx.index)
+        src[use] = "SEC shares then"
+        log(f"Company size at the time: {use.mean() * 100:.0f}% of trades from the SEC share count then, "
+            f"the rest from today's count ({sum(good.values())} companies matched)")
+    tx["market_cap_source"] = src
     tx["market_cap_now"] = cap_now
     tx["market_cap"] = cap
     tx["f_small_cap"] = np.where(cap.isna(), 0.0, np.where(cap < 2e9, 1.0, np.where(cap < 1e10, 0.5, 0.0)))
@@ -7267,6 +7624,9 @@ def price_exit_positions(rows, px, hold, price_exit="none", extend="none"):
             continue
         base = e + int(hold)
         p0 = arr[e, c]
+        O = _opens(px)
+        if O is not None and np.isfinite(O[e, c]) and O[e, c] > 0:
+            p0 = O[e, c]                  # the price paid at the open, like the live tool's average entry price
         if not np.isfinite(p0) or p0 <= 0:
             continue
         stopped = False

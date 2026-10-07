@@ -80,6 +80,26 @@ def _bot_buys(api, any_buyer=False, owner=False):
     return out
 
 
+NEAR_END_DAYS = 5          # a position this close to its sell date is re-checked against the current hold every run
+
+
+def current_hold(order, sym, pol, cfg):
+    """The holding period the weekly check currently supports for this position's group: the small-company
+    portfolio, or main picks of small / other companies (size at the filing, from the run's scores)."""
+    cid = order.get("client_order_id") or ""
+    if not pol or cid.startswith(PARK_PREFIX):
+        return None
+    if cid.startswith(PREFIX + "sm-"):
+        v = pol.get("hold_sleeve")
+    else:
+        cap = (cfg.get("_caps") or {}).get(from_alpaca(sym))
+        v = pol.get("hold_small") if (cap is not None and cap < 2e9) else pol.get("hold_other")
+    try:
+        return int(v) if v else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _hold_of(order, default):
     m = re.search(r"-h(\d+)$", order.get("client_order_id") or "")
     return int(m.group(1)) if m else int(default)
@@ -178,7 +198,16 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             continue
         bought = dt.date.fromisoformat(o["filled_at"][:10])
         held = int(np.busday_count(bought, today))
-        hold = _hold_of(o, s["hold_days"])
+        hold = orig = _hold_of(o, s["hold_days"])
+        # near the end of its hold (or past it), checked every run: the holding period the weekly check now
+        # supports for this group wins over the one it was bought under (longer: keep it; shorter: sell)
+        now_hold = current_hold(o, sym, pol, cfg)
+        if now_hold and now_hold != orig and held >= min(orig, now_hold) - NEAR_END_DAYS:
+            hold = now_hold
+            if now_hold > orig and held >= orig - NEAR_END_DAYS and sym not in cfg.setdefault("_extended_logged", set()):
+                cfg["_extended_logged"].add(sym)
+                actions.append({"side": "hold", "symbol": sym, "ok": True,
+                                "why": f"holding {now_hold} trading days instead of {orig}: the weekly check now favors the longer hold"})
         ext = rule_ext(o)
         if ext != "none" and hold <= held < 2 * hold:
             # keep holding while it's in profit and within X% of its high since buying
@@ -187,10 +216,10 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             hi = high_since(sym, o["filled_at"][:10], now_px)
             if hi is None or (now_px > entry and now_px >= hi * (1 - pct(ext))):
                 continue
-        if held >= hold:                                    # each position keeps the hold it was bought under
+        if held >= hold:
             r = api.delete(f"/v2/positions/{sym}")
             actions.append({"side": "sell", "symbol": sym, "ok": r.status_code in (200, 207),
-                            "why": f"held {held} trading days"})
+                            "why": f"held {held} trading days" + (f" (the weekly check moved this group to {hold})" if hold != orig else "")})
             sold.add(sym)
 
     # 1a. the weekly check can turn on "sell when a member who bought discloses a sale" (main picks only;
@@ -294,11 +323,17 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                 return True
             return False
 
-        rows = buys[buys["action"] == "BUY"] if buys is not None and len(buys) else buys
-        if rows is not None and len(rows):
+        live = cfg.get("_live_picks")
+        if live is not None:
+            # the backtest's own rule on the newest filings, bought as soon as they're seen (stale picks skipped)
+            rows, order, first_time = live, list(live["ticker"]) if len(live) else [], False
+        else:
+            rows = buys[buys["action"] == "BUY"] if buys is not None and len(buys) else buys
             new_buys = set(new.loc[new["action"] == "BUY", "ticker"]) if new is not None and len(new) else set()
             first_time = not any(not is_sleeve(x) for x in bot)   # first run: start from the whole current BUY list
-            for t in [t for t in rows["ticker"] if first_time or t in new_buys]:
+            order = [t for t in rows["ticker"] if first_time or t in new_buys] if rows is not None and len(rows) else []
+        if rows is not None and len(rows):
+            for t in order:
                 if slots <= 0 or inv_main + dollars * 0.5 > main_cap:
                     break
                 row = rows[rows["ticker"] == t].iloc[0]
@@ -320,15 +355,22 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                     inv_main += amt
 
         # small-company portfolio: every timely purchase of a company under $2B, once per stock
-        if sleeve_pct > 0 and buys is not None and len(buys) and "f_small_cap" in buys:
+        fresh_sm = cfg.get("_small_fresh")
+        if sleeve_pct > 0 and fresh_sm is not None:
+            sm = fresh_sm              # the backtest's small-company rule on filings recent enough to match its timing
+        elif sleeve_pct > 0 and buys is not None and len(buys) and "f_small_cap" in buys:
             sm = buys[(buys["f_small_cap"].fillna(0) >= 1) & (buys.get("lag_days", pd.Series(0, index=buys.index)).fillna(999) <= 45)]
             if pol.get("sleeve_coverage") and "f_no_coverage" in sm:     # set by the weekly check
                 sm = sm[sm["f_no_coverage"].fillna(0) == 0]
+        else:
+            sm = None
+        if sm is not None and len(sm):
             sleeve_cap = sleeve_pct * 0.95 * equity
             sm_slots = int(cfg.get("_small_slots") or 25)
             amount = sleeve_cap / max(sm_slots, 1)
             hold = int(pol.get("hold_sleeve", 250))
-            ever = {sym for sym in bot if is_sleeve(sym)}
+            # the backtest's rule already spaces repeat buys of a stock; the old list-based path buys each stock once
+            ever = set() if fresh_sm is not None else {sym for sym in bot if is_sleeve(sym)}
             for t in sm["ticker"]:
                 if inv_sleeve + amount > sleeve_cap:
                     break

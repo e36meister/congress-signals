@@ -24,4 +24,6 @@ jobs:
           path: data
           key: data-${{ github.run_id }}
           restore-keys: data-
-      - run: python tools/${{ github.event.inputs.script }}
+      - env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+        run: python tools/${{ github.event.inputs.script }}
