@@ -38,6 +38,7 @@ async function api(req, env, url) {
   }
   if (p === "/api/login" && req.method === "POST") return login(req, env);
   if (p === "/api/logout" && req.method === "POST") return json({ ok: true }, 200, { "Set-Cookie": `${COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict` });
+  if (p === "/api/widget" && req.method === "GET") return widget(req, env, url);   // its own read-only key
   if (!(await validSession(req, env))) return json({ error: "login" }, 401);
 
   if (p === "/api/session") return json({ ok: true, mode: (env.TRADING_MODE || "paper") });
@@ -45,6 +46,8 @@ async function api(req, env, url) {
   if (p === "/api/charts" && req.method === "GET") return fromR2(req, env, "ticker_charts.json");
   if (p === "/api/live" && req.method === "GET") return live(env);
   if (p === "/api/buy" && req.method === "POST") return buy(req, env);
+  if (p === "/api/widget/script" && req.method === "GET") return widgetScript(env, url, false);
+  if (p === "/api/widget/script" && req.method === "POST") return widgetScript(env, url, true);   // new key
   if (p === "/api/push/key" && req.method === "GET") return json({ key: (await vapid(env)).pub, phones: (await getSubs(env)).length });
   if (p === "/api/push/subscribe" && req.method === "POST") {
     let b = {};
@@ -297,3 +300,120 @@ async function startQuickCheck(env, min) {
     });
   } catch (e) {}
 }
+
+// ---------- home-screen widget (Scriptable) ----------
+// The widget has its own key, separate from the login: it can only read the summary below, never trade.
+async function widgetKey(env, renew) {
+  const o = renew ? null : await env.DATA.get("widget/key.txt");
+  if (o) return (await o.text()).trim();
+  const k = b64url(crypto.getRandomValues(new Uint8Array(24)));
+  await env.DATA.put("widget/key.txt", k);
+  return k;
+}
+
+async function widget(req, env, url) {
+  const given = req.headers.get("X-Widget-Key") || url.searchParams.get("k") || "";
+  const o = await env.DATA.get("widget/key.txt");
+  const key = o ? (await o.text()).trim() : "";
+  if (!key || !timingSafeEqual(given, key)) return json({ error: "key" }, 401);
+  const dobj = await env.DATA.get("dashboard_data.json");
+  const d = dobj ? await dobj.json() : {};
+  const cr = d.close_report || {}, port = d.portfolio || {};
+  const out = { at: new Date().toISOString(), equity: port.equity ?? null, day_pl: port.day_pl ?? null,
+    market_open: !!port.market_open, live: false };
+  const a = alpaca(env);
+  if (a.ready) {
+    try {
+      const [acct, clock] = await Promise.all([a.get("/v2/account"), a.get("/v2/clock")]);
+      if (acct.ok) {
+        out.equity = +acct.data.equity;
+        if (+acct.data.last_equity) out.day_pl = out.equity - +acct.data.last_equity;
+        out.live = true;
+      }
+      if (clock.ok) out.market_open = !!clock.data.is_open;
+    } catch (e) {}
+  }
+  if (out.equity != null && out.day_pl != null && out.equity - out.day_pl) out.day_pct = out.day_pl / (out.equity - out.day_pl) * 100;
+  const s = cr.series || {};
+  if ((s.account || []).length) {
+    out.since = { date: cr.date, acct: cr.since_start, spy: cr.spy_since_start,
+      gap: cr.since_start != null && cr.spy_since_start != null ? cr.since_start - cr.spy_since_start : null };
+    out.spark = { acct: s.account.slice(-60), spy: (s.spy || []).slice(-60) };
+  }
+  const park = new Set(["SPY", "VOO", "IVV"]), seen = new Set();
+  out.buys = (port.orders || []).filter(x => x.side === "buy" && (x.by === "tool" || x.by === "tap") && x.status === "filled" && !park.has(x.t))
+    .filter(x => !seen.has(x.t) && seen.add(x.t)).slice(0, 4).map(x => ({ t: x.t, at: x.at, by: x.by }));
+  return json(out);
+}
+
+async function widgetScript(env, url, renew) {
+  const key = await widgetKey(env, renew);
+  const js = WIDGET_JS.replace("__URL__", url.origin).replace("__KEY__", key);
+  return new Response(js, { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
+}
+
+const WIDGET_JS = `// Capitol Capital widget for Scriptable (large size). Read-only: it can't trade.
+const URL_ = "__URL__", KEY = "__KEY__";
+const BG = new Color("#07090A"), GREEN = new Color("#39FF88"), RED = new Color("#FF3B4E"),
+      INK = new Color("#E9EEF2"), DIM = new Color("#7C8696"), GRID = new Color("#1A2027");
+const fm = FileManager.local(), cache = fm.joinPath(fm.documentsDirectory(), "capitol-capital-widget.json");
+async function load() {
+  try {
+    const r = new Request(URL_ + "/api/widget"); r.headers = { "X-Widget-Key": KEY }; r.timeoutInterval = 20;
+    const d = await r.loadJSON();
+    if (d && d.error) throw new Error(d.error);
+    fm.writeString(cache, JSON.stringify(d)); return d;
+  } catch (e) { return fm.fileExists(cache) ? Object.assign(JSON.parse(fm.readString(cache)), { stale: true }) : null; }
+}
+const money = v => v == null ? "–" : (v < 0 ? "-$" : "$") + Math.abs(Math.round(v)).toLocaleString("en-US");
+const pct = (v, dp = 2) => v == null ? "–" : (v > 0 ? "+" : "") + v.toFixed(dp) + "%";
+const col = v => v == null || v === 0 ? DIM : v > 0 ? GREEN : RED;
+function spark(a, b, w, h) {
+  const dc = new DrawContext(); dc.size = new Size(w, h); dc.opaque = false; dc.respectScreenScale = true;
+  const all = a.concat(b).filter(x => x != null); if (all.length < 2) return dc.getImage();
+  let lo = Math.min(...all, 0), hi = Math.max(...all, 0); if (hi - lo < 0.5) { hi += 0.25; lo -= 0.25; }
+  const y = v => h - 4 - (v - lo) / (hi - lo) * (h - 8);
+  const zero = new Path(); zero.move(new Point(0, y(0))); zero.addLine(new Point(w, y(0)));
+  dc.addPath(zero); dc.setStrokeColor(GRID); dc.setLineWidth(1); dc.strokePath();
+  const line = (arr, c, lw) => { const n = arr.length; if (n < 2) return; const p = new Path();
+    arr.forEach((v, i) => { const pt = new Point(i / (n - 1) * w, y(v ?? 0)); i ? p.addLine(pt) : p.move(pt); });
+    dc.addPath(p); dc.setStrokeColor(c); dc.setLineWidth(lw); dc.strokePath(); };
+  line(b, DIM, 1.5); line(a, GREEN, 2.5);
+  return dc.getImage();
+}
+const d = await load();
+const w = new ListWidget(); w.backgroundColor = BG; w.url = URL_; w.setPadding(16, 16, 16, 16);
+w.refreshAfterDate = new Date(Date.now() + 15 * 60 * 1000);
+const head = w.addStack(); head.centerAlignContent();
+const t = head.addText("CAPITOL CAPITAL"); t.font = Font.semiboldMonospacedSystemFont(11); t.textColor = GREEN;
+head.addSpacer();
+const st = head.addText(d ? (d.stale ? "offline · " : "") + (d.market_open ? "market open" : "market closed") : ""); st.font = Font.systemFont(10); st.textColor = DIM;
+w.addSpacer(8);
+if (!d) { const e = w.addText("Can't reach the app yet"); e.textColor = INK; }
+else {
+  const row = w.addStack(); row.bottomAlignContent();
+  const eq = row.addText(money(d.equity)); eq.font = Font.boldMonospacedSystemFont(30); eq.textColor = INK; eq.minimumScaleFactor = 0.6;
+  row.addSpacer(10);
+  const dy = row.addText((d.day_pl > 0 ? "+" : "") + money(d.day_pl) + " · " + pct(d.day_pct) + " today"); dy.font = Font.mediumMonospacedSystemFont(13); dy.textColor = col(d.day_pl);
+  w.addSpacer(10);
+  if (d.spark) { const img = w.addImage(spark(d.spark.acct, d.spark.spy, 320, 120)); img.imageSize = new Size(320, 120); }
+  w.addSpacer(6);
+  if (d.since) {
+    const s = w.addStack();
+    const a = s.addText("You " + pct(d.since.acct)); a.font = Font.mediumMonospacedSystemFont(12); a.textColor = GREEN;
+    s.addSpacer(10);
+    const b = s.addText("S&P " + pct(d.since.spy)); b.font = Font.mediumMonospacedSystemFont(12); b.textColor = DIM;
+    s.addSpacer();
+    const g = s.addText((d.since.gap >= 0 ? "ahead " : "behind ") + Math.abs(d.since.gap ?? 0).toFixed(2) + " pts"); g.font = Font.mediumMonospacedSystemFont(12); g.textColor = col(d.since.gap);
+  }
+  w.addSpacer();
+  const nb = w.addText("NEW BUYS"); nb.font = Font.semiboldMonospacedSystemFont(10); nb.textColor = DIM;
+  w.addSpacer(3);
+  const list = (d.buys || []).map(b => b.t).join("   ") || "none yet";
+  const l = w.addText(list); l.font = Font.boldMonospacedSystemFont(16); l.textColor = INK;
+  w.addSpacer(6);
+  const up = w.addText("since start = last close" + (d.since && d.since.date ? " (" + d.since.date + ")" : "")); up.font = Font.systemFont(9); up.textColor = DIM;
+}
+if (config.runsInWidget) Script.setWidget(w); else await w.presentLarge();
+Script.complete();
+`;
