@@ -2937,14 +2937,21 @@ def _day_parts(px, idx):
     O = _opens(px)
     if O is None:
         return None, None
-    c = px.values.astype(float)
-    cf = _px_ffill(px).values.astype(float)
-    prev = np.vstack([np.full((1, c.shape[1]), np.nan), cf[:-1]])
-    with np.errstate(invalid="ignore", divide="ignore"):
-        first = np.where(np.isfinite(O) & np.isfinite(c), c / O - 1, 0.0)
-        last = np.where(np.isfinite(O) & np.isfinite(prev), O / prev - 1, 0.0)
+    if _DAYPARTS.get("id") != _OPEN_REG.get("id"):            # computed once per price table (it's large)
+        c = px.values.astype(float)
+        cf = _px_ffill(px).values.astype(float)
+        prev = np.vstack([np.full((1, c.shape[1]), np.nan), cf[:-1]])
+        with np.errstate(invalid="ignore", divide="ignore"):
+            first = np.nan_to_num(np.where(np.isfinite(O) & np.isfinite(c), c / O - 1, 0.0)).astype(np.float32)
+            last = np.nan_to_num(np.where(np.isfinite(O) & np.isfinite(prev), O / prev - 1, 0.0)).astype(np.float32)
+        del c, cf, prev
+        _DAYPARTS.clear()
+        _DAYPARTS.update({"id": _OPEN_REG.get("id"), "F": first, "L": last})
     pos = px.index.get_indexer(idx)
-    return np.nan_to_num(first[pos]), np.nan_to_num(last[pos])
+    return _DAYPARTS["F"][pos], _DAYPARTS["L"][pos]
+
+
+_DAYPARTS = {}
 
 
 FACTOR_RANGE = {"track_record": (-1, 1), "sell_track_record": (-1, 1), "momentum": (-1, 1)}
