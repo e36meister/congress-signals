@@ -69,6 +69,7 @@ DEFAULT_CONFIG = {
     "QUIVER_API_KEY": "",
     "FMP_API_KEY": "",
     "OCR_SPACE_API_KEY": "",
+    "GOOGLE_VISION_API_KEY": "",     # Google Cloud Vision, free tier only (950 pages a month), after OCR.space's daily cap
     "TIINGO_API_KEY": "",            # free key from tiingo.com: fills in prices for delisted stocks
     "TIINGO_PER_RUN": 45,
     "USE_HOUSE": True, "USE_SENATE": True, "USE_INSIDERS": True, "USE_CONTRACTS": True,
@@ -272,7 +273,47 @@ def parse_house_ptr_text(text):
     return out
 
 
-def house_index(year):
+HOUSE_LIVE_SEEN = os.path.join("data", "cache", "house_live_seen.json")   # first day each live-only report was seen
+
+
+def house_live_rows(year):
+    """PTRs on the House clerk's live search page that aren't in the yearly list file yet. The list file is only
+    rebuilt about once a day, while the search page shows a report as soon as it's posted (often most of a day
+    earlier). The page has no filing date, so a report is dated the day we first saw it: never earlier than the
+    real date, so nothing can be known before it was public."""
+    r = requests.post("https://disclosures-clerk.house.gov/FinancialDisclosure/ViewMemberSearchResult",
+                      data={"LastName": "", "FilingYear": str(year), "State": "", "District": ""},
+                      headers=UA, timeout=60)
+    r.raise_for_status()
+    rows = []
+    for m in re.finditer(r'href="public_disc/ptr-pdfs/(\d{4})/(\d+)\.pdf"[^>]*>([^<]+)</a>\s*</td>\s*'
+                         r'<td[^>]*>([^<]*)</td>\s*<td[^>]*>[^<]*</td>\s*<td[^>]*>([^<]*)</td>', r.text):
+        y, doc, name, office, filing = m.groups()
+        if "PTR" not in filing.upper():
+            continue
+        last, _, first = name.partition(",")
+        first = re.sub(r"^\s*(Hon\.+|Mr\.|Mrs\.|Ms\.|Dr\.)\s*", "", first.strip(), flags=re.I).strip()
+        rows.append({"Prefix": "", "Last": last.strip(), "First": first, "Suffix": "", "FilingType": "P",
+                     "StateDst": office.strip(), "Year": int(y), "DocID": int(doc)})
+    df = pd.DataFrame(rows)
+    if not len(df):
+        return df
+    try:
+        seen = json.load(open(HOUSE_LIVE_SEEN)) if os.path.exists(HOUSE_LIVE_SEEN) else {}
+    except Exception:
+        seen = {}
+    today = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
+    for d in df["DocID"].astype(str):
+        seen.setdefault(d, today)
+    if os.path.isdir(os.path.dirname(HOUSE_LIVE_SEEN)):
+        cutoff = (pd.Timestamp(today) - pd.Timedelta(days=400)).strftime("%Y-%m-%d")
+        json.dump({k: v for k, v in seen.items() if v >= cutoff}, open(HOUSE_LIVE_SEEN, "w"))
+    # same text format as the list file ("7/13/2026"), so mixed columns parse the same way
+    df["FilingDate"] = [f"{int(d[5:7])}/{int(d[8:10])}/{d[:4]}" for d in df["DocID"].astype(str).map(seen)]
+    return df
+
+
+def house_index(year, live=True):
     url = f"https://disclosures-clerk.house.gov/public_disc/financial-pdfs/{year}FD.zip"
     r = requests.get(url, headers=UA, timeout=120)
     r.raise_for_status()
@@ -280,6 +321,17 @@ def house_index(year):
     xml_name = [n for n in z.namelist() if n.lower().endswith(".xml")][0]
     df = pd.read_xml(z.open(xml_name))
     df = df[df["FilingType"].astype(str).str.upper() == "P"].copy()
+    if live and year >= dt.date.today().year - 1:
+        try:      # reports posted since the list file was last rebuilt
+            lv = house_live_rows(year)
+            if len(lv):
+                lv = lv[~lv["DocID"].astype(str).isin(set(df["DocID"].astype(str)))]
+                if len(lv):
+                    df = pd.concat([df, lv[[c for c in lv.columns if c in df.columns or c == "FilingDate"]]],
+                                   ignore_index=True)
+                    log(f"House {year}: {len(lv)} report(s) from the live search, not in the list file yet")
+        except Exception as e:
+            log(f"House {year}: live search skipped ({type(e).__name__})")
     df["year"] = year
     return df
 
@@ -533,7 +585,7 @@ def collect_house_paper(cfg):
     cache_un, redo_path = _p(cfg, "cache", "house_paper_unmatched.pkl"), _p(cfg, "cache", "house_paper_redo.json")
     un = pd.read_pickle(cache_un) if os.path.exists(cache_un) else pd.DataFrame()
     redo = set(json.load(open(redo_path))) if os.path.exists(redo_path) else set()
-    mode = "ocrspace" if cfg.get("OCR_SPACE_API_KEY") else "tesseract"
+    mode = "ocrspace" if (cfg.get("OCR_SPACE_API_KEY") or cfg.get("GOOGLE_VISION_API_KEY")) else "tesseract"
     old = open(vpath).read().strip() if os.path.exists(vpath) else ""
     old_ver, _, old_mode = old.partition("-")
     if old and old_mode != mode and mode == "ocrspace":
@@ -549,7 +601,8 @@ def collect_house_paper(cfg):
         open(vpath, "w").write(f"{PAPER_VERSION}-{mode}")
     nidx, known = paper_name_index(cfg)
     tx, un = _rematch(tx, un, nidx, known, "House paper", cfg)
-    ocr = PP.OcrSpace(cfg["OCR_SPACE_API_KEY"], _p(cfg, "state", "ocrspace_usage.json")) if cfg.get("OCR_SPACE_API_KEY") else None
+    ocr = PP.make_ocr(cfg.get("OCR_SPACE_API_KEY"), _p(cfg, "state", "ocrspace_usage.json"),
+                      cfg.get("GOOGLE_VISION_API_KEY"), _p(cfg, "state", "vision_usage.json"))
     matcher = lambda name: nidx.match(name, known)
     idx = []
     for y in range(start.year, dt.date.today().year + 1):
@@ -669,7 +722,7 @@ def collect_senate_paper(cfg, max_calls=120):
     vpath = _p(cfg, "cache", "senate_paper_version.txt")
     tx = pd.read_pickle(cache_tx) if os.path.exists(cache_tx) else pd.DataFrame()
     done = set(json.load(open(cache_done))) if os.path.exists(cache_done) else set()
-    mode = "ocrspace" if cfg.get("OCR_SPACE_API_KEY") else "tesseract"
+    mode = "ocrspace" if (cfg.get("OCR_SPACE_API_KEY") or cfg.get("GOOGLE_VISION_API_KEY")) else "tesseract"
     old = open(vpath).read().strip() if os.path.exists(vpath) else ""
     old_ver, _, old_mode = old.partition("-")
     if old and (old_ver != str(SENATE_PAPER_VERSION) or (old_mode != mode and mode == "ocrspace")):
@@ -689,7 +742,8 @@ def collect_senate_paper(cfg, max_calls=120):
     tx, un = _rematch(tx, un, nidx, known, "Senate paper", cfg)
     urows = []
     matcher = lambda name: nidx.match(name, known)
-    ocr = PP.OcrSpace(cfg["OCR_SPACE_API_KEY"], _p(cfg, "state", "ocrspace_usage.json")) if cfg.get("OCR_SPACE_API_KEY") else None
+    ocr = PP.make_ocr(cfg.get("OCR_SPACE_API_KEY"), _p(cfg, "state", "ocrspace_usage.json"),
+                      cfg.get("GOOGLE_VISION_API_KEY"), _p(cfg, "state", "vision_usage.json"))
     used0 = sum((ocr.u.get("day") or {}).values()) if ocr else 0
     calls = lambda: (sum((ocr.u.get("day") or {}).values()) - used0) if ocr else 0
     log(f"Senate paper: {len(index)} scanned reports, {len(todo)} to read")
@@ -796,7 +850,9 @@ def data_progress(cfg):
                             "lines_seen", "lines_matched", "at"),
         "senate_scans": pick(h.get("senate_paper") or {}, "rows", "left", "unmatched", "read_this_run", "at"),
         "ocr": {"today": (use.get("day") or {}).get(today, 0), "day_cap": 450,
-                "month": (use.get("month") or {}).get(mon, 0), "month_cap": 24000},
+                "month": (use.get("month") or {}).get(mon, 0), "month_cap": 24000,
+                "vision_month": ((js("state", "vision_usage.json", default={}) or {}).get("month") or {}).get(mon, 0),
+                "vision_cap": 950},
         "prices": {"refresh_queue": len(js("cache", "price_refresh_queue.json", default=[]) or []),
                    "trades": pc.get("trades"), "with_prices": pc.get("with_prices"), "missing_share": pc.get("missing_share")},
         "company_names": {"quarters": len(names.get("done") or []), "tickers": len(names.get("names") or {})},

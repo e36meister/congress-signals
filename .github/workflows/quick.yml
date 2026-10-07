@@ -7,7 +7,7 @@ on:
 
 concurrency:
   group: quick-check
-  cancel-in-progress: true
+  cancel-in-progress: false      # a check already running finishes; at most one more waits behind it
 
 permissions:
   contents: read
