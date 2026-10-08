@@ -21,7 +21,7 @@ days = px.index[-5:]
 a, b = px.loc[days], new.reindex(days)[px.columns]
 both = a.notna() & b.notna()
 rel = (b / a - 1).abs()[both]
-v = rel.stack()
+v = rel.stack().dropna()
 print(f"Compared {int(both.values.sum())} prices on {len(days)} days: within 0.1% {(v < .001).mean():.1%}, within 1% {(v < .01).mean():.1%}")
 miss = int((a.notna() & b.isna()).values.sum())
 print(f"Saved price present but refresh returned nothing: {miss}")
