@@ -30,7 +30,7 @@ print(f"Saved price present but refresh returned nothing: {miss}")
 from_al = set()
 _orig = E._alpaca_close
 bad = rel > .001
-by_day = bad.sum()
+by_day = bad.sum(axis=1)
 print("Differing prices by day:", {str(d.date()): int(n) for d, n in by_day.items()})
 tick_bad = bad.any()
 tb = list(tick_bad[tick_bad].index)
