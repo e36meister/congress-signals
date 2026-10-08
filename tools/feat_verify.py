@@ -58,8 +58,9 @@ for c in cols:
         if c.startswith("f_"):
             same &= (np.isnan(xv) == np.isnan(yv)) & ((xv == yv) | np.isnan(xv))
     else:
+        both_missing = pd.isna(x).values & pd.isna(y).values
         xs, ys = x.astype(str).values, y.astype(str).values
-        same = xs == ys
+        same = (xs == ys) | both_missing
     n_bad = int((~same).sum())
     if n_bad:
         bad += 1
