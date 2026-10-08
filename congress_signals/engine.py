@@ -2391,12 +2391,35 @@ def collect_insiders(cfg):
     return ins
 
 
-def recent_form4(cfg, tickers, days=120):
-    """Live Form 4 filings for a few tickers (the quarterly data lags up to 3 months)."""
+def recent_form4(cfg, tickers, days=120, last_filed=None):
+    """Live Form 4 filings for a few tickers (the quarterly data lags up to 3 months).
+    Saved per stock: a stock is checked again only when a member filed a trade in it on or after the day of its
+    last check (or after a week). A trade's insider signal only counts Form 4s filed by the trade's own filing
+    date, so Form 4s filed after every member filing in that stock can't change any score; skipping them is
+    exact, not an approximation."""
     import xml.etree.ElementTree as ET
     hdr = _sec_headers(cfg)
     if not hdr or not tickers:
         return pd.DataFrame()
+    cache, cpath = _cache_json(cfg, "insiders_live.json", {"checked": {}, "rows": []})
+    today = pd.Timestamp.today().normalize()
+    lf = last_filed or {}
+
+    def due(t):
+        c = cache["checked"].get(t)
+        if not c:
+            return True
+        c = pd.Timestamp(c)
+        return (today - c).days >= 7 or (t in lf and pd.Timestamp(lf[t]).normalize() >= c)
+    keep = [t for t in tickers if not due(t)]
+    tickers = [t for t in tickers if due(t)]
+    if keep:
+        log(f"Insiders (live): {len(keep)} stocks unchanged since their last check; {len(tickers)} to check")
+    if not tickers:
+        d = pd.DataFrame(cache["rows"], columns=["ticker", "filed", "owner", "code", "value"])
+        d = d[d["ticker"].isin(set(keep))]
+        d["filed"] = pd.to_datetime(d["filed"])
+        return d
     try:
         cmap = {v["ticker"].upper().replace(".", "-"): int(v["cik_str"]) for v in
                 requests.get("https://www.sec.gov/files/company_tickers.json", headers=hdr, timeout=60).json().values()}
@@ -2404,7 +2427,7 @@ def recent_form4(cfg, tickers, days=120):
         log(f"Insiders (live): ticker list failed ({e})")
         return pd.DataFrame()
     cutoff = (pd.Timestamp.today() - pd.Timedelta(days=days)).strftime("%Y-%m-%d")
-    rows = []
+    rows, checked_ok = [], []
     log(f"Insiders (live): checking the latest SEC filings for {len(tickers)} recently traded stocks")
     for n_t, t in enumerate(tickers, 1):
         if out_of_time(cfg):
@@ -2413,6 +2436,7 @@ def recent_form4(cfg, tickers, days=120):
             log(f"Insiders (live): {n_t}/{len(tickers)}")
         cik = cmap.get(t)
         if not cik:
+            checked_ok.append(t)
             continue
         try:
             rec = requests.get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json", headers=hdr, timeout=30).json()["filings"]["recent"]
@@ -2433,11 +2457,28 @@ def recent_form4(cfg, tickers, days=120):
                     pr = pd.to_numeric(n.findtext("transactionAmounts/transactionPricePerShare/value"), errors="coerce")
                     rows.append({"ticker": t, "filed": pd.Timestamp(fdate), "owner": owner, "code": code,
                                  "value": (sh or 0) * (pr or 0)})
+            checked_ok.append(t)              # only a complete check counts (a failed one is tried next run)
         except Exception:
             continue
-    d = pd.DataFrame(rows)
+    d = pd.DataFrame(rows, columns=["ticker", "filed", "owner", "code", "value"])
     if len(d):
         d = d.groupby(["ticker", "filed", "owner", "code"], as_index=False)["value"].sum()
+    try:      # save: the checked stocks' rows replace their old ones
+        done_t = set(checked_ok)
+        old = [r for r in cache["rows"] if r[0] not in done_t]
+        new = [[r.ticker, pd.Timestamp(r.filed).strftime("%Y-%m-%d"), r.owner, r.code, float(r.value)]
+               for r in d.itertuples(index=False) if r.ticker in done_t]
+        cache["rows"] = old + new
+        stamp = today.strftime("%Y-%m-%d")
+        for t in done_t:
+            cache["checked"][t] = stamp
+        json.dump(cache, open(cpath, "w"))
+    except Exception as e:
+        log(f"Insiders (live): couldn't save the check ({type(e).__name__})")
+    prev = pd.DataFrame([r for r in cache["rows"] if r[0] in set(keep)], columns=["ticker", "filed", "owner", "code", "value"])
+    if len(prev):
+        prev["filed"] = pd.to_datetime(prev["filed"])
+        d = pd.concat([d, prev], ignore_index=True)
     log(f"Insiders (live): {len(d)} recent trades across {d['ticker'].nunique() if len(d) else 0} tickers")
     return d
 
@@ -3075,7 +3116,11 @@ def save_member_tags(cfg, tx, mems):
     json.dump(tags, open(path, "w"))
 
 
+_T0 = [0.0]
+
+
 def compute_features(tx, px, data, cfg):
+    _T0[0] = time.time()
     meta, committees = data["meta"], data["committees"]
     hold = cfg["HOLD_DAYS"]
     K = cfg["TRACK_PRIOR_TRADES"]
@@ -3278,12 +3323,16 @@ def compute_features(tx, px, data, cfg):
                 f[i] = 1.0 if sp else 0.5
                 note[i] = f"{'sponsored' if sp else 'cosponsored'} {len(w)} {w['policy'].iloc[0]} bill(s)"
         tx["f_bills"], tx["bill_note"] = f, note
-    tx = compute_connections(tx, data, cfg, mems)
-    tx = relationship_features(tx, data, cfg, mems)
-    tx = volume_features(tx, data)
-    tx = event_features(tx, data, mems)
-    tx = analyst_features(tx, data)
-    tx = extra_features(tx, px, data, cfg, mems)
+    t_ = time.time()
+    tim = {"basic signals": t_ - _T0[0]}
+    for name, fn in (("connections", lambda x: compute_connections(x, data, cfg, mems)),
+                     ("relationships", lambda x: relationship_features(x, data, cfg, mems)),
+                     ("volume", lambda x: volume_features(x, data)), ("events", lambda x: event_features(x, data, mems)),
+                     ("analysts", lambda x: analyst_features(x, data)), ("size and the rest", lambda x: extra_features(x, px, data, cfg, mems))):
+        tx = fn(tx)
+        tim[name] = time.time() - t_
+        t_ = time.time()
+    log("Scoring time: " + ", ".join(f"{k} {v / 60:.1f} min" for k, v in sorted(tim.items(), key=lambda kv: -kv[1])))
     return tx
 
 
@@ -4571,7 +4620,8 @@ def prepare(cfg):
             ins = ins.copy()
             ins["ticker"] = ins["ticker"].replace(renames)
         recent = tx.loc[tx["filed_date"] >= pd.Timestamp.today() - pd.Timedelta(days=60), "ticker"].value_counts()
-        live = recent_form4(cfg, list(recent.index[:150]))
+        lastf = tx.loc[tx["filed_date"] >= pd.Timestamp.today() - pd.Timedelta(days=60)].groupby("ticker")["filed_date"].max().to_dict()
+        live = recent_form4(cfg, list(recent.index[:150]), last_filed=lastf)
         data["insiders"] = pd.concat([ins, live], ignore_index=True).drop_duplicates(
             ["ticker", "filed", "owner", "code"]) if len(live) else ins
     if step("USE_CONTRACTS"):

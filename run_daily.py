@@ -257,12 +257,53 @@ def send_alerts(buys, sells, new):
         E.log(f"Email alerts: sending failed ({e}); check the Gmail app password secret")
 
 
+DRY_RUN = (env("DRY_RUN") or "").strip() == "1"      # test run: reads Alpaca but never trades
+
+
+def trade_now(scored, px):
+    """Buy and sell right after scoring, before the slow parts of the update (backtests, weekly checks, watchlist
+    context, charts). Uses the backtest's own pick rule on the newest filings (live_picks), so it doesn't need the
+    watchlist. Returns (snapshot, helpers) or (None, helpers) when live picks failed (the old path runs later)."""
+    last = px.ffill().iloc[-1].to_dict() if px is not None and len(px) else {}
+    mt = E.member_trades(scored)
+    msales = lambda t, bought: E.member_sales(mt, t, bought)
+    pxf = px.ffill() if px is not None else None
+    phist = lambda t, since: pxf.loc[E.pd.Timestamp(since):, t].dropna().values if pxf is not None and t in pxf else None
+    caps = scored.sort_values("filed_date").drop_duplicates("ticker", keep="last") \
+        .set_index("ticker")["market_cap"].dropna().to_dict() if "market_cap" in scored else {}
+    helpers = {"last": last, "msales": msales, "phist": phist, "caps": caps}
+    try:
+        live_p, small_f = E.live_picks(scored, px, cfg), E.fresh_small_rows(scored, cfg)
+        E.log(f"Live picks: {len(live_p)} fresh main pick(s) {list(live_p['ticker'])[:8] if len(live_p) else ''}, "
+              f"{len(small_f)} fresh small-company buy(s)")
+    except Exception as e:
+        E.log(f"Live picks: failed ({type(e).__name__}: {e}); trading waits for the BUY list at the end")
+        return None, helpers
+    try:       # positions open at once in the small-company backtest, from the last full update
+        slots = (json.load(open(os.path.join(cfg["DATA_DIR"], "dashboard_data.json"))).get("small") or {}).get("slots")
+    except Exception:
+        slots = None
+    snap = broker.sync(dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=slots,
+                            _live_picks=live_p, _small_fresh=small_f, _caps=caps,
+                            _member_sales=msales, _price_hist=phist), None, None, last, E.log, trade=not DRY_RUN)
+    if snap is not None and not DRY_RUN:
+        cloud_store.save_reasons(snap.get("this_run"), E.log)       # phone trade alerts say why
+    mins = (E.time.time() - E._RUN_START) / 60
+    E.log(f"Trading done {mins:.0f} min after the update started" + (" (test run: no orders)" if DRY_RUN else ""))
+    return snap, helpers
+
+
 def main():
     try:
         scored, px = E.prepare(cfg)
     except RuntimeError as e:
         E.log(f"Stopped early: {e}")
         return
+    early, helpers = None, None
+    try:
+        early, helpers = trade_now(scored, px)
+    except Exception as e:
+        E.log(f"Broker: early trading skipped ({type(e).__name__}: {e})")
     try:     # foreign vs US purchases (country lookups fill in over a few runs)
         cs = E.load_countries(cfg, list(scored["ticker"].unique()), priority=scored["ticker"].value_counts().to_dict())
         fr = E.foreign_report(scored, cs, cfg)
@@ -382,28 +423,29 @@ def main():
     except Exception as e:
         E.log(f"Worth a look: email skipped ({type(e).__name__})")
     try:
-        last = px.ffill().iloc[-1].to_dict() if px is not None and len(px) else {}
+        h = helpers or {}
+        last, msales, phist = h.get("last"), h.get("msales"), h.get("phist")
+        if msales is None:
+            last = px.ffill().iloc[-1].to_dict() if px is not None and len(px) else {}
+            mt = E.member_trades(scored)
+            msales = lambda t, bought: E.member_sales(mt, t, bought)
+            pxf = px.ffill() if px is not None else None
+            phist = lambda t, since: pxf.loc[E.pd.Timestamp(since):, t].dropna().values if pxf is not None and t in pxf else None
         sm = (bt.get("small") or {}) if isinstance(bt, dict) else {}
-        mt = E.member_trades(scored)
-        msales = lambda t, bought: E.member_sales(mt, t, bought)
-        pxf = px.ffill() if px is not None else None
-        phist = lambda t, since: pxf.loc[E.pd.Timestamp(since):, t].dropna().values if pxf is not None and t in pxf else None
-        try:       # the backtest's pick rule on the newest filings: bought as soon as seen, stale picks skipped
-            live_p, small_f = E.live_picks(scored, px, cfg), E.fresh_small_rows(scored, cfg)
-            E.log(f"Live picks: {len(live_p)} fresh main pick(s), {len(small_f)} fresh small-company buy(s)")
-        except Exception as e:
-            live_p = small_f = None
-            E.log(f"Live picks: fell back to the BUY list ({type(e).__name__}: {e})")
-        snap = broker.sync(dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=sm.get("slots"),
-                                _live_picks=live_p, _small_fresh=small_f,
-                                _caps=scored.sort_values("filed_date").drop_duplicates("ticker", keep="last")
-                                      .set_index("ticker")["market_cap"].dropna().to_dict() if "market_cap" in scored else {},
-                                _member_sales=msales, _price_hist=phist), buys, new, last, E.log)
+        base = dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=sm.get("slots"),
+                    _caps=h.get("caps") or {}, _member_sales=msales, _price_hist=phist)
+        if early is not None:
+            # already traded right after scoring: just refresh the account snapshot, keeping what that step did
+            snap = broker.sync(base, None, None, last, E.log, trade=False) or early
+            snap["this_run"] = early.get("this_run") or []
+        else:      # live picks failed earlier: the old way, from the BUY list
+            snap = broker.sync(dict(base, _live_picks=None, _small_fresh=None), buys, new, last, E.log, trade=not DRY_RUN)
+            if snap is not None and not DRY_RUN:
+                cloud_store.save_reasons(snap.get("this_run"), E.log)
         path = os.path.join(cfg["DATA_DIR"], "dashboard_data.json")
         d = json.load(open(path))
         if snap is not None:
             d["portfolio"] = snap
-            cloud_store.save_reasons(snap.get("this_run"), E.log)       # phone trade alerts say why
         # members who bought a stock you hold and have since disclosed a sale (shown on My portfolio)
         ms = {}
         for p in (d.get("portfolio") or {}).get("positions") or []:

@@ -284,6 +284,11 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
     #     to day, so only clearly larger companies are sold; one near the $2B line is left alone.
     if trade and buys is not None and len(buys) and "market_cap" in buys:
         caps = dict(zip(buys["ticker"].map(to_alpaca), buys["market_cap"]))
+    elif trade and cfg.get("_caps"):        # trading before the watchlist exists: size at each stock's latest filing
+        caps = {to_alpaca(t): c for t, c in cfg["_caps"].items()}
+    else:
+        caps = None
+    if caps:
         for sym in sleeve_misfits(bot, caps):
             if sym not in positions or sym in pending or sym in sold or sym in others:
                 continue

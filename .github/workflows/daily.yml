@@ -9,13 +9,16 @@ on:
       chain:
         description: "How many back-to-back runs came before this one (leave at 0)"
         default: "0"
+      dry_run:
+        description: "Test run: no orders, no emails or alerts, no uploads, nothing saved"
+        default: "false"
 
 permissions:
   contents: write              # monthly keep-alive commit
   actions: write               # start the next run while history is still filling
 
 concurrency:
-  group: daily-run
+  group: daily-run${{ github.event.inputs.dry_run == 'true' && '-test' || '' }}
   cancel-in-progress: false
 
 jobs:
@@ -55,13 +58,13 @@ jobs:
           OCR_SPACE_API_KEY: ${{ secrets.OCR_SPACE_API_KEY }}
           GOOGLE_VISION_API_KEY: ${{ secrets.GOOGLE_VISION_API_KEY }}
           TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
-          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GMAIL_ADDRESS: ${{ github.event.inputs.dry_run != 'true' && secrets.GMAIL_ADDRESS || '' }}
+          GMAIL_APP_PASSWORD: ${{ github.event.inputs.dry_run != 'true' && secrets.GMAIL_APP_PASSWORD || '' }}
           ALERT_TO: ${{ secrets.ALERT_TO }}
-          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ github.event.inputs.dry_run != 'true' && secrets.GDRIVE_SERVICE_ACCOUNT_JSON || '' }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ github.event.inputs.dry_run != 'true' && secrets.CLOUDFLARE_API_TOKEN || '' }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ github.event.inputs.dry_run != 'true' && secrets.CLOUDFLARE_ACCOUNT_ID || '' }}
           USE_TUNED_WEIGHTS: ${{ vars.USE_TUNED_WEIGHTS }}
           ALPACA_PAPER_KEY_ID: ${{ secrets.ALPACA_PAPER_KEY_ID }}
           ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
@@ -75,17 +78,18 @@ jobs:
           MAX_INVESTED_PCT: ${{ vars.MAX_INVESTED_PCT }}
           SMALL_SLEEVE_PCT: ${{ vars.SMALL_SLEEVE_PCT }}
           TIME_BUDGET_MIN: "320"
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
         run: python run_daily.py
 
       - name: Save data for tomorrow (even if the run stopped early)
-        if: always()
+        if: always() && github.event.inputs.dry_run != 'true'
         uses: actions/cache/save@v4
         with:
           path: data
           key: data-${{ github.run_id }}
 
       - name: Start the next run right away if data collection isn't finished
-        if: always()
+        if: always() && github.event.inputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           CHAIN: ${{ github.event.inputs.chain || '0' }}
