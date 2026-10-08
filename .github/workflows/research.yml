@@ -30,6 +30,8 @@ jobs:
           LDA_API_KEY: ${{ secrets.LDA_API_KEY }}
           TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
           TIME_BUDGET_MIN: "300"
+          ALPACA_PAPER_KEY_ID: ${{ secrets.ALPACA_PAPER_KEY_ID }}
+          ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
         run: |
           sudo apt-get install -y -qq tesseract-ocr >/dev/null 2>&1 || true
           python tools/${{ github.event.inputs.script }}
