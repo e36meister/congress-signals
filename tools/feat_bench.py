@@ -32,6 +32,10 @@ def captured(tx, px, data, cfg):
 
 
 E.compute_features = captured
+# read-only runs don't OCR scanned reports (tesseract can crash here, and the saved trades are all we need)
+_rd = lambda name: (lambda cfg: E.pd.read_pickle(E._p(cfg, "cache", name)) if os.path.exists(E._p(cfg, "cache", name)) else E.pd.DataFrame())
+E.collect_house_paper = _rd("house_paper_tx.pkl")
+E.collect_senate_paper = _rd("senate_paper_tx.pkl")
 try:
     E.prepare(R.cfg)
 except Stop:
