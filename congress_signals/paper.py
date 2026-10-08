@@ -361,6 +361,7 @@ class OcrSpace:
         import threading
         self.lock = threading.Lock()
         self.misses = 0            # calls that were skipped (allowance) or failed: callers can retry the report later
+        self.calls = 0             # calls made by this object (this run)
 
     def _keys(self):
         import datetime as dt
@@ -404,6 +405,7 @@ class OcrSpace:
         if not ok:
             return None
         self._count(engine)
+        self.calls += 1
         try:
             r = requests.post(self.URL, timeout=120, files={"file": ("p.jpg", buf.tobytes(), "image/jpeg")},
                               data={"apikey": self.key, "OCREngine": str(engine), "scale": "true",
@@ -739,6 +741,7 @@ class GoogleVision:
             self.u = {}
         self.lock = threading.Lock()
         self.misses = 0
+        self.calls = 0
 
     def _mon(self):
         import datetime as dt
@@ -774,6 +777,7 @@ class GoogleVision:
         if not ok:
             return None
         self._count()
+        self.calls += 1
         try:
             r = requests.post(self.URL, params={"key": self.key}, timeout=120, json={"requests": [{
                 "image": {"content": base64.b64encode(buf.tobytes()).decode()},
@@ -813,6 +817,10 @@ class OcrChain:
     @property
     def misses(self):
         return sum(r.misses for r in self.readers)
+
+    @property
+    def calls(self):
+        return sum(r.calls for r in self.readers)
 
     def can(self, engine=2):
         return any(r.can(engine) for r in self.readers)

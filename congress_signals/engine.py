@@ -744,8 +744,7 @@ def collect_senate_paper(cfg, max_calls=120):
     matcher = lambda name: nidx.match(name, known)
     ocr = PP.make_ocr(cfg.get("OCR_SPACE_API_KEY"), _p(cfg, "state", "ocrspace_usage.json"),
                       cfg.get("GOOGLE_VISION_API_KEY"), _p(cfg, "state", "vision_usage.json"))
-    used0 = sum((ocr.u.get("day") or {}).values()) if ocr else 0
-    calls = lambda: (sum((ocr.u.get("day") or {}).values()) - used0) if ocr else 0
+    calls = lambda: ocr.calls if ocr else 0          # OCR calls made this run (any reader)
     log(f"Senate paper: {len(index)} scanned reports, {len(todo)} to read")
     try:
         s = _senate_session()
