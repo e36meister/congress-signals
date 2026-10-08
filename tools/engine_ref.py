@@ -3071,29 +3071,6 @@ def _window_lookup(events, key_col, date_col, keys, ends, days, fn, starts=None)
     return out
 
 
-def _window_agg(events, key_col, date_col, keys, ends, days, col, how):
-    """Same as _window_lookup with fn = g[col].nunique() (how="nunique") or g[col].sum() (how="sum"),
-    on numpy arrays instead of a DataFrame slice per row."""
-    out = np.zeros(len(keys))
-    if events is None or events.empty:
-        return out
-    grp = {}
-    for k, g in events.groupby(key_col):
-        g = g.sort_values(date_col)
-        grp[k] = (g[date_col].values, g[col].values)
-    for i, (k, e) in enumerate(zip(keys, ends)):
-        G = grp.get(k)
-        if G is None or pd.isna(e):
-            continue
-        d, v = G
-        lo = np.searchsorted(d, np.datetime64(e - pd.Timedelta(days=days)), side="right")
-        hi = np.searchsorted(d, np.datetime64(e), side="right")
-        if hi > lo:
-            x = v[lo:hi]
-            out[i] = pd.Series(x).nunique() if how == "nunique" else pd.Series(x).sum()
-    return out
-
-
 def _member_track(tx, sign):
     """Shrunk mean of sign*excess over the member's earlier closed trades of that type."""
     typ = "buy" if sign > 0 else "sell"
@@ -3256,9 +3233,9 @@ def compute_features(tx, px, data, cfg):
     if ins is not None and len(ins):
         b = ins[ins["code"] == "P"]
         s = ins[ins["code"] == "S"]
-        tx["insider_buyers"] = _window_agg(b, "ticker", "filed", tx["ticker"], ends, 90, "owner", "nunique")
-        tx["insider_sellers"] = _window_agg(s, "ticker", "filed", tx["ticker"], ends, 90, "owner", "nunique")
-        tx["insider_buy_value"] = _window_agg(b, "ticker", "filed", tx["ticker"], ends, 90, "value", "sum")
+        tx["insider_buyers"] = _window_lookup(b, "ticker", "filed", tx["ticker"], ends, 90, lambda g: g["owner"].nunique())
+        tx["insider_sellers"] = _window_lookup(s, "ticker", "filed", tx["ticker"], ends, 90, lambda g: g["owner"].nunique())
+        tx["insider_buy_value"] = _window_lookup(b, "ticker", "filed", tx["ticker"], ends, 90, lambda g: g["value"].sum())
     else:
         tx["insider_buyers"] = tx["insider_sellers"] = tx["insider_buy_value"] = 0.0
     tx["f_insider_buying"] = tx["insider_buyers"].clip(upper=3) / 3
@@ -3267,7 +3244,7 @@ def compute_features(tx, px, data, cfg):
     # federal contracts publicly known in the 180 days before filing
     con = data.get("contracts")
     if con is not None and len(con):
-        tx["contracts_180d"] = _window_agg(con, "ticker", "known_date", tx["ticker"], ends, 180, "amount", "sum")
+        tx["contracts_180d"] = _window_lookup(con, "ticker", "known_date", tx["ticker"], ends, 180, lambda g: g["amount"].sum())
         # a contract awarded after the member traded, and public by the time the trade was disclosed
         after = np.zeros(len(tx), dtype=bool)
         cg = {k: (g["action_date"].values, g["known_date"].values) for k, g in con.dropna(subset=["action_date"]).groupby("ticker")}
@@ -3283,20 +3260,16 @@ def compute_features(tx, px, data, cfg):
     # lobbying in the prior year on issues this member's committees handle
     lb = data.get("lobbying")
     if lb is not None and len(lb):
-        lbg = {}
-        for k, g in lb.dropna(subset=["posted"]).groupby("ticker"):
-            g = g.sort_values("posted")
-            lbg[k] = (g["posted"].values, g["amount"].values, list(g["issues"]))
+        lbg = {k: g.sort_values("posted") for k, g in lb.dropna(subset=["posted"]).groupby("ticker")}
         f, spend = np.zeros(len(tx)), np.zeros(len(tx))
         for i, (t, e, iss) in enumerate(zip(tx["ticker"], ends, cissue)):
-            G = lbg.get(t)
-            if G is None or pd.isna(e):
+            g = lbg.get(t)
+            if g is None:
                 continue
-            lo = np.searchsorted(G[0], np.datetime64(e - pd.Timedelta(days=365)), side="right")
-            hi = np.searchsorted(G[0], np.datetime64(e), side="right")
-            if hi > lo:
-                spend[i] = pd.Series(G[1][lo:hi]).sum()
-                codes = {c for cs in G[2][lo:hi] for c in cs}
+            w = g[(g["posted"] > e - pd.Timedelta(days=365)) & (g["posted"] <= e)]
+            if len(w):
+                spend[i] = w["amount"].sum()
+                codes = {c for cs in w["issues"] for c in cs}
                 f[i] = 1.0 if codes & iss else 0.3
         tx["f_lobbying"], tx["lobbying_12m"] = f, spend
     else:
@@ -3313,7 +3286,7 @@ def compute_features(tx, px, data, cfg):
             if len(k) >= 3:
                 tk_orgs[t] = {o for o in orgs if o == k or o.startswith(k + " ")}
         dsub = don[don["org"].isin(set().union(*tk_orgs.values()) if tk_orgs else set())]
-        by = {k: (g["date"].values, g["amount"].values) for k, g in dsub.groupby(["org", "cand_id"])}
+        by = {k: g for k, g in dsub.groupby(["org", "cand_id"])}
         vals = np.zeros(len(tx))
         for i, (t, e, fids) in enumerate(zip(tx["ticker"], ends, fec_ids)):
             if not fids or t not in tk_orgs:
@@ -3324,8 +3297,8 @@ def compute_features(tx, px, data, cfg):
                     g = by.get((o, c))
                     if g is not None:
                         # quarterly FEC reports can arrive up to ~105 days after a donation
-                        m = (g[0] <= np.datetime64(e - pd.Timedelta(days=105))) & (g[0] > np.datetime64(e - pd.Timedelta(days=1461)))
-                        tot += pd.Series(g[1][m]).sum()
+                        m = (g["date"] <= e - pd.Timedelta(days=105)) & (g["date"] > e - pd.Timedelta(days=1461))
+                        tot += g.loc[m, "amount"].sum()
             vals[i] = tot
         tx["donations_4y"] = vals
     tx["f_donations"] = (tx["donations_4y"] / 10000).clip(0, 1)
@@ -3335,21 +3308,20 @@ def compute_features(tx, px, data, cfg):
     tx["f_bills"], tx["bill_note"] = 0.0, ""
     if bl is not None and len(bl):
         bl = bl.assign(sectors=bl["policy"].map(lambda p: set(POLICY_SECTORS.get(p, []))))
-        blg = {k: (g["date"].values, list(g["sectors"]), (g["role"] == "sponsor").values, list(g["policy"]))
-               for k, g in bl.groupby("bioguide")}
+        blg = {k: g for k, g in bl.groupby("bioguide")}
         f, note = np.zeros(len(tx)), [""] * len(tx)
         for i, (b, s, e) in enumerate(zip(tx["bioguide"], tx["sector"], ends)):
-            G = blg.get(b)
-            if G is None or not s:
+            g = blg.get(b)
+            if g is None or not s:
                 continue
-            Dt, Sc, Sp, Po = G
+            w = g[(g["date"] > e - pd.Timedelta(days=180)) & (g["date"] <= e) & g["sectors"].map(lambda x: s in x)]
             # cosponsorships carry only the bill's introduction date, not when the member signed on (often later,
             # possibly after this filing), so only bills the member sponsored count
-            m = (Dt > np.datetime64(e - pd.Timedelta(days=180))) & (Dt <= np.datetime64(e)) & Sp
-            ks = [k for k in np.nonzero(m)[0] if s in Sc[k]]
-            if ks:
-                f[i] = 1.0
-                note[i] = f"sponsored {len(ks)} {Po[ks[0]]} bill(s)"
+            w = w[w["role"] == "sponsor"]
+            if len(w):
+                sp = (w["role"] == "sponsor").any()
+                f[i] = 1.0 if sp else 0.5
+                note[i] = f"{'sponsored' if sp else 'cosponsored'} {len(w)} {w['policy'].iloc[0]} bill(s)"
         tx["f_bills"], tx["bill_note"] = f, note
     t_ = time.time()
     tim = {"basic signals": t_ - _T0[0]}
@@ -5685,25 +5657,18 @@ def event_features(tx, data, mems):
     tx["event_note"] = ""
     notes = [[] for _ in range(n)]
 
-    TD, HI = tdt.values, hi.values                 # numpy arrays: much faster than .iloc in the loops below
-
-    def first_in(arr, i):
-        """First date in the sorted array with trade day < date <= the window's end (None if there's none)."""
-        if np.isnat(TD[i]) or np.isnat(HI[i]) or not len(arr):
-            return None
-        k = np.searchsorted(arr, TD[i], side="right")
-        return arr[k] if k < len(arr) and arr[k] <= HI[i] else None
+    def win(dates, i):
+        return [d for d in dates if tdt.iloc[i] < d <= hi.iloc[i]]
     # federal rules naming the company
     fr = data.get("fedreg") or {}
-    frd = {t: np.array(sorted(pd.to_datetime([d[0] for d in v.get("docs", []) if d[0]], errors="coerce").dropna()),
-                       dtype="datetime64[ns]")
+    frd = {t: sorted(pd.to_datetime([d[0] for d in v.get("docs", []) if d[0]], errors="coerce").dropna())
            for t, v in fr.items() if v.get("docs")}
     f1 = np.zeros(n)
     for i, t in enumerate(tx["ticker"]):
-        w0 = first_in(frd.get(t, np.array([], dtype="datetime64[ns]")), i)
-        if w0 is not None:
+        w = win(frd.get(t, []), i)
+        if w:
             f1[i] = 1.0
-            notes[i].append(f"a federal rule naming the company was published {(pd.Timestamp(w0) - tdt.iloc[i]).days} days after the trade")
+            notes[i].append(f"a federal rule naming the company was published {(w[0] - tdt.iloc[i]).days} days after the trade")
     tx["f_reg_action"] = f1
     # committee hearings and markups after the trade
     mt = data.get("meetings")
@@ -5712,25 +5677,23 @@ def event_features(tx, data, mems):
     if mt is not None and len(mt) and "bills" in mt:
         mt = mt.sort_values("date")
         md = mt["date"].values
-        M_c, M_o, M_t, M_b, M_d = list(mt["cids"]), list(mt["orgs"]), [str(x).lower() for x in mt["type"]], list(mt["bills"]), list(mt["date"])
-        SEC = list(tx["sector"]) if "sector" in tx else [None] * n
         for i in range(n):
             if not cids[i]:
                 continue
-            a, b = np.searchsorted(md, TD[i], side="right"), np.searchsorted(md, HI[i], side="right")
+            a, b = np.searchsorted(md, np.datetime64(tdt.iloc[i]), side="right"), np.searchsorted(md, np.datetime64(hi.iloc[i]), side="right")
             if b <= a:
                 continue
-            sec = SEC[i]
-            for j in range(a, b):
-                if not (cids[i] & M_c[j]):
+            sec = tx["sector"].iloc[i] if "sector" in tx else None
+            for _, r in mt.iloc[a:b].iterrows():
+                if not (cids[i] & r["cids"]):
                     continue
-                if ck[i] and not f2[i] and any(ck[i] in o for o in M_o[j]):
+                if ck[i] and not f2[i] and any(ck[i] in o for o in r["orgs"]):
                     f2[i] = 1.0
-                    notes[i].append(f"company testified before their committee {(M_d[j] - tdt.iloc[i]).days} days after the trade")
-                if sec and not f3[i] and "markup" in M_t[j] and any(
-                        sec in POLICY_SECTORS.get(pol.get(bl) or "", []) for bl in M_b[j]):
+                    notes[i].append(f"company testified before their committee {(r['date'] - tdt.iloc[i]).days} days after the trade")
+                if sec and not f3[i] and "markup" in r["type"].lower() and any(
+                        sec in POLICY_SECTORS.get(pol.get(bl) or "", []) for bl in r["bills"]):
                     f3[i] = 1.0
-                    notes[i].append(f"their committee marked up a bill affecting {sec} {(M_d[j] - tdt.iloc[i]).days} days after the trade")
+                    notes[i].append(f"their committee marked up a bill affecting {sec} {(r['date'] - tdt.iloc[i]).days} days after the trade")
     tx["f_witness_after"], tx["f_markup_after"] = f2, f3
     # major company announcements (8-K)
     k8 = data.get("k8") or {}
@@ -5742,17 +5705,13 @@ def event_features(tx, data, mems):
             its = [x.strip() for x in str(items).split(",") if x.strip() in MAJOR_8K]
             if its:
                 lst.append((pd.Timestamp(d), its))
-        lst = sorted(lst)
-        kd[t] = (np.array([d for d, _ in lst], dtype="datetime64[ns]"), [x for _, x in lst])
+        kd[t] = sorted(lst)
     for i, t in enumerate(tx["ticker"]):
-        K = kd.get(t)
-        if K is None or not len(K[0]) or np.isnat(TD[i]) or np.isnat(HI[i]):
-            continue
-        k = np.searchsorted(K[0], TD[i], side="right")
-        if k < len(K[0]) and K[0][k] <= HI[i]:
-            d, its = pd.Timestamp(K[0][k]), K[1][k]
-            f4[i] = 1.0
-            notes[i].append(f"company announced {MAJOR_8K[its[0]]} {(d - tdt.iloc[i]).days} days after the trade (8-K)")
+        for d, its in kd.get(t, []):
+            if tdt.iloc[i] < d <= hi.iloc[i]:
+                f4[i] = 1.0
+                notes[i].append(f"company announced {MAJOR_8K[its[0]]} {(d - tdt.iloc[i]).days} days after the trade (8-K)")
+                break
     tx["f_major_8k_after"] = f4
     tx["event_note"] = ["; ".join(x) for x in notes]
     return tx
@@ -6107,18 +6066,13 @@ def compute_connections(tx, data, cfg, mems):
     for t, g in tmp.groupby("t"):
         if len(g) < 2:
             continue
-        g = g.sort_values("d", kind="stable")
-        D_, T_, W_, C_, I_ = g["d"].values, g["typ"].values, g["who"].values, list(g["c"]), g.index.values
-        lo_ = np.searchsorted(D_, D_ - np.timedelta64(30, "D"), side="right")     # d > day - 30
-        hi_ = np.searchsorted(D_, D_, side="right")                                 # d <= day
-        for j in range(len(g)):
-            cj = C_[j]
-            if not cj:
+        g = g.sort_values("d")
+        for i, r in g.iterrows():
+            if not r.c:
                 continue
-            for k in range(lo_[j], hi_[j]):
-                if T_[k] == T_[j] and W_[k] != W_[j] and (cj & C_[k]):
-                    cc[I_[j]] = 1.0
-                    break
+            w = g[(g.d <= r.d) & (g.d > r.d - np.timedelta64(30, "D")) & (g.typ == r.typ) & (g.who != r.who)]
+            if len(w) and any(r.c & c2 for c2 in w.c):
+                cc[i] = 1.0
     tx["f_committee_cluster"] = cc
 
     # 13. company headquartered in the member's state
@@ -6130,42 +6084,32 @@ def compute_connections(tx, data, cfg, mems):
     con = data.get("contracts")
     tx["f_contract_in_state"] = 0.0
     if con is not None and len(con) and "pop_state" in con:
-        g = {k: (v["pop_state"].values, v["known_date"].values) for k, v in con.dropna(subset=["pop_state"]).groupby("ticker")}
+        g = {k: v for k, v in con.dropna(subset=["pop_state"]).groupby("ticker")}
         tx["f_contract_in_state"] = [1.0 if (t in g and st and
-                                             ((g[t][0] == st) & (g[t][1] <= np.datetime64(f)) & (g[t][1] > np.datetime64(f - D(days=365)))).any())
+                                             ((g[t].pop_state == st) & (g[t].known_date <= f) & (g[t].known_date > f - D(days=365))).any())
                                      else 0.0 for t, st, f in zip(tx["ticker"], mstate, fdt)]
 
     # 2, 3, 4. yearly disclosures: already owned it; company named in jobs, income, travel or gifts
     fd = data["annual_fd"] = fd_member_ids(data.get("annual_fd"), data.get("legislators") or {})
     held, tie = np.zeros(n), np.zeros(n)
     if fd is not None and len(fd):
-        fdg = {}
-        for k, g in fd.groupby("who"):
-            g = g.sort_values("filed")
-            g = g[g["filed"].notna()]
-            fdg[k] = (g["filed"].values, list(g["holdings"]), list(g["doc"]), list(g["text"]))
-        text_cache, hit_memo = {}, {}
+        fdg = {k: g.sort_values("filed") for k, g in fd.groupby("who")}
+        text_cache = {}
         for i, (wk, t, f, c_) in enumerate(zip(tx["who"], tx["ticker"], fdt, tx["_ck"])):
-            G = fdg.get(wk)
-            if G is None or pd.isna(f):
+            g = fdg.get(wk)
+            if g is None:
                 continue
-            Fd, Hs, Ds, Ts = G
-            lo = np.searchsorted(Fd, np.datetime64(f - D(days=1100)), side="right")     # filed > f - 1100 days
-            hi = np.searchsorted(Fd, np.datetime64(f), side="right")                      # filed <= f
-            if hi <= lo:
+            w = g[(g.filed <= f) & (g.filed > f - D(days=1100))]
+            if not len(w):
                 continue
-            if any(t in Hs[j] for j in range(lo, hi)):
+            if any(t in h for h in w.holdings):
                 held[i] = 1.0
             if c_ and len(c_) >= 4:
-                for j in range(lo, hi):
-                    key = (Ds[j], c_)
-                    h = hit_memo.get(key)
-                    if h is None:
-                        tl = text_cache.get(Ds[j])
-                        if tl is None:
-                            tl = text_cache[Ds[j]] = _unz(Ts[j]).lower()
-                        h = hit_memo[key] = _name_hit(tl, c_)
-                    if h:
+                for doc, blob in zip(w.doc, w.text):
+                    tl = text_cache.get(doc)
+                    if tl is None:
+                        tl = text_cache[doc] = _unz(blob).lower()
+                    if _name_hit(tl, c_):
                         tie[i] = 1.0
                         break
     tx["f_already_owned"], tx["f_disclosure_tie"] = held, tie
@@ -6194,43 +6138,27 @@ def compute_connections(tx, data, cfg, mems):
     lb = data.get("lobbying")
     rv = np.zeros(n)
     if lb is not None and len(lb) and "covered" in lb:
-        lg = {}
-        for k, v in lb.dropna(subset=["posted"]).groupby("ticker"):
-            v = v.sort_values("posted", kind="stable")
-            lg[k] = (v["posted"].values, list(v["covered"]))
-        pats, rv_memo = {}, {}
+        lg = {k: v for k, v in lb.dropna(subset=["posted"]).groupby("ticker")}
         for i, (t, lk, f, ch, mem) in enumerate(zip(tx["ticker"], last, fdt, tx["chamber"], tx["member"])):
-            G = lg.get(t)
-            if G is None or not lk or pd.isna(f):
+            g = lg.get(t)
+            if g is None or not lk:
                 continue
-            Pd, Cv = G
-            lo = np.searchsorted(Pd, np.datetime64(f - D(days=730)), side="right")      # posted > f - 730 days
-            hi = np.searchsorted(Pd, np.datetime64(f), side="right")                     # posted <= f
-            if hi <= lo:
+            w = g[(g.posted <= f) & (g.posted > f - D(days=730))]
+            if not len(w):
                 continue
             # the right chamber's title, and if a first name is written it must be this member's
             # senators often served in the House first, so "Rep." also counts for them; the first-name check guards
-            pk = (ch == "House", lk)
-            pat = pats.get(pk)
-            if pat is None:
-                title = r"(rep|representative|congressman|congresswoman)" if ch == "House" else \
-                    r"(sen|senator|rep|representative|congressman|congresswoman)"
-                pat = pats[pk] = re.compile(r"\b" + title + r"\.?\s+(?:([A-Za-z]+)\.?\s+)?(?:[A-Z]\.\s+)?" + re.escape(lk) + r"\b", re.I)
-            firsts = frozenset(x[:3] for x in _first_tokens("", str(mem)))
-            for j in range(lo, hi):
-                c = Cv[j]
-                key = (c, pk, firsts)
-                h = rv_memo.get(key)
-                if h is None:
-                    h = False
-                    for mm in pat.finditer(c or ""):
-                        fw = (mm.group(2) or "").lower()
-                        if not fw or not firsts or fw[:3] in firsts:
-                            h = True
-                            break
-                    rv_memo[key] = h
-                if h:
-                    rv[i] = 1.0
+            title = r"(rep|representative|congressman|congresswoman)" if ch == "House" else \
+                r"(sen|senator|rep|representative|congressman|congresswoman)"
+            pat = re.compile(r"\b" + title + r"\.?\s+(?:([A-Za-z]+)\.?\s+)?(?:[A-Z]\.\s+)?" + re.escape(lk) + r"\b", re.I)
+            firsts = {x[:3] for x in _first_tokens("", str(mem))}
+            for c in w.covered:
+                for mm in pat.finditer(c or ""):
+                    fw = (mm.group(2) or "").lower()
+                    if not fw or not firsts or fw[:3] in firsts:
+                        rv[i] = 1.0
+                        break
+                if rv[i]:
                     break
     tx["f_revolving_door"] = rv
 
@@ -6239,22 +6167,17 @@ def compute_connections(tx, data, cfg, mems):
     test, closed = np.zeros(n), np.zeros(n)
     if mt is not None and len(mt):
         mt = mt.sort_values("date")
-        mt = mt[mt["date"].notna()]
         closed_m = mt[mt.closed]
-        MD, MO, MC = mt["date"].values, list(mt["orgs"]), list(mt["cids"])
-        CD, CC = closed_m["date"].values, list(closed_m["cids"])
         for i, (c_, cs, f, td, fc) in enumerate(zip(tx["_ck"], cids, fdt, tdt, tx["f_committee"])):
             if not cs:
                 continue
-            if c_ and pd.notna(f):
-                lo = np.searchsorted(MD, np.datetime64(f - D(days=365)), side="right")
-                hi = np.searchsorted(MD, np.datetime64(f), side="right")
-                if any((c_ in MO[j]) and (cs & MC[j]) for j in range(lo, hi)):
+            if c_:
+                w = mt[(mt.date <= f) & (mt.date > f - D(days=365))]
+                if any((c_ in o) and (cs & m_) for o, m_ in zip(w.orgs, w.cids)):
                     test[i] = 1.0
-            if fc > 0 and pd.notna(td):
-                lo = np.searchsorted(CD, np.datetime64(td - D(days=30)), side="right")
-                hi = np.searchsorted(CD, np.datetime64(td), side="right")
-                if any(cs & CC[j] for j in range(lo, hi)):
+            if fc > 0:
+                w = closed_m[(closed_m.date <= td) & (closed_m.date > td - D(days=30))]
+                if any(cs & m_ for m_ in w.cids):
                     closed[i] = 1.0
     tx["f_testified"], tx["f_closed_briefing"] = test, closed
 
@@ -6283,15 +6206,12 @@ def compute_connections(tx, data, cfg, mems):
     spk = np.zeros(n)
     if sp:
         gran = sp.get("granules", {})
-        gdate = {}
         for i, (t, b, f) in enumerate(zip(tx["ticker"], bios, fdt)):
             if not b:
                 continue
             for gid in (sp.get("companies", {}).get(t) or {}).get("granules", []):
                 gr = gran.get(gid) or {}
-                if gid not in gdate:
-                    gdate[gid] = pd.to_datetime(gr.get("date"), errors="coerce")
-                d = gdate[gid]
+                d = pd.to_datetime(gr.get("date"), errors="coerce")
                 if b in (gr.get("ids") or []) and pd.notna(d) and f - D(days=365) < d <= f:
                     spk[i] = 1.0
                     break
@@ -6307,24 +6227,17 @@ def compute_connections(tx, data, cfg, mems):
             lk = nm.split(" ")[-1:]
             if lk and lk[0]:
                 by_last.setdefault(lk[0], []).append((h, nm.split(" ")[0][:3] if " " in nm else ""))
-        import bisect
-        hits = {}
-
-        def post_days(h, t, c_):
-            k = (h, t, c_)
-            if k not in hits:
-                hits[k] = sorted(d for d, text in (bs.get("posts", {}).get(h) or {}).get("items", [])
-                                 if ("$" + t) in text or _name_hit(text.lower(), c_))
-            return hits[k]
         for i, (lk, t, c_, f, mem) in enumerate(zip(last, tx["ticker"], tx["_ck"], fdt, tx["member"])):
             firsts = {x[:3] for x in _first_tokens("", str(mem))}
             for h, f3 in by_last.get(lk, []):
                 if f3 and firsts and f3 not in firsts:        # Tim Scott's account isn't Rick Scott's
                     continue
                 lo_, hi_ = (f - D(days=365)).strftime("%Y-%m-%d"), f.strftime("%Y-%m-%d")
-                ds = post_days(h, t, c_)
-                if bisect.bisect_right(ds, hi_) > bisect.bisect_right(ds, lo_):     # some day with lo_ < d <= hi_
-                    soc[i] = 1.0
+                for d, text in (bs.get("posts", {}).get(h) or {}).get("items", []):
+                    if lo_ < d <= hi_ and (("$" + t) in text or _name_hit(text.lower(), c_)):
+                        soc[i] = 1.0
+                        break
+                if soc[i]:
                     break
     tx["f_social_post"] = soc
 
@@ -6415,11 +6328,10 @@ def extra_features(tx, px, data, cfg, mems):
     last_px = px.ffill().iloc[-1]
     idx0 = px.index
     p_then = []
-    _cm, _pv = {c: k for k, c in enumerate(px.columns)}, px.values
     for tk, d in zip(tx["ticker"], tx["filed_date"]):
-        if tk in _cm and pd.notna(d):
+        if tk in px.columns and pd.notna(d):
             j = idx0.searchsorted(d, side="right") - 1
-            p_then.append(_pv[j, _cm[tk]] if j >= 0 else np.nan)
+            p_then.append(px[tk].iat[j] if j >= 0 else np.nan)
         else:
             p_then.append(np.nan)
     # scale by the price change between the trade and the day the cap was looked up (not today: that would
@@ -6445,15 +6357,14 @@ def extra_features(tx, px, data, cfg, mems):
     src = pd.Series("today's shares", index=tx.index)
     if shares:
         _CAP_CACHE.clear()
-        good, cols = {}, {}
+        good = {}
         for t in set(tx["ticker"]):
             if t not in shares or t not in px.columns:
                 continue
-            cols[t] = px[t]
-            c_sec = cap_at_time(t, px.index[-1], cols[t], shares, acts, lag_days=0)
+            c_sec = cap_at_time(t, px.index[-1], px[t], shares, acts, lag_days=0)
             c_y = (meta.get(t) or {}).get("cap")
             good[t] = c_sec is not None and (not c_y or 1 / 3 < c_sec / float(c_y) < 3)
-        vals = np.array([cap_at_time(t, d, cols[t], shares, acts) if good.get(t) and pd.notna(d) else np.nan
+        vals = np.array([cap_at_time(t, d, px[t], shares, acts) if good.get(t) and pd.notna(d) else np.nan
                          for t, d in zip(tx["ticker"], tx["filed_date"])], dtype=float)
         use = np.isfinite(vals)
         cap = pd.Series(np.where(use, vals, cap.values), index=tx.index)
@@ -6519,18 +6430,13 @@ def extra_features(tx, px, data, cfg, mems):
     lb = data.get("lobbying")
     exm = np.zeros(len(tx))
     if lb is not None and len(lb) and "covered" in lb:
-        lg = {}
-        for k, v in lb.dropna(subset=["posted"]).groupby("ticker"):
-            v = v.sort_values("posted", kind="stable")
-            hit = np.array([any(EX_MEMBER_RE.match(part.strip()) for part in (c or "").split("|")) for c in v["covered"]], dtype=bool)
-            lg[k] = (v["posted"].values, hit)
+        lg = {k: v for k, v in lb.dropna(subset=["posted"]).groupby("ticker")}
         for i, (tk, f) in enumerate(zip(tx["ticker"], tx["filed_date"])):
-            G = lg.get(tk)
-            if G is None or pd.isna(f):
+            g = lg.get(tk)
+            if g is None:
                 continue
-            lo = np.searchsorted(G[0], np.datetime64(f - D(days=730)), side="right")
-            hi = np.searchsorted(G[0], np.datetime64(f), side="right")
-            if G[1][lo:hi].any():
+            w = g[(g.posted <= f) & (g.posted > f - D(days=730))]
+            if any(EX_MEMBER_RE.match(part.strip()) for c in w.covered for part in (c or "").split("|")):
                 exm[i] = 1.0
     tx["f_ex_member_lobbyist"] = exm
 
@@ -6544,19 +6450,17 @@ def extra_features(tx, px, data, cfg, mems):
     after, mom, recent = np.zeros(len(tx)), np.zeros(len(tx)), np.zeros(len(tx))
     if con is not None and len(con):
         dod = con[con["agency"].str.contains("Defense", case=False, na=False)].dropna(subset=["action_date"])
-        g = {k: (v["known_date"].values, v["action_date"].values, v["amount"].values.astype(float))
-             for k, v in ((k, v.sort_values("action_date")) for k, v in dod.groupby("ticker"))}
+        g = {k: v.sort_values("action_date") for k, v in dod.groupby("ticker")}
         for i, (tk, td, fd) in enumerate(zip(tx["ticker"], tx["trade_date"], tx["filed_date"])):
             v = g.get(tk)
             if v is None:
                 continue
-            Kn, Ac, Am = v
-            kn = Kn <= np.datetime64(fd)
+            known = v[v.known_date <= fd]
             # award announced after the member traded but before we saw the trade
-            if (kn & (Ac > np.datetime64(td)) & (Am >= 7.5e6)).any():
+            if ((known.action_date > td) & (known.amount >= 7.5e6)).any():
                 after[i] = 1.0
-            last = pd.Series(Am[kn & (Ac > np.datetime64(fd - D(days=180)))]).sum()
-            prior = pd.Series(Am[kn & (Ac <= np.datetime64(fd - D(days=180))) & (Ac > np.datetime64(fd - D(days=900)))]).sum() / 4
+            last = known[known.action_date > fd - D(days=180)].amount.sum()
+            prior = known[(known.action_date <= fd - D(days=180)) & (known.action_date > fd - D(days=900))].amount.sum() / 4
             recent[i] = last
             if last > 0 and (prior == 0 or last / prior >= 2):
                 mom[i] = 1.0
@@ -7204,20 +7108,17 @@ def relationship_features(tx, data, cfg, mems):
     # grants, loans and direct payments
     a = data.get("assistance")
     if a is not None and len(a):
-        ag = {k: (g["known_date"].values, g["action_date"].values, g["amount"].values.astype(float),
-                  (g["kind"] == "loan").values) for k, g in a.groupby("ticker")}
+        ag = {k: g for k, g in a.groupby("ticker")}
         g12, fg, fa = np.zeros(n), np.zeros(n), np.zeros(n)
         for i, (t, f, td) in enumerate(zip(tx["ticker"], fdt, tdt)):
-            G = ag.get(t)
-            if G is None:
+            g = ag.get(t)
+            if g is None:
                 continue
-            Kd, Ad, Am, Ln = G
-            f64, td64 = np.datetime64(f), np.datetime64(td)
-            m = (Kd <= f64) & (Kd > np.datetime64(f - D(days=365)))
-            g12[i] = pd.Series(Am[m]).clip(lower=0).sum()
-            fg[i] = 1.0 if (g12[i] >= 1e6 or Ln[m].any()) else (0.5 if m.any() else 0.0)
-            m2 = (Ad > td64) & (Kd <= f64)                                        # public by disclosure day
-            fa[i] = 1.0 if m2.any() and (pd.Series(Am[m2]).sum() >= 1e6 or Ln[m2].any()) else 0.0
+            k = g[(g.known_date <= f) & (g.known_date > f - D(days=365))]
+            g12[i] = k["amount"].clip(lower=0).sum()
+            fg[i] = 1.0 if (g12[i] >= 1e6 or (k["kind"] == "loan").any()) else (0.5 if len(k) else 0.0)
+            after = g[(g.action_date > td) & (g.known_date <= f)]           # public by disclosure day
+            fa[i] = 1.0 if len(after) and (after["amount"].sum() >= 1e6 or (after["kind"] == "loan").any()) else 0.0
         tx["grants_12m"], tx["f_grants"], tx["f_grant_after_trade"] = g12, fg, fa
 
     # the member's campaign paid the company (routine vendors most campaigns use are ignored)
@@ -7227,35 +7128,23 @@ def relationship_features(tx, data, cfg, mems):
             share = cv.groupby("payee")["cand"].nunique() / cv["cand"].nunique()
             cv = cv[cv["payee"].map(share) < 0.2]
         payees = set(cv["payee"])
-        byk = {k: (g["date"].values, g["amount"].values.astype(float)) for k, g in cv.groupby(["cand", "payee"])}
+        byk = {k: g for k, g in cv.groupby(["cand", "payee"])}
         fec_of = [set(m.get("fec") or []) if m else set() for m in mems]
         ck_map = {}
-        import bisect
-        srt = sorted(p for p in payees if isinstance(p, str))
         for ck in tx["_ck"].dropna().unique():
             if ck and len(ck) >= 4:
-                hit = set()
-                j = bisect.bisect_left(srt, ck)
-                if j < len(srt) and srt[j] == ck:
-                    hit.add(ck)
-                pre = ck + " "
-                j = bisect.bisect_left(srt, pre)
-                while j < len(srt) and srt[j].startswith(pre):
-                    hit.add(srt[j])
-                    j += 1
-                ck_map[ck] = hit
+                ck_map[ck] = {p for p in payees if p == ck or p.startswith(ck + " ")}
         paid, f = np.zeros(n), np.zeros(n)
         for i, (fids, ck, fd) in enumerate(zip(fec_of, tx["_ck"], fdt)):
             if not fids or not ck or not ck_map.get(ck):
                 continue
             tot = 0.0
-            fd64, lo64 = np.datetime64(fd - D(days=105)), np.datetime64(fd - D(days=730))
             for c in fids:
                 for p in ck_map[ck]:
                     g = byk.get((c, p))
                     if g is not None:
-                        m = (g[0] <= fd64) & (g[0] > lo64)      # date + 105 days <= filing, date > filing - 730 days
-                        tot += pd.Series(g[1][m]).sum()
+                        m = (g["date"] + D(days=105) <= fd) & (g["date"] > fd - D(days=730))
+                        tot += g.loc[m, "amount"].sum()
             paid[i] = tot
             f[i] = 1.0 if tot > 0 else 0.0
         tx["vendor_paid"], tx["f_campaign_vendor"] = paid, f
@@ -7299,12 +7188,8 @@ def relationship_features(tx, data, cfg, mems):
             for x in p:
                 partners.setdefault(x, []).append(p)
         lead = {}
-        pos_of = {}
-        for j, p in enumerate(ev["pair"]):
-            for x in p:
-                pos_of.setdefault(x, []).append(j)
         for x in partners:
-            e = ev.iloc[pos_of.get(x, [])].sort_values("known")
+            e = ev[ev["pair"].map(lambda p: x in p)].sort_values("known")
             lead[x] = (e["known"].values, (e["first"] == x).values.astype(float), e["first"].notna().values.astype(float))
         buys = tx[tx["tx_type"] == "buy"]
         bt_idx = {k: g for k, g in buys.assign(_w=whoS).groupby("ticker")}
@@ -7346,7 +7231,7 @@ def relationship_features(tx, data, cfg, mems):
         bios = [m.get("bioguide") if m else None for m in mems]
         adv, mom, note = np.zeros(n), np.zeros(n), [""] * n
         passed = ba[ba["kind"] != "cleared committee"]
-        ps = {s: np.sort(g["date"].values) for s, g in passed.explode("sectors").groupby("sectors")} if len(passed) else {}
+        ps = {s: g for s, g in passed.explode("sectors").groupby("sectors")} if len(passed) else {}
         for i, (b, s, td, f) in enumerate(zip(bios, tx["sector"], tdt, fdt)):
             if not s:
                 continue
@@ -7358,8 +7243,7 @@ def relationship_features(tx, data, cfg, mems):
                     adv[i] = 1.0
                     note[i] = f"a {pol} bill they back {kind} after the trade"
             g = ps.get(s)
-            if g is not None and pd.notna(f) and np.searchsorted(g, np.datetime64(f), side="right") > \
-                    np.searchsorted(g, np.datetime64(f - D(days=45)), side="right"):          # f - 45 days < date <= f
+            if g is not None and ((g["date"] <= f) & (g["date"] > f - D(days=45))).any():
                 mom[i] = 1.0
         tx["f_bill_advanced"], tx["f_sector_bill_momentum"], tx["bill_adv_note"] = adv, mom, note
     return tx.drop(columns=["_ck"])
