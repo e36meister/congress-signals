@@ -7263,18 +7263,23 @@ def relationship_features(tx, data, cfg, mems):
     # yearly disclosures, by schedule: spouse's employer, sponsored travel, outside positions
     fd = data["annual_fd"] = fd_member_ids(data.get("annual_fd"), data.get("legislators") or {})
     if fd is not None and len(fd):
-        fdg = {k: g.sort_values("filed") for k, g in fd.groupby("who")}
+        fdg = {}
+        for k, g in fd.groupby("who"):
+            g = g.sort_values("filed")
+            g = g[g["filed"].notna()]
+            fdg[k] = (g["filed"].values, list(g["doc"]), list(g["text"]))
         memo, texts = {}, {}
         sj, tr, po = np.zeros(n), np.zeros(n), np.zeros(n)
         for i, (wk, f, ck) in enumerate(zip(tx["who"], fdt, tx["_ck"])):
             if not ck or len(ck) < 4:
                 continue
-            g = fdg.get(wk)
-            if g is None:
+            G = fdg.get(wk)
+            if G is None or pd.isna(f):
                 continue
-            w = g[(g.filed <= f) & (g.filed > f - D(days=1100))]
+            lo = np.searchsorted(G[0], np.datetime64(f - D(days=1100)), side="right")
+            hi = np.searchsorted(G[0], np.datetime64(f), side="right")
             kinds = set()
-            for doc, blob in zip(w.doc, w.text):
+            for doc, blob in zip(G[1][lo:hi], G[2][lo:hi]):
                 key = (doc, ck)
                 if key not in memo:
                     if doc not in texts:
@@ -7307,7 +7312,8 @@ def relationship_features(tx, data, cfg, mems):
             e = ev.iloc[pos_of.get(x, [])].sort_values("known")
             lead[x] = (e["known"].values, (e["first"] == x).values.astype(float), e["first"].notna().values.astype(float))
         buys = tx[tx["tx_type"] == "buy"]
-        bt_idx = {k: g for k, g in buys.assign(_w=whoS).groupby("ticker")}
+        bt_idx = {k: (g["_w"].values, g["filed_date"].values, g["trade_date"].values)
+                  for k, g in buys.assign(_w=whoS).groupby("ticker")}
         fb, fl, note = np.zeros(n), np.zeros(n), [""] * n
         for i in np.where(tx["tx_type"].values == "buy")[0]:
             me, t, f, td = who[i], tx["ticker"].iat[i], fdt.iat[i], tdt.iat[i]
@@ -7315,8 +7321,9 @@ def relationship_features(tx, data, cfg, mems):
             if strong:
                 g = bt_idx.get(t)
                 if g is not None:
-                    others = g[(g["_w"] != me) & (g["filed_date"] <= f) & ((g["trade_date"] - td).abs() <= D(days=30))]
-                    hit = [w_ for w_ in others["_w"].unique() if tuple(sorted((me, w_))) in strong]
+                    W_, F_, T_ = g
+                    m_ = (W_ != me) & (F_ <= np.datetime64(f)) & (np.abs(T_ - np.datetime64(td)) <= np.timedelta64(30, "D"))
+                    hit = [w_ for w_ in pd.unique(W_[m_]) if tuple(sorted((me, w_))) in strong]
                     if hit:
                         fb[i] = 1.0
                         note[i] = "frequent trading partner " + ", ".join(names.get(h, h) for h in hit[:2]) + " also bought"
