@@ -10,7 +10,7 @@ permissions:
 jobs:
   study:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,4 +26,10 @@ jobs:
           restore-keys: data-
       - env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
-        run: python tools/${{ github.event.inputs.script }}
+          CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
+          LDA_API_KEY: ${{ secrets.LDA_API_KEY }}
+          TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
+          TIME_BUDGET_MIN: "300"
+        run: |
+          sudo apt-get install -y -qq tesseract-ocr >/dev/null 2>&1 || true
+          python tools/${{ github.event.inputs.script }}
