@@ -25,3 +25,17 @@ v = rel.stack()
 print(f"Compared {int(both.values.sum())} prices on {len(days)} days: within 0.1% {(v < .001).mean():.1%}, within 1% {(v < .01).mean():.1%}")
 miss = int((a.notna() & b.isna()).values.sum())
 print(f"Saved price present but refresh returned nothing: {miss}")
+
+# where do the differences come from?
+from_al = set()
+_orig = E._alpaca_close
+bad = rel > .001
+by_day = bad.sum()
+print("Differing prices by day:", {str(d.date()): int(n) for d, n in by_day.items()})
+tick_bad = bad.any()
+tb = list(tick_bad[tick_bad].index)
+print(f"Tickers with any difference: {len(tb)}; examples:")
+for t in tb[:12]:
+    print(" ", t, "saved", [round(x, 2) if x == x else None for x in a[t]], "new", [round(x, 2) if x == x else None for x in b[t]])
+r2 = E._alpaca_close(tb[:200], str(days[0].date()))
+print(f"Alpaca carries {r2.shape[1]} of the first {min(200, len(tb))} differing tickers")
