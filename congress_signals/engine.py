@@ -1842,7 +1842,14 @@ def load_prices(cfg, tickers, max_age_hours=12, priority=None):
         if len(al):
             upd.append(al)
             log(f"Prices: recent days for {al.shape[1]} tickers from Alpaca")
-        rest = [c for c in cols if c not in set(al.columns)]
+        # Yahoo only for the rest, and only those still trading: a stock with no price for 30+ days has almost
+        # always been delisted or bought out, and asking Yahoo about hundreds of them just costs retries
+        # (they get one weekly look on Mondays in case trading resumed)
+        last_seen = px.apply(pd.Series.last_valid_index)
+        live_cut = px.index.max() - pd.Timedelta(days=30)
+        monday = pd.Timestamp.today().weekday() == 0
+        rest = [c for c in cols if c not in set(al.columns)
+                and (monday or (pd.notna(last_seen.get(c)) and last_seen[c] >= live_cut))]
         for i in range(0, len(rest), 200):
             if out_of_time(cfg, 45):
                 break
