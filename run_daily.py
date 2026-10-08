@@ -18,7 +18,9 @@ cfg = {**E.DEFAULT_CONFIG,
        "TIINGO_API_KEY": env("TIINGO_API_KEY", ""),
        # true / false forces tuned weights on or off; unset lets the weekly check decide
        "USE_TUNED_WEIGHTS": {"true": True, "false": False}.get((env("USE_TUNED_WEIGHTS") or "").strip().lower(), "auto"),
-       "TIME_BUDGET_MIN": int(env("TIME_BUDGET_MIN", "320"))}
+       "TIME_BUDGET_MIN": int(env("TIME_BUDGET_MIN", "320")),
+       # scanned Senate reports are read in their own step after the update (scan_senate.py)
+       "SENATE_PAPER_READ": env("SENATE_SCANS_SEPARATE") != "1"}
 os.makedirs(cfg["DATA_DIR"], exist_ok=True)
 
 

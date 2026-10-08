@@ -740,6 +740,10 @@ def collect_senate_paper(cfg, max_calls=120):
     un = pd.read_pickle(cache_un) if os.path.exists(cache_un) and len(done) else pd.DataFrame()
     nidx, known = paper_name_index(cfg)
     tx, un = _rematch(tx, un, nidx, known, "Senate paper", cfg)
+    if not cfg.get("SENATE_PAPER_READ", True):
+        # new reports are read in a separate step after the update (built-in reader, no daily limit)
+        log(f"Senate paper: {len(tx)} transactions on file; {len(todo)} reports left for the separate reading step")
+        return tx
     urows = []
     matcher = lambda name: nidx.match(name, known)
     ocr = PP.make_ocr(cfg.get("OCR_SPACE_API_KEY"), _p(cfg, "state", "ocrspace_usage.json"),

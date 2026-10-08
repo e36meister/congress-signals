@@ -79,7 +79,14 @@ jobs:
           SMALL_SLEEVE_PCT: ${{ vars.SMALL_SLEEVE_PCT }}
           TIME_BUDGET_MIN: "320"
           DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
+          SENATE_SCANS_SEPARATE: "1"
         run: python run_daily.py
+
+      - name: Read scanned Senate reports (built-in reader, after the update)
+        if: always() && github.event.inputs.dry_run != 'true'
+        continue-on-error: true
+        timeout-minutes: 35
+        run: python scan_senate.py
 
       - name: Save data for tomorrow (even if the run stopped early)
         if: always() && github.event.inputs.dry_run != 'true'
