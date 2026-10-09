@@ -7793,6 +7793,7 @@ def check_trial_signals(scored, px, cfg, a, pol, rows, today, only=None):
     """Test each new signal on and off (rescoring every trade); switch only when clearly better."""
     base = dict(cfg, _nested=True)
     vs = lambda b: float(b["perf"].loc["Per year vs S&P 500", "Long picks"])
+    _cur_cache = {}
     for k in (only if only is not None else TRIAL_SIGNALS):
         label = TRIAL_LABELS[k]
         rows[:] = [r for r in rows if r.get("Setting") != label]
@@ -7808,7 +7809,10 @@ def check_trial_signals(scored, px, cfg, a, pol, rows, today, only=None):
             return run_backtest(apply_hold_policy(apply_scores(scored, cfg, buy_w=bw, short_w=sw), px, cfg, pol), px, base)
         cur_sig = list(pol.get("signals_on", []))
         alt_sig = [x for x in cur_sig if x != k] if on else cur_sig + [k]
-        cur, alt = run(cur_sig), run(alt_sig)
+        ck = tuple(sorted(cur_sig))
+        if ck not in _cur_cache:            # the current setting's backtest is shared by every signal tested
+            _cur_cache[ck] = run(cur_sig)
+        cur, alt = _cur_cache[ck], run(alt_sig)
         c = _compare(_long_daily(alt), _long_daily(cur))
         rows.append({"Setting": label, "Option": ("On" if on else "Off") + " (current)", "Per year vs S&P": vs(cur),
                      "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
