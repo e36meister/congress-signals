@@ -33,6 +33,14 @@ for k in NEW:
           f"with {base.loc[mm, 'excess'].mean() * 100:+6.2f}%  without {base.loc[~mm, 'excess'].mean() * 100:+6.2f}%  "
           f"(median {base.loc[mm, 'excess'].median() * 100:+.2f}% vs {base.loc[~mm, 'excess'].median() * 100:+.2f}%)")
 
+HO = pd.Timestamp.today() - pd.DateOffset(years=3)
+print(f"\nSplit at {HO.date()} (earlier years choose, last 3 years confirm):")
+for k in NEW:
+    for lab, part in (("earlier", buys[buys["filed_date"] < HO]), ("last 3y", buys[buys["filed_date"] >= HO])):
+        m = part[f"f_{k}"] > 0
+        if m.sum():
+            print(f"  {k:14s} {lab}: {int(m.sum()):5,} buys, with {part.loc[m, 'excess'].mean() * 100:+6.2f}% "
+                  f"without {part.loc[~m, 'excess'].mean() * 100:+6.2f}%")
 print("\nshort days-to-cover spread among buys:", buys["short_dtc"].describe(percentiles=[.5, .75, .9, .95]).round(1).to_dict())
 print("fund-count change spread among buys:", buys["funds_chg"].describe(percentiles=[.1, .25, .5, .75, .9]).round(3).to_dict())
 
@@ -60,6 +68,17 @@ for k in NEW:
           f"earlier years {c['train_gain'] * 100 if c['train_gain'] is not None else float('nan'):+.2f}% "
           f"(sure {c['train_t'] if c['train_t'] is not None else float('nan'):.2f}); last 3 yrs {c['recent'] * 100:+.2f}% "
           f"-> {'CLEARLY BETTER' if E.clearly_better(c) else 'not clearly better'}")
+print("\nReversed direction (each signal's weight flipped):")
+for k in NEW:
+    w0 = E.TRIAL_SIGNALS[k]
+    E.TRIAL_SIGNALS[k] = -w0
+    alt = run(on_now + [k])
+    E.TRIAL_SIGNALS[k] = w0
+    c = E._compare(E._long_daily(alt), E._long_daily(cur))
+    if c:
+        print(f"  {k:14s} flipped ({-w0:+.1f}): gain {c['gain'] * 100:+.2f}%/yr (sure {c['t']:.2f}); earlier "
+              f"{c['train_gain'] * 100:+.2f}% (sure {c['train_t']:.2f}); last 3 yrs {c['recent'] * 100:+.2f}% "
+              f"-> {'CLEARLY BETTER' if E.clearly_better(c) else 'not clearly better'}")
 good = [k for k in NEW if E.clearly_better(res.get(k))]
 if len(good) > 1:
     alt = run(on_now + good)
