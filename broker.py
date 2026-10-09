@@ -13,7 +13,21 @@ env = os.environ.get
 BASE = {"paper": "https://paper-api.alpaca.markets", "live": "https://api.alpaca.markets"}
 PREFIX = "cs-"
 PARK_PREFIX = PREFIX + "park-"          # unused tool money parked in an S&P 500 fund, like the backtest
-PARK_CHOICES = ("SPY", "VOO", "IVV")     # first one you don't hold yourself
+# where the tool parks unused money (first one you don't hold yourself): paper copies the backtest (S&P 500);
+# real money uses a Treasury-bill fund (steady price, ~short-term interest rates, almost no taxable gains when sold).
+# PARK_FUND (comma-separated symbols) overrides either.
+PARK_SP500 = ("SPY", "VOO", "IVV")
+PARK_TBILL = ("SGOV", "BIL", "SHV")
+PARK_ALL = PARK_SP500 + PARK_TBILL
+
+
+def park_choices(mode):
+    own = [x.strip().upper() for x in (env("PARK_FUND") or "").split(",") if x.strip()]
+    return tuple(own) or (PARK_TBILL if mode == "live" else PARK_SP500)
+
+
+def park_label(sym):
+    return "a Treasury-bill fund" if sym in PARK_TBILL else "the S&P 500" if sym in PARK_SP500 else sym
 
 
 def settings(hold_days):
@@ -176,7 +190,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
     others = set(_bot_buys(api, owner=True))
 
     is_park = lambda sym: (bot.get(sym, {}).get("client_order_id") or "").startswith(PARK_PREFIX)
-    park = next((x for x in PARK_CHOICES if x not in others), None)
+    park = next((x for x in park_choices(s["mode"]) if x not in others), None)
 
     # price rules the weekly check can turn on, set separately for main picks and the small-company portfolio
     is_sm = lambda o: (o.get("client_order_id") or "").startswith(PREFIX + "sm-")
@@ -403,9 +417,18 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                 if ok:
                     inv_sleeve += amount
 
-        # 3. park the tool's unused money in an S&P 500 fund (the backtest assumes idle money sits in SPY),
-        #    keeping a little cash for your own Buy-button orders. Sold down as picks need the money.
-        if park and park not in pending and env("PARK_IDLE", "true").lower() != "false":
+        # 3. park the tool's unused money (S&P 500 fund on paper, like the backtest; Treasury-bill fund with real
+        #    money), keeping a little cash for your own Buy-button orders. Sold down as picks need the money.
+        #    Money parked in a fund that's no longer the choice (e.g. after PARK_FUND changes) is sold first;
+        #    it's re-parked in the right fund on the next run.
+        stale = [p for p in positions if p in bot and p not in others and is_park(p) and p != park and p not in pending]
+        for p in stale:
+            r = api.post("/v2/orders", {"symbol": p, "side": "sell", "qty": positions[p].get("qty"), "type": "market",
+                                        "time_in_force": "day",
+                                        "client_order_id": f"{PARK_PREFIX}move-{dt.datetime.now():%Y%m%d%H%M%S}-{p}"[:48]})
+            actions.append({"side": "sell", "symbol": p, "ok": r.status_code in (200, 201),
+                            "why": f"moving parked money to {park_label(park)}"})
+        if not stale and park and park not in pending and env("PARK_IDLE", "true").lower() != "false":
             spent = inv_main + inv_sleeve - inv0
             open_buys = sum(float(o.get("notional") or 0) for o in open_orders if o.get("side") == "buy")
             buffer = 0.03 * equity
@@ -422,7 +445,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                              "client_order_id": f"{PARK_PREFIX}{body['side']}-{dt.datetime.now():%Y%m%d%H%M%S}"})
                 r = api.post("/v2/orders", body)
                 actions.append({"side": body["side"], "symbol": park, "ok": r.status_code in (200, 201),
-                                "why": f"parking unused money in the S&P 500 (${float(body['notional']):,.0f})"})
+                                "why": f"parking unused money in {park_label(park)} (${float(body['notional']):,.0f})"})
     if trade:
         log(f"Broker ({s['mode']}): {sum(a['ok'] for a in actions if a['side'] == 'buy')} buy order(s), "
             f"{sum(a['ok'] for a in actions if a['side'] == 'sell')} sell order(s)"
@@ -513,7 +536,7 @@ def place_tap_order(ticker, dollars, req_id, log):
         return False, "not-tradable"
     if dollars > float(acct.get("buying_power") or 0):
         return False, "not-enough-cash"
-    try:    # not enough cash: sell some of the tool's parked S&P fund first, never your own shares
+    try:    # not enough cash: sell some of the tool's parked fund first, never your own shares
         cash = float(acct.get("cash") or 0)
         if dollars > cash:
             bot = _bot_buys(api)
