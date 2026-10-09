@@ -26,14 +26,19 @@ for _, r in picks.iterrows():
     if i + hold >= len(s):
         continue
     d1 = s.index[i + hold]
-    dv = div[t] if isinstance(div, dict) else div.get(t)
-    dv = pd.Series(dv) if not isinstance(dv, pd.Series) else dv
-    dv.index = pd.to_datetime(dv.index)
-    dv = dv.dropna()
-    dv = dv[dv > 0]
-    paid = dv[(dv.index > d0) & (dv.index <= d1)]
-    # raw price at entry ~ adjusted close (dividends after entry make adjusted < raw, so this slightly overstates yield)
-    rows.append((t, d0, float(paid.sum()) / float(s.iloc[i]) if len(paid) else 0.0, len(paid)))
+    dv = div[t].dropna()
+    dv = dv[dv > 0].sort_index()
+    # each payment as a % of that day's actual (unadjusted) price: adjusted prices are lowered by every later
+    # dividend, so undo the later ones first (newest to oldest)
+    fac, yl = 1.0, {}
+    for exd, amt in zip(dv.index[::-1], dv.values[::-1]):
+        pre = s.asof(exd - pd.Timedelta(days=1))
+        if np.isfinite(pre) and pre > 0:
+            raw_pre = pre / fac + amt
+            yl[exd] = amt / raw_pre
+            fac *= max(1e-6, 1 - amt / raw_pre)
+    paid = [y for e, y in yl.items() if d0 < e <= d1]
+    rows.append((t, d0, float(sum(paid)), len(paid)))
 d = pd.DataFrame(rows, columns=["t", "d", "yield", "n"])
 print(f"Picks checked: {len(d)}; paid a dividend during the 60-day hold: {(d['n'] > 0).mean():.0%}")
 print(f"Average dividend per 60-day hold: {d['yield'].mean() * 100:.2f}% (about {d['yield'].mean() * 252 / 60 * 100:.2f}%/yr)")
