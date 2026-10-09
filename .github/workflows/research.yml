@@ -24,6 +24,12 @@ jobs:
           path: data
           key: data-${{ github.run_id }}
           restore-keys: data-
+      - name: Restore institutional data (read-only)
+        uses: actions/cache/restore@v4
+        with:
+          path: inst
+          key: inst-${{ github.run_id }}
+          restore-keys: inst-
       - env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
           CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
