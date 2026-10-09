@@ -3426,7 +3426,8 @@ def compute_features(tx, px, data, cfg):
     for name, fn in (("connections", lambda x: compute_connections(x, data, cfg, mems)),
                      ("relationships", lambda x: relationship_features(x, data, cfg, mems)),
                      ("volume", lambda x: volume_features(x, data)), ("events", lambda x: event_features(x, data, mems)),
-                     ("analysts", lambda x: analyst_features(x, data)), ("size and the rest", lambda x: extra_features(x, px, data, cfg, mems))):
+                     ("analysts", lambda x: analyst_features(x, data)), ("size and the rest", lambda x: extra_features(x, px, data, cfg, mems)),
+                     ("institutions", lambda x: _inst().inst_features(x, cfg))):
         tx = fn(tx)
         tim[name] = time.time() - t_
         t_ = time.time()
@@ -3444,14 +3445,28 @@ def _score(tx, weights):
 # New signals start switched off; the weekly check turns one on (with this weight) only when it's clearly better.
 TRIAL_SIGNALS = {"relative_tie": 0.5, "unusual_volume": 0.4, "reg_action": 0.3, "witness_after": 0.4,
                  "markup_after": 0.3, "major_8k_after": 0.3,
-                 "foreign": -0.3}      # negative: a foreign company's purchase scores lower (they've lagged US ones)
+                 "foreign": -0.3,      # negative: a foreign company's purchase scores lower (they've lagged US ones)
+                 # institutional data (congress_signals/institutions.py), each dated by when it became public
+                 "activist_13d": 0.4, "new_5pct": 0.2, "funds_adding": 0.3,
+                 "short_heavy": -0.3, "short_jump": -0.2, "funds_leaving": -0.2}
 TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "unusual_volume": "Signal: unusual trading volume before the trade",
                 "reg_action": "Signal: federal rule naming the company soon after the trade",
                 "witness_after": "Signal: company testified to their committee soon after the trade",
                 "markup_after": "Signal: their committee marked up an industry bill soon after the trade",
                 "major_8k_after": "Signal: major company announcement (8-K) soon after the trade",
-                "foreign": "Signal: score foreign companies lower (they've lagged US purchases)"}
+                "foreign": "Signal: score foreign companies lower (they've lagged US purchases)",
+                "activist_13d": "Signal: an activist investor took a 5%+ stake (13D) in the 6 months before",
+                "new_5pct": "Signal: a new passive 5% holder (13G) in the 6 months before",
+                "funds_adding": "Signal: number of funds holding it rose 10%+ last quarter (13F)",
+                "short_heavy": "Signal: score lower when short sellers hold 8+ days of volume",
+                "short_jump": "Signal: score lower when short interest jumped 50%+ in a month",
+                "funds_leaving": "Signal: score lower when funds holding it fell 10%+ last quarter (13F)"}
+
+
+def _inst():
+    from . import institutions
+    return institutions
 
 
 def active_weights(cfg, signals_on=None):
@@ -7774,11 +7789,11 @@ def check_exit_rule(scored, px, cfg, a, pol, rows, today):
     return c
 
 
-def check_trial_signals(scored, px, cfg, a, pol, rows, today):
+def check_trial_signals(scored, px, cfg, a, pol, rows, today, only=None):
     """Test each new signal on and off (rescoring every trade); switch only when clearly better."""
     base = dict(cfg, _nested=True)
     vs = lambda b: float(b["perf"].loc["Per year vs S&P 500", "Long picks"])
-    for k in TRIAL_SIGNALS:
+    for k in (only if only is not None else TRIAL_SIGNALS):
         label = TRIAL_LABELS[k]
         rows[:] = [r for r in rows if r.get("Setting") != label]
         on = k in pol.get("signals_on", [])
@@ -7862,12 +7877,15 @@ def check_trial_signals_once(scored, px, cfg):
     """A newly added trial signal is tested right away instead of waiting for the weekly check."""
     a = load_adaptive(cfg)
     seen = set(a.get("trial_checked") or [])
-    if all(k in seen for k in TRIAL_SIGNALS):
+    # a signal whose data isn't collected yet waits until it has enough trades to test
+    have = {k for k in TRIAL_SIGNALS if int((scored.get(f"f_{k}", pd.Series(0, index=scored.index)) > 0).sum()) >= 30}
+    todo = [k for k in TRIAL_SIGNALS if k not in seen and k in have]
+    if not todo:
         return
     pol = dict(a["policy"])
     rows = list(a.get("evaluation") or [])
-    check_trial_signals(scored, px, cfg, a, pol, rows, dt.date.today().isoformat())
-    a["policy"], a["evaluation"], a["trial_checked"] = pol, rows, sorted(TRIAL_SIGNALS)
+    check_trial_signals(scored, px, cfg, a, pol, rows, dt.date.today().isoformat(), only=todo)
+    a["policy"], a["evaluation"], a["trial_checked"] = pol, rows, sorted(seen | set(todo))
     save_adaptive(cfg, a)
 
 

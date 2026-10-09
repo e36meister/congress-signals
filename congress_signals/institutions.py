@@ -85,7 +85,7 @@ def collect_sched13(cfg, budget_end):
         if os.path.exists(path) and (done or not _old(path, 12)):
             continue
         if time.time() > budget_end:
-            return
+            return False
         try:
             r = requests.get(f"https://www.sec.gov/Archives/edgar/full-index/{p.year}/QTR{p.quarter}/form.idx",
                              headers=hdr, timeout=300)
@@ -105,6 +105,7 @@ def collect_sched13(cfg, budget_end):
             time.sleep(0.5)
         except Exception as e:
             E.log(f"Institutions: 13D/13G index {p.year} Q{p.quarter} failed ({type(e).__name__})")
+    return True
 
 
 def _subject_from_header(cfg, cik, acc, cache):
@@ -197,13 +198,16 @@ def collect_short_interest(cfg, budget_end):
     dates = _settlement_dates(cfg)
     if not dates:
         E.log("Institutions: FINRA short interest dates unavailable")
-        return
+        return False
     fields = ["symbolCode", "currentShortPositionQuantity", "previousShortPositionQuantity",
               "averageDailyVolumeQuantity", "daysToCoverQuantity", "marketClassCode"]
-    n = 0
+    n, left = 0, 0
     for d in dates:
         path = os.path.join(sd, d + ".pkl")
-        if os.path.exists(path) or time.time() > budget_end:
+        if os.path.exists(path):
+            continue
+        if time.time() > budget_end:
+            left += 1
             continue
         rows, off = [], 0
         while True:
@@ -230,6 +234,7 @@ def collect_short_interest(cfg, budget_end):
         _changed(cfg)
     if n:
         E.log(f"Institutions: short interest for {n} new settlement date(s); {len(dates)} on file from {dates[0]}")
+    return left == 0
 
 
 def short_table(cfg):
@@ -268,7 +273,7 @@ def collect_13f(cfg, budget_end):
         zips = _f13_zips(cfg)
     except Exception as e:
         E.log(f"Institutions: 13F list failed ({type(e).__name__})")
-        return
+        return False
     start = pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=500)
     for u in zips:
         name = u.rsplit("/", 1)[-1].replace(".zip", "")
@@ -276,7 +281,7 @@ def collect_13f(cfg, budget_end):
         if os.path.exists(path):
             continue
         if time.time() > budget_end - 240:          # one file takes up to ~4 minutes
-            return
+            return False
         try:
             t0 = time.time()
             r = requests.get(u, headers=hdr, timeout=900)
@@ -306,6 +311,7 @@ def collect_13f(cfg, budget_end):
             del z, info, r
         except Exception as e:
             E.log(f"Institutions: 13F {name} failed ({type(e).__name__}: {e})")
+    return True
 
 
 def f13_table(cfg):
@@ -326,7 +332,7 @@ def map_cusips(cfg, budget_end, min_holders=10):
     m = json.load(open(path)) if os.path.exists(path) else {}
     a = f13_table(cfg)
     if not len(a):
-        return m
+        return False
     top = a.groupby("CUSIP")["holders"].max()
     todo = [c for c in top[top >= min_holders].sort_values(ascending=False).index
             if c not in m and re.fullmatch(r"[0-9A-Z]{9}", c or "")]
@@ -362,7 +368,7 @@ def map_cusips(cfg, budget_end, min_holders=10):
         json.dump(m, open(path, "w"))
         _changed(cfg)
         E.log(f"Institutions: mapped {n:,} CUSIPs to tickers ({len(todo) - n:,} left)")
-    return m
+    return n >= len(todo)
 
 
 def f13_by_ticker(cfg):
@@ -389,19 +395,27 @@ def update_all(cfg, minutes):
         os.remove(os.path.join(_dir(cfg), ".changed"))      # set again only if something new is saved
     except OSError:
         pass
+    done = True
     for name, fn in (("13D/13G", collect_sched13), ("short interest", collect_short_interest), ("13F", collect_13f),
                      ("CUSIPs", map_cusips)):
         if time.time() > end:
+            done = False
             break
         try:
-            fn(cfg, end)
+            done = bool(fn(cfg, end)) and done
         except Exception as e:
+            done = False
             E.log(f"Institutions: {name} step failed ({type(e).__name__}: {e})")
     try:
         sched13_events(cfg, budget_end=end)         # resolves (and caches) the subject of shared filings
     except Exception as e:
         E.log(f"Institutions: 13D subjects failed ({type(e).__name__}: {e})")
+    mark = os.path.join(_dir(cfg), "complete")
+    if done and time.time() < end and not os.path.exists(mark):
+        open(mark, "w").write(time.strftime("%Y-%m-%d"))      # history is in: daily runs keep it current from now on
+        _changed(cfg)
     st = status(cfg)
+    st["history complete"] = os.path.exists(mark)
     E.log("Institutions: on file: " + ", ".join(f"{k} {v}" for k, v in st.items()))
     return st
 
@@ -444,7 +458,9 @@ def inst_features(tx, cfg):
     for c in ("f_activist_13d", "f_new_5pct", "f_short_heavy", "f_short_jump", "f_funds_adding", "f_funds_leaving"):
         tx[c] = 0.0
     tx["short_dtc"], tx["funds_chg"], tx["inst_note"] = np.nan, np.nan, ""
-    if not os.path.isdir(cfg.get("INST_DIR") or "inst"):
+    root = cfg.get("INST_DIR") or "inst"
+    # only once the full history is in, so a half-built history never feeds the backtest or the signal tests
+    if not os.path.exists(os.path.join(root, "complete")) and not cfg.get("INST_PARTIAL_OK"):
         return tx
     key = (cfg.get("INST_DIR") or "inst")
     if key not in _CACHE:

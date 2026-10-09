@@ -48,6 +48,13 @@ jobs:
           key: data-${{ github.run_id }}
           restore-keys: data-
 
+      - name: Restore institutional data (13D/13G, short interest, 13F)
+        uses: actions/cache/restore@v4
+        with:
+          path: inst
+          key: inst-${{ github.run_id }}
+          restore-keys: inst-
+
       - name: Collect, score, backtest and update the dashboard
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
@@ -87,6 +94,23 @@ jobs:
         continue-on-error: true
         timeout-minutes: 35
         run: python scan_senate.py
+
+      - name: Update institutional data (after trading; only once the history build is complete)
+        id: inst
+        if: always() && github.event.inputs.dry_run != 'true' && hashFiles('inst/complete') != ''
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
+        run: python update_institutions.py 8
+
+      - name: Save institutional data
+        if: always() && steps.inst.outcome == 'success' && hashFiles('inst/.changed') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: inst
+          key: inst-${{ github.run_id }}
 
       - name: Save data for tomorrow (even if the run stopped early)
         if: always() && github.event.inputs.dry_run != 'true'
