@@ -20,7 +20,9 @@ cfg = {**E.DEFAULT_CONFIG,
        "USE_TUNED_WEIGHTS": {"true": True, "false": False}.get((env("USE_TUNED_WEIGHTS") or "").strip().lower(), "auto"),
        "TIME_BUDGET_MIN": int(env("TIME_BUDGET_MIN", "320")),
        # scanned Senate reports are read in their own step after the update (scan_senate.py)
-       "SENATE_PAPER_READ": env("SENATE_SCANS_SEPARATE") != "1"}
+       "SENATE_PAPER_READ": env("SENATE_SCANS_SEPARATE") != "1",
+       # House scans: only reports from the last 30 days before trading; older ones after trading (scan_house.py)
+       "HOUSE_PAPER_FRESH_DAYS": 30 if env("SENATE_SCANS_SEPARATE") == "1" else None}
 os.makedirs(cfg["DATA_DIR"], exist_ok=True)
 
 
