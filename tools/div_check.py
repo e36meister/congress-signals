@@ -19,14 +19,14 @@ hold = 60
 rows = []
 for _, r in picks.iterrows():
     t, d0 = r["ticker"], pd.Timestamp(r["entry_date"])
-    if t not in px.columns or div is None or t not in div:
+    if t not in px.columns:
         continue
     s = px[t].dropna()
     i = s.index.searchsorted(d0)
     if i + hold >= len(s):
         continue
     d1 = s.index[i + hold]
-    dv = div[t].dropna()
+    dv = div[t].dropna() if t in div.columns else pd.Series(dtype=float)
     dv = dv[dv > 0].sort_index()
     # each payment as a % of that day's actual (unadjusted) price: adjusted prices are lowered by every later
     # dividend, so undo the later ones first (newest to oldest)
