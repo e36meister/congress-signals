@@ -1,0 +1,48 @@
+name: Build institutional data (one-time history, resumable)
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Minutes to spend collecting"
+        default: "300"
+permissions:
+  contents: read
+concurrency:
+  group: institutions
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      TZ: America/New_York
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: for i in 1 2 3; do pip install -q -r requirements.txt && exit 0; sleep 20; done; exit 1
+      - name: Restore saved data (read-only here; only for the ticker list)
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: data-${{ github.run_id }}
+          restore-keys: data-
+      - name: Restore institutional data
+        uses: actions/cache/restore@v4
+        with:
+          path: inst
+          key: inst-${{ github.run_id }}
+          restore-keys: inst-
+      - name: Collect
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
+        run: python update_institutions.py ${{ github.event.inputs.minutes || '300' }}
+      - name: Save institutional data
+        if: always() && hashFiles('inst/.changed') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: inst
+          key: inst-${{ github.run_id }}
