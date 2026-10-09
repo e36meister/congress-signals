@@ -1,86 +1,32 @@
-"""Read-only probe: are the institutional data sources reachable from GitHub, and what do they look like?
-Prints only public data."""
-import os, re, io, json, zipfile, requests
+"""Read-only probe #2: history depth of FINRA short interest / short volume, and where the SEC 13F data sets live."""
+import os, re, requests
 
 UA = {"User-Agent": os.environ.get("SEC_USER_AGENT") or "research probe admin@example.com"}
+FH = {"Accept": "application/json", "Content-Type": "application/json"}
 
 
-def show(name, f):
+def si(date):
+    r = requests.post("https://api.finra.org/data/group/otcMarket/name/consolidatedShortInterest", headers=FH, timeout=60,
+                      json={"limit": 5000, "compareFilters": [{"compareType": "EQUAL", "fieldName": "settlementDate", "fieldValue": date}],
+                            "fields": ["symbolCode", "currentShortPositionQuantity", "averageDailyVolumeQuantity", "marketClassCode"]})
     try:
-        f()
-    except Exception as e:
-        print(f"{name}: FAILED {type(e).__name__}: {e}")
+        n = len(r.json())
+    except Exception:
+        n = r.text[:150]
+    return r.status_code, n, {k: v for k, v in r.headers.items() if k.lower() in ("record-total", "record-limit", "record-offset")}
 
 
-def edgar_index():
-    r = requests.get("https://www.sec.gov/Archives/edgar/full-index/2024/QTR1/form.idx", headers=UA, timeout=120)
-    print("form.idx 2024Q1", r.status_code, len(r.content))
-    lines = r.text.splitlines()
-    kinds = {}
-    for l in lines:
-        f = l[:17].strip()
-        if "13D" in f or "13G" in f:
-            kinds[f] = kinds.get(f, 0) + 1
-    print("  13D/13G form types:", kinds)
-    ex = [l for l in lines if l.startswith("SC 13D ")][:6]
-    print("  sample:", *ex, sep="\n    ")
+for d in ("2013-12-31", "2014-01-15", "2016-01-15", "2018-01-12", "2019-01-15", "2020-01-15", "2021-06-15", "2025-09-15", "2025-09-30"):
+    print("short interest", d, si(d))
 
+for d in ("20180102", "20190102", "20200102", "20210104", "20220103", "20230103", "20240102"):
+    r = requests.head(f"https://cdn.finra.org/equity/regsho/daily/CNMSshvol{d}.txt", timeout=60)
+    print("short volume file", d, r.status_code)
+r = requests.post("https://api.finra.org/data/group/otcMarket/name/regShoDaily", headers=FH, timeout=60,
+                  json={"limit": 3, "compareFilters": [{"compareType": "EQUAL", "fieldName": "tradeReportDate", "fieldValue": "2015-01-05"}]})
+print("regShoDaily 2015-01-05:", r.status_code, r.text[:200])
 
-def edgar_index_new():
-    r = requests.get("https://www.sec.gov/Archives/edgar/full-index/2025/QTR2/form.idx", headers=UA, timeout=120)
-    kinds = {}
-    for l in r.text.splitlines():
-        f = l[:17].strip()
-        if "13D" in f or "13G" in f:
-            kinds[f] = kinds.get(f, 0) + 1
-    print("form.idx 2025Q2 13D/13G form types:", kinds)
-    ex = [l for l in r.text.splitlines() if l.startswith("SCHEDULE 13D ")][:4]
-    print("  sample:", *ex, sep="\n    ")
-
-
-def f13_list():
-    r = requests.get("https://www.sec.gov/dera/data/form-13f-data-sets", headers=UA, timeout=60)
-    links = sorted(set(re.findall(r'href="([^"]+form13f[^"]*\.zip)"', r.text)))
-    print("13F data sets page", r.status_code, len(links), "zips; first/last:", links[:3], links[-3:])
-    if links:
-        u = links[-1] if links[-1].startswith("http") else "https://www.sec.gov" + links[-1]
-        h = requests.head(u, headers=UA, timeout=60)
-        print("  newest size", h.headers.get("Content-Length"))
-
-
-def finra_api():
-    for ds in ("consolidatedShortInterest", "regShoDaily"):
-        r = requests.get(f"https://api.finra.org/data/group/otcMarket/name/{ds}?limit=2",
-                         headers={"Accept": "application/json"}, timeout=60)
-        print(f"FINRA {ds}:", r.status_code, r.text[:400].replace("\n", " "))
-    r = requests.post("https://api.finra.org/data/group/otcMarket/name/consolidatedShortInterest",
-                      headers={"Accept": "application/json", "Content-Type": "application/json"},
-                      json={"limit": 3, "sortFields": ["settlementDate"],
-                            "compareFilters": [{"compareType": "EQUAL", "fieldName": "symbolCode", "fieldValue": "AAPL"}]}, timeout=60)
-    print("  AAPL earliest:", r.status_code, r.text[:600].replace("\n", " "))
-
-
-def finra_cdn():
-    for d in ("20140102", "20250102"):
-        r = requests.get(f"https://cdn.finra.org/equity/regsho/daily/CNMSshvol{d}.txt", timeout=60)
-        print(f"FINRA short volume file {d}:", r.status_code, len(r.content), r.text[:200].replace("\n", " | "))
-    r = requests.get("https://cdn.finra.org/equity/otcmarket/biweekly/shrt20140115.csv", timeout=60)
-    print("FINRA biweekly short interest 2014-01-15:", r.status_code, len(r.content), r.text[:200].replace("\n", " | "))
-
-
-def openfigi():
-    r = requests.post("https://api.openfigi.com/v3/mapping", json=[{"idType": "ID_CUSIP", "idValue": "037833100"},
-                                                                  {"idType": "ID_CUSIP", "idValue": "594918104"}], timeout=60)
-    print("OpenFIGI:", r.status_code, r.text[:300], "limits:", {k: v for k, v in r.headers.items() if "limit" in k.lower()})
-
-
-def thirteen_d_doc():
-    # a recent XML-era Schedule 13D primary doc: is the CUSIP structured?
-    r = requests.get("https://efts.sec.gov/LATEST/search-index?forms=SCHEDULE%2013D&dateRange=custom&startdt=2025-06-01&enddt=2025-06-05",
-                     headers=UA, timeout=60)
-    print("EDGAR full-text search:", r.status_code, r.text[:300].replace("\n", " "))
-
-
-for n, f in [("edgar", edgar_index), ("edgar new", edgar_index_new), ("13f", f13_list), ("finra api", finra_api),
-             ("finra cdn", finra_cdn), ("openfigi", openfigi), ("efts", thirteen_d_doc)]:
-    show(n, f)
+for u in ("https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets", "https://www.sec.gov/dera/data/form-13f"):
+    r = requests.get(u, headers=UA, timeout=60)
+    links = sorted(set(re.findall(r'href="([^"]+\.zip)"', r.text)))
+    print(u, r.status_code, len(links), links[:3], links[-3:])
