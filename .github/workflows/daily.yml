@@ -95,6 +95,16 @@ jobs:
         timeout-minutes: 35
         run: python scan_senate.py
 
+      - name: Read older scanned House reports (after the update)
+        if: always() && github.event.inputs.dry_run != 'true'
+        continue-on-error: true
+        timeout-minutes: 35
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          OCR_SPACE_API_KEY: ${{ secrets.OCR_SPACE_API_KEY }}
+          GOOGLE_VISION_API_KEY: ${{ secrets.GOOGLE_VISION_API_KEY }}
+        run: python scan_house.py
+
       - name: Update institutional data (after trading; only once the history build is complete)
         id: inst
         if: always() && github.event.inputs.dry_run != 'true' && hashFiles('inst/complete') != ''

@@ -619,6 +619,13 @@ def collect_house_paper(cfg):
     # new reports first (newest first), then ones read by an older reader version
     todo = pd.concat([idx[~ids.isin(done) & ~ids.isin(redo)].sort_values("FilingDate", ascending=False),
                       idx[ids.isin(redo) & ~ids.isin(done)].sort_values("FilingDate", ascending=False)])
+    fresh_days = cfg.get("HOUSE_PAPER_FRESH_DAYS")
+    if fresh_days:      # before trading: only new reports; the backlog is read in its own step after trading
+        backlog = len(todo)
+        todo = todo[~todo["DocID"].astype(str).isin(redo)
+                    & (todo["FilingDate"] >= pd.Timestamp.today().normalize() - pd.Timedelta(days=int(fresh_days)))]
+        if backlog > len(todo):
+            log(f"House paper: {backlog - len(todo)} older reports left for the reading step after trading")
     if ocr is None:
         log("House paper: no OCR_SPACE_API_KEY; using the built-in reader (handwriting mostly unreadable)")
     elif not ocr.can(2):
