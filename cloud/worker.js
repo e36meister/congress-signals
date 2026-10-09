@@ -5,7 +5,7 @@
 const COOKIE = "cc_s";
 const SESSION_DAYS = 180;
 const MAX_FAILS = 10;            // wrong passcodes allowed per hour before locking
-const PREFIX = "cs-", PARK_PREFIX = "cs-park-", PARK_CHOICES = ["SPY", "VOO", "IVV"];
+const PREFIX = "cs-", PARK_PREFIX = "cs-park-", PARK_CHOICES = ["SPY", "VOO", "IVV", "SGOV", "BIL", "SHV"];
 const enc = new TextEncoder();
 import { vapid, saveSub, sendAll, getSubs } from "./push.js";
 
@@ -178,7 +178,7 @@ async function buy(req, env) {
   if (!asset.data.tradable) return json({ ok: false, why: "not-tradable" }, 400);
   if (dollars > +acct.data.buying_power) return json({ ok: false, why: "not-enough-cash" }, 400);
   const reqId = String(Date.now());
-  // short on cash: sell some of the tool's parked S&P fund first, never your own shares (same as the GitHub version)
+  // short on cash: sell some of the tool's parked fund first, never your own shares (same as the GitHub version)
   try {
     const cash = +acct.data.cash;
     if (dollars > cash) {

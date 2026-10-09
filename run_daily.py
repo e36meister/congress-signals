@@ -172,12 +172,12 @@ def send_weekly_summary():
     orders = [o for o in ((d.get("portfolio") or {}).get("orders") or [])
               if o.get("by") == "tool" and o.get("status") == "filled" and str(o.get("at", ""))[:10] >= since.isoformat()]
     if orders:
-        park = ("SPY", "VOO", "IVV")
+        park = broker.PARK_ALL
         lst = lambda side, pk: ", ".join(sorted({esc(o["t"]) for o in orders if o["side"] == side and (o["t"] in park) == pk}))
         lines = [f"Bought: {lst('buy', False)}" if lst("buy", False) else "",
                  f"Sold: {lst('sell', False)}" if lst("sell", False) else "",
-                 "Moved unused money into the S&amp;P 500 fund" if lst("buy", True) else "",
-                 "Took money out of the S&amp;P 500 fund for new picks" if lst("sell", True) else ""]
+                 "Parked unused money (" + lst("buy", True) + ")" if lst("buy", True) else "",
+                 "Took parked money out (" + lst("sell", True) + ") for new picks" if lst("sell", True) else ""]
         parts.append("<h3>Trades the tool made</h3><p>" + "<br>".join(x for x in lines if x) + "</p>")
     # new buy picks this week
     w = d.get("watchlist") or {}

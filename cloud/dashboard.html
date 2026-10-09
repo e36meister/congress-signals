@@ -629,7 +629,7 @@ function soldNote(x) {
     <div class="foot" style="font-family:var(--body);white-space:normal;min-width:160px">${list.map(s => `${esc(s.n)}${tagHtml({ n: s.n, b: s.b })} sold ${esc(fmtDate(s.td))}, disclosed ${esc(fmtDate(s.d))}`).join("<br>")}${auto ? "<br>The tool sells it at the next update." : ""}</div>`;
 }
 function heldCell(x, L) {
-  if (x.sleeve === "park") return `Tool's unused money<div class="foot">Parked in the S&amp;P 500 until picks need it</div>`;
+  if (x.sleeve === "park") return `Tool's unused money<div class="foot">Parked in ${["SGOV", "BIL", "SHV"].includes(x.t) ? "a Treasury-bill fund" : "the S&amp;P 500"} until picks need it</div>`;
   if (x.bot) {
     const h = x.hold ?? L.hold_days ?? 60;
     return `${x.sleeve === "small" ? "Small-co. portfolio · " : ""}${x.held ?? 0} of ${h} days${x.bought ? `<div class="foot">Tool sells ~${esc(fmtDate(addTradingDays(x.bought, h)))}</div>` : ""}`;
