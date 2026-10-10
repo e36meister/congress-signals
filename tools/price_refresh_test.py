@@ -39,3 +39,15 @@ for t in tb[:12]:
     print(" ", t, "saved", [round(x, 2) if x == x else None for x in a[t]], "new", [round(x, 2) if x == x else None for x in b[t]])
 r2 = E._alpaca_close(tb[:200], str(days[0].date()))
 print(f"Alpaca carries {r2.shape[1]} of the first {min(200, len(tb))} differing tickers")
+
+print(f"Alpaca dividends/splits in the window: {len(E._ALP_ACTED)} tickers; examples {sorted(E._ALP_ACTED.items())[:5]}")
+import json as _j
+q = _j.load(open(f"{work}/cache/price_refresh_queue.json")) if os.path.exists(f"{work}/cache/price_refresh_queue.json") else []
+print(f"Still queued for re-download after this run: {len(q)}")
+dv = pd.read_pickle(f"{work}/cache/dividends.pkl")
+print("dividends.pkl newest ex-dates:", list(dv.dropna(how='all').index[-3:].date))
+import broker
+api = broker.Alpaca(broker.settings(60))
+d = broker.dividend_estimate(api)
+print("dividend estimate:", None if d is None else {"since": d["since"], "payouts": d["n"], "has_total": d["total"] > 0,
+                                                    "received_any": d["received"] > 0})
