@@ -58,6 +58,42 @@ src = sub("Connecting to your Google Drive…", "Loading…", src)
 src = sub('<button class="link" id="refresh" type="button" hidden>Refresh</button>',
           '<button class="link" id="refresh" type="button" hidden>Refresh</button><button class="link" id="alerts" type="button" hidden>Turn on alerts</button><button class="link" id="widgetBtn" type="button">Widget</button>', src)
 
+# ---- phone: tab bar at the bottom (thumb reach), icons + short labels; desktop keeps the top tabs ----
+from urllib.parse import quote
+_ic = {  # 24px outline icons
+    "today": '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/><circle cx="12" cy="15" r="1.6" fill="#000"/>',
+    "record": '<path d="M4 20V4M4 20h16"/><path d="M7 15l4-4 3 3 5-6"/>',
+    "defense": '<path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z"/>',
+    "small": '<path d="M5 20v-5M10 20v-9M15 20v-6M20 20V8"/>',
+    "works": '<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.4 1.1 2.2h5c0-.8.4-1.6 1.1-2.2A6 6 0 0 0 12 3z"/>',
+    "real": '<circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5.5 5.5M8 10.5l2 2 3.5-4"/>',
+    "port": '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M3 12.5h18"/>',
+}
+_short = {"today": "Today", "record": "Record", "defense": "Defense", "small": "Small", "works": "Works",
+          "real": "Reality", "port": "Portfolio"}
+_svg = lambda body: ("url(\"data:image/svg+xml," + quote('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+                     'stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + body + '</svg>') + "\")")
+tabcss = "\n@media (max-width: 760px){\n" + \
+"""  body{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
+  nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:50;margin:0;gap:0;display:grid;grid-template-columns:repeat(7,1fr);
+    overflow:visible;background:color-mix(in srgb,var(--surface) 92%,transparent);-webkit-backdrop-filter:saturate(1.6) blur(14px);
+    backdrop-filter:saturate(1.6) blur(14px);border-top:1px solid var(--rule);padding:6px 2px calc(6px + env(safe-area-inset-bottom,0px))}
+  nav.tabs button{font-size:0;border:0;padding:4px 0 2px;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--muted);
+    min-width:0;-webkit-tap-highlight-color:transparent}
+  nav.tabs button::before{content:"";width:24px;height:24px;background:currentColor;-webkit-mask:var(--ic) center/contain no-repeat;mask:var(--ic) center/contain no-repeat}
+  nav.tabs button::after{font:600 10.5px/1.1 var(--body);letter-spacing:.1px;white-space:nowrap}
+  nav.tabs button[aria-selected="true"]{color:var(--accent);border:0}
+""" + "".join(f'  nav.tabs button[data-tab="{k}"]{{--ic:{_svg(v)}}}\n  nav.tabs button[data-tab="{k}"]::after{{content:"{_short[k]}"}}\n'
+              for k, v in _ic.items()) + "}\n</style>"
+src = sub("env(safe-area-inset-top,0px))} }\n</style>", "env(safe-area-inset-top,0px))} }" + tabcss, src)
+# tapping a tab starts that tab at the top of the page (bottom bar on phones)
+src = sub("""  try { localStorage.setItem("ctd-tab", state.tab); } catch (e) {}
+  render();
+}));""", """  try { localStorage.setItem("ctd-tab", state.tab); } catch (e) {}
+  render();
+  window.scrollTo(0, 0);
+}));""", src)
+
 # ---- Buy button: orders go straight to Alpaca ----
 src = sub("state.requests.find(f => f.title.startsWith(\"order_request_\") && tickerOf(f.title) === t)",
           "(state.taps || []).find(o => o.t === t && OPEN.includes(o.status))", src)
