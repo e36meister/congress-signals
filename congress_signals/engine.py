@@ -1553,14 +1553,14 @@ def _alpaca_actions(tickers, start, h):
             ca = js.get("corporate_actions") or {}
             today = dt.date.today().isoformat()
             for d in ca.get("cash_dividends") or []:
-                if d.get("ex_date") and d["ex_date"] <= today and float(d.get("rate") or 0) > 0:
+                if d.get("ex_date") and start[:10] <= d["ex_date"] <= today and float(d.get("rate") or 0) > 0:
                     t = d["symbol"].replace(".", "-")
                     div.setdefault(t, {})[pd.Timestamp(d["ex_date"])] = float(d["rate"])
                     _ALP_ACTED[t] = max(_ALP_ACTED.get(t, ""), d["ex_date"])
             for k in ("forward_splits", "reverse_splits"):
                 for d in ca.get(k) or []:
                     nr, orr = float(d.get("new_rate") or 0), float(d.get("old_rate") or 0)
-                    if d.get("ex_date") and d["ex_date"] <= today and nr > 0 and orr > 0:
+                    if d.get("ex_date") and start[:10] <= d["ex_date"] <= today and nr > 0 and orr > 0:
                         t = d["symbol"].replace(".", "-")
                         spl.setdefault(t, {})[pd.Timestamp(d["ex_date"])] = nr / orr
                         _ALP_ACTED[t] = max(_ALP_ACTED.get(t, ""), d["ex_date"])

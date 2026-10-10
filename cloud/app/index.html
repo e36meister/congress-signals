@@ -130,6 +130,7 @@ td.nw{white-space:nowrap}
 .alp{font-size:13px;font-weight:600;color:inherit;text-decoration:underline;text-underline-offset:2px;white-space:nowrap;align-self:center}
 /* chart */
 .chart{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:12px 12px 8px;position:relative}
+.chart svg{display:block;max-width:100%;height:auto}
 .legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:var(--ink2);margin:0 4px 6px}
 .legend span{display:inline-flex;align-items:center;gap:6px}
 .legend i{width:14px;height:3px;border-radius:2px;display:inline-block}
@@ -192,9 +193,11 @@ svg text{fill:var(--muted);font:11px var(--mono)}
 @media (max-width:620px){
   .pick{grid-template-columns:1fr;}
   .pick .tk{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px}
-  .pick .side{text-align:left;justify-items:start;grid-auto-flow:column;align-items:center;gap:12px}
-  .frow{grid-template-columns:52px 1fr 110px}
-  .cols{grid-template-columns:1fr}
+  .pick .side{text-align:left;display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;min-width:0}
+  .frow{grid-template-columns:44px minmax(36px,1fr) auto;gap:8px}
+  .frow .val{font-size:11.5px}
+  .cols{grid-template-columns:minmax(0,1fr)}
+  .pick{grid-template-columns:minmax(0,1fr)}
 }
 @media (prefers-reduced-motion:no-preference){ .pick,.tile{transition:border-color .15s} .pick:hover{border-color:var(--accent)} }
 
@@ -210,9 +213,41 @@ svg text{fill:var(--muted);font:11px var(--mono)}
 .login button:disabled{opacity:.6}
 .login .msg{min-height:20px;font-size:13.5px;color:var(--bad)}
 @media (display-mode: standalone){ header.top{padding-top:max(16px,env(safe-area-inset-top,0px))} }
+
+@media (max-width: 760px){
+  header.top{padding-block:10px 0}
+  .brand{align-items:center;gap:2px 12px;padding-bottom:8px}
+  .brand .seal{display:none}
+  .brand h1{font-size:19px;line-height:1.2}
+  .status{font-size:12px;gap:6px;line-height:1.35}
+  main{padding-top:14px;gap:18px}
+  .tiles{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+  .tile{padding:10px 12px}
+  .tile .v{font-size:22px}
+  .tile .l,.tile .c{font-size:12px;line-height:1.35}
+  .tbl.cards{background:none;border:0;border-radius:0;overflow:visible;max-height:none}
+  .tbl.cards table,.tbl.cards tbody{display:block}
+  .tbl.cards thead{display:none}
+  .tbl.cards tr{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px 14px;background:var(--surface);border:1px solid var(--rule);border-radius:10px;padding:10px 12px;margin-bottom:8px}
+  .tbl.cards td{display:block;border:0;padding:0;text-align:left;white-space:normal;min-width:0;background:none;font-size:13.5px;overflow-wrap:anywhere}
+  .tbl.cards td::before{content:attr(data-l);display:block;font:600 10px/1.5 var(--body);letter-spacing:.5px;text-transform:uppercase;color:var(--muted)}
+  .tbl.cards td.ttl{order:-1;grid-column:1/-1;font-weight:600;font-size:15px}
+  .tbl.cards td.full,.tbl.cards td[data-l=""]{grid-column:1/-1}
+  .tbl.cards td.ttl::before,.tbl.cards td[data-l=""]::before{display:none}
+  .tbl.cards td.why{min-width:0}
+  .tbl.cards tr.on{border-color:var(--accent)}
+  .tbl.cards .who-cell{display:flex;flex-direction:column;align-items:flex-start;gap:4px}
+  .tbl.cards span.nm{flex-wrap:wrap;row-gap:2px}
+}
+@media (max-width: 360px){ nav.tabs button::after{font-size:8.5px;letter-spacing:0} nav.tabs button::before{width:22px;height:22px} }
+nav.tabs button{overflow:hidden}
+#ptr{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 6px);z-index:60;transform:translate(-50%,-60px);
+  background:var(--surface);color:var(--ink2);border:1px solid var(--rule);border-radius:999px;padding:6px 14px;
+  font:600 12.5px var(--body);box-shadow:0 4px 14px rgba(0,0,0,.12);pointer-events:none;opacity:0;white-space:nowrap}
+#ptr.go{color:var(--accent)}
 @media (max-width: 760px){
   body{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
-  nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:50;margin:0;gap:0;display:grid;grid-template-columns:repeat(7,1fr);
+  nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:50;margin:0;gap:0;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));
     overflow:visible;background:color-mix(in srgb,var(--surface) 92%,transparent);-webkit-backdrop-filter:saturate(1.6) blur(14px);
     backdrop-filter:saturate(1.6) blur(14px);border-top:1px solid var(--rule);padding:6px 2px calc(6px + env(safe-area-inset-bottom,0px))}
   nav.tabs button{font-size:0;border:0;padding:4px 0 2px;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--muted);
@@ -738,6 +773,7 @@ function renderPortfolio(d) {
     <div class="tile"><span class="v ${cls(p.day_pl)}">${p.day_pl == null ? "–" : (p.day_pl > 0 ? "+" : "") + money(p.day_pl)}</span><span class="l">Change today</span></div>
     <div class="tile"><span class="v ${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain)}</span><span class="l">Gain on open positions</span><span class="c">${money(invested)} invested</span></div>
     <div class="tile"><span class="v">${pos.length}</span><span class="l">Open positions</span>${L.max_positions ? `<span class="c">Limit ${L.max_positions}</span>` : ""}</div>
+    ${p.dividends ? `<div class="tile"><span class="v ${p.dividends.total > 0 ? "pos" : ""}">${money(p.dividends.total, 2)}</span><span class="l">Dividends${p.mode === "live" ? "" : " (estimated)"}</span><span class="c">${p.mode === "live" ? "Received " + money(p.dividends.received, 2) : "Not paid on paper; real money would get them"}</span></div>` : ""}
   </div>
   ${L.small_pct ? `<p class="note">${Math.round(L.small_pct)}% of the account runs the small-company portfolio (see the Small caps tab), holding each pick ${L.hold_sleeve ?? 250} trading days. The rest follows the main BUY picks.</p>` : ""}
   ${closeSection(d)}
@@ -747,6 +783,7 @@ function renderPortfolio(d) {
     ${pos.map(x => `<tr><td class="mono">${tkBtn(x.t)}${soldNote(x)}</td><td class="n">${Number(x.qty).toLocaleString()}</td><td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.px, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${heldCell(x, L)}</td></tr>`).join("")}
     </tbody></table></div>
     <p class="foot">Suggested sell dates for your own positions use the current best holding period from the weekly check (What works → Automatic adjustments): ${(state.data.adaptive?.policy?.hold_other) ?? L.hold_days ?? 60} trading days for most stocks, ${(state.data.adaptive?.policy?.hold_small) ?? L.hold_small ?? L.hold_days ?? 60} for companies under $2B. They update if the check changes. The tool never sells your own positions.</p>` : `<div class="empty">No open positions yet. New BUY picks are bought at the next market open.</div>`}</section>
+  ${divSection(p)}
   ${reqSection()}
   <section class="panel"><div class="ph"><h2>Recent orders</h2></div>
     ${ords.length ? `<div class="tbl scroll"><table><thead><tr><th>When</th><th>Ticker</th><th>Side</th><th class="n">Shares</th><th class="n">Fill price</th><th>Status</th><th>Placed by</th></tr></thead><tbody>
@@ -755,6 +792,14 @@ function renderPortfolio(d) {
   return h;
 }
 
+function divSection(p) {
+  const D = p.dividends;
+  if (!D || !D.items || !D.items.length) return "";
+  return `<section class="panel"><div class="ph"><h2>Dividends</h2><span class="sub">Since ${esc(fmtDate(D.since))} · ${D.n} payout${D.n === 1 ? "" : "s"} on shares held the day before each ex-date${p.mode === "live" ? "" : " · estimated: the paper account isn't paid them"}</span></div>
+    <div class="tbl"><table><thead><tr><th>Ticker</th><th>Ex-date</th><th class="n">Shares</th><th class="n">Per share</th><th class="n">Amount</th><th>Paid</th></tr></thead><tbody>
+    ${D.items.map(x => `<tr><td class="mono">${tkBtn(x.t)}</td><td class="nw">${esc(fmtDate(x.ex))}</td><td class="n">${Number(x.sh).toLocaleString()}</td><td class="n">${money(x.rate, 2)}</td><td class="n pos">${money(x.amt, 2)}</td><td class="nw">${x.pay ? esc(fmtDate(x.pay)) : "–"}</td></tr>`).join("")}
+    </tbody></table></div></section>`;
+}
 function sureWord(t) { return t == null ? "–" : t >= 3 ? "Very sure" : t >= 1.65 ? "Sure" : t >= 1 ? "Somewhat" : "Not sure"; }
 function sureFoot(r) {
   if (r.Bar == null) return sureWord(r.Sureness);
@@ -1398,6 +1443,71 @@ function widgetModal() {
 }
 // no Widget button any more (already installed); opening the app with #widget at the end of its address shows the setup again
 if (location.hash === "#widget") setTimeout(widgetModal, 1500);
+
+// ---------- phone: wide tables as cards ----------
+// Each cell gets its column name (shown as a label on phones); tables with 4+ columns and up to 25 rows become a
+// stack of cards on narrow screens (CSS in the app build). The ticker/stock column, if any, is the card's title.
+const TITLE_COL = /^(ticker|stock|company|member|portfolio|setting|signal|year|when)$/i;
+function cardify(root) {
+  for (const tbl of root.querySelectorAll(".tbl")) {
+    if (tbl.classList.contains("tlist") || tbl.dataset.cd) continue;
+    const t = tbl.querySelector("table"); if (!t) continue;
+    const heads = [...t.querySelectorAll("thead th")].map(th => th.textContent.trim());
+    const rows = t.querySelectorAll("tbody tr");
+    tbl.dataset.cd = "1";
+    if (heads.length < 4 || rows.length > 25) continue;
+    let ti = heads.findIndex(h => TITLE_COL.test(h)); if (ti < 0) ti = 0;
+    for (const tr of rows) {
+      let i = 0;
+      for (const td of tr.children) {
+        td.dataset.l = td.colSpan > 1 ? "" : (heads[i] || "");
+        if (i === ti && td.colSpan === 1) td.classList.add("ttl");
+        else if (td.textContent.trim().length > 26 || td.querySelector(".who-cell,.bar,svg")) td.classList.add("full");
+        i += td.colSpan || 1;
+      }
+    }
+    tbl.classList.add("cards");
+  }
+}
+let cardQueued = false;
+new MutationObserver(() => { if (cardQueued) return; cardQueued = true; requestAnimationFrame(() => { cardQueued = false; cardify(document.body); }); })
+  .observe(document.body, { childList: true, subtree: true });
+
+// ---------- pull to refresh (home-screen app has no browser reload) ----------
+(() => {
+  const ind = document.createElement("div"); ind.id = "ptr"; ind.setAttribute("aria-hidden", "true"); document.body.appendChild(ind);
+  const PULL = 80;
+  let y0 = null, dy = 0, busy = false;
+  const show = (d, text, go) => { ind.textContent = text; ind.classList.toggle("go", !!go);
+    ind.style.transform = `translate(-50%, ${Math.min(d, PULL + 20) - 60}px)`; ind.style.opacity = String(Math.min(1, d / 40)); };
+  const hide = () => { ind.style.transition = "transform .2s, opacity .2s"; ind.style.transform = "translate(-50%,-60px)"; ind.style.opacity = "0";
+    setTimeout(() => { ind.style.transition = ""; }, 220); };
+  addEventListener("touchstart", e => {
+    const modal = document.querySelector(".mbg:not([hidden])");
+    y0 = (!busy && scrollY <= 0 && e.touches.length === 1 && $("#login").hidden && !modal) ? e.touches[0].clientY : null; dy = 0;
+  }, { passive: true });
+  addEventListener("touchmove", e => {
+    if (y0 == null) return;
+    dy = (e.touches[0].clientY - y0) * 0.6;
+    if (dy <= 0 || scrollY > 0) { if (dy < 0) y0 = null; return; }
+    show(dy, dy >= PULL ? "Release to refresh" : "Pull to refresh", dy >= PULL);
+  }, { passive: true });
+  addEventListener("touchend", async () => {
+    if (y0 == null) return; y0 = null;
+    if (dy < PULL) { hide(); return; }
+    busy = true; show(PULL, "Refreshing…", true);
+    try { lastEtag = null; setStatus("", "Checking for new results…", false); await loadData(); }
+    finally { busy = false; show(PULL, "Up to date", true); setTimeout(hide, 600); }
+  }, { passive: true });
+})();
+
+// ---------- app-icon badge: alerts add to it (service worker); opening the app clears it ----------
+function clearBadge() {
+  try { navigator.clearAppBadge && navigator.clearAppBadge().catch(() => {}); } catch (e) {}
+  try { caches.open("cc-badge").then(c => c.put("/n", new Response("0"))).catch(() => {}); } catch (e) {}
+}
+clearBadge();
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") clearBadge(); });
 
 state.folderId = "cloud";       // turns on the Buy buttons
 // preview hook for local screenshots only
