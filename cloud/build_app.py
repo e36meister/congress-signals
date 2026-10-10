@@ -75,7 +75,7 @@ _svg = lambda body: ("url(\"data:image/svg+xml," + quote('<svg xmlns="http://www
                      'stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + body + '</svg>') + "\")")
 tabcss = "\n@media (max-width: 760px){\n" + \
 """  body{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
-  nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:50;margin:0;gap:0;display:grid;grid-template-columns:repeat(7,1fr);
+  nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:50;margin:0;gap:0;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));
     overflow:visible;background:color-mix(in srgb,var(--surface) 92%,transparent);-webkit-backdrop-filter:saturate(1.6) blur(14px);
     backdrop-filter:saturate(1.6) blur(14px);border-top:1px solid var(--rule);padding:6px 2px calc(6px + env(safe-area-inset-bottom,0px))}
   nav.tabs button{font-size:0;border:0;padding:4px 0 2px;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--muted);
@@ -86,6 +86,42 @@ tabcss = "\n@media (max-width: 760px){\n" + \
 """ + "".join(f'  nav.tabs button[data-tab="{k}"]{{--ic:{_svg(v)}}}\n  nav.tabs button[data-tab="{k}"]::after{{content:"{_short[k]}"}}\n'
               for k, v in _ic.items()) + "}\n</style>"
 src = sub("env(safe-area-inset-top,0px))} }\n</style>", "env(safe-area-inset-top,0px))} }" + tabcss, src)
+# ---- phone: slim header, wide tables as cards, pull-to-refresh indicator ----
+phonecss = """
+@media (max-width: 760px){
+  header.top{padding-block:10px 0}
+  .brand{align-items:center;gap:2px 12px;padding-bottom:8px}
+  .brand .seal{display:none}
+  .brand h1{font-size:19px;line-height:1.2}
+  .status{font-size:12px;gap:6px;line-height:1.35}
+  main{padding-top:14px;gap:18px}
+  .tiles{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+  .tile{padding:10px 12px}
+  .tile .v{font-size:22px}
+  .tile .l,.tile .c{font-size:12px;line-height:1.35}
+  .tbl.cards{background:none;border:0;border-radius:0;overflow:visible;max-height:none}
+  .tbl.cards table,.tbl.cards tbody{display:block}
+  .tbl.cards thead{display:none}
+  .tbl.cards tr{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px 14px;background:var(--surface);border:1px solid var(--rule);border-radius:10px;padding:10px 12px;margin-bottom:8px}
+  .tbl.cards td{display:block;border:0;padding:0;text-align:left;white-space:normal;min-width:0;background:none;font-size:13.5px;overflow-wrap:anywhere}
+  .tbl.cards td::before{content:attr(data-l);display:block;font:600 10px/1.5 var(--body);letter-spacing:.5px;text-transform:uppercase;color:var(--muted)}
+  .tbl.cards td.ttl{order:-1;grid-column:1/-1;font-weight:600;font-size:15px}
+  .tbl.cards td.full,.tbl.cards td[data-l=""]{grid-column:1/-1}
+  .tbl.cards td.ttl::before,.tbl.cards td[data-l=""]::before{display:none}
+  .tbl.cards td.why{min-width:0}
+  .tbl.cards tr.on{border-color:var(--accent)}
+  .tbl.cards .who-cell{display:flex;flex-direction:column;align-items:flex-start;gap:4px}
+  .tbl.cards span.nm{flex-wrap:wrap;row-gap:2px}
+}
+@media (max-width: 360px){ nav.tabs button::after{font-size:8.5px;letter-spacing:0} nav.tabs button::before{width:22px;height:22px} }
+nav.tabs button{overflow:hidden}
+#ptr{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 6px);z-index:60;transform:translate(-50%,-60px);
+  background:var(--surface);color:var(--ink2);border:1px solid var(--rule);border-radius:999px;padding:6px 14px;
+  font:600 12.5px var(--body);box-shadow:0 4px 14px rgba(0,0,0,.12);pointer-events:none;opacity:0;white-space:nowrap}
+#ptr.go{color:var(--accent)}
+"""
+src = sub("@media (max-width: 760px){\n  body{padding-bottom", phonecss + "@media (max-width: 760px){\n  body{padding-bottom", src)
+
 # tapping a tab starts that tab at the top of the page (bottom bar on phones)
 src = sub("""  try { localStorage.setItem("ctd-tab", state.tab); } catch (e) {}
   render();

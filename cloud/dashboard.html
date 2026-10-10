@@ -120,6 +120,7 @@ td.nw{white-space:nowrap}
 .alp{font-size:13px;font-weight:600;color:inherit;text-decoration:underline;text-underline-offset:2px;white-space:nowrap;align-self:center}
 /* chart */
 .chart{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:12px 12px 8px;position:relative}
+.chart svg{display:block;max-width:100%;height:auto}
 .legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:var(--ink2);margin:0 4px 6px}
 .legend span{display:inline-flex;align-items:center;gap:6px}
 .legend i{width:14px;height:3px;border-radius:2px;display:inline-block}
@@ -182,9 +183,11 @@ svg text{fill:var(--muted);font:11px var(--mono)}
 @media (max-width:620px){
   .pick{grid-template-columns:1fr;}
   .pick .tk{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px}
-  .pick .side{text-align:left;justify-items:start;grid-auto-flow:column;align-items:center;gap:12px}
-  .frow{grid-template-columns:52px 1fr 110px}
-  .cols{grid-template-columns:1fr}
+  .pick .side{text-align:left;display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;min-width:0}
+  .frow{grid-template-columns:44px minmax(36px,1fr) auto;gap:8px}
+  .frow .val{font-size:11.5px}
+  .cols{grid-template-columns:minmax(0,1fr)}
+  .pick{grid-template-columns:minmax(0,1fr)}
 }
 @media (prefers-reduced-motion:no-preference){ .pick,.tile{transition:border-color .15s} .pick:hover{border-color:var(--accent)} }
 </style>
@@ -677,6 +680,7 @@ function renderPortfolio(d) {
     <div class="tile"><span class="v ${cls(p.day_pl)}">${p.day_pl == null ? "–" : (p.day_pl > 0 ? "+" : "") + money(p.day_pl)}</span><span class="l">Change today</span></div>
     <div class="tile"><span class="v ${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain)}</span><span class="l">Gain on open positions</span><span class="c">${money(invested)} invested</span></div>
     <div class="tile"><span class="v">${pos.length}</span><span class="l">Open positions</span>${L.max_positions ? `<span class="c">Limit ${L.max_positions}</span>` : ""}</div>
+    ${p.dividends ? `<div class="tile"><span class="v ${p.dividends.total > 0 ? "pos" : ""}">${money(p.dividends.total, 2)}</span><span class="l">Dividends${p.mode === "live" ? "" : " (estimated)"}</span><span class="c">${p.mode === "live" ? "Received " + money(p.dividends.received, 2) : "Not paid on paper; real money would get them"}</span></div>` : ""}
   </div>
   ${L.small_pct ? `<p class="note">${Math.round(L.small_pct)}% of the account runs the small-company portfolio (see the Small caps tab), holding each pick ${L.hold_sleeve ?? 250} trading days. The rest follows the main BUY picks.</p>` : ""}
   ${closeSection(d)}
@@ -686,6 +690,7 @@ function renderPortfolio(d) {
     ${pos.map(x => `<tr><td class="mono">${tkBtn(x.t)}${soldNote(x)}</td><td class="n">${Number(x.qty).toLocaleString()}</td><td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.px, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${heldCell(x, L)}</td></tr>`).join("")}
     </tbody></table></div>
     <p class="foot">Suggested sell dates for your own positions use the current best holding period from the weekly check (What works → Automatic adjustments): ${(state.data.adaptive?.policy?.hold_other) ?? L.hold_days ?? 60} trading days for most stocks, ${(state.data.adaptive?.policy?.hold_small) ?? L.hold_small ?? L.hold_days ?? 60} for companies under $2B. They update if the check changes. The tool never sells your own positions.</p>` : `<div class="empty">No open positions yet. New BUY picks are bought at the next market open.</div>`}</section>
+  ${divSection(p)}
   ${reqSection()}
   <section class="panel"><div class="ph"><h2>Recent orders</h2></div>
     ${ords.length ? `<div class="tbl scroll"><table><thead><tr><th>When</th><th>Ticker</th><th>Side</th><th class="n">Shares</th><th class="n">Fill price</th><th>Status</th><th>Placed by</th></tr></thead><tbody>
@@ -694,6 +699,14 @@ function renderPortfolio(d) {
   return h;
 }
 
+function divSection(p) {
+  const D = p.dividends;
+  if (!D || !D.items || !D.items.length) return "";
+  return `<section class="panel"><div class="ph"><h2>Dividends</h2><span class="sub">Since ${esc(fmtDate(D.since))} · ${D.n} payout${D.n === 1 ? "" : "s"} on shares held the day before each ex-date${p.mode === "live" ? "" : " · estimated: the paper account isn't paid them"}</span></div>
+    <div class="tbl"><table><thead><tr><th>Ticker</th><th>Ex-date</th><th class="n">Shares</th><th class="n">Per share</th><th class="n">Amount</th><th>Paid</th></tr></thead><tbody>
+    ${D.items.map(x => `<tr><td class="mono">${tkBtn(x.t)}</td><td class="nw">${esc(fmtDate(x.ex))}</td><td class="n">${Number(x.sh).toLocaleString()}</td><td class="n">${money(x.rate, 2)}</td><td class="n pos">${money(x.amt, 2)}</td><td class="nw">${x.pay ? esc(fmtDate(x.pay)) : "–"}</td></tr>`).join("")}
+    </tbody></table></div></section>`;
+}
 function sureWord(t) { return t == null ? "–" : t >= 3 ? "Very sure" : t >= 1.65 ? "Sure" : t >= 1 ? "Somewhat" : "Not sure"; }
 function sureFoot(r) {
   if (r.Bar == null) return sureWord(r.Sureness);

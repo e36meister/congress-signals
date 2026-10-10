@@ -212,6 +212,71 @@ function widgetModal() {
 // no Widget button any more (already installed); opening the app with #widget at the end of its address shows the setup again
 if (location.hash === "#widget") setTimeout(widgetModal, 1500);
 
+// ---------- phone: wide tables as cards ----------
+// Each cell gets its column name (shown as a label on phones); tables with 4+ columns and up to 25 rows become a
+// stack of cards on narrow screens (CSS in the app build). The ticker/stock column, if any, is the card's title.
+const TITLE_COL = /^(ticker|stock|company|member|portfolio|setting|signal|year|when)$/i;
+function cardify(root) {
+  for (const tbl of root.querySelectorAll(".tbl")) {
+    if (tbl.classList.contains("tlist") || tbl.dataset.cd) continue;
+    const t = tbl.querySelector("table"); if (!t) continue;
+    const heads = [...t.querySelectorAll("thead th")].map(th => th.textContent.trim());
+    const rows = t.querySelectorAll("tbody tr");
+    tbl.dataset.cd = "1";
+    if (heads.length < 4 || rows.length > 25) continue;
+    let ti = heads.findIndex(h => TITLE_COL.test(h)); if (ti < 0) ti = 0;
+    for (const tr of rows) {
+      let i = 0;
+      for (const td of tr.children) {
+        td.dataset.l = td.colSpan > 1 ? "" : (heads[i] || "");
+        if (i === ti && td.colSpan === 1) td.classList.add("ttl");
+        else if (td.textContent.trim().length > 26 || td.querySelector(".who-cell,.bar,svg")) td.classList.add("full");
+        i += td.colSpan || 1;
+      }
+    }
+    tbl.classList.add("cards");
+  }
+}
+let cardQueued = false;
+new MutationObserver(() => { if (cardQueued) return; cardQueued = true; requestAnimationFrame(() => { cardQueued = false; cardify(document.body); }); })
+  .observe(document.body, { childList: true, subtree: true });
+
+// ---------- pull to refresh (home-screen app has no browser reload) ----------
+(() => {
+  const ind = document.createElement("div"); ind.id = "ptr"; ind.setAttribute("aria-hidden", "true"); document.body.appendChild(ind);
+  const PULL = 80;
+  let y0 = null, dy = 0, busy = false;
+  const show = (d, text, go) => { ind.textContent = text; ind.classList.toggle("go", !!go);
+    ind.style.transform = `translate(-50%, ${Math.min(d, PULL + 20) - 60}px)`; ind.style.opacity = String(Math.min(1, d / 40)); };
+  const hide = () => { ind.style.transition = "transform .2s, opacity .2s"; ind.style.transform = "translate(-50%,-60px)"; ind.style.opacity = "0";
+    setTimeout(() => { ind.style.transition = ""; }, 220); };
+  addEventListener("touchstart", e => {
+    const modal = document.querySelector(".mbg:not([hidden])");
+    y0 = (!busy && scrollY <= 0 && e.touches.length === 1 && $("#login").hidden && !modal) ? e.touches[0].clientY : null; dy = 0;
+  }, { passive: true });
+  addEventListener("touchmove", e => {
+    if (y0 == null) return;
+    dy = (e.touches[0].clientY - y0) * 0.6;
+    if (dy <= 0 || scrollY > 0) { if (dy < 0) y0 = null; return; }
+    show(dy, dy >= PULL ? "Release to refresh" : "Pull to refresh", dy >= PULL);
+  }, { passive: true });
+  addEventListener("touchend", async () => {
+    if (y0 == null) return; y0 = null;
+    if (dy < PULL) { hide(); return; }
+    busy = true; show(PULL, "Refreshing…", true);
+    try { lastEtag = null; setStatus("", "Checking for new results…", false); await loadData(); }
+    finally { busy = false; show(PULL, "Up to date", true); setTimeout(hide, 600); }
+  }, { passive: true });
+})();
+
+// ---------- app-icon badge: alerts add to it (service worker); opening the app clears it ----------
+function clearBadge() {
+  try { navigator.clearAppBadge && navigator.clearAppBadge().catch(() => {}); } catch (e) {}
+  try { caches.open("cc-badge").then(c => c.put("/n", new Response("0"))).catch(() => {}); } catch (e) {}
+}
+clearBadge();
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") clearBadge(); });
+
 state.folderId = "cloud";       // turns on the Buy buttons
 // preview hook for local screenshots only
 if (window.__CTD_SAMPLE) { state.data = window.__CTD_SAMPLE; state.confirm = window.__CTD_CONFIRM || null; state.taps = window.__CTD_TAPS || [];
