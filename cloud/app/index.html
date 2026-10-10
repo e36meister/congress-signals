@@ -210,6 +210,31 @@ svg text{fill:var(--muted);font:11px var(--mono)}
 .login button:disabled{opacity:.6}
 .login .msg{min-height:20px;font-size:13.5px;color:var(--bad)}
 @media (display-mode: standalone){ header.top{padding-top:max(16px,env(safe-area-inset-top,0px))} }
+@media (max-width: 760px){
+  body{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
+  nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:50;margin:0;gap:0;display:grid;grid-template-columns:repeat(7,1fr);
+    overflow:visible;background:color-mix(in srgb,var(--surface) 92%,transparent);-webkit-backdrop-filter:saturate(1.6) blur(14px);
+    backdrop-filter:saturate(1.6) blur(14px);border-top:1px solid var(--rule);padding:6px 2px calc(6px + env(safe-area-inset-bottom,0px))}
+  nav.tabs button{font-size:0;border:0;padding:4px 0 2px;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--muted);
+    min-width:0;-webkit-tap-highlight-color:transparent}
+  nav.tabs button::before{content:"";width:24px;height:24px;background:currentColor;-webkit-mask:var(--ic) center/contain no-repeat;mask:var(--ic) center/contain no-repeat}
+  nav.tabs button::after{font:600 10.5px/1.1 var(--body);letter-spacing:.1px;white-space:nowrap}
+  nav.tabs button[aria-selected="true"]{color:var(--accent);border:0}
+  nav.tabs button[data-tab="today"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Crect%20x%3D%223.5%22%20y%3D%225%22%20width%3D%2217%22%20height%3D%2215.5%22%20rx%3D%222%22/%3E%3Cpath%20d%3D%22M3.5%2010h17M8%203v4M16%203v4%22/%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2215%22%20r%3D%221.6%22%20fill%3D%22%23000%22/%3E%3C/svg%3E")}
+  nav.tabs button[data-tab="today"]::after{content:"Today"}
+  nav.tabs button[data-tab="record"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M4%2020V4M4%2020h16%22/%3E%3Cpath%20d%3D%22M7%2015l4-4%203%203%205-6%22/%3E%3C/svg%3E")}
+  nav.tabs button[data-tab="record"]::after{content:"Record"}
+  nav.tabs button[data-tab="defense"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M12%203l7.5%203v5.5c0%204.6-3.2%208.2-7.5%209.5-4.3-1.3-7.5-4.9-7.5-9.5V6z%22/%3E%3C/svg%3E")}
+  nav.tabs button[data-tab="defense"]::after{content:"Defense"}
+  nav.tabs button[data-tab="small"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M5%2020v-5M10%2020v-9M15%2020v-6M20%2020V8%22/%3E%3C/svg%3E")}
+  nav.tabs button[data-tab="small"]::after{content:"Small"}
+  nav.tabs button[data-tab="works"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M9%2018h6M10%2021h4%22/%3E%3Cpath%20d%3D%22M12%203a6%206%200%200%200-3.6%2010.8c.7.6%201.1%201.4%201.1%202.2h5c0-.8.4-1.6%201.1-2.2A6%206%200%200%200%2012%203z%22/%3E%3C/svg%3E")}
+  nav.tabs button[data-tab="works"]::after{content:"Works"}
+  nav.tabs button[data-tab="real"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Ccircle%20cx%3D%2210.5%22%20cy%3D%2210.5%22%20r%3D%226%22/%3E%3Cpath%20d%3D%22M15%2015l5.5%205.5M8%2010.5l2%202%203.5-4%22/%3E%3C/svg%3E")}
+  nav.tabs button[data-tab="real"]::after{content:"Reality"}
+  nav.tabs button[data-tab="port"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Crect%20x%3D%223%22%20y%3D%227%22%20width%3D%2218%22%20height%3D%2213%22%20rx%3D%222%22/%3E%3Cpath%20d%3D%22M9%207V5a1%201%200%200%201%201-1h4a1%201%200%200%201%201%201v2M3%2012.5h18%22/%3E%3C/svg%3E")}
+  nav.tabs button[data-tab="port"]::after{content:"Portfolio"}
+}
 </style>
 
 <div class="login" id="login" hidden><form id="loginForm" autocomplete="on">
@@ -288,6 +313,7 @@ document.querySelectorAll("nav.tabs button").forEach(b => b.addEventListener("cl
   state.tab = b.dataset.tab;
   try { localStorage.setItem("ctd-tab", state.tab); } catch (e) {}
   render();
+  window.scrollTo(0, 0);
 }));
 
 // ---------- rendering ----------
