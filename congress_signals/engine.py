@@ -1523,7 +1523,54 @@ def _alpaca_close(tickers, start):
         return pd.DataFrame()
     c = pd.DataFrame(closes).sort_index()
     _OPEN_BUF.append(pd.DataFrame(opens).sort_index())
+    try:
+        _alpaca_actions(list(c.columns), start, h)
+    except Exception as e:
+        log(f"Prices: Alpaca dividends/splits not read ({type(e).__name__})")
     return c
+
+
+_ALP_ACTED = {}          # ticker -> newest ex-date of a dividend or split Alpaca reported in this run's refresh window
+
+
+def _alpaca_actions(tickers, start, h):
+    """Dividends and splits in the refresh window from Alpaca's corporate-actions data, saved with the ones from
+    Yahoo's full downloads (dividends.pkl / splits.pkl). Each one also marks the ticker: its saved price history is
+    on the old adjustment basis and gets re-downloaded."""
+    _ALP_ACTED.clear()
+    div, spl = {}, {}
+    for i in range(0, len(tickers), 400):
+        syms = [t.replace("-", ".") for t in tickers[i:i + 400]]
+        tok = None
+        for _ in range(20):
+            p = {"symbols": ",".join(syms), "types": "cash_dividend,forward_split,reverse_split", "start": start, "limit": 1000}
+            if tok:
+                p["page_token"] = tok
+            r = requests.get("https://data.alpaca.markets/v1/corporate-actions", headers=h, params=p, timeout=60)
+            if r.status_code != 200:
+                break
+            js = r.json()
+            ca = js.get("corporate_actions") or {}
+            today = dt.date.today().isoformat()
+            for d in ca.get("cash_dividends") or []:
+                if d.get("ex_date") and d["ex_date"] <= today and float(d.get("rate") or 0) > 0:
+                    t = d["symbol"].replace(".", "-")
+                    div.setdefault(t, {})[pd.Timestamp(d["ex_date"])] = float(d["rate"])
+                    _ALP_ACTED[t] = max(_ALP_ACTED.get(t, ""), d["ex_date"])
+            for k in ("forward_splits", "reverse_splits"):
+                for d in ca.get(k) or []:
+                    nr, orr = float(d.get("new_rate") or 0), float(d.get("old_rate") or 0)
+                    if d.get("ex_date") and d["ex_date"] <= today and nr > 0 and orr > 0:
+                        t = d["symbol"].replace(".", "-")
+                        spl.setdefault(t, {})[pd.Timestamp(d["ex_date"])] = nr / orr
+                        _ALP_ACTED[t] = max(_ALP_ACTED.get(t, ""), d["ex_date"])
+            tok = js.get("next_page_token")
+            if not tok:
+                break
+    if div:
+        _ACT_BUF.append(("Dividends", pd.DataFrame(div).sort_index()))
+    if spl:
+        _ACT_BUF.append(("Stock Splits", pd.DataFrame(spl).sort_index()))
 
 
 def _stooq_close(t, start):
@@ -1875,6 +1922,14 @@ def load_prices(cfg, tickers, max_age_hours=12, priority=None):
             if len(common) and cc:
                 ratio = (upd.loc[common, cc] / px.loc[common, cc]).median()
                 restated = [c for c, r in ratio.items() if pd.notna(r) and abs(r - 1) > 0.003]
+                # a dividend or split Alpaca reported restates the history too, even when it's under 0.3%
+                # (most quarterly dividends are): re-download each one once
+                seen, seen_path = _cache_json(cfg, "price_actions_seen.json", {})
+                acted = [t for t, ex in _ALP_ACTED.items() if t in px.columns and seen.get(t, "") < ex]
+                if acted:
+                    seen.update({t: _ALP_ACTED[t] for t in acted})
+                    json.dump(seen, open(seen_path, "w"))
+                restated = sorted(set(restated) | set(acted))
                 if restated:
                     _price_queue_add(cfg, restated, front=True)
             px = upd.combine_first(px)

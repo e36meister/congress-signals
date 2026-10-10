@@ -94,6 +94,66 @@ def _bot_buys(api, any_buyer=False, owner=False):
     return out
 
 
+def dividend_estimate(api):
+    """Cash dividends the account's shares were entitled to, from every fill and Alpaca's corporate-actions data:
+    shares held at the end of the day before each ex-date x the dividend per share. A paper account isn't paid
+    dividends, so this shows what real money would have received; 'received' is what Alpaca actually credited."""
+    fills, page_token = [], None
+    for _ in range(40):
+        params = {"activity_types": "FILL", "direction": "asc", "page_size": 100}
+        if page_token:
+            params["page_token"] = page_token
+        page = api.get("/v2/account/activities", **params)
+        if not page:
+            break
+        fills += page
+        if len(page) < 100:
+            break
+        page_token = page[-1]["id"]
+    if not fills:
+        return None
+    first = min(f["transaction_time"][:10] for f in fills)
+    syms = sorted({f["symbol"] for f in fills})
+    divs = []
+    for i in range(0, len(syms), 400):
+        tok = None
+        for _ in range(10):
+            p = {"symbols": ",".join(syms[i:i + 400]), "types": "cash_dividend", "start": first, "limit": 1000}
+            if tok:
+                p["page_token"] = tok
+            r = requests.get("https://data.alpaca.markets/v1/corporate-actions", headers=api.h, params=p, timeout=30)
+            if r.status_code != 200:
+                break
+            js = r.json()
+            divs += (js.get("corporate_actions") or {}).get("cash_dividends") or []
+            tok = js.get("next_page_token")
+            if not tok:
+                break
+    today = dt.date.today().isoformat()
+    items = []
+    for d in divs:
+        ex, sym, rate = d.get("ex_date"), d.get("symbol"), float(d.get("rate") or 0)
+        if not ex or not sym or rate <= 0 or ex > today:
+            continue
+        sh = 0.0
+        for f in fills:      # shares at the close before the ex-date
+            if f["symbol"] == sym and f["transaction_time"][:10] < ex:
+                sh += float(f["qty"]) * (1 if f["side"] == "buy" else -1)
+        if sh > 1e-6:
+            items.append({"t": from_alpaca(sym), "ex": ex, "pay": d.get("payable_date"), "sh": round(sh, 4),
+                          "rate": rate, "amt": round(sh * rate, 2)})
+    received = 0.0
+    try:
+        for a in api.get("/v2/account/activities", activity_types="DIV,DIVCGL,DIVCGS,DIVFT,DIVNRA,DIVROC,DIVTXEX",
+                         page_size=100) or []:
+            received += float(a.get("net_amount") or 0)
+    except Exception:
+        pass
+    items.sort(key=lambda x: x["ex"], reverse=True)
+    return {"since": first, "total": round(sum(x["amt"] for x in items), 2), "n": len(items),
+            "received": round(received, 2), "items": items[:30]}
+
+
 AHEAD_RULES = ("ahead", "ahead_daily")
 AHEAD_MAX = 250            # trading days: the longest the "ahead of the S&P" rules keep a pick (same as the backtest)
 NEAR_END_DAYS = 5          # a position this close to its sell date is re-checked against the current hold every run
@@ -514,7 +574,14 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                         or (o["side"] == "sell" and o["symbol"] in bot and not o.get("client_order_id", "").startswith("tap-")
                             and o["symbol"] not in others)
                         else ("tap" if (o.get("client_order_id") or "").startswith("tap-") else "you")} for o in recent],
-            "this_run": actions}
+            "this_run": actions, "dividends": _safe(lambda: dividend_estimate(api))}
+
+
+def _safe(fn):
+    try:
+        return fn()
+    except Exception:
+        return None
 
 
 def place_tap_order(ticker, dollars, req_id, log):
