@@ -331,7 +331,26 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                                 "why": "a member who bought it disclosed a sale"})
                 sold.add(sym)
 
-    # 1a2. stop rules: sell a position that fell X% below its buy price, or X% from its high since buying
+    # 1a2. stop rules: sell a position that fell X% below its buy price, or X% from its high since buying.
+    #      Measured with dividends added back (the price drops by each dividend on its ex-date), the way the
+    #      backtest measures it on dividend-adjusted prices.
+    _divs = {}
+
+    def div_since(sym, since):
+        if sym not in _divs:
+            tot = 0.0
+            try:
+                r = requests.get("https://data.alpaca.markets/v1/corporate-actions", headers=api.h, timeout=20,
+                                 params={"symbols": sym, "types": "cash_dividend", "start": since, "limit": 100})
+                today_s = dt.date.today().isoformat()
+                for d in ((r.json().get("corporate_actions") or {}).get("cash_dividends") or []) if r.status_code == 200 else []:
+                    if since < (d.get("ex_date") or "") <= today_s:
+                        tot += float(d.get("rate") or 0)
+            except Exception:
+                pass
+            _divs[sym] = tot
+        return _divs[sym]
+
     if trade:
         for sym, o in bot.items():
             if sym not in positions or sym in pending or sym in sold or sym in others or is_park(sym):
@@ -343,6 +362,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             entry = float(positions[sym].get("avg_entry_price") or 0)
             if not (now_px > 0 and entry > 0):
                 continue
+            if now_px <= entry * (1 - pct(pe)) * 1.15 or pe.startswith("trail"):   # near a stop: count dividends
+                now_px += div_since(sym, o["filled_at"][:10])
             if pe.startswith("trail"):
                 ref = high_since(sym, o["filled_at"][:10], now_px)
                 why = f"fell {pct(pe)*100:.0f}% from its high since buying"
