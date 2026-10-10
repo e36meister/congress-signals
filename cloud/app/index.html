@@ -253,7 +253,7 @@ svg text{fill:var(--muted);font:11px var(--mono)}
         <div class="seal">The Purpose of a System is What It Does · STOCK Act</div>
         <h1>Capitol Capital</h1>
       </div>
-      <div class="status" id="status"><span class="dot" id="dot"></span><span id="statusText">Loading…</span><button class="link" id="refresh" type="button" hidden>Refresh</button><button class="link" id="alerts" type="button" hidden>Turn on alerts</button><button class="link" id="widgetBtn" type="button">Widget</button></div>
+      <div class="status" id="status"><span class="dot" id="dot"></span><span id="statusText">Loading…</span><button class="link" id="refresh" type="button" hidden>Refresh</button><button class="link" id="alerts" type="button" hidden>Turn on alerts</button></div>
     </div>
     <nav class="tabs" role="tablist" aria-label="Sections">
       <button role="tab" id="tab-today" aria-selected="true" data-tab="today" type="button">Today</button>
@@ -1396,7 +1396,8 @@ function widgetModal() {
     try { widgetJs = await fetchWidget(true); ready(); msg.textContent = "New key made. Copy the script again."; } catch (e) { msg.textContent = "Couldn't make a new key."; }
   });
 }
-$("#widgetBtn").addEventListener("click", widgetModal);
+// no Widget button any more (already installed); opening the app with #widget at the end of its address shows the setup again
+if (location.hash === "#widget") setTimeout(widgetModal, 1500);
 
 state.folderId = "cloud";       // turns on the Buy buttons
 // preview hook for local screenshots only
