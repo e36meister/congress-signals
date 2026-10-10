@@ -209,7 +209,8 @@ function widgetModal() {
     try { widgetJs = await fetchWidget(true); ready(); msg.textContent = "New key made. Copy the script again."; } catch (e) { msg.textContent = "Couldn't make a new key."; }
   });
 }
-$("#widgetBtn").addEventListener("click", widgetModal);
+// no Widget button any more (already installed); opening the app with #widget at the end of its address shows the setup again
+if (location.hash === "#widget") setTimeout(widgetModal, 1500);
 
 state.folderId = "cloud";       // turns on the Buy buttons
 // preview hook for local screenshots only

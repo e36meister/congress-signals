@@ -56,7 +56,7 @@ login = """<div class="login" id="login" hidden><form id="loginForm" autocomplet
 src = sub("<div class=\"wrap\">", login + "<div class=\"wrap\">", src)
 src = sub("Connecting to your Google Drive…", "Loading…", src)
 src = sub('<button class="link" id="refresh" type="button" hidden>Refresh</button>',
-          '<button class="link" id="refresh" type="button" hidden>Refresh</button><button class="link" id="alerts" type="button" hidden>Turn on alerts</button><button class="link" id="widgetBtn" type="button">Widget</button>', src)
+          '<button class="link" id="refresh" type="button" hidden>Refresh</button><button class="link" id="alerts" type="button" hidden>Turn on alerts</button>', src)
 
 # ---- phone: tab bar at the bottom (thumb reach), icons + short labels; desktop keeps the top tabs ----
 from urllib.parse import quote
