@@ -677,7 +677,7 @@ function renderPortfolio(d) {
   let h = `<div class="filters">${mode}${auto}${alpLink}<span class="foot">Updated ${esc(ago(p.updated))} (${esc(fmtET(p.updated))}) · market ${p.market_open ? "open" : "closed"}</span></div>
   <div class="tiles">
     <div class="tile"><span class="v">${money(p.equity)}</span><span class="l">Account value</span><span class="c">Cash ${money(p.cash)}</span></div>
-    <div class="tile"><span class="v ${cls(p.day_pl)}">${p.day_pl == null ? "–" : (p.day_pl > 0 ? "+" : "") + money(p.day_pl)}</span><span class="l">Change today</span></div>
+    <div class="tile"><span class="v ${cls(p.day_pl)}">${p.day_pl == null ? "–" : (p.day_pl > 0 ? "+" : "") + money(p.day_pl)}</span><span class="l">${esc(dayLabel(p))}</span></div>
     <div class="tile"><span class="v ${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain)}</span><span class="l">Gain on open positions</span><span class="c">${money(invested)} invested</span></div>
     <div class="tile"><span class="v">${pos.length}</span><span class="l">Open positions</span>${L.max_positions ? `<span class="c">Limit ${L.max_positions}</span>` : ""}</div>
     ${p.dividends ? `<div class="tile"><span class="v ${p.dividends.total > 0 ? "pos" : ""}">${money(p.dividends.total, 2)}</span><span class="l">Dividends${p.mode === "live" ? "" : " (estimated)"}</span><span class="c">${p.mode === "live" ? "Received " + money(p.dividends.received, 2) : "Not paid on paper; real money would get them"}</span></div>` : ""}
@@ -699,6 +699,17 @@ function renderPortfolio(d) {
   return h;
 }
 
+// Alpaca's "today" is the account now vs the last trading day's 4 PM close. Outside a trading session that's
+// after-hours price moves (e.g. Friday 4-8 PM on a weekend), not a day of trading, so it's labeled that way.
+function dayLabel(p) {
+  if (p.market_open) return "Change today";
+  // closed: a weekday after 4 PM ET shows that day's trading; a weekend, holiday or before the open shows only
+  // after-hours moves since the last close
+  const f = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric", minute: "numeric", hour12: false });
+  const part = k => (f.formatToParts(new Date()).find(x => x.type === k) || {}).value;
+  const hm = (+part("hour") % 24) * 60 + +part("minute");
+  return (["Sat", "Sun"].includes(part("weekday")) || hm < 960) ? "Since the last close (after-hours prices)" : "Change today";
+}
 function divSection(p) {
   const D = p.dividends;
   if (!D || !D.items || !D.items.length) return "";
