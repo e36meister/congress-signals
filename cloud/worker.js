@@ -334,6 +334,7 @@ async function widget(req, env, url) {
     } catch (e) {}
   }
   if (out.equity != null && out.day_pl != null && out.equity - out.day_pl) out.day_pct = out.day_pl / (out.equity - out.day_pl) * 100;
+  out.day_label = dayLabel(out.market_open);
   const s = cr.series || {};
   if ((s.account || []).length) {
     out.since = { date: cr.date, acct: cr.since_start, spy: cr.spy_since_start,
@@ -391,7 +392,7 @@ else {
   const t = left.addText("CAPITOL CAPITAL" + (d.stale ? " · offline" : "")); t.font = Font.semiboldMonospacedSystemFont(9); t.textColor = GREEN;
   left.addSpacer(2);
   const eq = left.addText(money(d.equity)); eq.font = Font.boldMonospacedSystemFont(24); eq.textColor = INK; eq.minimumScaleFactor = 0.6; eq.lineLimit = 1;
-  const dy = left.addText((d.day_pl > 0 ? "+" : "") + money(d.day_pl) + " · " + pct(d.day_pct) + " today"); dy.font = Font.mediumMonospacedSystemFont(11); dy.textColor = col(d.day_pl); dy.lineLimit = 1; dy.minimumScaleFactor = 0.7;
+  const dy = left.addText((d.day_pl > 0 ? "+" : "") + money(d.day_pl) + " · " + pct(d.day_pct) + " " + (d.day_label || "today")); dy.font = Font.mediumMonospacedSystemFont(11); dy.textColor = col(d.day_pl); dy.lineLimit = 1; dy.minimumScaleFactor = 0.7;
   top.addSpacer(8);
   if (d.spark) { const img = top.addImage(spark(d.spark.acct, d.spark.spy, 120, 58)); img.imageSize = new Size(120, 58); }
   w.addSpacer(6);
@@ -413,3 +414,13 @@ else {
 if (config.runsInWidget) Script.setWidget(w); else await w.presentMedium();
 Script.complete();
 `;
+
+// Alpaca's "today" = the account now vs the last trading day's 4 PM close. On weekends, holidays and before the
+// open that's only after-hours price moves, so the widget says so (same rule as the app's Portfolio tab).
+function dayLabel(isOpen) {
+  if (isOpen) return "today";
+  const f = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric", minute: "numeric", hour12: false });
+  const parts = Object.fromEntries(f.formatToParts(new Date()).map(x => [x.type, x.value]));
+  const hm = (+parts.hour % 24) * 60 + +parts.minute;
+  return (["Sat", "Sun"].includes(parts.weekday) || hm < 960) ? "after hours" : "today";
+}
