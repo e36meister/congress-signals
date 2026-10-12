@@ -209,8 +209,8 @@ function widgetModal() {
     try { widgetJs = await fetchWidget(true); ready(); msg.textContent = "New key made. Copy the script again."; } catch (e) { msg.textContent = "Couldn't make a new key."; }
   });
 }
-// no Widget button any more (already installed); opening the app with #widget at the end of its address shows the setup again
-if (location.hash === "#widget") setTimeout(widgetModal, 1500);
+$("#widgetBtn")?.addEventListener("click", widgetModal);
+if (location.hash === "#widget") setTimeout(widgetModal, 1500);     // the app's address + #widget also opens it
 
 // ---------- phone: wide tables as cards ----------
 // Each cell gets its column name (shown as a label on phones); tables with 4+ columns and up to 25 rows become a
