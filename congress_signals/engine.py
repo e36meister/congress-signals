@@ -3490,7 +3490,8 @@ def compute_features(tx, px, data, cfg):
                      ("relationships", lambda x: relationship_features(x, data, cfg, mems)),
                      ("volume", lambda x: volume_features(x, data)), ("events", lambda x: event_features(x, data, mems)),
                      ("analysts", lambda x: analyst_features(x, data)), ("size and the rest", lambda x: extra_features(x, px, data, cfg, mems)),
-                     ("institutions", lambda x: _inst().inst_features(x, cfg))):
+                     ("institutions", lambda x: _inst().inst_features(x, cfg)),
+                     ("posts", lambda x: _social().post_features(x, cfg))):
         tx = fn(tx)
         tim[name] = time.time() - t_
         t_ = time.time()
@@ -3511,7 +3512,9 @@ TRIAL_SIGNALS = {"relative_tie": 0.5, "unusual_volume": 0.4, "reg_action": 0.3, 
                  "foreign": -0.3,      # negative: a foreign company's purchase scores lower (they've lagged US ones)
                  # institutional data (congress_signals/institutions.py), each dated by when it became public
                  "activist_13d": 0.4, "new_5pct": 0.2, "funds_adding": 0.3,
-                 "short_heavy": -0.3, "short_jump": -0.2, "funds_leaving": -0.2}
+                 "short_heavy": -0.3, "short_jump": -0.2, "funds_leaving": -0.2,
+                 # members' posts (congress_signals/social.py): press releases, X archive, Bluesky, Mastodon, ...
+                 "post_named_before": 0.3, "post_sector_burst": 0.2, "post_tone_clash": 0.2, "post_crowd": 0.2}
 TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "unusual_volume": "Signal: unusual trading volume before the trade",
                 "reg_action": "Signal: federal rule naming the company soon after the trade",
@@ -3524,12 +3527,21 @@ TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "funds_adding": "Signal: number of funds holding it rose 10%+ last quarter (13F)",
                 "short_heavy": "Signal: score lower when short sellers hold 8+ days of volume",
                 "short_jump": "Signal: score lower when short interest jumped 50%+ in a month",
-                "funds_leaving": "Signal: score lower when funds holding it fell 10%+ last quarter (13F)"}
+                "funds_leaving": "Signal: score lower when funds holding it fell 10%+ last quarter (13F)",
+                "post_named_before": "Signal: the member named the company or its people in a post in the 30 days before",
+                "post_sector_burst": "Signal: the member posted about the industry twice as often as usual before the trade",
+                "post_tone_clash": "Signal: bought after criticizing the company in posts (or sold after praising it)",
+                "post_crowd": "Signal: 3+ members named the company in posts in the 2 weeks before the filing"}
 
 
 def _inst():
     from . import institutions
     return institutions
+
+
+def _social():
+    from . import social
+    return social
 
 
 def active_weights(cfg, signals_on=None):
