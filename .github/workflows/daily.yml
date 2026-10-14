@@ -55,6 +55,13 @@ jobs:
           key: inst-${{ github.run_id }}
           restore-keys: inst-
 
+      - name: Restore members' posts (press releases, X archive, Bluesky, ...)
+        uses: actions/cache/restore@v4
+        with:
+          path: social
+          key: social-${{ github.run_id }}
+          restore-keys: social-
+
       - name: Collect, score, backtest and update the dashboard
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
@@ -121,6 +128,23 @@ jobs:
         with:
           path: inst
           key: inst-${{ github.run_id }}
+
+      - name: Update members' posts (after trading; only once the history build is complete)
+        id: social
+        if: always() && github.event.inputs.dry_run != 'true' && hashFiles('social/complete') != ''
+        continue-on-error: true
+        timeout-minutes: 20
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: python update_social.py 12 --daily
+
+      - name: Save members' posts
+        if: always() && steps.social.outcome == 'success' && hashFiles('social/.changed') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: social
+          key: social-${{ github.run_id }}
 
       - name: Save data for tomorrow (even if the run stopped early)
         if: always() && github.event.inputs.dry_run != 'true'

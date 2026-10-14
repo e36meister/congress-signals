@@ -102,7 +102,8 @@ def company_events(data, tickers, company_key):
     lb = data.get("lobbying")
     if lb is not None and len(lb):
         for r in lb[lb["ticker"].isin(tickers)].itertuples():
-            iss = str(r.issues or "")[:140]
+            iss = ", ".join(r.issues) if isinstance(r.issues, (list, tuple)) else str(r.issues or "")
+            iss = iss[:140]
             who = r.lobbyists if isinstance(r.lobbyists, str) else ", ".join(r.lobbyists[:4]) if isinstance(r.lobbyists, (list, tuple)) else ""
             add(r.ticker, _d(r.posted), "lb", f"Lobbying filing {_money(r.amount)}" + (f" on {iss}" if iss else "")
                 + (f" · lobbyists: {who[:120]}" if who else ""))
