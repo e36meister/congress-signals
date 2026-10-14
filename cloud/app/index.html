@@ -200,6 +200,58 @@ svg text{fill:var(--muted);font:11px var(--mono)}
   .pick{grid-template-columns:minmax(0,1fr)}
 }
 @media (prefers-reduced-motion:no-preference){ .pick,.tile{transition:border-color .15s} .pick:hover{border-color:var(--accent)} }
+/* members */
+.mlist{display:grid;gap:6px}
+.mrow{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;text-align:left;background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:8px 12px;font:inherit;color:inherit;cursor:pointer;width:100%}
+.mrow:hover{border-color:var(--accent)}
+.mrow .mn{display:grid;min-width:0}
+.mrow .nm{font-weight:600;font-size:14.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ms{font-size:12.5px;color:var(--muted)}
+.mrow .mv,.mt-r{font:500 14px var(--mono);text-align:right;display:grid;white-space:nowrap}
+.mrow .mv .foot,.mt-r .foot{font:11px var(--body);color:var(--muted)}
+.mback{justify-self:start;padding-left:0}
+.mhead{display:flex;gap:12px;align-items:center}
+.mhead h2{font-size:22px}
+.av.lg{width:64px;height:64px;font-size:20px}
+.tiles.mt{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.mwin{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:6px 18px;background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:10px 14px;position:sticky;top:calc(env(safe-area-inset-top,0px) + 92px);z-index:3}
+.mwin .foot{grid-column:1/-1}
+.mwin label{display:grid;gap:2px;font-size:13px;color:var(--ink2)}
+.mwin input[type=range]{width:100%;accent-color:var(--accent)}
+.mtrs{display:grid;gap:6px}
+.mtr{background:var(--surface);border:1px solid var(--rule);border-radius:8px;overflow:hidden}
+.mtr.on{border-color:var(--accent)}
+.mtr-h{display:grid;grid-template-columns:62px minmax(0,1fr) auto;gap:10px;align-items:center;width:100%;text-align:left;background:none;border:0;padding:9px 12px;font:inherit;color:inherit;cursor:pointer}
+.mt-t{display:grid;gap:1px}
+.mt-t b{font:600 15px var(--mono)}
+.mt-c{display:grid;min-width:0}
+.mt-c .co{font-weight:500;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mtr-b{border-top:1px solid var(--rule);padding:10px 12px 12px;display:grid;gap:10px;background:var(--sunken)}
+.mstats{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:13px;color:var(--ink2)}
+.mstats b{font-family:var(--mono);font-weight:500}
+ol.tl{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+ol.tl li{display:grid;grid-template-columns:48px minmax(0,1fr);gap:8px;font-size:13.5px;line-height:1.4;border-left:3px solid var(--rule);padding-left:8px}
+ol.tl .tl-o{font:500 12px var(--mono);color:var(--muted);text-align:right;padding-top:1px}
+ol.tl .kl{font:600 10.5px var(--body);letter-spacing:.5px;text-transform:uppercase;color:var(--muted);margin-right:4px}
+ol.tl li.k-cb{border-left-color:var(--bad)} ol.tl li.k-gov{border-left-color:var(--accent)} ol.tl li.k-co{border-left-color:var(--warn)}
+ol.tl li.k-mem{border-left-color:var(--spy)} ol.tl li.k-post{border-left-color:var(--good)}
+ol.tl li.tl-mark{border-left-color:var(--ink);font-weight:600}
+ol.tl li.tl-mark.disc{border-left-color:var(--muted);font-weight:500;color:var(--ink2)}
+ol.tl a,ol.posts a{color:inherit;text-decoration:underline;text-decoration-color:var(--rule);text-underline-offset:2px}
+ol.posts{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+ol.posts li{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:8px 12px;display:grid;gap:2px;font-size:13.5px}
+@media (max-width:620px){
+  .mwin{grid-template-columns:1fr 1fr;gap:2px 14px;padding:6px 12px 4px;top:calc(env(safe-area-inset-top,0px) + 62px)}
+  .mwin>.foot{display:none}
+  .mwin label{font-size:12px}
+  .tiles.mt .tile{padding:10px 12px}
+  .tiles.mt .tile .v{font-size:21px}
+  .mtr-h{grid-template-columns:56px minmax(0,1fr) auto;gap:8px;padding:8px 10px}
+  ol.tl li{grid-template-columns:40px minmax(0,1fr);font-size:13px}
+  .tiles.mt{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+  .tiles.mt .tile .c{font-size:11.5px}
+  .mhead .av.lg{width:52px;height:52px}
+}
 
 .login{position:fixed;inset:0;z-index:100;background:var(--ground);display:grid;place-items:center;padding:24px 16px}
 .login form{width:100%;max-width:340px;display:grid;gap:14px;text-align:center}
@@ -247,7 +299,7 @@ nav.tabs button{overflow:hidden}
 #ptr.go{color:var(--accent)}
 @media (max-width: 760px){
   body{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
-  nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:50;margin:0;gap:0;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));
+  nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:50;margin:0;gap:0;display:grid;grid-template-columns:repeat(8,minmax(0,1fr));
     overflow:visible;background:color-mix(in srgb,var(--surface) 92%,transparent);-webkit-backdrop-filter:saturate(1.6) blur(14px);
     backdrop-filter:saturate(1.6) blur(14px);border-top:1px solid var(--rule);padding:6px 2px calc(6px + env(safe-area-inset-bottom,0px))}
   nav.tabs button{font-size:0;border:0;padding:4px 0 2px;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--muted);
@@ -269,6 +321,8 @@ nav.tabs button{overflow:hidden}
   nav.tabs button[data-tab="real"]::after{content:"Reality"}
   nav.tabs button[data-tab="port"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Crect%20x%3D%223%22%20y%3D%227%22%20width%3D%2218%22%20height%3D%2213%22%20rx%3D%222%22/%3E%3Cpath%20d%3D%22M9%207V5a1%201%200%200%201%201-1h4a1%201%200%200%201%201%201v2M3%2012.5h18%22/%3E%3C/svg%3E")}
   nav.tabs button[data-tab="port"]::after{content:"Portfolio"}
+  nav.tabs button[data-tab="members"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Ccircle%20cx%3D%229%22%20cy%3D%228.5%22%20r%3D%223.2%22/%3E%3Cpath%20d%3D%22M3%2019.5c.6-3.3%203-5.2%206-5.2s5.4%201.9%206%205.2%22/%3E%3Cpath%20d%3D%22M15.5%205.6a3%203%200%200%201%200%205.8M17.5%2014.6c1.8.6%203%202.3%203.4%204.9%22/%3E%3C/svg%3E")}
+  nav.tabs button[data-tab="members"]::after{content:"Members"}
 }
 </style>
 
@@ -298,6 +352,7 @@ nav.tabs button{overflow:hidden}
       <button role="tab" id="tab-works" aria-selected="false" data-tab="works" type="button">What works</button>
       <button role="tab" id="tab-real" aria-selected="false" data-tab="real" type="button">Reality check</button>
       <button role="tab" id="tab-port" aria-selected="false" data-tab="port" type="button">My portfolio</button>
+      <button role="tab" id="tab-members" aria-selected="false" data-tab="members" type="button">Members</button>
     </nav>
   </header>
   <main id="main"><div class="empty">Loading your latest results…</div></main>
@@ -334,7 +389,7 @@ function ago(iso) {
   return Math.round(h / 24) + " days ago";
 }
 try { const t = localStorage.getItem("ctd-tab"); if (t) state.tab = t; } catch (e) {}
-if (/^#(today|record|defense|small|works|real|port)$/.test(location.hash)) state.tab = location.hash.slice(1);
+if (/^#(today|record|defense|small|works|real|port|members)$/.test(location.hash)) state.tab = location.hash.slice(1);
 
 // ---------- status ----------
 function setStatus(kind, text, showRefresh) {
@@ -369,6 +424,7 @@ function render() {
   if (state.tab === "works") html += renderWorks(d);
   if (state.tab === "real") html += renderReal(d);
   if (state.tab === "port") html += renderPortfolio(d);
+  if (state.tab === "members") html += renderMembers(d);
   main.innerHTML = html;
   bind();
   try { document.querySelector('nav.tabs button[aria-selected="true"]')?.scrollIntoView({ inline: "nearest", block: "nearest" }); } catch (e) {}
@@ -1050,6 +1106,7 @@ function drawChart(b = state.data?.backtest, sel = "#chart") {
 }
 
 function bind() {
+  if (state.tab === "members") bindMembers();
   if (state.tab === "defense" && state.data?.defense) drawChart(state.data.defense, "#dchart");
   if (state.tab === "small" && state.data?.small) drawChart(state.data.small, "#schart");
   if (state.tab === "real" && state.data?.walk_forward) drawChart(state.data.walk_forward, "#wchart");
@@ -1241,7 +1298,200 @@ function drawTickerChart() {
 }
 addEventListener("resize", () => { if (pop.t && pop.charts) { clearTimeout(pop.rt); pop.rt = setTimeout(drawTickerChart, 150); } });
 
+// ---------- Members tab: each member's trades, results, and what happened around each trade ----------
+const MEM = { index: null, docs: {}, loading: {}, err: null, key: null, q: "", sort: "recent", show: 60,
+  best: { h: "1y", side: "buy" }, open: null, before: 45, after: 45, tq: "", tshow: 40, posts: "all" };
+try { const w = JSON.parse(localStorage.getItem("ctd-mwin") || "null"); if (w) { MEM.before = w.b ?? 45; MEM.after = w.a ?? 45; } } catch (e) {}
+const WIN_B = [7, 14, 21, 28, 35, 42, 45, 49, 56, 63, 70, 77, 84, 91];
+const WIN_A = [0, 7, 14, 21, 28, 35, 42, 45, 49, 56, 63, 70, 77, 84, 91];
+const EV_KIND = {
+  cb: ["Closed briefing", "k-cb"], witm: ["Testimony", "k-cb"], wit: ["Testimony", "k-co"], mk: ["Markup", "k-gov"],
+  vt: ["Vote", "k-gov"], sp: ["Floor speech", "k-gov"], ct: ["Contract", "k-co"], fr: ["Federal rule", "k-gov"],
+  "8k": ["Company news", "k-co"], ern: ["Earnings", "k-co"], fda: ["FDA", "k-co"], lb: ["Lobbying", "k-co"],
+  ins: ["Insider trade", "k-co"], ot: ["Member trade", "k-mem"], post: ["Post", "k-post"] };
+function memLoadIndex() {
+  if (MEM.index || MEM.loading.index) return;
+  MEM.loading.index = true;
+  loadMembersIndex().then(js => { MEM.index = js; MEM.err = null; }).catch(e => { MEM.err = e; })
+    .finally(() => { MEM.loading.index = false; if (state.tab === "members") render(); });
+}
+function memLoad(k) {
+  if (MEM.docs[k] || MEM.loading[k]) return;
+  MEM.loading[k] = true;
+  loadMember(k).then(js => { MEM.docs[k] = js; }).catch(e => { MEM.err = e; })
+    .finally(() => { MEM.loading[k] = false; if (state.tab === "members") render(); });
+}
+const days = (a, b) => Math.round((Date.parse(a) - Date.parse(b)) / 864e5);
+function memAvatar(m, big) {
+  const cls = "av" + (big ? " lg" : "");
+  if (m.photo) return `<img class="${cls}" src="${m.photo}" alt="">`;
+  const parts = String(m.n || "?").replace(/\b(Mr|Mrs|Ms|Dr|Hon|Jr|Sr|II|III)\b\.?/g, "").trim().split(/\s+/);
+  return `<span class="${cls}" aria-hidden="true">${esc(((parts[0] || "?")[0] + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase())}</span>`;
+}
+const memTag = m => m.tag ? `<span class="ptag ${esc(m.tag[0])}">${esc(m.tag)}</span>` : "";
+const chamberOf = m => m.ch === "Senate" ? "Senator" : m.ch === "House" ? "Representative" : "";
+
+function renderMembers(d) {
+  if (MEM.key) return renderMember(MEM.key);
+  memLoadIndex();
+  if (MEM.err?.code === "app_only") return `<div class="empty">Member pages are in the Capitol Capital app (home-screen app or its web address).</div>`;
+  if (!MEM.index) return MEM.err ? `<div class="note err">${errorText(MEM.err)}</div>` : `<div class="empty">Loading members…</div>`;
+  const q = MEM.q.trim().toLowerCase();
+  let rows = MEM.index.members || [];
+  if (q) rows = rows.filter(m => (m.n + " " + (m.tag || "") + " " + (m.ch || "")).toLowerCase().includes(q));
+  const sorters = { recent: (a, b) => (b.last || "").localeCompare(a.last || ""), most: (a, b) => b.nt - a.nt,
+    best: (a, b) => (b.buys >= 5 ? b.bx1y ?? -9 : -9) - (a.buys >= 5 ? a.bx1y ?? -9 : -9) };
+  rows = [...rows].sort(sorters[MEM.sort]);
+  const shown = rows.slice(0, MEM.show);
+  return `<section class="panel">
+    <div class="ph"><h2>Members</h2><span class="sub">${(MEM.index.members || []).length} members with disclosed trades</span></div>
+    <div class="filters"><input type="search" id="mq" placeholder="Search name, state, party" value="${esc(MEM.q)}" aria-label="Search members">
+      <div class="seg" role="group" aria-label="Sort">${[["recent", "Recent"], ["most", "Most trades"], ["best", "Best buys"]].map(([k, l]) =>
+        `<button type="button" data-msort="${k}" aria-pressed="${MEM.sort === k}">${l}</button>`).join("")}</div></div>
+    <div class="mlist">${shown.map(m => `<button type="button" class="mrow" data-mem="${esc(m.k)}">
+      ${memAvatar(m)}<span class="mn"><span class="nm">${esc(m.n)}${memTag(m)}</span>
+      <span class="ms">${m.nt} trade${m.nt === 1 ? "" : "s"} · ${m.tickers} stock${m.tickers === 1 ? "" : "s"} · last ${esc(fmtDate(m.last))}</span></span>
+      <span class="mv ${cls(m.bx1y)}" title="Average purchase vs the S&P 500, 1 year after the trade">${m.buys && m.bx1y != null ? pct(m.bx1y) : "–"}<span class="foot">buys, 1 yr</span></span></button>`).join("")}</div>
+    ${rows.length > MEM.show ? `<button type="button" class="link" data-mmore="1">Show ${Math.min(60, rows.length - MEM.show)} more</button>` : ""}
+    ${!rows.length ? `<div class="empty">No member matches “${esc(MEM.q)}”.</div>` : ""}
+    <p class="foot">Results measure the stock against the S&amp;P 500 from the trade date. For sales, a positive number means the stock did worse than the S&amp;P after the member sold.</p>
+  </section>`;
+}
+
+function memTrades(doc) {
+  const c = doc.tcols; const ix = Object.fromEntries(c.map((k, i) => [k, i]));
+  return doc.trades.map(r => Object.fromEntries(Object.entries(ix).map(([k, i]) => [k, r[i]])));
+}
+function memEvents(doc) {
+  if (doc._ev) return doc._ev;
+  return (doc._ev = (doc.events || []).map(e => ({ d: e[0], k: e[1], x: e[2], t: e[3], sec: e[4] ? e[4].split("|") : [], u: e[5] })));
+}
+function eventsFor(doc, tr) {
+  const lo = MEM.before, hi = MEM.after;
+  return memEvents(doc).filter(e => {
+    const off = days(e.d, tr.td);
+    if (off < -lo || off > hi) return false;
+    if (e.t) return e.t.split(",").includes(tr.t);
+    return e.sec.includes("*") || (tr.sec && e.sec.includes(tr.sec));
+  });
+}
+// edge: how the trade did for the member (buys: stock vs S&P; sales: S&P vs stock)
+const edge = (tr, h) => { const x = tr["x" + h]; return x == null ? null : tr.ty === "sell" ? -x : x; };
+function amountTxt(tr) { return tr.lo ? kfmt(tr.lo) + (tr.hi ? "–" + kfmt(tr.hi) : "+") : ""; }
+function ownerTxt(o) { o = String(o || "").toLowerCase(); return o === "sp" || o === "spouse" ? "Spouse" : o === "jt" || o === "joint" ? "Joint" : o === "dc" || o.includes("child") ? "Child" : ""; }
+
+function tradeCard(doc, tr, h, sec) {
+  const id = sec + tr.i, ev = eventsFor(doc, tr), e = edge(tr, h), open = MEM.open === id;
+  const own = ownerTxt(tr.own), lag = tr.fd ? days(tr.fd, tr.td) : null;
+  const pre = ev.filter(x => days(x.d, tr.td) < 0).length;
+  return `<article class="mtr${open ? " on" : ""}">
+    <button type="button" class="mtr-h" data-mtr="${id}" aria-expanded="${open}">
+      <span class="mt-t"><b>${esc(tr.t)}</b><span class="bs ${tr.ty}">${tr.ty === "buy" ? "Buy" : "Sell"}</span></span>
+      <span class="mt-c"><span class="co">${esc(tr.co || tr.t)}</span>
+        <span class="ms">${esc(fmtDate(tr.td))}${amountTxt(tr) ? " · " + amountTxt(tr) : ""}${own ? " · " + own : ""}</span></span>
+      <span class="mt-r ${cls(e)}">${e == null ? "–" : pct(e)}<span class="foot">${ev.length ? `${ev.length} event${ev.length === 1 ? "" : "s"}${pre ? ` · ${pre} before` : ""}` : "vs S&P"}</span></span>
+    </button>
+    ${open ? `<div class="mtr-b">
+      <div class="mstats"><span>3 mo: <b class="${cls(edge(tr, "3m"))}">${pct(edge(tr, "3m"))}</b> vs S&amp;P${tr.r3m != null ? ` (stock ${pct(tr.r3m)})` : ""}</span>
+        <span>1 yr: <b class="${cls(edge(tr, "1y"))}">${pct(edge(tr, "1y"))}</b> vs S&amp;P${tr.r1y != null ? ` (stock ${pct(tr.r1y)})` : ""}</span>
+        <span>Disclosed ${esc(fmtDate(tr.fd))}${lag != null ? ` (${lag} days later)` : ""}</span>${tr.sec ? `<span>${esc(tr.sec)}</span>` : ""}</div>
+      ${timeline(ev, tr)}
+    </div>` : ""}
+  </article>`;
+}
+function timeline(ev, tr) {
+  if (!ev.length) return `<div class="foot">Nothing on file in this window (${MEM.before} days before to ${MEM.after} days after). Widen the window above.</div>`;
+  const rows = [...ev].sort((a, b) => a.d.localeCompare(b.d));
+  let html = "", markDone = false, discDone = !tr.fd;
+  const mark = (txt, c) => `<li class="tl-mark ${c}"><span class="tl-o"></span><span>${txt}</span></li>`;
+  for (const e of rows) {
+    const off = days(e.d, tr.td);
+    if (!markDone && off >= 0) { html += mark(`${tr.ty === "buy" ? "Bought" : "Sold"} ${esc(tr.t)} · ${esc(fmtDate(tr.td))}`, "tr"); markDone = true; }
+    if (!discDone && tr.fd && e.d > tr.fd) { html += mark(`Disclosed · ${esc(fmtDate(tr.fd))}`, "disc"); discDone = true; }
+    const [lbl, kc] = EV_KIND[e.k] || [e.k, "k-co"];
+    const txt = esc(e.x.length > 320 ? e.x.slice(0, 318) + "…" : e.x);
+    html += `<li class="${kc}"><span class="tl-o">${off > 0 ? "+" : ""}${off}d</span><span><span class="kl">${lbl}</span> ${e.u ? `<a href="${esc(e.u)}" target="_blank" rel="noopener">${txt}</a>` : txt}</span></li>`;
+  }
+  if (!markDone) html += mark(`${tr.ty === "buy" ? "Bought" : "Sold"} ${esc(tr.t)} · ${esc(fmtDate(tr.td))}`, "tr");
+  if (!discDone && tr.fd && days(tr.fd, tr.td) <= MEM.after) html += mark(`Disclosed · ${esc(fmtDate(tr.fd))}`, "disc");
+  return `<ol class="tl">${html}</ol>`;
+}
+function winControls() {
+  const bi = Math.max(0, WIN_B.indexOf(MEM.before)), ai = Math.max(0, WIN_A.indexOf(MEM.after));
+  const lbl = n => n === 0 ? "none" : n % 7 === 0 ? `${n / 7} wk${n === 7 ? "" : "s"}` : `${n} days`;
+  return `<div class="mwin"><span class="foot">Show what happened around each trade</span>
+    <label><span>Before <b id="wbv">${lbl(MEM.before)}</b></span><input type="range" id="wb" min="0" max="${WIN_B.length - 1}" step="1" value="${bi}" aria-label="Days before the trade"></label>
+    <label><span>After <b id="wav">${lbl(MEM.after)}</b></span><input type="range" id="wa" min="0" max="${WIN_A.length - 1}" step="1" value="${ai}" aria-label="Days after the trade"></label></div>`;
+}
+
+function renderMember(k) {
+  memLoad(k);
+  const doc = MEM.docs[k];
+  const back = `<button type="button" class="link mback" data-mback="1">← All members</button>`;
+  if (!doc) return `<section class="panel">${back}${MEM.err && !MEM.loading[k] ? `<div class="note err">${errorText(MEM.err)}</div>` : `<div class="empty">Loading…</div>`}</section>`;
+  const S = doc.stats, T = memTrades(doc), h = MEM.best.h;
+  const best = T.filter(t => t.ty === MEM.best.side && edge(t, h) != null).sort((a, b) => edge(b, h) - edge(a, h)).slice(0, 8);
+  const tq = MEM.tq.trim().toUpperCase();
+  const all = tq ? T.filter(t => t.t.includes(tq) || (t.co || "").toUpperCase().includes(tq)) : T;
+  const posts = (doc.posts || []).filter(p => MEM.posts === "all" || (p[3] || []).length);
+  return `<section class="panel">${back}
+    <div class="mhead">${memAvatar(doc, true)}<div><h2>${esc(doc.n)}${memTag(doc)}</h2>
+      <div class="ms">${esc(chamberOf(doc))}${S.first ? ` · trades ${esc(fmtDate(S.first))} – ${esc(fmtDate(S.last))}` : ""}</div></div></div>
+    <div class="tiles mt">
+      <div class="tile"><span class="l">Trades</span><span class="v">${S.nt}</span><span class="c">${S.buys} buys · ${S.sells} sales · ${S.tickers} stocks</span></div>
+      <div class="tile"><span class="l">Buys vs S&amp;P, 1 yr</span><span class="v ${cls(S.bx1y)}">${pct(S.bx1y)}</span><span class="c">3 months: ${pct(S.bx3m)}${S.bhit1y != null ? ` · ${Math.round(S.bhit1y * 100)}% beat it` : ""}</span></div>
+      <div class="tile"><span class="l">Sales, 1 yr</span><span class="v ${cls(S.sx1y)}">${pct(S.sx1y)}</span><span class="c">+ = sold before it lagged the S&amp;P</span></div>
+    </div>
+    ${winControls()}
+    <div class="ph"><h2>Best trades</h2>
+      <div class="filters"><div class="seg" role="group" aria-label="Buys or sales">${[["buy", "Buys"], ["sell", "Sales"]].map(([v, l]) => `<button type="button" data-mbs="${v}" aria-pressed="${MEM.best.side === v}">${l}</button>`).join("")}</div>
+      <div class="seg" role="group" aria-label="Measured after">${[["3m", "3 months"], ["1y", "1 year"]].map(([v, l]) => `<button type="button" data-mbh="${v}" aria-pressed="${h === v}">${l}</button>`).join("")}</div></div></div>
+    <div class="mtrs">${best.length ? best.map(t => tradeCard(doc, t, h, "b")).join("") : `<div class="empty">No ${MEM.best.side === "buy" ? "purchases" : "sales"} with ${h === "1y" ? "a full year" : "3 months"} of prices yet.</div>`}</div>
+    <div class="ph"><h2>All trades</h2><input type="search" id="tq" placeholder="Ticker or company" value="${esc(MEM.tq)}" aria-label="Filter trades"></div>
+    <div class="mtrs">${all.slice(0, MEM.tshow).map(t => tradeCard(doc, t, h, "a")).join("")}</div>
+    ${all.length > MEM.tshow ? `<button type="button" class="link" data-tmore="1">Show ${Math.min(40, all.length - MEM.tshow)} more of ${all.length}</button>` : ""}
+    <div class="ph"><h2>Posts</h2>${(doc.posts || []).length ? `<div class="seg" role="group">${[["all", "All"], ["co", "Name a company"]].map(([v, l]) => `<button type="button" data-mpo="${v}" aria-pressed="${MEM.posts === v}">${l}</button>`).join("")}</div>` : ""}</div>
+    ${posts.length ? `<ol class="posts">${posts.slice(-40).reverse().map(p => `<li><span class="ms">${esc(fmtDate(p[0]))} · ${esc(p[1])}${(p[3] || []).length ? ` · <b>${esc(p[3].join(", "))}</b>` : ""}</span>
+      <span>${p[5] ? `<a href="${esc(p[5])}" target="_blank" rel="noopener">${esc(String(p[2]).slice(0, 400))}</a>` : esc(String(p[2]).slice(0, 400))}</span></li>`).join("")}</ol>`
+      : `<div class="foot">No posts collected for this member yet. Press releases, newsletters and social posts are being added.</div>`}
+  </section>`;
+}
+
+function bindMembers() {
+  const q = $("#mq");
+  if (q) q.addEventListener("input", () => { MEM.q = q.value; MEM.show = 60; const pos = q.selectionStart; render(); const n = $("#mq"); n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) {} });
+  const tq = $("#tq");
+  if (tq) tq.addEventListener("input", () => { MEM.tq = tq.value; MEM.tshow = 40; const pos = tq.selectionStart; render(); const n = $("#tq"); n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) {} });
+  const lbl = n => n === 0 ? "none" : n % 7 === 0 ? `${n / 7} wk${n === 7 ? "" : "s"}` : `${n} days`;
+  const save = () => { try { localStorage.setItem("ctd-mwin", JSON.stringify({ b: MEM.before, a: MEM.after })); } catch (e) {} };
+  const wb = $("#wb"), wa = $("#wa");
+  if (wb) { wb.addEventListener("input", () => { $("#wbv").textContent = lbl(WIN_B[+wb.value]); }); wb.addEventListener("change", () => { MEM.before = WIN_B[+wb.value]; save(); render(); }); }
+  if (wa) { wa.addEventListener("input", () => { $("#wav").textContent = lbl(WIN_A[+wa.value]); }); wa.addEventListener("change", () => { MEM.after = WIN_A[+wa.value]; save(); render(); }); }
+}
+document.getElementById("main").addEventListener("click", ev => {
+  if (state.tab !== "members") return;
+  const t = ev.target.closest("[data-mem],[data-mback],[data-msort],[data-mmore],[data-mtr],[data-mbs],[data-mbh],[data-tmore],[data-mpo]");
+  if (!t) return;
+  const D = t.dataset;
+  if (D.mem) { MEM.key = D.mem; MEM.open = null; MEM.tq = ""; MEM.tshow = 40; MEM.err = null; try { history.pushState({ mem: D.mem }, "", "#members/" + D.mem); } catch (e) {} render(); scrollTo(0, 0); }
+  else if (D.mback) { MEM.key = null; try { history.pushState({}, "", "#members"); } catch (e) {} render(); }
+  else if (D.msort) { MEM.sort = D.msort; render(); }
+  else if (D.mmore) { MEM.show += 60; render(); }
+  else if (D.mtr) { MEM.open = MEM.open === D.mtr ? null : D.mtr; render(); }
+  else if (D.mbs) { MEM.best.side = D.mbs; render(); }
+  else if (D.mbh) { MEM.best.h = D.mbh; render(); }
+  else if (D.tmore) { MEM.tshow += 40; render(); }
+  else if (D.mpo) { MEM.posts = D.mpo; render(); }
+});
+addEventListener("popstate", () => {
+  const m = location.hash.match(/^#members(?:\/([A-Za-z0-9-]+))?$/);
+  if (m) { state.tab = "members"; MEM.key = m[1] || null; render(); }
+});
+{ const m = location.hash.match(/^#members(?:\/([A-Za-z0-9-]+))?$/); if (m) { state.tab = "members"; MEM.key = m[1] || null; } }
+
 // ---------- data from Cloudflare ----------
+async function loadMembersIndex() { return (await api("/api/members")).js; }
+async function loadMember(k) { return (await api("/api/member?k=" + encodeURIComponent(k))).js; }
 function errorText(e) {
   switch (e?.code) {
     case "login": return "Please log in.";
@@ -1404,7 +1654,7 @@ $("#alerts").addEventListener("click", async () => {
 // tapping an alert opens a tab (e.g. /#port)
 addEventListener("hashchange", () => {
   const h = location.hash.slice(1);
-  if (/^(today|record|defense|small|works|real|port)$/.test(h)) { state.tab = h; render(); scrollTo(0, 0); }
+  if (/^(today|record|defense|small|works|real|port|members)$/.test(h)) { state.tab = h; render(); scrollTo(0, 0); }
 });
 
 // ---------- home-screen widget (Scriptable) ----------

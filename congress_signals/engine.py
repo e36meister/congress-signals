@@ -3330,6 +3330,7 @@ def compute_features(tx, px, data, cfg):
     tx["bioguide"] = [(m.get("bioguide") if m else None) or b for m, b in
                       zip(mems, tx["bio_id"] if "bio_id" in tx else [None] * len(tx))]
     tx["party"] = [m.get("party") if m else None for m in mems]
+    tx["cids"] = [";".join(sorted(c for c in (m.get("cids") or []) if c)) if m else "" for m in mems]   # member pages
     try:
         save_member_tags(cfg, tx, mems)
     except Exception as e:
@@ -4896,6 +4897,8 @@ def prepare(cfg):
     if out_of_time(cfg):
         log("Time limit reached: saved progress; the next run continues where this one stopped")
     log("Computing signals for every transaction...")
+    global LAST_DATA
+    LAST_DATA = data          # kept for the member pages (members.export_members)
     feats = compute_features(tx, px, data, cfg)
     try:
         ties = []
@@ -5338,6 +5341,7 @@ import zlib
 
 _RUN_START = time.time()
 HIT_TIME_LIMIT = False
+LAST_DATA = None
 
 
 def out_of_time(cfg, reserve_min=60):

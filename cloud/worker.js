@@ -44,6 +44,12 @@ async function api(req, env, url) {
   if (p === "/api/session") return json({ ok: true, mode: (env.TRADING_MODE || "paper") });
   if (p === "/api/data" && req.method === "GET") return fromR2(req, env, "dashboard_data.json");
   if (p === "/api/charts" && req.method === "GET") return fromR2(req, env, "ticker_charts.json");
+  if (p === "/api/members" && req.method === "GET") return fromR2(req, env, "members/index.json");
+  if (p === "/api/member" && req.method === "GET") {
+    const k = url.searchParams.get("k") || "";
+    if (!/^([A-Z]\d{6}|n-[a-z0-9-]{1,40})$/.test(k)) return json({ error: "bad-member" }, 400);
+    return fromR2(req, env, `members/${k}.json`);
+  }
   if (p === "/api/live" && req.method === "GET") return live(env);
   if (p === "/api/buy" && req.method === "POST") return buy(req, env);
   if (p === "/api/widget/script" && req.method === "GET") return widgetScript(env, url, false);

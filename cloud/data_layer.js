@@ -1,4 +1,6 @@
 // ---------- data from Cloudflare ----------
+async function loadMembersIndex() { return (await api("/api/members")).js; }
+async function loadMember(k) { return (await api("/api/member?k=" + encodeURIComponent(k))).js; }
 function errorText(e) {
   switch (e?.code) {
     case "login": return "Please log in.";
@@ -161,7 +163,7 @@ $("#alerts").addEventListener("click", async () => {
 // tapping an alert opens a tab (e.g. /#port)
 addEventListener("hashchange", () => {
   const h = location.hash.slice(1);
-  if (/^(today|record|defense|small|works|real|port)$/.test(h)) { state.tab = h; render(); scrollTo(0, 0); }
+  if (/^(today|record|defense|small|works|real|port|members)$/.test(h)) { state.tab = h; render(); scrollTo(0, 0); }
 });
 
 // ---------- home-screen widget (Scriptable) ----------
