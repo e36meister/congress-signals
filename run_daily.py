@@ -467,6 +467,13 @@ def main():
         send_weekly_summary()
     except Exception as e:
         E.log(f"Weekly summary: skipped ({type(e).__name__}: {e})")
+    try:      # member pages (Members tab in the phone app): trades, results and what happened around each trade
+        import congress_signals.members as M
+        quiet = lambda m: E.log(m) if "couldn't" in m else None
+        M.export_members(cfg, scored, px, E.LAST_DATA, E.log,
+                         put=lambda name, path: cloud_store.put(name, path, log=quiet))
+    except Exception as e:
+        E.log(f"Member pages: skipped ({type(e).__name__}: {e})")
     try:      # price charts with member trades for the tickers on Today, Defense and My portfolio
         d = json.load(open(os.path.join(cfg["DATA_DIR"], "dashboard_data.json")))
         w = d.get("watchlist") or {}
