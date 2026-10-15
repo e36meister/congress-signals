@@ -27,7 +27,7 @@ LEG_SOC = "https://unitedstates.github.io/congress-legislators/legislators-socia
 BSKY = "https://public.api.bsky.app/xrpc/"
 TWEETS_FIRST, TWEETS_LAST = dt.date(2017, 6, 21), dt.date(2023, 7, 15)
 START_YEAR = 2013
-TAGGER_VERSION = 2
+TAGGER_VERSION = 3
 
 SECTOR_WORDS = {
     "Energy": "oil gas pipeline pipelines drilling fracking refinery refineries lng crude petroleum keystone opec gasoline energy",
@@ -161,8 +161,13 @@ class Tagger:
         except Exception:
             pass
         np_ = 0
+        top = re.compile(r"\b(ceo|chief|president|chair|chairman|chairwoman|founder|cfo|coo|cto|lobbyist)\b", re.I)
         for t, ps in people.items():
+            if t not in self.tickers:
+                continue
             for n, role in ps.items():
+                if not top.search(str(role)):
+                    continue
                 toks = re.findall(r"[a-z]+", E._strip_accents(n).lower())
                 toks = [x for x in toks if len(x) > 1 and x not in ("jr", "sr", "ii", "iii", "iv", "mr", "ms", "dr")]
                 if len(toks) < 2:
@@ -868,8 +873,12 @@ def update_all(cfg, minutes, history=True):
     deadline = t0 + minutes * 60
     st = _state(cfg)
     tg = Tagger(cfg)
-    if st.get("tagger") != tg.version:
-        st["tagger"] = tg.version
+    if st.get("tagger_v") != TAGGER_VERSION:      # tagging rules changed: re-read this year's press releases
+        for f in os.listdir(_dir(cfg, "posts", "press")):
+            if f.startswith(str(dt.date.today().year) + "-"):
+                os.remove(os.path.join(_dir(cfg, "posts", "press"), f))
+        st["tagger_v"] = TAGGER_VERSION
+    st["tagger"] = tg.version
     leg = legislators(cfg, st)
     acc = discover_accounts(cfg, leg, st, min(deadline, time.time() + minutes * 60 * 0.15))
     hmap = bluesky_accounts(cfg, leg, acc, st, min(deadline, time.time() + minutes * 60 * 0.1))
@@ -882,10 +891,10 @@ def update_all(cfg, minutes, history=True):
     ok = True
     if history:
         ok &= collect_people(cfg, st, deadline - 600, per_run=60)
-    else:
-        collect_people(cfg, st, deadline, per_run=1)
         ok &= collect_press(cfg, st, tg, deadline - 300)
         ok &= collect_tweets(cfg, st, tg, deadline - 300)
+    else:
+        collect_people(cfg, st, deadline, per_run=1)
     _save_state(cfg, st)
     build_index(cfg)
     if history and ok:
