@@ -773,6 +773,8 @@ def collect_people(cfg, st, deadline, per_run=6):
         r = _get(url, as_json=False, timeout=300, headers=hdr)
         n += 1
         if r is None:
+            done.add(k)            # the SEC doesn't have this quarter (older ones are missing); don't block
+            st["people_q"] = sorted(done)
             continue
         try:
             z = zipfile.ZipFile(io.BytesIO(r.content))
