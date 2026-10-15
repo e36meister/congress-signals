@@ -27,7 +27,7 @@ LEG_SOC = "https://unitedstates.github.io/congress-legislators/legislators-socia
 BSKY = "https://public.api.bsky.app/xrpc/"
 TWEETS_FIRST, TWEETS_LAST = dt.date(2017, 6, 21), dt.date(2023, 7, 15)
 START_YEAR = 2013
-TAGGER_VERSION = 3
+TAGGER_VERSION = 6
 
 SECTOR_WORDS = {
     "Energy": "oil gas pipeline pipelines drilling fracking refinery refineries lng crude petroleum keystone opec gasoline energy",
@@ -46,12 +46,14 @@ SECTOR_WORDS = {
     "Consumer Cyclical": "retail retailers automakers auto autos electric vehicles ev cars",
     "Basic Materials": "steel aluminum mining minerals lithium copper chemicals",
 }
-COMMON_NAMES = set("apple target visa meta intel oracle amazon delta southern general block square ford gap ball crown "
+COMMON_NAMES = set("frontline compass alamo allot deluxe plexus prudential apple target visa meta intel oracle amazon delta southern general block square ford gap ball crown "
                    "united american progressive alliance dominion carrier fortune shell select global national first "
                    "equity public service health capital energy power river valley summit pioneer frontier liberty "
                    "patriot eagle heritage independence premier republic union security guardian discovery sprint "
                    "match zoom snap lumen evergy entergy ameren exelon realty prologis welltower dollar general "
                    "chewy wayfair etsy uber lyft paramount spirit hess murphy marathon devon apache halliburton".split())
+STRONG_CUES = set("company companies ceo ceos shares stock stocks inc corp corporation headquarters executives executive merger "
+                  "acquisition acquire earnings shareholders contract contracts subsidiary brand".split())
 COMPANY_CUES = set("company companies ceo ceos shares stock stocks inc corp corporation workers employees plant factory "
                    "facility contract contracts merger acquisition announced invest investment headquarters executives "
                    "jobs layoffs earnings".split())
@@ -133,6 +135,8 @@ class Tagger:
         except Exception:
             meta = {}
         self.tickers = set()
+        self.names = {}
+        self.caps = {t: float(m.get("cap") or 0) for t, m in meta.items() if isinstance(m, dict)}
         idx = {}            # first token -> [(tokens, ticker, kind, single)]
         self.cash = {}
         for t, m in meta.items():
@@ -146,6 +150,9 @@ class Tagger:
                 continue
             if len(toks) > 2 and len(toks[-1]) <= 3:   # "xyz bancorp of", keep the distinctive part
                 toks = toks[:2]
+            self.names[t] = toks
+            if len(toks) == 1 and _generic(tuple(toks)) and float(m.get("cap") or 0) < 50e9:
+                continue        # "City Holding", "American International", "Travelers": only by $TICKER / (TICKER)
             idx.setdefault(toks[0], []).append((tuple(toks), t, "co", len(toks) == 1))
         people = {}
         try:
@@ -176,37 +183,71 @@ class Tagger:
                 idx.setdefault(toks[0], []).append((toks, t, "pp:" + role, False))
                 np_ += 1
         self.idx = idx
+        self.surnames, self.firsts = set(), {}
+        try:      # members' own names ("Bill Hagerty", "Huntsman") aren't companies or their executives
+            for m in json.load(open(_dir(cfg, "legislators.json"))).values():
+                last = re.findall(r"[a-z]+", E._strip_accents(m.get("last") or "").lower())
+                if last:
+                    self.surnames.add(last[-1])
+                    self.firsts.setdefault(last[-1], set()).update(
+                        x for x in re.findall(r"[a-z]+", E._strip_accents(f"{m.get('first') or ''} {m.get('nick') or ''}").lower()))
+        except Exception:
+            pass
         self.sectors = {}
         for s, words in SECTOR_WORDS.items():
             for w in words.split():
                 self.sectors.setdefault(w, set()).add(s)
-        self.version = hashlib.md5(json.dumps([TAGGER_VERSION, sorted(self.tickers), np_]).encode()).hexdigest()[:10]
+        self.version = f"t{TAGGER_VERSION}"      # bump TAGGER_VERSION to re-tag every stored post
         _log(f"Tagger: {len(self.tickers):,} companies, {np_:,} company people")
 
     def tag(self, text):
-        """-> (tickers, people [(name, ticker, role)], sectors, tone)"""
+        """-> (tickers, people [(name, ticker, role)], sectors, tone).
+        A company name counts only when capitalized where it appears, outside links and other accounts' handles.
+        A name made only of everyday words or common surnames ("Apple", "People", "Graham", "American International")
+        also needs a company word (CEO, shares, company, ...) within 5 words. Short all-capital words (PACS, USPS)
+        need that too. $TICKER and "Name (TICKER)" always count."""
         if not text:
             return [], [], [], 0.0
-        low = self.E._strip_accents(text).lower()
-        toks = re.findall(r"[a-z0-9]+", low)
+        raw = self.E._strip_accents(text)
+        raw = re.sub(r"https?://\S+", " ", raw)
+        spans = [(m.group(0), m.start()) for m in re.finditer(r"[A-Za-z0-9]+", raw)]
+        toks = [w.lower() for w, _ in spans]
+        low = raw.lower()
         tset = set(toks)
-        cues = bool(tset & COMPANY_CUES)
+        cue_at = [i for i, w in enumerate(toks) if w in STRONG_CUES]
         tick, ppl = set(), []
-        for m in re.finditer(r"\$([a-z]{1,5})\b", low):
-            if m.group(1) in self.cash:
-                tick.add(self.cash[m.group(1)])
+        for m in re.finditer(r"\$([A-Z]{1,5})\b", raw):              # $XOM (capitals; "$s" isn't a ticker)
+            if m.group(1).lower() in self.cash:
+                tick.add(self.cash[m.group(1).lower()])
+        for m in re.finditer(r"\((?:NYSE|NASDAQ|Nasdaq|NYSE American)?:?\s*([A-Z]{1,5})\)", raw):
+            t_ = self.cash.get(m.group(1).lower())                     # "Exxon Mobil (XOM)", not "(SHIP) program"
+            if t_ and (re.search(r"(NYSE|NASDAQ|Nasdaq)", m.group(0)) or
+                       set(re.findall(r"[a-z]+", low[max(0, m.start() - 60):m.start()])) & set(self.names.get(t_, ()))):
+                tick.add(t_)
         for i, w in enumerate(toks):
             for ct, t, kind, single in self.idx.get(w, ()):
                 n = len(ct)
                 if tuple(toks[i:i + n]) != ct:
                     continue
+                words = [spans[i + j][0] for j in range(n)]
+                if not all(x[:1].isupper() or x[:1].isdigit() for x in words):
+                    continue                                    # "apple pie", "frontline workers"
+                pos = spans[i][1]
+                pre = raw[max(0, pos - 1):pos]
+                if pre in ("@", "_", "#") and not (pre == "@" and len(ct) == 1):
+                    continue                                    # someone else's handle or a hashtag
+                near_cue = any(abs(k - i) <= 5 for k in cue_at)
                 if kind == "co":
-                    if single and not (cues or f"({t.lower()})" in low or (len(ct[0]) >= 6 and ct[0] not in COMMON_NAMES)):
-                        continue
-                    if single and not re.search(r"\b" + re.escape(ct[0].capitalize()), text):   # "Apple", not "apple"
+                    acronym = n == 1 and words[0].isupper() and len(words[0]) <= 5
+                    weak = acronym or _generic(ct) or ct[0] in self.surnames
+                    if n == 1 and not weak:       # one-word name: a well-known company, or a company word nearby
+                        weak = self.caps.get(t, 0) < 10e9 or _zipf(ct[0]) >= 3.9
+                    if weak and not near_cue:
                         continue
                     tick.add(t)
                 else:
+                    if ct[-1] in self.surnames and ct[0] in self.firsts.get(ct[-1], ()):
+                        continue                                # it's a member of Congress, not the executive
                     ppl.append((" ".join(x.capitalize() for x in ct), t, kind[3:]))
                     tick.add(t)
         secs = sorted({s for w in tset for s in self.sectors.get(w, ())})
@@ -215,9 +256,34 @@ class Tagger:
         return sorted(tick), ppl[:6], secs, tone
 
 
+_GEN = {}
+
+
+def _zipf(w):
+    try:
+        from wordfreq import zipf_frequency
+        return zipf_frequency(w, "en")
+    except Exception:
+        return 0.0
+
+
+def _generic(ct):
+    """True when every word of the name is an everyday English word or common name (zipf frequency >= 4.0, e.g.
+    'people' 6.3, 'northern' 4.9, 'apple' 4.8, 'graham' 4.3, 'visa' 4.1), or a listed one ('frontline'). Brand words
+    are rarer (boeing 3.8, tesla 3.8, lockheed 3.4, pfizer 3.1)."""
+    k = " ".join(ct)
+    if k not in _GEN:
+        try:
+            from wordfreq import zipf_frequency
+            _GEN[k] = all(w in COMMON_NAMES or zipf_frequency(w, "en") >= 4.0 for w in ct)
+        except Exception:
+            _GEN[k] = all(w in COMMON_NAMES or len(w) < 6 for w in ct)
+    return _GEN[k]
+
+
 def rec(date, key, src, text, url, tg, rp="", full=None):
     tk, pp, secs, tone = tg.tag(full or text)
-    return [date, key, src, (text or "")[:400], url or "", tk, [f"{a}|{b}|{c}" for a, b, c in pp], tone, secs, rp]
+    return [date, key, src, (text or "")[:400], url or "", tk, [f"{a}|{b}|{c}" for a, b, c in pp], tone, secs, rp, tg.version]
 
 
 # ---------------------------------------------------------------------------
@@ -741,7 +807,7 @@ def collect_people(cfg, st, deadline, per_run=6):
 # ---------------------------------------------------------------------------
 # index for the member pages and the post signals
 # ---------------------------------------------------------------------------
-def build_index(cfg):
+def build_index(cfg, tg=None):
     """social/index.pkl: per member, posts for the member page (every post naming a company or person, plus the
     latest 120 others) and, for the signals, dated company mentions with tone and dated industry mentions."""
     root = _dir(cfg, "posts")
@@ -749,7 +815,15 @@ def build_index(cfg):
     n = 0
     for src in sorted(os.listdir(root)) if os.path.exists(root) else []:
         for fn in sorted(os.listdir(os.path.join(root, src))):
-            for r in read_jsonl(os.path.join(root, src, fn)):
+            fpath = os.path.join(root, src, fn)
+            recs, redone = read_jsonl(fpath), False
+            for r in recs:
+                if tg is not None and (len(r) < 11 or r[10] != tg.version):     # re-tag with today's rules, once
+                    tk2, pp2, secs2, tone2 = tg.tag(r[3])
+                    r[:] = (r + [""] * 10)[:10]
+                    r[5], r[6], r[7], r[8] = tk2, [f"{a}|{b}|{c}" for a, b, c in pp2], tone2, secs2
+                    r.append(tg.version)
+                    redone = True
                 d, key, s, text, url, tk, pp, tone, secs, rp = (r + [""] * 10)[:10]
                 if not d or not isinstance(key, str):
                     continue
@@ -765,6 +839,8 @@ def build_index(cfg):
                     crowd.setdefault(t, []).append((d, key))
                 for sc in secs:
                     sectors.setdefault(key, {}).setdefault(sc, []).append(d)
+            if redone:
+                write_jsonl(fpath, recs)
     for key, (a, b) in pages.items():
         b.sort(key=lambda x: x[0])
         pages[key] = sorted(a, key=lambda x: x[0])[-600:] + b[-120:]
@@ -896,7 +972,7 @@ def update_all(cfg, minutes, history=True):
     else:
         collect_people(cfg, st, deadline, per_run=1)
     _save_state(cfg, st)
-    build_index(cfg)
+    build_index(cfg, tg)
     if history and ok:
         open(_dir(cfg, "complete"), "w").write(dt.datetime.utcnow().isoformat())
         _log("Social: history complete")

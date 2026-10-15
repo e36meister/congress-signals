@@ -12,3 +12,4 @@ google-auth
 pillow
 opencv-python-headless
 pytesseract
+wordfreq
