@@ -30,6 +30,12 @@ jobs:
           path: inst
           key: inst-${{ github.run_id }}
           restore-keys: inst-
+      - name: Restore members' posts (read-only)
+        uses: actions/cache/restore@v4
+        with:
+          path: social
+          key: social-${{ github.run_id }}
+          restore-keys: social-
       - env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
           CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
