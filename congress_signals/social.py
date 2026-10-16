@@ -27,7 +27,7 @@ LEG_SOC = "https://unitedstates.github.io/congress-legislators/legislators-socia
 BSKY = "https://public.api.bsky.app/xrpc/"
 TWEETS_FIRST, TWEETS_LAST = dt.date(2017, 6, 21), dt.date(2023, 7, 15)
 START_YEAR = 2013
-TAGGER_VERSION = 7
+TAGGER_VERSION = 8
 
 SECTOR_WORDS = {
     "Energy": "oil gas pipeline pipelines drilling fracking refinery refineries lng crude petroleum keystone opec gasoline energy",
@@ -248,9 +248,6 @@ class Tagger:
                 else:
                     if ct[-1] in self.surnames and ct[0] in self.firsts.get(ct[-1], ()):
                         continue                                # it's a member of Congress, not the executive
-                    co = self.names.get(t) or ()
-                    if not (near_cue or (co and any(c in tset for c in co))):
-                        continue                                # "Jeff Williams" alone could be anyone
                     ppl.append((" ".join(x.capitalize() for x in ct), t, kind[3:]))
                     tick.add(t)
         secs = sorted({s for w in tset for s in self.sectors.get(w, ())})
