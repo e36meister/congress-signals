@@ -27,6 +27,23 @@ os.makedirs(cfg["DATA_DIR"], exist_ok=True)
 
 
 def upload_to_drive(local_path, title, mimetype="application/json"):
+    """Retries Google's temporary errors (502/503/500/429) and never stops the update: the phone app (Cloudflare),
+    member pages and charts still get their copies if Drive is down."""
+    import time
+    for attempt in range(4):
+        try:
+            return _upload_to_drive(local_path, title, mimetype)
+        except Exception as e:
+            code = getattr(getattr(e, "resp", None), "status", None)
+            if attempt < 3 and (code is None or int(code) in (429, 500, 502, 503, 504)):
+                E.log(f"Drive: {title} upload failed ({code or type(e).__name__}); retrying in {30 * (attempt + 1)} s")
+                time.sleep(30 * (attempt + 1))
+                continue
+            E.log(f"Drive: couldn't update {title} ({code or type(e).__name__}); the next update tries again")
+            return None
+
+
+def _upload_to_drive(local_path, title, mimetype="application/json"):
     sa = env("GDRIVE_SERVICE_ACCOUNT_JSON")
     folder = env("GDRIVE_FOLDER_ID")
     if not sa or not folder:
