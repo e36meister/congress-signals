@@ -1681,6 +1681,7 @@ def volume_features(tx, data):
     """Unusual trading volume in the stock in the two weeks before the member's trade: someone may have been
     trading on the same information. 0 at 4x normal or less, 1 at 12x or more (the median trade sees ~2x)."""
     tx["f_unusual_volume"], tx["volume_ratio"], tx["volume_note"] = 0.0, np.nan, ""
+    tx["f_unusual_volume_low"] = 0.0
     vol = data.get("volume")
     if vol is None or not len(vol):
         return tx
