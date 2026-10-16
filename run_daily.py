@@ -314,7 +314,24 @@ def trade_now(scored, px):
     return snap, helpers
 
 
+def fetch_app_inputs():
+    """What the owner entered in the app (family-tie reviews), copied in before scoring."""
+    try:
+        raw = cloud_store.get("inputs/tie_reviews.json", E.log)
+        if raw:
+            rv = json.loads(raw)
+            if isinstance(rv, dict):
+                os.makedirs(os.path.join(cfg["DATA_DIR"], "state"), exist_ok=True)
+                json.dump(rv, open(os.path.join(cfg["DATA_DIR"], "state", E.TIE_REVIEW_FILE), "w"))
+                yes = sum(1 for v in rv.values() if (v or {}).get("verdict") == "yes")
+                no = sum(1 for v in rv.values() if (v or {}).get("verdict") == "no")
+                E.log(f"Family-tie reviews from the app: {yes} confirmed, {no} rejected")
+    except Exception as e:
+        E.log(f"Family-tie reviews: couldn't read ({type(e).__name__})")
+
+
 def main():
+    fetch_app_inputs()
     try:
         scored, px = E.prepare(cfg)
     except RuntimeError as e:
@@ -381,21 +398,27 @@ def main():
         E.check_trial_signals_once(scored, px, cfg)
     except Exception as e:
         E.log(f"Adjustments: new-signal check skipped ({e})")
-    try:      # rare signals judged per trade; a newly passing one is reported to the owner, never switched on
+    try:      # rare signals judged per trade; a passing trial signal is switched on automatically
         rt = E.rare_signal_test(scored, px, cfg)
-        fresh = [r for r in (rt or {}).get("rows", []) if r["signal"] in (rt.get("newly_passing") or [])
-                 and r["signal"] not in (rt.get("reported") or [])]
+        fresh = [r for r in (rt or {}).get("rows", []) if (r["signal"] in (rt.get("newly_passing") or [])
+                 and r["signal"] not in (rt.get("reported") or [])) or r.get("switched")]
         if fresh and not DRY_RUN:
             import html
-            body = "<p>These rare signals now pass the per-trade test (flagged purchases beat similar purchases " \
-                   "filed the same month in the same industry, in earlier years and again in the last 3 years). " \
-                   "Nothing was switched on.</p><ul>" + "".join(
-                f"<li><b>{html.escape(r['label'])}</b>: {r['lift'] * 100:+.2f}% per trade vs similar purchases "
-                f"({r['n']} trades; earlier years {r['lift_early'] * 100:+.2f}%, sureness {r['t_early']:.1f}; "
-                f"last 3 years {r['lift_recent'] * 100:+.2f}%)</li>" for r in fresh) + "</ul>"
-            ok_ = cloud_store.notify("Rare signal passed: " + ", ".join(r["label"][:40] for r in fresh[:2]),
-                                     "Passes the per-trade test. Nothing switched on; see What works.", "rare", "/#works", E.log)
-            ok_ = _send_email("Capitol Capital: rare signal passed the per-trade test", body, "Email: sent rare-signal notice") or ok_
+            what = lambda r: ("Switched on automatically." if r.get("switched") == "on" else
+                              "Switched off again: it no longer passes." if r.get("switched") == "off" else
+                              "Already counts in the score." if r.get("in_score") else
+                              "Not a score signal, shown for information.")
+            body = "<p>Per-trade test results (flagged purchases vs similar purchases filed the same month in the same " \
+                   "industry, in earlier years and again in the last 3 years).</p><ul>" + "".join(
+                f"<li><b>{html.escape(r['label'])}</b>: {(r['lift'] or 0) * 100:+.2f}% per trade vs similar purchases "
+                f"({r['n']} trades; earlier years {(r['lift_early'] or 0) * 100:+.2f}%, sureness {(r['t_early'] or 0):.1f}; "
+                f"last 3 years {(r['lift_recent'] or 0) * 100:+.2f}%). {what(r)}</li>" for r in fresh) + "</ul>"
+            ons = [r for r in fresh if r.get("switched") == "on"]
+            ok_ = cloud_store.notify(("Signal switched on: " if ons else "Rare signal passed: ")
+                                     + ", ".join(r["label"][:40] for r in (ons or fresh)[:2]),
+                                     " ".join(f"{r['label'][:50]}: {(r['lift'] or 0) * 100:+.2f}%/trade. {what(r)}"
+                                              for r in fresh[:3]), "rare", "/#works", E.log)
+            ok_ = _send_email("Capitol Capital: per-trade signal test", body, "Email: sent rare-signal notice") or ok_
             if ok_:
                 rp = os.path.join(cfg["DATA_DIR"], "state", E.RARE_FILE)
                 d_ = json.load(open(rp))

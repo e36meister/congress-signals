@@ -50,6 +50,8 @@ async function api(req, env, url) {
     if (!/^([A-Z]\d{6}|n-[a-z0-9-]{1,40})$/.test(k)) return json({ error: "bad-member" }, 400);
     return fromR2(req, env, `members/${k}.json`);
   }
+  if (p === "/api/tie-reviews" && req.method === "GET") return json(await tieReviews(env));
+  if (p === "/api/tie-review" && req.method === "POST") return tieReview(req, env);
   if (p === "/api/live" && req.method === "GET") return live(env);
   if (p === "/api/buy" && req.method === "POST") return buy(req, env);
   if (p === "/api/widget/script" && req.method === "GET") return widgetScript(env, url, false);
@@ -218,6 +220,25 @@ async function buy(req, env) {
   if (!r.ok) return json({ ok: false, why: "rejected-" + r.status, message: r.data && r.data.message }, 400);
   return json({ ok: true, status: r.data.status, market_open: !!(clock.data && clock.data.is_open), next_open: clock.data && clock.data.next_open,
     qty: order.qty ? +order.qty : null });
+}
+
+// ---------- family-tie reviews (the owner says whether a name match is really the member's family) ----------
+const TIE_FILE = "inputs/tie_reviews.json";
+async function tieReviews(env) {
+  try { const o = await env.DATA.get(TIE_FILE); if (o) return await o.json(); } catch (e) {}
+  return {};
+}
+async function tieReview(req, env) {
+  let b = {};
+  try { b = await req.json(); } catch (e) {}
+  const key = String(b.key || ""), verdict = String(b.verdict || "");
+  if (!/^[A-Za-z0-9-]{1,20}\|[A-Za-z0-9.\-]{1,12}\|[A-Za-z0-9 .'\-]{1,60}$/.test(key)) return json({ ok: false, why: "bad-key" }, 400);
+  if (!["yes", "no", "clear"].includes(verdict)) return json({ ok: false, why: "bad-verdict" }, 400);
+  const all = await tieReviews(env);
+  if (verdict === "clear") delete all[key];
+  else all[key] = { verdict, note: String(b.note || "").slice(0, 500), at: new Date().toISOString() };
+  await env.DATA.put(TIE_FILE, JSON.stringify(all), { httpMetadata: { contentType: "application/json" } });
+  return json({ ok: true, review: all[key] || null });
 }
 
 // ---------- alerts ----------
