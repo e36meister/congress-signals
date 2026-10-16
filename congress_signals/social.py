@@ -815,10 +815,21 @@ def build_index(cfg, tg=None):
     root = _dir(cfg, "posts")
     pages, mentions, sectors, crowd = {}, {}, {}, {}
     n = 0
+    press_seen = set()
+    from congress_signals.press_backfill import norm_url
     for src in sorted(os.listdir(root)) if os.path.exists(root) else []:
         for fn in sorted(os.listdir(os.path.join(root, src))):
             fpath = os.path.join(root, src, fn)
             recs, redone = read_jsonl(fpath), False
+            if src.startswith("press"):          # Congress Press first ("press" sorts first); backfills skip its URLs
+                keep = []
+                for r in recs:
+                    u = norm_url(r[4] if len(r) > 4 else "")
+                    if u and u in press_seen:
+                        continue
+                    press_seen.add(u)
+                    keep.append(r)
+                recs = keep
             for r in recs:
                 if tg is not None and (len(r) < 11 or r[10] != tg.version):     # re-tag with today's rules, once
                     tk2, pp2, secs2, tone2 = tg.tag(r[3])
@@ -971,6 +982,15 @@ def update_all(cfg, minutes, history=True):
         ok &= collect_people(cfg, st, deadline - 600, per_run=60)
         ok &= collect_press(cfg, st, tg, deadline - 300)
         ok &= collect_tweets(cfg, st, tg, deadline - 300)
+        try:        # press releases missing from Congress Press since 2021 (members' sites, then the Internet Archive)
+            import congress_signals.press_backfill as PB
+            left = deadline - time.time() - 600
+            if left > 300:
+                ok &= PB.backfill_current(cfg, st, tg, leg, time.time() + left * 0.55)
+                ok &= PB.backfill_departed(cfg, st, tg, deadline - 600)
+        except Exception as e:
+            _log(f"Press backfill: stopped ({type(e).__name__}: {e})")
+            ok = False
     else:
         collect_people(cfg, st, deadline, per_run=1)
     _save_state(cfg, st)
