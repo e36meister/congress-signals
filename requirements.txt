@@ -13,3 +13,5 @@ pillow
 opencv-python-headless
 pytesseract
 wordfreq
+trafilatura
+python-statement @ git+https://github.com/dwillis/python-statement.git
