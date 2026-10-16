@@ -202,7 +202,30 @@ def finalize_tx(df):
 HOUSE_CORE = re.compile(
     r"(?<![A-Za-z])(P|S \(partial\)|S|E)\s+(\d{1,2}/\d{1,2}/\d{4})\s+(\d{1,2}/\d{1,2}/\d{4})\s+"
     r"(Over \$[\d,]+|\$[\d,]+(?:\s*-\s*\$[\d,]+)?)")
-HOUSE_ASSET = re.compile(r"(?:\(([A-Za-z0-9.\-/]{1,8})\)\s*)?\[([A-Z]{2})\]")
+HOUSE_ASSET = re.compile(r"(?:\(([A-Za-z0-9.\-/]{1,8})\)\s*)?\[([A-Za-z]{2})\]")      # "[ST]", or "[sT]" in small-caps reports
+# reports with no asset-type tags at all (House 2014-2017): a ticker in parentheses on a Schedule A line
+HOUSE_PAREN_TICKER = re.compile(r"\(([A-Za-z]{1,5}(?:[.\-][A-Za-z])?)\)")
+NOT_TICKERS = {"SP", "DC", "JT", "IRA", "LLC", "LP", "INC", "CO", "NA", "SEP", "UTMA", "UGMA", "ROTH", "TR", "ETF",
+               "PA", "MD", "VA", "CA", "TX", "NY", "FL", "DE", "US", "USA", "IL", "OH", "CT", "NJ", "MA", "GA", "WA"}
+FD_VERSION = 3        # 3: Senate tables read row by row; House tag case; holdings in untagged House reports
+
+
+def _house_holdings(text):
+    hold = {clean_ticker(m.group(1)) for m in HOUSE_ASSET.finditer(text) if m.group(1)}
+    if hold or HOUSE_ASSET.search(text):
+        return {h for h in hold if h}
+    sched, out = "a", set()
+    for ln in text.splitlines():
+        m = FD_SCHEDULE.search(_fd_norm(ln.lower()))
+        if m:
+            sched = m.group(1)
+        if sched != "a":
+            continue
+        for t in HOUSE_PAREN_TICKER.findall(ln):
+            t_ = clean_ticker(t)
+            if t_ and t_ not in NOT_TICKERS:
+                out.add(t_)
+    return out
 
 
 PARSER_VERSION = 3
@@ -3517,7 +3540,8 @@ TRIAL_SIGNALS = {"relative_tie": 0.5, "unusual_volume": 0.4, "reg_action": 0.3, 
                  "activist_13d": 0.4, "new_5pct": 0.2, "funds_adding": 0.3,
                  "short_heavy": -0.3, "short_jump": -0.2, "funds_leaving": -0.2,
                  # members' posts (congress_signals/social.py): press releases, X archive, Bluesky, Mastodon, ...
-                 "post_named_before": 0.3, "post_sector_burst": 0.2, "post_tone_clash": 0.2, "post_crowd": 0.2}
+                 "post_named_before": 0.3, "post_sector_burst": 0.2, "post_tone_clash": 0.2, "post_crowd": 0.2,
+                 "committee_staff_lobbyist": 0.3, "family_possible": 0.3}
 TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "unusual_volume": "Signal: unusual trading volume before the trade",
                 "reg_action": "Signal: federal rule naming the company soon after the trade",
@@ -3534,7 +3558,9 @@ TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "post_named_before": "Signal: the member named the company or its people in a post in the 30 days before",
                 "post_sector_burst": "Signal: the member posted about the industry twice as often as usual before the trade",
                 "post_tone_clash": "Signal: bought after criticizing the company in posts (or sold after praising it)",
-                "post_crowd": "Signal: 3+ members named the company in posts in the 2 weeks before the filing"}
+                "post_crowd": "Signal: 3+ members named the company in posts in the 2 weeks before the filing",
+                "committee_staff_lobbyist": "Signal: a company lobbyist used to work for one of the member's committees",
+                "family_possible": "Signal: possible family tie to the company (SEC name match, not confirmed by state)"}
 
 
 def _inst():
@@ -3638,7 +3664,8 @@ def _why_buy(r):
                    ("f_crowded", lambda: "but the stock already jumped on disclosure day")):
         if r.get(f, 0) and r.get(f, 0) >= 0.5:
             b.append(txt())
-    for k in ("street_note", "spouse_note", "relative_note", "volume_note", "event_note", "buddy_note", "bill_adv_note"):
+    for k in ("street_note", "spouse_note", "relative_note", "family_note", "committee_staff_note", "volume_note",
+              "event_note", "buddy_note", "bill_adv_note"):
         if r.get(k):
             b.append(r[k])
     if r["f_size"] >= 0.4:
@@ -4922,6 +4949,7 @@ def prepare(cfg):
             for r in st_.sort_values("first_filed").drop_duplicates(["bioguide", "ticker"]).to_dict("records"):
                 ties.append({"Member": r["member"], "Spouse": r["spouse"], "Company": f"{r['issuer']} ({r['ticker']})",
                              "Role": r["role"], "Since": str(pd.Timestamp(r["first_filed"]).date()),
+                             "Last filing": str(pd.Timestamp(r["last_filed"]).date()) if pd.notna(r.get("last_filed")) else "",
                              "Confidence": r["confidence"], "Source": "SEC insider filings",
                              "link": f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={r['owner_cik']}&type=4&owner=include&count=40"})
         rt_ = data.get("relative_ties")
@@ -5406,8 +5434,29 @@ def _unz(b):
         return ""
 
 
+_NAME_RX = {}
+
+
+def _name_rx(key):
+    """Company name pattern: words may be separated by any punctuation ("chevrolet-cadillac", "johnson & johnson");
+    a name like "l3harris technologies" also matches its distinctive first word alone ("l3harris 401k")."""
+    rx = _NAME_RX.get(key)
+    if rx is None:
+        words = key.split()
+        alts = [r"[\W_]+(?:and[\W_]+)?".join(re.escape(w) for w in words)]
+        if len(words) > 1 and len(words[0]) >= 6:
+            try:
+                from wordfreq import zipf_frequency
+                if zipf_frequency(words[0], "en") < 3.0:
+                    alts.append(re.escape(words[0]))
+            except Exception:
+                pass
+        rx = _NAME_RX[key] = re.compile(r"\b(?:" + "|".join(alts) + r")\b")
+    return rx
+
+
 def _name_hit(text_low, key):
-    return bool(key) and len(key) >= 4 and re.search(r"\b" + re.escape(key) + r"\b", text_low) is not None
+    return bool(key) and len(key) >= 4 and _name_rx(key).search(text_low) is not None
 
 
 # ----------------------------------------------------------------------------
@@ -5460,7 +5509,17 @@ def collect_annual_disclosures(cfg, traders=None):
     if "v" not in df.columns:
         df["v"] = 1
     # version 2 reads up to FD_MAX_PAGES pages (version 1 stopped at 20, cutting off long reports)
-    done = set(df.loc[(df["chamber"] != "House") | (df["v"].fillna(1) >= 2), "doc"]) if len(df) else set()
+    if len(df):
+        v = df["v"].fillna(1)
+        fy = pd.to_datetime(df["filed"], errors="coerce").dt.year
+        no_hold = df["holdings"].map(lambda h: not h)
+        redo = ((df["chamber"] == "Senate") & (v < 3)) | ((df["chamber"] == "House") & (v < 2)) | \
+               ((df["chamber"] == "House") & (v < 3) & no_hold & (fy <= 2018))
+        done = set(df.loc[~redo, "doc"])
+        if redo.any():
+            log(f"Yearly disclosures: {int(redo.sum()):,} reports to read again with the fixed reader")
+    else:
+        done = set()
     start = pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=500)
     rows = []
 
@@ -5506,12 +5565,12 @@ def collect_annual_disclosures(cfg, traders=None):
                         df.to_pickle(cache)
                     if not text:
                         continue
-                    hold = {clean_ticker(m.group(1)) for m in HOUSE_ASSET.finditer(text) if m.group(1)}
+                    hold = _house_holdings(text)
                     ties = "\n".join(l for l in text.splitlines() if not HOUSE_ASSET.search(l))
                     rows.append({"chamber": "House", "last_key": name_key(r.get("Last") or "").split(" ")[-1],
                                  "first": str(r.get("First") or ""), "state": str(r.get("StateDst") or "")[:2],
                                  "filed": pd.to_datetime(r.get("FilingDate"), errors="coerce"),
-                                 "doc": str(r["DocID"]), "holdings": {h for h in hold if h}, "text": _z(ties), "v": 2})
+                                 "doc": str(r["DocID"]), "holdings": {h for h in hold if h}, "text": _z(ties), "v": FD_VERSION})
             if out_of_time(cfg):
                 break
 
@@ -5547,7 +5606,10 @@ def collect_annual_disclosures(cfg, traders=None):
                 hold, ties = set(), []
                 for table in soup.find_all("table"):
                     heads = [h.get_text(" ", strip=True).lower() for h in table.find_all("th")]
-                    body = table.get_text("\n", strip=True)
+                    # one line per row, cells joined, the table's column names after it (e.g. "who was paid")
+                    body = "\n".join(" | ".join(td.get_text(" ", strip=True) for td in tr.find_all("td")) +
+                                     "   [" + " / ".join(heads) + "]"
+                                     for tr in table.find_all("tr") if tr.find_all("td"))
                     if any("asset" in h for h in heads):
                         for tr in table.find_all("tr"):
                             txt = tr.get_text(" ", strip=True)
@@ -5560,7 +5622,7 @@ def collect_annual_disclosures(cfg, traders=None):
                 done.add(rep["link"])
                 rows.append({"chamber": "Senate", "last_key": name_key(rep["last"]).split(" ")[-1], "first": rep["first"],
                              "state": None, "filed": pd.to_datetime(rep["filed"], errors="coerce"), "doc": rep["link"],
-                             "holdings": hold, "text": _z("\n".join(ties)), "v": 2})
+                             "holdings": hold, "text": _z("\n".join(ties)), "v": FD_VERSION})
                 time.sleep(0.4)
         except Exception as e:
             log(f"Yearly disclosures: Senate skipped ({e})")
@@ -6405,6 +6467,37 @@ def compute_connections(tx, data, cfg, mems):
                     rv[i] = 1.0
                     break
     tx["f_revolving_door"] = rv
+
+    # 5b. the company's lobbyists used to work for a committee this member sits on (committee staff)
+    cr, crn = np.zeros(n), [""] * n
+    if lb is not None and len(lb) and "covered" in lb:
+        def core(nm):
+            c = re.sub(r"\b(committee|on|the|of|and|house|senate|joint|select|permanent|special|subcommittee)\b", " ", nm.lower())
+            return " ".join(c.split())
+        cmemo = {}
+        for i, (t, f, ch, m) in enumerate(zip(tx["ticker"], fdt, tx["chamber"], mems)):
+            G = lg.get(t)
+            if G is None or not m or pd.isna(f) or not m.get("committees"):
+                continue
+            Pd, Cv = G
+            lo = np.searchsorted(Pd, np.datetime64(f - D(days=730)), side="right")
+            hi = np.searchsorted(Pd, np.datetime64(f), side="right")
+            if hi <= lo:
+                continue
+            cores = tuple(sorted({core(c) for c in m["committees"] if len(core(c)) >= 6}))
+            chw = "house" if ch == "House" else "senate"
+            for j in range(lo, hi):
+                c = (Cv[j] or "").lower()
+                if not c or chw not in c or "committee" not in c:
+                    continue
+                key = (c, cores, chw)
+                h = cmemo.get(key)
+                if h is None:
+                    h = cmemo[key] = next((k for k in cores if re.search(r"\b" + re.escape(k) + r"\b", c)), "")
+                if h:
+                    cr[i], crn[i] = 1.0, f"a company lobbyist used to work for the {chw.title()} {h.title()} committee, which the member sits on"
+                    break
+    tx["f_committee_staff_lobbyist"], tx["committee_staff_note"] = cr, crn
 
     # 10, 12. testimony before the member's committees; closed briefings before the trade
     mt = data.get("meetings")
@@ -7281,7 +7374,13 @@ def collect_bill_status(cfg):
     return df
 
 
-FD_SCHEDULE = re.compile(r"^\s*s(?:chedule)?\s+([a-j])\s*:")
+FD_SCHEDULE = re.compile(r"^\s*s(?:chedule)?[^a-z0-9:]{1,40}([a-j])\s*:")
+
+
+def _fd_norm(ln):
+    """Small-caps fonts come out as stray symbols in place of lower-case letters ("s        c: e      i"); turn
+    anything that isn't a plain character into a space so the schedule headers can be found."""
+    return re.sub(r"[^\x20-\x7e]", " ", ln)
 
 
 def _fd_kinds(text_lower, ck):
@@ -7289,13 +7388,14 @@ def _fd_kinds(text_lower, ck):
     a gift, sponsored travel, or elsewhere."""
     kinds, sched = set(), ""
     for ln in text_lower.splitlines():
-        m = FD_SCHEDULE.search(ln)
+        m = FD_SCHEDULE.search(_fd_norm(ln))
         if m:
             sched = m.group(1)
         if not _name_hit(ln, ck):
             continue
         spouse = re.search(r"\bspouse\b|\bsp\b", ln) is not None
-        if sched == "c" and spouse or (spouse and re.search(r"salary|income|employ|compensation|wages|bonus", ln)):
+        if sched == "c" and spouse or (spouse and re.search(
+                r"salary|income|employ|compensation|wages|bonus|pension|fees|honorari|consult|commission|stipend|retainer|director|board", ln)):
             kinds.add("spouse_job")
         elif sched == "e" or re.search(r"\b(director|board|trustee|officer|partner|advisor)\b", ln) and sched not in ("a", "b"):
             kinds.add("position")
@@ -7336,6 +7436,16 @@ def trading_pairs(tx, window_days=7, popular_top=60):
     return ev, names
 
 
+TIE_LASTS = pd.Timedelta(days=548)      # an insider tie counts until 18 months after the person's last SEC filing
+
+
+def _tie_live(first, last, when):
+    """The tie was public by `when` and hadn't ended (no SEC filing for 18 months = they likely left)."""
+    if first is None or pd.isna(first) or pd.Timestamp(first) > when:
+        return False
+    return last is None or pd.isna(last) or when <= pd.Timestamp(last) + TIE_LASTS
+
+
 def relationship_features(tx, data, cfg, mems):
     D = pd.Timedelta
     n = len(tx)
@@ -7344,26 +7454,29 @@ def relationship_features(tx, data, cfg, mems):
     st_ = data.get("spouse_ties")
     if st_ is not None and len(st_):
         ok = st_[st_["confidence"] == "Confirmed by state"]
-        tie = {(b, t): (f0, sp, role) for b, t, f0, sp, role in zip(ok["bioguide"], ok["ticker"], ok["first_filed"], ok["spouse"], ok["role"])}
+        lastc = ok["last_filed"] if "last_filed" in ok else pd.Series([None] * len(ok), index=ok.index)
+        tie = {(b, t): (f0, sp, role, l0) for b, t, f0, sp, role, l0 in
+               zip(ok["bioguide"], ok["ticker"], ok["first_filed"], ok["spouse"], ok["role"], lastc)}
         fs, nt = np.zeros(n), [""] * n
         for i, (m, t, f) in enumerate(zip(mems, tx["ticker"], fdt)):
             h = tie.get(((m or {}).get("bioguide"), t))
-            if h and h[0] <= f:
+            if h and _tie_live(h[0], h[3], f):
                 fs[i], nt[i] = 1.0, f"spouse {h[1]} is a company insider ({h[2].lower()}) per SEC filings"
         tx["f_spouse_insider"], tx["spouse_note"] = fs, nt
     tx["f_relative_tie"], tx["relative_note"] = 0.0, ""
     rt_ = data.get("relative_ties")
     if rt_ is not None and len(rt_):
         ok = rt_[rt_["confidence"] == "Confirmed by state"].dropna(subset=["first_filed"])
+        lastc = ok["last_filed"] if "last_filed" in ok else pd.Series([None] * len(ok), index=ok.index)
         tie = {}
-        for b, t, f0, nm, rel, role in zip(ok["bioguide"], ok["ticker"], ok["first_filed"], ok["relative"],
-                                           ok["relation"], ok["role"]):
+        for b, t, f0, nm, rel, role, l0 in zip(ok["bioguide"], ok["ticker"], ok["first_filed"], ok["relative"],
+                                               ok["relation"], ok["role"], lastc):
             if (b, t) not in tie or f0 < tie[(b, t)][0]:
-                tie[(b, t)] = (f0, nm, rel, role)
+                tie[(b, t)] = (f0, nm, rel, role, l0)
         fr, nr = np.zeros(n), [""] * n
         for i, (m, t, f) in enumerate(zip(mems, tx["ticker"], fdt)):
             h = tie.get(((m or {}).get("bioguide"), t))
-            if h and h[0] <= f:
+            if h and _tie_live(h[0], h[4], f):
                 fr[i], nr[i] = 1.0, f"{h[2]} {h[1]} is a company insider ({str(h[3]).lower()}) per SEC filings"
         tx["f_relative_tie"], tx["relative_note"] = fr, nr
     # family ties not confirmed by state (SEC filers often give the company's address): not scored, but flagged in
@@ -7381,12 +7494,12 @@ def relationship_features(tx, data, cfg, mems):
             note = (f"possible family tie: {kind if kind == 'spouse' else ''} {who} appears as a company insider "
                     f"({str(r_.get('role') or 'insider').lower()}) in SEC filings; {str(r_['confidence']).lower()} match").replace("  ", " ")
             if key not in poss or r_["first_filed"] < poss[key][0]:
-                poss[key] = (r_["first_filed"], note)
+                poss[key] = (r_["first_filed"], note, r_.get("last_filed"))
     if poss:
         fp, npn = np.zeros(n), [""] * n
         for i, (m, t, f) in enumerate(zip(mems, tx["ticker"], fdt)):
             h = poss.get(((m or {}).get("bioguide"), t))
-            if h and pd.Timestamp(h[0]) <= f:
+            if h and _tie_live(h[0], h[2], f):
                 fp[i], npn[i] = 1.0, h[1]
         tx["f_family_possible"], tx["family_note"] = fp, npn
     for c in ("f_grants", "f_grant_after_trade", "f_campaign_vendor", "f_spouse_employer", "f_paid_travel",
@@ -7760,7 +7873,7 @@ def spouse_ties(spouses, ins, members):
     Everything else is 'Needs review' and is shown but not scored."""
     if ins is None or not len(ins) or not spouses:
         return pd.DataFrame(columns=["bioguide", "member", "spouse", "ticker", "issuer", "role", "first_filed",
-                                     "owner_cik", "confidence"])
+                                     "last_filed", "owner_cik", "confidence"])
     ins = ins.dropna(subset=["ticker", "filed"])
     rows = []
     for bio, names in spouses.items():
@@ -7782,7 +7895,7 @@ def spouse_ties(spouses, ins, members):
                 rows.append({"bioguide": bio, "member": m.get("name"), "spouse": nm, "ticker": t,
                              "issuer": g["issuer"].dropna().iloc[0] if g["issuer"].notna().any() else t,
                              "role": g["role"].mode().iloc[0] if g["role"].str.len().gt(0).any() else "Insider",
-                             "first_filed": g["filed"].min(), "owner_cik": str(cik),
+                             "first_filed": g["filed"].min(), "last_filed": g["filed"].max(), "owner_cik": str(cik),
                              "confidence": "Confirmed by state" if ok else ("Unique name" if unique else "Needs review")})
     return pd.DataFrame(rows)
 
