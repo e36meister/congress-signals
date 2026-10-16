@@ -4920,8 +4920,11 @@ def prepare(cfg):
                         if m.get("bioguide"):
                             members.setdefault(m["bioguide"], m)
             sp = {b: v for b, v in collect_spouses(cfg).items() if b in bios}
-            data["spouse_ties"] = spouse_ties(sp, collect_spouse_insiders(cfg, sp), members)
-            log(f"Spouse insiders: {len(data['spouse_ties'])} possible spouse-company ties")
+            reviews_ = load_tie_reviews(cfg)
+            data["spouse_ties"] = apply_tie_reviews(spouse_ties(sp, collect_spouse_insiders(cfg, sp), members),
+                                                    reviews_, "spouse")
+            log(f"Spouse insiders: {len(data['spouse_ties'])} possible spouse-company ties"
+                + (f"; {len(reviews_)} reviewed by you" if reviews_ else ""))
         except Exception as e:
             log(f"Spouse insiders: skipped ({e})")
         try:      # public-figure relatives: SEC insider roles and lobbyist registrations
@@ -4935,6 +4938,7 @@ def prepare(cfg):
                 rt["source"] = "SEC insider filings"
             lt = relative_lobbyist_ties(rel, data.get("lobbying"), members)
             data["relative_ties"] = pd.concat([x for x in (rt, lt) if len(x)], ignore_index=True) if (len(rt) or len(lt)) else pd.DataFrame()
+            data["relative_ties"] = apply_tie_reviews(data["relative_ties"], load_tie_reviews(cfg), "relative")
             log(f"Relatives: {len(data['relative_ties'])} possible relative-company ties")
         except Exception as e:
             log(f"Relatives: skipped ({e})")
@@ -4951,11 +4955,12 @@ def prepare(cfg):
         ties = []
         st_ = data.get("spouse_ties")
         if st_ is not None and len(st_):
-            for r in st_.sort_values("first_filed").drop_duplicates(["bioguide", "ticker"]).to_dict("records"):
+            for r in st_.sort_values("first_filed").drop_duplicates(["bioguide", "ticker", "owner_cik"]).to_dict("records"):
                 ties.append({"Member": r["member"], "Spouse": r["spouse"], "Company": f"{r['issuer']} ({r['ticker']})",
                              "Role": r["role"], "Since": str(pd.Timestamp(r["first_filed"]).date()),
                              "Last filing": str(pd.Timestamp(r["last_filed"]).date()) if pd.notna(r.get("last_filed")) else "",
                              "Confidence": r["confidence"], "Source": "SEC insider filings",
+                             "key": r.get("key") or "", "Auto": r.get("auto_confidence") or r["confidence"],
                              "link": f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={r['owner_cik']}&type=4&owner=include&count=40"})
         rt_ = data.get("relative_ties")
         if rt_ is not None and len(rt_):
@@ -4963,7 +4968,9 @@ def prepare(cfg):
                 ties.append({"Member": r["member"], "Spouse": f"{r['relative']} ({r['relation']})",
                              "Company": f"{r['issuer']} ({r['ticker']})", "Role": r["role"],
                              "Since": str(pd.Timestamp(r["first_filed"]).date()) if pd.notna(r["first_filed"]) else "",
+                             "Last filing": str(pd.Timestamp(r["last_filed"]).date()) if pd.notna(r.get("last_filed")) else "",
                              "Confidence": r["confidence"], "Source": r.get("source") or "SEC insider filings",
+                             "key": r.get("key") or "", "Auto": r.get("auto_confidence") or r["confidence"],
                              "link": f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={r['owner_cik']}&type=4&owner=include&count=40"
                              if r.get("owner_cik") else ""})
         dj = feats[feats.get("f_spouse_employer", 0) > 0] if "f_spouse_employer" in feats else feats.iloc[0:0]
@@ -7442,6 +7449,42 @@ def trading_pairs(tx, window_days=7, popular_top=60):
 
 
 TIE_LASTS = pd.Timedelta(days=548)      # an insider tie counts until 18 months after the person's last SEC filing
+# The owner can review any family tie in the app (Family ties table): "It's them" counts it like a confirmed tie,
+# "Not them" drops it from scores and alerts. Saved by the app to R2 inputs/tie_reviews.json; run_daily copies it
+# to state/tie_reviews.json before scoring.
+TIE_CONFIRMED = {"Confirmed by state", "Confirmed by you"}
+TIE_REJECTED = "Not them (you)"
+TIE_REVIEW_FILE = "tie_reviews.json"
+
+
+def tie_key(bioguide, ticker, cik="", person=""):
+    """Stable id for one family tie row: member | stock | SEC filer id (or the person's name when there is none)."""
+    who = str(cik or "").strip() or name_key(person or "")
+    return f"{bioguide}|{ticker}|{who}"[:90]
+
+
+def load_tie_reviews(cfg):
+    try:
+        r = json.load(open(_p(cfg, "state", TIE_REVIEW_FILE)))
+        return r if isinstance(r, dict) else {}
+    except Exception:
+        return {}
+
+
+def apply_tie_reviews(df, reviews, person_col):
+    """Owner's verdicts override the automatic confidence (keeps the automatic one in 'auto_confidence')."""
+    if df is None or not len(df):
+        return df
+    df = df.copy()
+    df["key"] = [tie_key(b, t, c, p) for b, t, c, p in zip(df["bioguide"], df["ticker"],
+                                                            df.get("owner_cik", pd.Series("", index=df.index)).fillna(""),
+                                                            df[person_col])]
+    df["auto_confidence"] = df["confidence"]
+    if reviews:
+        v = df["key"].map(lambda k: (reviews.get(k) or {}).get("verdict"))
+        df.loc[v == "yes", "confidence"] = "Confirmed by you"
+        df.loc[v == "no", "confidence"] = TIE_REJECTED
+    return df
 
 
 def _tie_live(first, last, when):
@@ -7458,7 +7501,7 @@ def relationship_features(tx, data, cfg, mems):
     tx["f_spouse_insider"], tx["spouse_note"] = 0.0, ""
     st_ = data.get("spouse_ties")
     if st_ is not None and len(st_):
-        ok = st_[st_["confidence"] == "Confirmed by state"]
+        ok = st_[st_["confidence"].isin(TIE_CONFIRMED)]
         lastc = ok["last_filed"] if "last_filed" in ok else pd.Series([None] * len(ok), index=ok.index)
         tie = {(b, t): (f0, sp, role, l0) for b, t, f0, sp, role, l0 in
                zip(ok["bioguide"], ok["ticker"], ok["first_filed"], ok["spouse"], ok["role"], lastc)}
@@ -7471,7 +7514,7 @@ def relationship_features(tx, data, cfg, mems):
     tx["f_relative_tie"], tx["relative_note"] = 0.0, ""
     rt_ = data.get("relative_ties")
     if rt_ is not None and len(rt_):
-        ok = rt_[rt_["confidence"] == "Confirmed by state"].dropna(subset=["first_filed"])
+        ok = rt_[rt_["confidence"].isin(TIE_CONFIRMED)].dropna(subset=["first_filed"])
         lastc = ok["last_filed"] if "last_filed" in ok else pd.Series([None] * len(ok), index=ok.index)
         tie = {}
         for b, t, f0, nm, rel, role, l0 in zip(ok["bioguide"], ok["ticker"], ok["first_filed"], ok["relative"],
@@ -7491,7 +7534,7 @@ def relationship_features(tx, data, cfg, mems):
     for df_, kind in ((st_, "spouse"), (rt_, "relative")):
         if df_ is None or not len(df_):
             continue
-        pz = df_[df_["confidence"] != "Confirmed by state"].dropna(subset=["first_filed"])
+        pz = df_[~df_["confidence"].isin(TIE_CONFIRMED | {TIE_REJECTED})].dropna(subset=["first_filed"])
         nmcol = "spouse" if kind == "spouse" else "relative"
         for r_ in pz.to_dict("records"):
             key = (r_["bioguide"], r_["ticker"])
@@ -9153,7 +9196,8 @@ def small_cap_backtest(scored, px, cfg, hold=None, coverage=None, price_exit=Non
 # ############################################################################
 #  RARE-SIGNAL TEST (owner, Oct 16): a signal that fires on few trades can't move the whole portfolio by +1%/yr,
 #  so it is judged per trade instead: do flagged purchases beat similar unflagged purchases (same filing month,
-#  same industry)? Never switches anything on; a newly passing signal is reported to the owner.
+#  same industry)? A passing trial signal is switched on automatically (owner, Oct 16: "if they are actually
+#  good, switch them on"); one this test switched on is switched off again if it stops passing.
 # ############################################################################
 RARE_FILE = "rare_test.json"
 RARE_MAX_SHARE = 0.10          # "rare": on at most 10% of purchases
@@ -9196,7 +9240,8 @@ def rare_signal_test(scored, px, cfg, hold=None):
         share = on.mean()
         if on.sum() < RARE_MIN_N or share > RARE_MAX_SHARE:
             continue
-        sign = -1 if (c[2:] in TRIAL_SIGNALS and TRIAL_SIGNALS[c[2:]] < 0) else 1
+        w_ = TRIAL_SIGNALS.get(c[2:], cfg["BUY_WEIGHTS"].get(c[2:], 1)) or 1
+        sign = -1 if w_ < 0 else 1
         ctrl = b.loc[~on].groupby("cell")["x"].mean()
         fl = b.loc[on, ["cell", "x", "filed_date", "m"]].copy()
         fl["ctrl"] = fl["cell"].map(ctrl)
@@ -9210,6 +9255,7 @@ def rare_signal_test(scored, px, cfg, hold=None):
                       and m_l is not None and m_l > 0)
         label = TRIAL_LABELS.get(c[2:], c[2:].replace("_", " "))
         out.append({"signal": c[2:], "label": label.replace("Signal: ", ""), "trial": c[2:] in TRIAL_SIGNALS,
+                    "in_score": bool(cfg["BUY_WEIGHTS"].get(c[2:])),
                     "direction": "lower score" if sign < 0 else "higher score", "share": round(float(share), 4),
                     "n": n_all, "lift": m_all, "t": t_all, "n_early": n_e, "lift_early": m_e, "t_early": t_e,
                     "n_recent": n_l, "lift_recent": m_l, "t_recent": t_l, "passes": passed})
@@ -9221,8 +9267,44 @@ def rare_signal_test(scored, px, cfg, hold=None):
         old = {}
     before = {r["signal"] for r in old.get("rows", []) if r.get("passes")}
     new = [r for r in out if r["passes"] and r["signal"] not in before]
+    # switch passing trial signals on; switch off the ones this test switched on that no longer pass
+    on_now, off_now = [], []
+    try:
+        a = load_adaptive(cfg)
+        pol = a["policy"]
+        sig = list(pol.get("signals_on", []))
+        mine = set(a.get("rare_on") or [])
+        passing = {r["signal"] for r in out if r["passes"]}
+        tested = {r["signal"] for r in out}
+        today = dt.date.today().isoformat()
+        for r in out:
+            k = r["signal"]
+            if r["passes"] and k in TRIAL_SIGNALS and k not in sig:
+                sig.append(k)
+                mine.add(k)
+                on_now.append(k)
+                a.setdefault("history", []).append({"date": today, "change": TRIAL_LABELS.get(k, k), "from": "off",
+                                                    "to": "on", "why": f"per-trade test: {r['lift'] * 100:+.2f}% per trade "
+                                                    f"vs similar purchases ({r['n']} trades)"})
+        for k in sorted(mine):
+            if k in tested and k not in passing and k in sig:
+                sig.remove(k)
+                mine.discard(k)
+                off_now.append(k)
+                a.setdefault("history", []).append({"date": today, "change": TRIAL_LABELS.get(k, k), "from": "on",
+                                                    "to": "off", "why": "no longer passes the per-trade test"})
+        if on_now or off_now:
+            pol["signals_on"] = sig
+            a["policy"], a["rare_on"] = pol, sorted(mine)
+            save_adaptive(cfg, a)
+            log(f"Rare-signal test: switched on {on_now or 'none'}; switched off {off_now or 'none'}")
+    except Exception as e:
+        log(f"Rare-signal test: couldn't switch signals ({type(e).__name__}: {e})")
+    for r in out:
+        r["switched"] = "on" if r["signal"] in on_now else ("off" if r["signal"] in off_now else "")
     res = {"updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "hold": hold, "rows": out,
-           "newly_passing": [r["signal"] for r in new], "reported": old.get("reported", [])}
+           "newly_passing": [r["signal"] for r in new], "reported": old.get("reported", []),
+           "switched_on": on_now, "switched_off": off_now}
     json.dump(res, open(path, "w"), default=str)
     log(f"Rare-signal test ({hold}-day hold, {len(out)} rare signals): " + (", ".join(
         f"{r['signal']} {r['lift'] * 100:+.2f}%/trade (t {r['t_early'] or 0:.1f} earlier, recent {(r['lift_recent'] or 0) * 100:+.2f}%)"

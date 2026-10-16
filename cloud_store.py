@@ -31,6 +31,20 @@ def put(name, data, log=print, content_type="application/json"):
     return False
 
 
+def get(name, log=print):
+    """Read one object from R2 (bytes), or None when it isn't there or Cloudflare isn't set up."""
+    tok, acc = os.environ.get("CLOUDFLARE_API_TOKEN"), os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+    if not (tok and acc):
+        return None
+    try:
+        r = requests.get(f"https://api.cloudflare.com/client/v4/accounts/{acc}/r2/buckets/{BUCKET}/objects/{name}",
+                         headers={"Authorization": f"Bearer {tok}"}, timeout=60)
+        return r.content if r.status_code == 200 else None
+    except Exception as e:
+        log(f"Cloudflare: couldn't read {name} ({type(e).__name__})")
+        return None
+
+
 def notify(title, body="", tag="", url="/", log=print):
     """Queue a phone alert; the Cloudflare Worker sends it within a minute to every phone that turned alerts on."""
     import json, time, random
