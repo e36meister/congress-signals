@@ -193,7 +193,7 @@ def _cdx(host, frm="2021", to="2025"):
     return None
 
 
-def backfill_departed(cfg, st, tg, deadline, per_run=4000):
+def backfill_departed(cfg, st, tg, deadline, per_run=40000, workers=4):
     from congress_signals.social import rec, read_jsonl, write_jsonl, _dir, _save_state
     prog = st.setdefault("press_wb", {})       # bioguide -> {"done": bool, "total": n}; queues in social/wb_queue
     mpath = _dir(cfg, "wb_members.json")
@@ -218,6 +218,9 @@ def backfill_departed(cfg, st, tg, deadline, per_run=4000):
                     urls = None
                     break
                 for ts, orig in rows:
+                    yrs = [int(y) for y in re.findall(r"(?<!\d)(20[0-2]\d)(?!\d)", orig)]
+                    if yrs and max(yrs) < int(BACKFILL_FROM[:4]):
+                        continue                  # dated before the gap in its own address
                     if RELEASE_PATH.search(orig) and not SKIP_PATH.search(orig) and len(orig.rstrip("/").split("/")) >= 5:
                         if norm_url(orig) not in seen:
                             urls.append([ts, orig])
@@ -230,23 +233,36 @@ def backfill_departed(cfg, st, tg, deadline, per_run=4000):
             time.sleep(1)
         queue = json.load(open(qpath))
         rows = []
-        while queue and time.time() < deadline and fetched < per_run:
-            ts, orig = queue.pop()
-            fetched += 1
-            try:
-                r = requests.get(f"{WB}/web/{ts}id_/{orig}", headers=UA, timeout=60)
-                html = r.text if r.status_code == 200 else None
-            except Exception:
-                html = None
-            time.sleep(0.8)                   # be gentle with the Internet Archive
+
+        def get(item):
+            ts, orig = item
+            for a in range(3):
+                try:
+                    r = requests.get(f"{WB}/web/{ts}id_/{orig}", headers=UA, timeout=60)
+                    if r.status_code == 429:
+                        time.sleep(30 * (a + 1))      # the archive asked us to slow down
+                        continue
+                    html = r.text if r.status_code == 200 else None
+                    break
+                except Exception:
+                    html = None
+                    time.sleep(5)
+            time.sleep(0.5)                           # be gentle with the Internet Archive
             if not html:
-                continue
+                return None
             d, title, text = _text(orig, html=html)
             if not d or not text or len(text) < 200 or d < BACKFILL_FROM:
-                continue
-            rows.append(rec(d[:10], b, "Press release (archived)", f"{title or ''} — {text}".strip(" —"),
-                            f"{WB}/web/{ts}/{orig}", tg, full=(title or "") + "\n" + text))
-            seen.add(norm_url(orig))
+                return None
+            return rec(d[:10], b, "Press release (archived)", f"{title or ''} — {text}".strip(" —"),
+                       f"{WB}/web/{ts}/{orig}", tg, full=(title or "") + "\n" + text)
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            while queue and time.time() < deadline and fetched < per_run:
+                chunk = [queue.pop() for _ in range(min(len(queue), workers * 10))]
+                fetched += len(chunk)
+                for r_ in ex.map(get, chunk):
+                    if r_ is not None:
+                        rows.append(r_)
+                        seen.add(norm_url(r_[4].split("/", 5)[-1] if "/web/" in r_[4] else r_[4]))
         if rows:
             path = _dir(cfg, "posts", "press_wb", f"{b}.jsonl.gz")
             old = read_jsonl(path) if os.path.exists(path) else []
@@ -258,5 +274,8 @@ def backfill_departed(cfg, st, tg, deadline, per_run=4000):
         prog[b] = p
         _save_state(cfg, st)
     left = sum(1 for b in members if not (prog.get(b) or {}).get("done"))
+    queued = sum(len(json.load(open(os.path.join(qdir, f)))) for f in os.listdir(qdir) if f.endswith(".json"))
+    _log(f"Archived press releases: {queued:,} saved pages still queued; "
+         f"{sum(1 for b in members if os.path.exists(os.path.join(qdir, f'{b}.json')))} members' archives listed")
     _log(f"Archived press releases: +{added:,} from {fetched:,} saved pages; {left} of {len(members)} departed members left")
     return left == 0
