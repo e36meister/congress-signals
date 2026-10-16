@@ -1688,13 +1688,16 @@ def worth_a_look(scored, cfg, days=None):
     if not len(r):
         return []
     col = lambda c: r[c] if c in r else pd.Series(0, index=r.index)
-    flags = ((col("f_spouse_insider") > 0) | (col("f_relative_tie") > 0) | (col("volume_ratio").fillna(0) >= VOL_FLAG)
+    flags = ((col("f_spouse_insider") > 0) | (col("f_relative_tie") > 0) | (col("f_family_possible") > 0)
+             | (col("f_spouse_employer") > 0) | (col("volume_ratio").fillna(0) >= VOL_FLAG)
              | (col("f_reg_action") > 0) | (col("f_witness_after") > 0) | (col("f_markup_after") > 0)
              | (col("f_major_8k_after") > 0) | (col("f_closed_briefing") > 0))
     r = r[flags]
     out = {}
     for x in r.sort_values("filed_date", ascending=False).to_dict("records"):
-        why = [x.get(k) for k in ("spouse_note", "relative_note", "volume_note", "event_note") if x.get(k)]
+        why = [x.get(k) for k in ("spouse_note", "relative_note", "family_note", "volume_note", "event_note") if x.get(k)]
+        if x.get("f_spouse_employer", 0) > 0:
+            why.append("the member's yearly disclosure says their spouse works for or is paid by the company")
         if x.get("f_closed_briefing", 0) > 0:
             why.append("a closed committee briefing shortly before the trade")
         why = [w for part in why for w in str(part).split("; ") if w]
@@ -7363,6 +7366,29 @@ def relationship_features(tx, data, cfg, mems):
             if h and h[0] <= f:
                 fr[i], nr[i] = 1.0, f"{h[2]} {h[1]} is a company insider ({str(h[3]).lower()}) per SEC filings"
         tx["f_relative_tie"], tx["relative_note"] = fr, nr
+    # family ties not confirmed by state (SEC filers often give the company's address): not scored, but flagged in
+    # Worth a look so the owner sees every possible one
+    tx["f_family_possible"], tx["family_note"] = 0.0, ""
+    poss = {}
+    for df_, kind in ((st_, "spouse"), (rt_, "relative")):
+        if df_ is None or not len(df_):
+            continue
+        pz = df_[df_["confidence"] != "Confirmed by state"].dropna(subset=["first_filed"])
+        nmcol = "spouse" if kind == "spouse" else "relative"
+        for r_ in pz.to_dict("records"):
+            key = (r_["bioguide"], r_["ticker"])
+            who = r_.get(nmcol) if kind == "spouse" else f"{r_.get('relation', 'relative')} {r_.get('relative')}"
+            note = (f"possible family tie: {kind if kind == 'spouse' else ''} {who} appears as a company insider "
+                    f"({str(r_.get('role') or 'insider').lower()}) in SEC filings; {str(r_['confidence']).lower()} match").replace("  ", " ")
+            if key not in poss or r_["first_filed"] < poss[key][0]:
+                poss[key] = (r_["first_filed"], note)
+    if poss:
+        fp, npn = np.zeros(n), [""] * n
+        for i, (m, t, f) in enumerate(zip(mems, tx["ticker"], fdt)):
+            h = poss.get(((m or {}).get("bioguide"), t))
+            if h and pd.Timestamp(h[0]) <= f:
+                fp[i], npn[i] = 1.0, h[1]
+        tx["f_family_possible"], tx["family_note"] = fp, npn
     for c in ("f_grants", "f_grant_after_trade", "f_campaign_vendor", "f_spouse_employer", "f_paid_travel",
               "f_outside_position", "f_buddy", "f_leader", "f_bill_advanced", "f_sector_bill_momentum"):
         tx[c] = 0.0
@@ -7750,13 +7776,14 @@ def spouse_ties(spouses, ins, members):
                 continue
             same_state = hit[hit["state"].fillna("") == (m.get("state") or "")]
             ambiguous = same_state["owner_cik"].nunique() > 1
+            unique = hit["owner_cik"].nunique() == 1          # only one SEC filer anywhere has this exact name
             for (cik, t), g in hit.groupby(["owner_cik", "ticker"]):
                 ok = (g["state"].fillna("") == (m.get("state") or "")).any() and not ambiguous
                 rows.append({"bioguide": bio, "member": m.get("name"), "spouse": nm, "ticker": t,
                              "issuer": g["issuer"].dropna().iloc[0] if g["issuer"].notna().any() else t,
                              "role": g["role"].mode().iloc[0] if g["role"].str.len().gt(0).any() else "Insider",
                              "first_filed": g["filed"].min(), "owner_cik": str(cik),
-                             "confidence": "Confirmed by state" if ok else "Needs review"})
+                             "confidence": "Confirmed by state" if ok else ("Unique name" if unique else "Needs review")})
     return pd.DataFrame(rows)
 
 
