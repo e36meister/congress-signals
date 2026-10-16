@@ -381,6 +381,28 @@ def main():
         E.check_trial_signals_once(scored, px, cfg)
     except Exception as e:
         E.log(f"Adjustments: new-signal check skipped ({e})")
+    try:      # rare signals judged per trade; a newly passing one is reported to the owner, never switched on
+        rt = E.rare_signal_test(scored, px, cfg)
+        fresh = [r for r in (rt or {}).get("rows", []) if r["signal"] in (rt.get("newly_passing") or [])
+                 and r["signal"] not in (rt.get("reported") or [])]
+        if fresh and not DRY_RUN:
+            import html
+            body = "<p>These rare signals now pass the per-trade test (flagged purchases beat similar purchases " \
+                   "filed the same month in the same industry, in earlier years and again in the last 3 years). " \
+                   "Nothing was switched on.</p><ul>" + "".join(
+                f"<li><b>{html.escape(r['label'])}</b>: {r['lift'] * 100:+.2f}% per trade vs similar purchases "
+                f"({r['n']} trades; earlier years {r['lift_early'] * 100:+.2f}%, sureness {r['t_early']:.1f}; "
+                f"last 3 years {r['lift_recent'] * 100:+.2f}%)</li>" for r in fresh) + "</ul>"
+            ok_ = cloud_store.notify("Rare signal passed: " + ", ".join(r["label"][:40] for r in fresh[:2]),
+                                     "Passes the per-trade test. Nothing switched on; see What works.", "rare", "/#works", E.log)
+            ok_ = _send_email("Capitol Capital: rare signal passed the per-trade test", body, "Email: sent rare-signal notice") or ok_
+            if ok_:
+                rp = os.path.join(cfg["DATA_DIR"], "state", E.RARE_FILE)
+                d_ = json.load(open(rp))
+                d_["reported"] = sorted(set(d_.get("reported") or []) | {r["signal"] for r in fresh})
+                json.dump(d_, open(rp, "w"))
+    except Exception as e:
+        E.log(f"Rare-signal test: skipped ({type(e).__name__}: {e})")
     try:
         E.check_exit_rule_once(scored, px, cfg)
     except Exception as e:

@@ -5296,6 +5296,12 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
             data["filter_test"]["switches"] = {r: v["switches"] for r, v in ft.get("rules", {}).items()}
         except Exception:
             pass
+    rpath = os.path.join(cfg["DATA_DIR"], "state", RARE_FILE)
+    if os.path.exists(rpath):
+        try:
+            data["rare_test"] = json.load(open(rpath))
+        except Exception:
+            pass
     apath = os.path.join(cfg["DATA_DIR"], "state", ADAPT_FILE)
     if os.path.exists(apath):
         try:
@@ -8997,3 +9003,83 @@ def small_cap_backtest(scored, px, cfg, hold=None, coverage=None, price_exit=Non
     return {"perf": pd.DataFrame(perf), "curves": pd.DataFrame(curves), "trade_stats": _trade_stats(picks, 1),
             "picks": picks, "slots": slots, "hold": hold, "years": years,
             "per_year_trades": float(len(picks) / weeks * 52)}
+
+
+# ############################################################################
+#  RARE-SIGNAL TEST (owner, Oct 16): a signal that fires on few trades can't move the whole portfolio by +1%/yr,
+#  so it is judged per trade instead: do flagged purchases beat similar unflagged purchases (same filing month,
+#  same industry)? Never switches anything on; a newly passing signal is reported to the owner.
+# ############################################################################
+RARE_FILE = "rare_test.json"
+RARE_MAX_SHARE = 0.10          # "rare": on at most 10% of purchases
+RARE_MIN_N = 30
+
+
+def _quarter_t(lifts, when):
+    """Mean lift and t with trades grouped by filing quarter (trades in one quarter move together)."""
+    s = pd.Series(np.asarray(lifts, dtype=float), index=pd.to_datetime(np.asarray(when)).to_period("Q"))
+    s = s[np.isfinite(s.values)]
+    if len(s) < 5:
+        return (float(s.mean()) if len(s) else None), None, len(s)
+    q = s.groupby(level=0).mean()
+    if len(q) < 3 or q.std() == 0:
+        return float(s.mean()), None, len(s)
+    return float(s.mean()), float(q.mean() / (q.std() / np.sqrt(len(q)))), len(s)
+
+
+def rare_signal_test(scored, px, cfg, hold=None):
+    """Every rare signal (any f_ column on <=10% of timely purchases, trial or not), tested per trade: lift = the
+    flagged purchase's result vs the S&P minus the average of unflagged purchases filed the same month in the same
+    industry. Passes when: at least 30 flagged trades, lift > 0 with t >= 1.65 on the years before the last 3, and
+    lift > 0 on the last 3 years (which played no part in choosing). Saved to state/rare_test.json."""
+    pol = load_adaptive(cfg)["policy"]
+    hold = int(hold or pol.get("hold_other") or cfg["HOLD_DAYS"])
+    b = scored[(scored["tx_type"] == "buy") & (scored["lag_days"].fillna(999) <= 45)].copy()
+    if not len(b):
+        return {}
+    fr = forward_returns(b, px, hold)
+    b["x"] = fr["excess"].values
+    b = b[fr["closed"].values & np.isfinite(b["x"].values)].copy()
+    b["x"] = b["x"].clip(-1, 3)
+    b["m"] = pd.to_datetime(b["filed_date"]).dt.to_period("M").astype(str)
+    b["cell"] = b["m"] + "|" + b["sector"].fillna("?").astype(str)
+    cut = (pd.Timestamp.today() - pd.DateOffset(years=3)).strftime("%Y-%m")
+    fcols = [c for c in b.columns if c.startswith("f_") and pd.api.types.is_numeric_dtype(b[c])]
+    out = []
+    for c in fcols:
+        on = b[c].fillna(0).values > 0
+        share = on.mean()
+        if on.sum() < RARE_MIN_N or share > RARE_MAX_SHARE:
+            continue
+        sign = -1 if (c[2:] in TRIAL_SIGNALS and TRIAL_SIGNALS[c[2:]] < 0) else 1
+        ctrl = b.loc[~on].groupby("cell")["x"].mean()
+        fl = b.loc[on, ["cell", "x", "filed_date", "m"]].copy()
+        fl["ctrl"] = fl["cell"].map(ctrl)
+        fl = fl[fl["ctrl"].notna()]
+        fl["lift"] = sign * (fl["x"] - fl["ctrl"])
+        early, late = fl[fl["m"] < cut], fl[fl["m"] >= cut]
+        m_all, t_all, n_all = _quarter_t(fl["lift"], fl["filed_date"])
+        m_e, t_e, n_e = _quarter_t(early["lift"], early["filed_date"])
+        m_l, t_l, n_l = _quarter_t(late["lift"], late["filed_date"])
+        passed = bool(n_all >= RARE_MIN_N and m_e is not None and t_e is not None and m_e > 0 and t_e >= 1.65
+                      and m_l is not None and m_l > 0)
+        label = TRIAL_LABELS.get(c[2:], c[2:].replace("_", " "))
+        out.append({"signal": c[2:], "label": label.replace("Signal: ", ""), "trial": c[2:] in TRIAL_SIGNALS,
+                    "direction": "lower score" if sign < 0 else "higher score", "share": round(float(share), 4),
+                    "n": n_all, "lift": m_all, "t": t_all, "n_early": n_e, "lift_early": m_e, "t_early": t_e,
+                    "n_recent": n_l, "lift_recent": m_l, "t_recent": t_l, "passes": passed})
+    out.sort(key=lambda r: (not r["passes"], -(r["t_early"] or -9)))
+    path = _p(cfg, "state", RARE_FILE)
+    try:
+        old = json.load(open(path))
+    except Exception:
+        old = {}
+    before = {r["signal"] for r in old.get("rows", []) if r.get("passes")}
+    new = [r for r in out if r["passes"] and r["signal"] not in before]
+    res = {"updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "hold": hold, "rows": out,
+           "newly_passing": [r["signal"] for r in new], "reported": old.get("reported", [])}
+    json.dump(res, open(path, "w"), default=str)
+    log(f"Rare-signal test ({hold}-day hold, {len(out)} rare signals): " + (", ".join(
+        f"{r['signal']} {r['lift'] * 100:+.2f}%/trade (t {r['t_early'] or 0:.1f} earlier, recent {(r['lift_recent'] or 0) * 100:+.2f}%)"
+        for r in out if r["passes"]) or "none pass"))
+    return res
