@@ -1697,6 +1697,7 @@ def volume_features(tx, data):
     f = np.clip((rr - 4) / 8, 0, 1)       # the typical trade's peak day is ~2x normal; 8x+ is the top 5%
     f = np.where(np.isfinite(f), f, 0.0)
     tx["f_unusual_volume"], tx["volume_ratio"] = f, rr
+    tx["f_unusual_volume_low"] = f           # same flag; its trial weight is negative (tests "score lower")
     tx["volume_note"] = [f"trading volume hit {x:.1f}x normal in the 2 weeks before the trade" if np.isfinite(x) and x >= VOL_FLAG else ""
                          for x in rr]
     return tx
@@ -3541,7 +3542,9 @@ TRIAL_SIGNALS = {"relative_tie": 0.5, "unusual_volume": 0.4, "reg_action": 0.3, 
                  "short_heavy": -0.3, "short_jump": -0.2, "funds_leaving": -0.2,
                  # members' posts (congress_signals/social.py): press releases, X archive, Bluesky, Mastodon, ...
                  "post_named_before": 0.3, "post_sector_burst": 0.2, "post_tone_clash": 0.2, "post_crowd": 0.2,
-                 "committee_staff_lobbyist": 0.3, "family_possible": 0.3}
+                 "committee_staff_lobbyist": 0.3, "family_possible": 0.3,
+                 # the same unusual-volume flag, tested the other way round (it did worse per trade): score lower
+                 "unusual_volume_low": -0.4}
 TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "unusual_volume": "Signal: unusual trading volume before the trade",
                 "reg_action": "Signal: federal rule naming the company soon after the trade",
@@ -3560,7 +3563,8 @@ TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "post_tone_clash": "Signal: bought after criticizing the company in posts (or sold after praising it)",
                 "post_crowd": "Signal: 3+ members named the company in posts in the 2 weeks before the filing",
                 "committee_staff_lobbyist": "Signal: a company lobbyist used to work for one of the member's committees",
-                "family_possible": "Signal: possible family tie to the company (SEC name match, not confirmed by state)"}
+                "family_possible": "Signal: possible family tie to the company (SEC name match, not confirmed by state)",
+                "unusual_volume_low": "Signal: score lower when trading volume was unusual before the trade"}
 
 
 def _inst():
