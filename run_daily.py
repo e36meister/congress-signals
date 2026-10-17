@@ -575,3 +575,8 @@ if __name__ == "__main__":
         raise
     finally:
         flag_unfinished()
+        try:
+            from congress_signals import runlog
+            runlog.finish_daily(E.log)
+        except Exception as e:
+            print("Collection check failed:", e)

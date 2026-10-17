@@ -11,6 +11,10 @@ marker = os.path.join("social", "needs_more_runs")
 if os.path.exists(marker):
     os.remove(marker)
 mins = float(sys.argv[1]) if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else 10
-ok = S.update_all(cfg, mins, history="--daily" not in sys.argv)
+try:
+    ok = S.update_all(cfg, mins, history="--daily" not in sys.argv)
+finally:
+    from congress_signals import runlog
+    runlog.check_social(cfg, S._log, youtube_key=os.environ.get("YOUTUBE_API_KEY"))
 if "--daily" not in sys.argv and not ok:
     open(os.path.join("social", "needs_more_runs"), "w").write("1")

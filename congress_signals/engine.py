@@ -87,6 +87,11 @@ DEFAULT_CONFIG = {
 # ----------------------------------------------------------------------------
 def log(*a):
     print(time.strftime("%H:%M:%S"), *a, flush=True)
+    try:
+        from . import runlog
+        runlog.capture(" ".join(map(str, a)))
+    except Exception:
+        pass
 
 
 def chunked_map(fn, items, workers, cfg, chunk=None):
@@ -2989,9 +2994,11 @@ def _snapshot(sha):
                 d["subs"].append(sub[cid])
     out = {}
     for p in leg:
+        b = (p.get("id") or {}).get("bioguide")
+        if not b or not p.get("terms"):        # brand-new members were briefly listed without an id (Jan 2023)
+            continue
         term = p["terms"][-1]
         chamber = "Senate" if term["type"] == "sen" else "House"
-        b = p["id"]["bioguide"]
         d = by_bio.get(b, {"committees": [], "subs": [], "lead": [], "cids": []})
         rec = {"name": p["name"].get("official_full") or f"{p['name']['first']} {p['name']['last']}",
                "first": p["name"].get("first", ""), "nick": p["name"].get("nickname", ""),
@@ -4947,6 +4954,11 @@ def prepare(cfg):
             [t for t in tx["ticker"].unique() if is_defense(t, meta)] + enrich)))
     if out_of_time(cfg):
         log("Time limit reached: saved progress; the next run continues where this one stopped")
+    try:      # collection check: what came back empty or with nothing new (reported at the end of the run)
+        from . import runlog
+        runlog.stage_daily(cfg, data, tx)
+    except Exception:
+        pass
     log("Computing signals for every transaction...")
     global LAST_DATA
     LAST_DATA = data          # kept for the member pages (members.export_members)
@@ -5324,6 +5336,17 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
         data["data_progress"] = data_progress(cfg)
     except Exception as e:
         log(f"Data progress: skipped ({type(e).__name__}: {e})")
+    try:      # collection check of the last run of each job (daily update, posts, institutions)
+        cc = {}
+        for job, base in (("daily", os.path.join(cfg["DATA_DIR"], "state")), ("social", cfg.get("SOCIAL_DIR") or "social"),
+                          ("institutions", cfg.get("INST_DIR") or "inst")):
+            cp = os.path.join(base, f"collection_check_{job}.json")
+            if os.path.exists(cp):
+                j_ = json.load(open(cp))
+                cc[job] = {k: j_.get(k) for k in ("at", "problems", "failures")}
+        data["collection_check"] = cc
+    except Exception as e:
+        log(f"Collection check: not added to the app ({type(e).__name__})")
     hpath = os.path.join(cfg["DATA_DIR"], "state", "source_health.json")
     if os.path.exists(hpath):
         try:
