@@ -27,7 +27,7 @@ LEG_SOC = "https://unitedstates.github.io/congress-legislators/legislators-socia
 BSKY = "https://public.api.bsky.app/xrpc/"
 TWEETS_FIRST, TWEETS_LAST = dt.date(2017, 6, 21), dt.date(2023, 7, 15)
 START_YEAR = 2013
-TAGGER_VERSION = 8
+TAGGER_VERSION = 9       # 9: executives by last name or distinctive first name alone, scored
 
 SECTOR_WORDS = {
     "Energy": "oil gas pipeline pipelines drilling fracking refinery refineries lng crude petroleum keystone opec gasoline energy",
@@ -173,6 +173,9 @@ class Tagger:
         except Exception:
             pass
         np_ = 0
+        self.last_idx, self.first_idx = {}, {}     # name -> {ticker: (full name, role)}
+        self.sector_of = {t: (m.get("sector") or "") for t, m in meta.items() if isinstance(m, dict)}
+        self.last_cands = []
         top = re.compile(r"\b(ceo|chief|president|chair|chairman|chairwoman|founder|cfo|coo|cto|lobbyist)\b", re.I)
         for t, ps in people.items():
             if t not in self.tickers:
@@ -187,6 +190,10 @@ class Tagger:
                 toks = (toks[0], toks[-1])
                 idx.setdefault(toks[0], []).append((toks, t, "pp:" + role, False))
                 np_ += 1
+                if role != "lobbyist":       # first or last name alone: candidates, scored in tag()
+                    full = " ".join(x.capitalize() for x in toks)
+                    self.last_idx.setdefault(toks[1], {}).setdefault(t, (full, role))
+                    self.first_idx.setdefault(toks[0], {}).setdefault(t, (full, role))
         self.idx = idx
         self.surnames, self.firsts = set(), {}
         try:      # members' own names ("Bill Hagerty", "Huntsman") aren't companies or their executives
@@ -256,6 +263,38 @@ class Tagger:
                     ppl.append((" ".join(x.capitalize() for x in ct), t, kind[3:]))
                     tick.add(t)
         secs = sorted({s for w in tset for s in self.sectors.get(w, ())})
+        # an executive named by last name alone ("Huang said...") or a distinctive first name alone ("Elon"):
+        # scored on how rare the name is, a title next to it, the company or its industry in the same post, and
+        # how many companies have an executive by that name. High = counts as a mention; medium = for review.
+        self.last_cands = []
+        got = {p_[0].split()[-1].lower() for p_ in ppl}
+        titles = re.compile(r"\b(ceo|chief|founder|chair(?:man|woman)?|president|executive|mr|ms|mrs|cfo|coo|cto)\b", re.I)
+        for i, w in enumerate(toks):
+            if w in got or w in self.surnames or len(w) < 3 or not spans[i][0][:1].isupper():
+                continue
+            for kind, table, weight in (("last", self.last_idx, 1.0), ("first", self.first_idx, 0.6)):
+                cands = table.get(w)
+                if not cands:
+                    continue
+                if kind == "last" and i > 0 and toks[i - 1] in self.first_idx and spans[i - 1][0][:1].isupper():
+                    continue                     # "Jensen Huang" was already handled as a full name (or isn't one)
+                z = _zipf(w)
+                rarity = max(0.0, min(1.0, (5.0 - z) / 3.0))
+                if kind == "first" and z >= 3.2:
+                    continue                     # ordinary first names ("Tim", "Mary") never count alone
+                near = raw[max(0, spans[i][1] - 40):spans[i][1] + 60]
+                title = bool(titles.search(near))
+                for t, (full, role) in list(cands.items())[:12]:
+                    co = t in tick
+                    sec = bool(self.sector_of.get(t)) and self.sector_of.get(t) in secs
+                    conf = (0.45 * rarity + 0.3 * title + 0.35 * co + 0.15 * sec) * weight / (len(cands) ** 0.5)
+                    if conf >= 0.3:
+                        self.last_cands.append({"n": full, "t": t, "role": role, "w": spans[i][0], "by": kind,
+                                                "c": round(conf, 2), "title": title, "co": co, "sec": sec})
+        for c in self.last_cands:
+            if c["c"] >= 0.75 and all(x[0] != c["n"] for x in ppl):
+                ppl.append((c["n"], c["t"], c["role"]))
+                tick.add(c["t"])
         p, n = len(tset & POS), len(tset & NEG)
         tone = 0.0 if p + n == 0 else round((p - n) / (p + n), 2)
         return sorted(tick), ppl[:6], secs, tone
@@ -290,7 +329,11 @@ def rec(date, key, src, text, url, tg, rp="", full=None):
     tk, pp, secs, tone = tg.tag(full or text)
     r = [date, key, src, (text or "")[:400], url or "", tk, [f"{a}|{b}|{c}" for a, b, c in pp], tone, secs, rp, tg.version]
     from congress_signals.post_sort import sort_record
-    r.append(sort_record(r[:3] + [full or text] + r[4:], getattr(tg, "names", None)))
+    srt = sort_record(r[:3] + [full or text] + r[4:], getattr(tg, "names", None))
+    cand = [c for c in getattr(tg, "last_cands", []) if 0.45 <= c["c"] < 0.75]
+    if cand:
+        srt["cand"] = cand[:4]
+    r.append(srt)
     return r
 
 
@@ -889,8 +932,10 @@ def build_index(cfg, tg=None, sort_until=None):
                     keep.append(r)
                 recs = keep
             for r in recs:
+                cands_now = None
                 if tg is not None and (len(r) < 11 or r[10] != tg.version):     # re-tag with today's rules, once
                     tk2, pp2, secs2, tone2 = tg.tag(r[3])
+                    cands_now = [c for c in tg.last_cands if 0.45 <= c["c"] < 0.75]
                     r[:] = (r + [""] * 10)[:10]
                     r[5], r[6], r[7], r[8] = tk2, [f"{a}|{b}|{c}" for a, b, c in pp2], tone2, secs2
                     r.append(tg.version)
@@ -899,6 +944,8 @@ def build_index(cfg, tg=None, sort_until=None):
                 # the last ~15 months are always sorted (trade-post links, alerts); older ones while time allows
                 if srt is None and (sort_until is None or time.time() < sort_until or str(r[0])[:10] >= recent_from):
                     srt = sort_record(r, names)
+                    if cands_now:
+                        srt["cand"] = cands_now[:4]
                     r[:] = (r + [""] * 11)[:11] + [srt]
                     redone = True
                     n_sorted += 1
