@@ -161,13 +161,13 @@ jobs:
             git commit --allow-empty -m "Monthly keep-alive" && git push || true
           fi
 
-  scans:                         # scanned paper reports, after the update (they add to the same saved data)
+  scans:                         # scanned paper reports and the history fill, after the update (same saved data)
     needs: update
     if: always() && needs.update.result != 'skipped' && github.event.inputs.dry_run != 'true'
     runs-on: ubuntu-latest
     env:
       TZ: America/New_York
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -202,6 +202,15 @@ jobs:
           OCR_SPACE_API_KEY: ${{ secrets.OCR_SPACE_API_KEY }}
           GOOGLE_VISION_API_KEY: ${{ secrets.GOOGLE_VISION_API_KEY }}
         run: python scan_house.py
+
+      - name: Fill older years and less-traded companies (lobbying, grants, speeches, contracts, events)
+        continue-on-error: true
+        timeout-minutes: 55
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
+          LDA_API_KEY: ${{ secrets.LDA_API_KEY }}
+        run: python backfill_enrich.py 45
 
       - name: Save data for tomorrow
         if: always()

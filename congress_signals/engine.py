@@ -2343,6 +2343,18 @@ def _fresh(ts, days):
         return False
 
 
+def _merge_rows(old, new):
+    """New rows first, then old ones not seen again: a refresh adds to the history instead of replacing it (a lookup
+    that only returns the newest results, or fails, never wipes older data)."""
+    seen, out = set(), []
+    for r in list(new or []) + list(old or []):
+        k = json.dumps(r, default=str)
+        if k not in seen:
+            seen.add(k)
+            out.append(r)
+    return out
+
+
 def _enrich_tickers(tx, cfg):
     counts = tx["ticker"].value_counts()
     return list(counts.index[: cfg["MAX_ENRICH_TICKERS"]])
@@ -2674,19 +2686,22 @@ def recent_form4(cfg, tickers, days=120, last_filed=None):
 # ============================================================================
 # Federal contracts (USAspending.gov)
 # ============================================================================
-def collect_contracts(cfg, meta, tickers):
+def collect_contracts(cfg, meta, tickers, deep=False):
     cache, path = _cache_json(cfg, "contracts.json", {})
     start = (pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=200)).strftime("%Y-%m-%d")
     today = dt.date.today().isoformat()
-    todo = [t for t in tickers if (not _fresh(cache.get(t, {}).get("fetched", ""), 7) or cache.get(t, {}).get("v") != 3)
-            and company_key((meta.get(t) or {}).get("name"))]
+    if deep:
+        todo = [t for t in tickers if not cache.get(t, {}).get("deep") and company_key((meta.get(t) or {}).get("name"))]
+    else:
+        todo = [t for t in tickers if (not _fresh(cache.get(t, {}).get("fetched", ""), 7) or cache.get(t, {}).get("v") != 3)
+                and company_key((meta.get(t) or {}).get("name"))]
     if todo:
         log(f"Contracts: checking {len(todo)} companies on USAspending.gov")
 
     def work(t):
         key = company_key(meta[t]["name"])
         rows = []
-        pages = 6 if is_defense(t, meta) else 2
+        pages = (40 if is_defense(t, meta) else 10) if deep else (6 if is_defense(t, meta) else 2)
         for page in range(1, pages + 1):
             body = {"filters": {"recipient_search_text": [key], "award_type_codes": ["A", "B", "C", "D"],
                                 "time_period": [{"start_date": start, "end_date": today}]},
@@ -2715,7 +2730,10 @@ def collect_contracts(cfg, meta, tickers):
     if True:
         for i, (t, rows) in enumerate(chunked_map(work, todo, 4, cfg), 1):
             if rows is not None:
-                cache[t] = {"fetched": dt.datetime.now().isoformat(), "rows": rows, "v": 3}
+                old = cache.get(t, {})
+                keep = old.get("rows") if old.get("v") == 3 else []
+                cache[t] = {"fetched": dt.datetime.now().isoformat(), "rows": _merge_rows(keep, rows), "v": 3,
+                            "deep": bool(deep or old.get("deep"))}
             if i % 100 == 0:
                 json.dump(cache, open(path, "w"))
                 log(f"Contracts: {i}/{len(todo)}")
@@ -2751,16 +2769,21 @@ COMMITTEE_ISSUES = {
 }
 
 
-def collect_lobbying(cfg, meta, tickers):
+def collect_lobbying(cfg, meta, tickers, deep=False):
+    """deep=True (the history fill after the update): every filing since START_DATE, all pages. Otherwise the
+    newest 20 pages, added to what is on file."""
     cache, path = _cache_json(cfg, "lobbying.json", {})
     key = cfg.get("LDA_API_KEY")
     hdr = dict(UA, **({"Authorization": f"Token {key}"} if key else {}))
     if not key:
         tickers = tickers[:150]
-    max_pages = 20 if key else 4
+    max_pages = (400 if deep else 20) if key else 4
     start_year = pd.Timestamp(cfg["START_DATE"]).year - 1
-    todo = [t for t in tickers if (not _fresh(cache.get(t, {}).get("fetched", ""), 14) or cache.get(t, {}).get("v") != 3)
-            and company_key((meta.get(t) or {}).get("name"))]
+    if deep:
+        todo = [t for t in tickers if not cache.get(t, {}).get("deep") and company_key((meta.get(t) or {}).get("name"))]
+    else:
+        todo = [t for t in tickers if (not _fresh(cache.get(t, {}).get("fetched", ""), 14) or cache.get(t, {}).get("v") != 3)
+                and company_key((meta.get(t) or {}).get("name"))]
     if todo:
         log(f"Lobbying: checking {len(todo)} companies" + ("" if key else " (add LDA_API_KEY for more and faster)"))
     bases = ["https://lda.gov/api/v1/filings/", "https://lda.senate.gov/api/v1/filings/"]
@@ -2811,7 +2834,10 @@ def collect_lobbying(cfg, meta, tickers):
             if ok:
                 break
         if ok:
-            cache[t] = {"fetched": dt.datetime.now().isoformat(), "rows": rows, "v": 3}
+            old = cache.get(t, {})
+            keep = old.get("rows") if old.get("v") == 3 else []
+            cache[t] = {"fetched": dt.datetime.now().isoformat(), "rows": _merge_rows(keep, rows), "v": 3,
+                        "deep": bool(deep or old.get("deep"))}
         if i % 50 == 0:
             json.dump(cache, open(path, "w"))
             log(f"Lobbying: {i}/{len(todo)}")
@@ -6227,29 +6253,42 @@ def collect_bill_policy(cfg, bill_ids):
 # ----------------------------------------------------------------------------
 # 15. Floor speeches that name the company (Congressional Record via GovInfo)
 # ----------------------------------------------------------------------------
-def collect_speeches(cfg, meta, tickers):
+def collect_speeches(cfg, meta, tickers, deep=False):
     key = _datagov_key(cfg)
     cache, path = _cache_json(cfg, "speeches.json", {"companies": {}, "granules": {}})
     if not key:
         log("Floor speeches: skipped - needs CONGRESS_API_KEY (the same api.data.gov key works for GovInfo)")
         return cache
     start = (pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=400)).strftime("%Y-%m-%d")
-    todo = [t for t in tickers if len(company_key((meta.get(t) or {}).get("name"))) >= 4
-            and not _fresh(cache["companies"].get(t, {}).get("fetched", ""), 30)]
+    if deep:
+        todo = [t for t in tickers if len(company_key((meta.get(t) or {}).get("name"))) >= 4
+                and not cache["companies"].get(t, {}).get("deep")]
+    else:
+        todo = [t for t in tickers if len(company_key((meta.get(t) or {}).get("name"))) >= 4
+                and not _fresh(cache["companies"].get(t, {}).get("fetched", ""), 30)]
     if todo:
         log(f"Floor speeches: searching the Congressional Record for {len(todo)} companies")
     for i, t in enumerate(todo, 1):
         if out_of_time(cfg):
             break
         ck = company_key(meta[t]["name"])
-        try:
-            r = requests.post("https://api.govinfo.gov/search", params={"api_key": key}, timeout=60,
-                              json={"query": f'collection:(CREC) AND "{ck}" AND publishdate:range({start},)',
-                                    "pageSize": 60, "offsetMark": "*",
-                                    "sorts": [{"field": "publishdate", "sortOrder": "DESC"}]})
-            res = r.json().get("results", []) if r.status_code == 200 else None
-        except Exception:
-            res = None
+        res, mark = [], "*"
+        for _pg in range(20 if deep else 1):          # newest 60 normally; every mention since START_DATE when deep
+            try:
+                r = requests.post("https://api.govinfo.gov/search", params={"api_key": key}, timeout=60,
+                                  json={"query": f'collection:(CREC) AND "{ck}" AND publishdate:range({start},)',
+                                        "pageSize": 100 if deep else 60, "offsetMark": mark,
+                                        "sorts": [{"field": "publishdate", "sortOrder": "DESC"}]})
+                js_ = r.json() if r.status_code == 200 else None
+            except Exception:
+                js_ = None
+            if js_ is None:
+                res = None if not res else res
+                break
+            res += js_.get("results", [])
+            mark = js_.get("offsetMark")
+            if not deep or not mark or len(js_.get("results", [])) < 100:
+                break
         if res is None:
             continue
         grans = []
@@ -6265,7 +6304,10 @@ def collect_speeches(cfg, meta, tickers):
                                           "ids": [m.get("bioGuideId") or m.get("bioguideId") for m in mem
                                                   if (m.get("bioGuideId") or m.get("bioguideId"))]}
                 time.sleep(0.1)
-        cache["companies"][t] = {"fetched": dt.datetime.now().isoformat(), "granules": grans}
+        old = cache["companies"].get(t, {})
+        cache["companies"][t] = {"fetched": dt.datetime.now().isoformat(),
+                                 "granules": list(dict.fromkeys(grans + (old.get("granules") or []))),
+                                 "deep": bool(deep or old.get("deep"))}
         if i % 50 == 0:
             json.dump(cache, open(path, "w"))
             log(f"Floor speeches: {i}/{len(todo)}")
@@ -6341,10 +6383,13 @@ def collect_bluesky(cfg):
 # ----------------------------------------------------------------------------
 # 18. Company events: earnings dates (Yahoo) and FDA approvals (openFDA)
 # ----------------------------------------------------------------------------
-def collect_events(cfg, meta, tickers):
+def collect_events(cfg, meta, tickers, deep=False):
     import yfinance as yf
     cache, path = _cache_json(cfg, "company_events.json", {})
-    todo = [t for t in tickers if not _fresh(cache.get(t, {}).get("fetched", ""), 7)]
+    if deep:
+        todo = [t for t in tickers if not cache.get(t, {}).get("deep")]
+    else:
+        todo = [t for t in tickers if not _fresh(cache.get(t, {}).get("fetched", ""), 7)]
     if todo:
         log(f"Company events: earnings and FDA dates for {len(todo)} companies")
     for i, t in enumerate(todo, 1):
@@ -6352,7 +6397,7 @@ def collect_events(cfg, meta, tickers):
             break
         ev = []
         try:
-            ed = yf.Ticker(t).get_earnings_dates(limit=40)
+            ed = yf.Ticker(t).get_earnings_dates(limit=60 if deep else 40)
             if ed is not None and len(ed):
                 ev += [["earnings", d.strftime("%Y-%m-%d")] for d in pd.to_datetime(ed.index)]
         except Exception:
@@ -6365,7 +6410,9 @@ def collect_events(cfg, meta, tickers):
                     d = sub.get("submission_status_date")
                     if sub.get("submission_status") == "AP" and d:
                         ev.append(["fda", f"{d[:4]}-{d[4:6]}-{d[6:8]}"])
-        cache[t] = {"fetched": dt.datetime.now().isoformat(), "events": ev}
+        old = cache.get(t, {})
+        cache[t] = {"fetched": dt.datetime.now().isoformat(), "events": _merge_rows(old.get("events"), ev),
+                    "deep": bool(deep or old.get("deep"))}
         time.sleep(0.3)
         if i % 100 == 0:
             json.dump(cache, open(path, "w"))
@@ -7248,13 +7295,17 @@ def religion_for(idx, chamber, last_key, first, state):
 ASSIST_GROUPS = {"grant": ["02", "03", "04", "05"], "loan": ["07", "08"], "payment": ["06", "10"]}
 
 
-def collect_assistance(cfg, meta, tickers):
-    """Federal grants, loans and direct payments to each company (CHIPS grants, energy loans, subsidies...)."""
+def collect_assistance(cfg, meta, tickers, deep=False):
+    """Federal grants, loans and direct payments to each company (CHIPS grants, energy loans, subsidies...).
+    deep=True: every page since START_DATE (the history fill); otherwise the newest 100 per kind, added to the file."""
     cache, path = _cache_json(cfg, "assistance.json", {})
     start = (pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=200)).strftime("%Y-%m-%d")
     today = dt.date.today().isoformat()
-    todo = [t for t in tickers if not _fresh(cache.get(t, {}).get("fetched", ""), 14)
-            and company_key((meta.get(t) or {}).get("name"))]
+    if deep:
+        todo = [t for t in tickers if not cache.get(t, {}).get("deep") and company_key((meta.get(t) or {}).get("name"))]
+    else:
+        todo = [t for t in tickers if not _fresh(cache.get(t, {}).get("fetched", ""), 14)
+                and company_key((meta.get(t) or {}).get("name"))]
     if todo:
         log(f"Grants and loans: checking {len(todo)} companies on USAspending.gov")
 
@@ -7262,27 +7313,32 @@ def collect_assistance(cfg, meta, tickers):
         key = company_key(meta[t]["name"])
         rows = []
         for kind, codes in ASSIST_GROUPS.items():
-            body = {"filters": {"recipient_search_text": [key], "award_type_codes": codes,
-                                "time_period": [{"start_date": start, "end_date": today}]},
-                    "fields": ["Action Date", "Transaction Amount", "Recipient Name", "Awarding Agency"],
-                    "sort": "Action Date", "order": "desc", "limit": 100, "page": 1}
-            try:
-                r = requests.post("https://api.usaspending.gov/api/v2/search/spending_by_transaction/",
-                                  json=body, timeout=60)
-                if r.status_code != 200:
-                    continue
-                res = r.json().get("results", [])
-            except Exception:
-                return t, None
-            for x in res:
-                rn = company_key(x.get("Recipient Name"))
-                if (rn == key or rn.startswith(key + " ")) and x.get("Action Date"):
-                    rows.append([x["Action Date"], float(x.get("Transaction Amount") or 0), x.get("Awarding Agency") or "", kind])
+            for page in range(1, (20 if deep else 1) + 1):
+                body = {"filters": {"recipient_search_text": [key], "award_type_codes": codes,
+                                    "time_period": [{"start_date": start, "end_date": today}]},
+                        "fields": ["Action Date", "Transaction Amount", "Recipient Name", "Awarding Agency"],
+                        "sort": "Action Date", "order": "desc", "limit": 100, "page": page}
+                try:
+                    r = requests.post("https://api.usaspending.gov/api/v2/search/spending_by_transaction/",
+                                      json=body, timeout=60)
+                    if r.status_code != 200:
+                        break
+                    res = r.json().get("results", [])
+                except Exception:
+                    return t, None
+                for x in res:
+                    rn = company_key(x.get("Recipient Name"))
+                    if (rn == key or rn.startswith(key + " ")) and x.get("Action Date"):
+                        rows.append([x["Action Date"], float(x.get("Transaction Amount") or 0), x.get("Awarding Agency") or "", kind])
+                if len(res) < 100:
+                    break
         return t, rows
 
     for i, (t, rows) in enumerate(chunked_map(work, todo, 4, cfg), 1):
         if rows is not None:
-            cache[t] = {"fetched": dt.datetime.now().isoformat(), "rows": rows}
+            old = cache.get(t, {})
+            cache[t] = {"fetched": dt.datetime.now().isoformat(), "rows": _merge_rows(old.get("rows"), rows),
+                        "deep": bool(deep or old.get("deep"))}
         if i % 100 == 0:
             json.dump(cache, open(path, "w"))
             log(f"Grants and loans: {i}/{len(todo)}")
