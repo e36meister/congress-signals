@@ -300,8 +300,6 @@ class Tagger:
                         continue           # "Elon Musk" is a full name (handled above); "Jensen Ackles" isn't him
                 z = _zipf(w)
                 rarity = max(0.0, min(1.0, (5.0 - z) / 3.0))
-                if kind == "first" and z >= 3.2:
-                    continue                 # ordinary first names ("Tim", "Mary") never count alone
                 near = raw[max(0, spans[i][1] - 40):spans[i][1] + 60]
                 title = bool(exec_title.search(near))
                 for t, (full, role) in list(cands.items())[:12]:
@@ -309,6 +307,14 @@ class Tagger:
                         continue             # only the people whose name stands for the company
                     co = t in tick and w not in self.names.get(t, ())     # the company named by other words
                     sec = bool(self.sector_of.get(t)) and self.sector_of.get(t) in secs
+                    if kind == "first":
+                        # owner, Oct 16: first names always count and go to review, when the company or its
+                        # industry is in the same post (they never count on their own)
+                        if not (co or sec):
+                            continue
+                        self.last_cands.append({"n": full, "t": t, "role": role, "w": spans[i][0], "by": kind,
+                                                "c": 0.5, "title": title, "co": co, "sec": sec})
+                        continue
                     if not (co or (sec and title)):
                         continue             # no sign of the company in the post: not a candidate at all
                     conf = (0.35 * rarity + 0.25 * title + 0.45 * co + 0.15 * sec) * weight / (len(cands) ** 0.5)
