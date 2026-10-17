@@ -288,7 +288,10 @@ def _generic(ct):
 
 def rec(date, key, src, text, url, tg, rp="", full=None):
     tk, pp, secs, tone = tg.tag(full or text)
-    return [date, key, src, (text or "")[:400], url or "", tk, [f"{a}|{b}|{c}" for a, b, c in pp], tone, secs, rp, tg.version]
+    r = [date, key, src, (text or "")[:400], url or "", tk, [f"{a}|{b}|{c}" for a, b, c in pp], tone, secs, rp, tg.version]
+    from congress_signals.post_sort import sort_record
+    r.append(sort_record(r[:3] + [full or text] + r[4:], getattr(tg, "names", None)))
+    return r
 
 
 # ---------------------------------------------------------------------------
@@ -852,11 +855,17 @@ def collect_people(cfg, st, deadline, per_run=6):
 # ---------------------------------------------------------------------------
 # index for the member pages and the post signals
 # ---------------------------------------------------------------------------
-def build_index(cfg, tg=None):
+def build_index(cfg, tg=None, sort_until=None):
     """social/index.pkl: per member, posts for the member page (every post naming a company or person, plus the
-    latest 120 others) and, for the signals, dated company mentions with tone and dated industry mentions."""
+    latest 120 others) and, for the signals, dated company mentions with tone and dated industry mentions.
+    Posts not yet sorted (post_sort: type, who it's about, tone toward each, insider hints, meetings) are sorted
+    here until `sort_until` (a time; the rest wait for the next run); each member's post profile is summed up."""
+    from congress_signals.post_sort import sort_record, SORT_VERSION
     root = _dir(cfg, "posts")
     pages, mentions, sectors, crowd = {}, {}, {}, {}
+    profiles = {}
+    names = getattr(tg, "names", None)
+    n_sorted = n_unsorted = 0
     n = 0
     press_seen = set()
     from congress_signals.press_backfill import norm_url
@@ -884,12 +893,43 @@ def build_index(cfg, tg=None):
                     r[5], r[6], r[7], r[8] = tk2, [f"{a}|{b}|{c}" for a, b, c in pp2], tone2, secs2
                     r.append(tg.version)
                     redone = True
+                srt = r[11] if len(r) > 11 and isinstance(r[11], dict) and r[11].get("v") == SORT_VERSION else None
+                if srt is None and (sort_until is None or time.time() < sort_until):
+                    srt = sort_record(r, names)
+                    r[:] = (r + [""] * 11)[:11] + [srt]
+                    redone = True
+                    n_sorted += 1
+                elif srt is None:
+                    n_unsorted += 1
                 d, key, s, text, url, tk, pp, tone, secs, rp = (r + [""] * 10)[:10]
                 if not d or not isinstance(key, str):
                     continue
                 n += 1
                 lst = pages.setdefault(key, [[], []])
                 item = [d, s + (f" (repost of {rp})" if rp else ""), (text or "")[:300], tk, tone, url, ";".join(pp)]
+                if srt:      # what kind of post, insider hint, meeting, and tone toward each company or person
+                    item += [srt.get("ty") or [], srt.get("ins") or "", srt.get("meet") or [],
+                             [[x.get("n") if x["k"] in ("person", "lobbyist") else x.get("t"), x.get("s")] for x in srt.get("tg", [])
+                              if x["k"] in ("co", "person", "lobbyist") and x.get("s") is not None]]
+                    pf = profiles.setdefault(key, {"n": 0, "types": {}, "for": {}, "against": {}, "ins": 0, "meet": {},
+                                                   "agencies": {}, "industries": {}})
+                    pf["n"] += 1
+                    for ty in srt.get("ty") or []:
+                        pf["types"][ty] = pf["types"].get(ty, 0) + 1
+                    pf["ins"] += bool(srt.get("ins"))
+                    for w in srt.get("meet") or []:
+                        pf["meet"][w] = pf["meet"].get(w, 0) + 1
+                    for x in srt.get("tg", []):
+                        if x["k"] == "agency":
+                            pf["agencies"][x["n"]] = pf["agencies"].get(x["n"], 0) + 1
+                        elif x["k"] == "industry":
+                            pf["industries"][x["n"]] = pf["industries"].get(x["n"], 0) + 1
+                        elif (x.get("s") or 0) >= 0.3:
+                            k_ = x.get("n") if x["k"] in ("person", "lobbyist") else x.get("t")
+                            pf["for"][k_] = pf["for"].get(k_, 0) + 1
+                        elif (x.get("s") or 0) <= -0.3:
+                            k_ = x.get("n") if x["k"] in ("person", "lobbyist") else x.get("t")
+                            pf["against"][k_] = pf["against"].get(k_, 0) + 1
                 j = 0 if (tk or pp) else 1
                 lst[j].append(item)
                 if len(lst[j]) > (1200 if j == 0 else 400):        # keep memory flat: newest 600 / 120
@@ -912,14 +952,19 @@ def build_index(cfg, tg=None):
     except Exception:
         pass
     to_np = lambda xs: np.array(sorted(pd.to_datetime(xs, errors="coerce").dropna().values), dtype="datetime64[ns]")
-    idx = {"pages": pages,
+    top = lambda d, k=8: dict(sorted(d.items(), key=lambda kv: -kv[1])[:k])
+    profiles = {k: {"n": v["n"], "types": top(v["types"], 10), "for": top(v["for"]), "against": top(v["against"]),
+                    "ins": v["ins"], "meet": top(v["meet"]), "agencies": top(v["agencies"], 6),
+                    "industries": top(v["industries"], 6)} for k, v in profiles.items()}
+    idx = {"pages": pages, "profiles": profiles,
            "mentions": {k: {t: sorted(v) for t, v in m.items()} for k, m in mentions.items()},
            "sectors": {k: {s: to_np(v) for s, v in m.items()} for k, m in sectors.items()},
            "crowd": {t: sorted(v) for t, v in crowd.items()}, "x_counts": xc,
-           "built": dt.datetime.utcnow().isoformat(), "posts": n}
+           "built": dt.datetime.utcnow().isoformat(), "posts": n, "unsorted": n_unsorted}
     pd.to_pickle(idx, _dir(cfg, "index.pkl"))
     _log(f"Posts index: {n:,} posts from {len(pages):,} members and offices; "
-         f"{sum(len(v) for m in mentions.values() for v in m.values()):,} company mentions")
+         f"{sum(len(v) for m in mentions.values() for v in m.values()):,} company mentions; "
+         f"sorted {n_sorted:,} posts this run" + (f", {n_unsorted:,} still to sort (next run)" if n_unsorted else ""))
     return idx
 
 
@@ -1041,7 +1086,10 @@ def update_all(cfg, minutes, history=True):
     else:
         collect_people(cfg, st, deadline, per_run=1)
     _save_state(cfg, st)
-    build_index(cfg, tg)
+    # sorting every stored post the first time takes a few long runs; a daily run sorts for at least 5 minutes
+    idx = build_index(cfg, tg, sort_until=(deadline - 120) if history else max(deadline, time.time() + 300))
+    if idx.get("unsorted"):
+        ok = False
     if history and ok:
         open(_dir(cfg, "complete"), "w").write(dt.datetime.utcnow().isoformat())
         _log("Social: history complete")

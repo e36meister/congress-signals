@@ -1,0 +1,4 @@
+# Free sentiment model for reading posts (posts jobs only; CPU build of torch keeps the download small)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+transformers
