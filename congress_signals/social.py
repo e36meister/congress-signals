@@ -800,6 +800,9 @@ def collect_people(cfg, st, deadline, per_run=6):
     p = _dir(cfg, "people.json")
     people = json.load(open(p)) if os.path.exists(p) else {}
     done = set(st.get("people_q", []))
+    if not st.get("people_q_moved_fix"):       # 2026q2+ were marked done when the SEC moved its files; fetch again
+        done = {k for k in done if k < "2026q2"}
+        st["people_q_moved_fix"] = True
     today = dt.date.today()
     qs = [f"{y}q{q}" for y in range(today.year, START_YEAR - 1, -1) for q in (4, 3, 2, 1)
           if dt.date(y, 3 * q - 2, 1) <= today - dt.timedelta(days=100)]
@@ -809,12 +812,12 @@ def collect_people(cfg, st, deadline, per_run=6):
             continue
         if n >= per_run or time.time() > deadline:
             break
-        url = f"https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/{k}_form345.zip"
-        r = _get(url, as_json=False, timeout=300, headers=hdr)
+        r = E.sec_345_zip(k, hdr, timeout=300)
         n += 1
         if r is None:
-            done.add(k)            # the SEC doesn't have this quarter (older ones are missing); don't block
-            st["people_q"] = sorted(done)
+            if k < "2025q1":
+                done.add(k)        # the SEC doesn't have some old quarters; don't block on them
+                st["people_q"] = sorted(done)
             continue
         try:
             z = zipfile.ZipFile(io.BytesIO(r.content))
