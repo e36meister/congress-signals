@@ -5648,6 +5648,25 @@ def collect_annual_disclosures(cfg, traders=None):
         columns=["chamber", "last_key", "first", "state", "filed", "doc", "holdings", "text"])
     if "v" not in df.columns:
         df["v"] = 1
+    if len(df):
+        # House reports filed 2014-2018 have no [ST] tags, so holdings come from "(TICKER)" on Schedule A lines.
+        # Reports read before that reader existed kept an empty set; their saved text has every line, so the
+        # holdings are rebuilt from it here instead of downloading the reports again.
+        fy0 = pd.to_datetime(df["filed"], errors="coerce").dt.year
+        emp = (df["chamber"] == "House") & df["holdings"].map(lambda h: not h) & (fy0 <= 2018)
+        if emp.any():
+            got = 0
+            for i in df.index[emp]:
+                try:
+                    h = _house_holdings(_unz(df.at[i, "text"]))
+                except Exception:
+                    h = set()
+                if h:
+                    df.at[i, "holdings"] = h
+                    got += 1
+            if got:
+                log(f"Yearly disclosures: holdings rebuilt from saved text for {got:,} older House reports")
+                df.to_pickle(cache)
     # version 2 reads up to FD_MAX_PAGES pages (version 1 stopped at 20, cutting off long reports)
     if len(df):
         v = df["v"].fillna(1)
@@ -7647,9 +7666,31 @@ def apply_tie_reviews(df, reviews, person_col):
 
 def _tie_live(first, last, when):
     """The tie was public by `when` and hadn't ended (no SEC filing for 18 months = they likely left)."""
+    return _tie_state(first, last, when) == "current"
+
+
+TIE_FORMER_WEIGHT = 0.5      # owner, Oct 16: a tie that likely ended still counts (half), with a warning
+
+
+def _tie_state(first, last, when):
+    """None before the tie was public; "current" while the person still files with the SEC (or within 18 months
+    of their last filing); "former" after that (they probably left, but a recent departure still matters:
+    Kurt DelBene, Suzan DelBene's husband, left Microsoft shortly before trades in it)."""
     if first is None or pd.isna(first) or pd.Timestamp(first) > when:
-        return False
-    return last is None or pd.isna(last) or when <= pd.Timestamp(last) + TIE_LASTS
+        return None
+    if last is None or pd.isna(last) or when <= pd.Timestamp(last) + TIE_LASTS:
+        return "current"
+    return "former"
+
+
+def _former_note(last, when):
+    """Warning text for a tie that has probably ended."""
+    try:
+        mo = max(0, int(round((pd.Timestamp(when) - pd.Timestamp(last)).days / 30.4)))
+        return (f"FORMER tie: their last SEC filing for the company was {pd.Timestamp(last):%b %Y} ({mo} months before "
+                f"this disclosure), so they may have left; check whether the tie still matters")
+    except Exception:
+        return "FORMER tie: they may have left the company; check whether it still matters"
 
 
 def relationship_features(tx, data, cfg, mems):
@@ -7666,8 +7707,12 @@ def relationship_features(tx, data, cfg, mems):
         fs, nt = np.zeros(n), [""] * n
         for i, (m, t, f) in enumerate(zip(mems, tx["ticker"], fdt)):
             h = tie.get(((m or {}).get("bioguide"), t))
-            if h and _tie_live(h[0], h[3], f):
+            stt = _tie_state(h[0], h[3], f) if h else None
+            if stt == "current":
                 fs[i], nt[i] = 1.0, f"spouse {h[1]} is a company insider ({h[2].lower()}) per SEC filings"
+            elif stt == "former":
+                fs[i], nt[i] = TIE_FORMER_WEIGHT, (f"spouse {h[1]} was a company insider ({h[2].lower()}) per SEC filings; "
+                                                   + _former_note(h[3], f))
         tx["f_spouse_insider"], tx["spouse_note"] = fs, nt
     tx["f_relative_tie"], tx["relative_note"] = 0.0, ""
     rt_ = data.get("relative_ties")
@@ -7682,8 +7727,12 @@ def relationship_features(tx, data, cfg, mems):
         fr, nr = np.zeros(n), [""] * n
         for i, (m, t, f) in enumerate(zip(mems, tx["ticker"], fdt)):
             h = tie.get(((m or {}).get("bioguide"), t))
-            if h and _tie_live(h[0], h[4], f):
+            stt = _tie_state(h[0], h[4], f) if h else None
+            if stt == "current":
                 fr[i], nr[i] = 1.0, f"{h[2]} {h[1]} is a company insider ({str(h[3]).lower()}) per SEC filings"
+            elif stt == "former":
+                fr[i], nr[i] = TIE_FORMER_WEIGHT, (f"{h[2]} {h[1]} was a company insider ({str(h[3]).lower()}) per SEC "
+                                                   f"filings; " + _former_note(h[4], f))
         tx["f_relative_tie"], tx["relative_note"] = fr, nr
     # family ties not confirmed by state (SEC filers often give the company's address): not scored, but flagged in
     # Worth a look so the owner sees every possible one
@@ -7705,8 +7754,9 @@ def relationship_features(tx, data, cfg, mems):
         fp, npn = np.zeros(n), [""] * n
         for i, (m, t, f) in enumerate(zip(mems, tx["ticker"], fdt)):
             h = poss.get(((m or {}).get("bioguide"), t))
-            if h and _tie_live(h[0], h[2], f):
-                fp[i], npn[i] = 1.0, h[1]
+            stt = _tie_state(h[0], h[2], f) if h else None
+            if stt:
+                fp[i], npn[i] = 1.0, h[1] + ("" if stt == "current" else "; " + _former_note(h[2], f))
         tx["f_family_possible"], tx["family_note"] = fp, npn
     for c in ("f_grants", "f_grant_after_trade", "f_campaign_vendor", "f_spouse_employer", "f_paid_travel",
               "f_outside_position", "f_buddy", "f_leader", "f_bill_advanced", "f_sector_bill_momentum"):

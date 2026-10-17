@@ -488,6 +488,8 @@ const TAG_RULES = [
   [/sold shortly before a company event/i, () => "Before event", "Sold shortly before a company event (earnings, FDA decision...)."],
   [/trading volume hit ([\d.]+)x normal/i, m => `Volume ${m[1]}×`, "Trading volume was unusually heavy in the two weeks before the trade."],
   [/closed committee briefing/i, () => "Closed briefing", "A closed (non-public) committee briefing shortly before the trade."],
+  [/^FORMER tie: their last SEC filing for the company was (\w+ \d{4})/i, m => `Former · left ~${m[1]}`, "This family member's last SEC filing for the company is over 18 months old, so they may have left. The trade still counts, at half weight; check whether the tie still matters.", "neg"],
+  [/^FORMER tie/i, () => "Former tie", "The family member may have left the company. The trade still counts, at half weight.", "neg"],
   [/spouse .* (?:company insider|insider)/i, () => "Spouse insider", "The member's spouse is a company insider per SEC filings."],
   [/possible family tie/i, () => "Family tie?", "A possible family tie to the company (name match, not confirmed). Review it in What works."],
   [/spouse works for or is paid by/i, () => "Spouse job", "The member's yearly disclosure says their spouse works for or is paid by the company."],
@@ -1145,7 +1147,7 @@ function tiesPanel(rows) {
     let h = `<tr><td>${esc(r.Member)}</td><td>${esc(r.Spouse || "–")}</td>
       <td>${chip(r._c)}${r.key && canReview ? `<div style="margin-top:4px"><button class="btn sm" data-tie="${esc(r.key)}">${open ? "Close" : v ? "Change" : "Review"}</button></div>` : ""}${v && v.note ? `<div class="foot" style="margin:2px 0 0">${esc(v.note)}</div>` : ""}</td>
       <td>${esc(r.Company)}</td><td>${esc(r.Role)}</td>
-      <td class="nw">${esc(r.Since ? fmtDate(r.Since) : "–")}</td><td class="nw">${esc(r["Last filing"] ? fmtDate(r["Last filing"]) : "–")}</td>
+      <td class="nw">${esc(r.Since ? fmtDate(r.Since) : "–")}</td><td class="nw">${esc(r["Last filing"] ? fmtDate(r["Last filing"]) : "–")}${r["Last filing"] && (Date.now() - Date.parse(r["Last filing"])) > 548 * 864e5 ? ` <span class="chip avoid" title="No SEC filing for 18+ months: they may have left. Trades still count at half weight, with a warning.">Former?</span>` : ""}</td>
       <td class="nw">${r.link ? `<a href="${esc(r.link)}" target="_blank" rel="noopener">SEC filings</a>` : esc(r.Source)}</td></tr>`;
     if (open) {
       const m = TIE.msg[r.key];
