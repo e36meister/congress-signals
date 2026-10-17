@@ -53,6 +53,7 @@ async function api(req, env, url) {
     if (!/^([A-Z]\d{6}|n-[a-z0-9-]{1,40})$/.test(k)) return json({ error: "bad-member" }, 400);
     return fromR2(req, env, `members/${k}.json`);
   }
+  if (p === "/api/notifications" && req.method === "GET") return json({ items: await alertLog(env) });
   if (p === "/api/tie-reviews" && req.method === "GET") return json(await tieReviews(env));
   if (p === "/api/tie-review" && req.method === "POST") return tieReview(req, env);
   if (p === "/api/live" && req.method === "GET") return live(env);
@@ -245,6 +246,30 @@ async function tieReview(req, env) {
 }
 
 // ---------- alerts ----------
+// Every alert is kept (newest 400) for the app's Alerts tab, then pushed to the phones. Tapping it opens `url`
+// in the app: one post, one flagged trade, one position... An alert covering several things lists them as
+// `items` and, without a url of its own, opens in the Alerts tab.
+const LOG_KEY = "push/log.json";
+async function alertLog(env) {
+  try { const o = await env.DATA.get(LOG_KEY); const js = o ? await o.json() : []; return Array.isArray(js) ? js : []; } catch (e) { return []; }
+}
+async function deliver(env, msg) {
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const items = (Array.isArray(msg.items) ? msg.items : []).slice(0, 20)
+    .map(x => ({ l: String(x.l || "").slice(0, 160), u: String(x.u || "").slice(0, 200), x: x.x ? String(x.x).slice(0, 500) : undefined }))
+    .filter(x => x.l);
+  let url = msg.url && msg.url !== "/" ? msg.url : "";
+  if (!url) url = items.length === 1 && items[0].u ? items[0].u : items.length > 1 ? "/#alerts/" + id : "/#alerts/" + id;
+  const entry = { id, at: new Date().toISOString(), title: String(msg.title || "").slice(0, 120), body: String(msg.body || "").slice(0, 600),
+                  kind: msg.tag || "", url, items };
+  const log = await alertLog(env);
+  log.unshift(entry);
+  await env.DATA.put(LOG_KEY, JSON.stringify(log.slice(0, 400)), { httpMetadata: { contentType: "application/json" } });
+  // the id rides along so opening the alert marks it read in the app
+  const u = url.includes("#") ? url.replace("#", `?n=${id}#`) : url + `?n=${id}`;
+  return sendAll(env, { title: entry.title, body: entry.body, tag: msg.tag || "", url: u });
+}
+
 const ET = () => new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
 const money0 = v => "$" + Math.round(v).toLocaleString("en-US");
 
@@ -255,7 +280,7 @@ async function drainOutbox(env) {
       const age = Date.now() - o.uploaded.getTime();
       if (age < 6 * 3600e3) {
         const msg = await (await env.DATA.get(o.key))?.json();
-        if (msg && msg.title) await sendAll(env, msg);
+        if (msg && msg.title) await deliver(env, msg);
       }
     } catch (e) {}
     await env.DATA.delete(o.key);
@@ -300,15 +325,16 @@ async function checkFills(env) {
     const t = o.symbol.replace(/\./g, "-"), q = +o.filled_qty, p = +o.filled_avg_price;
     const sh = `${q % 1 ? q.toFixed(4).replace(/0+$/, "") : q} share${q === 1 ? "" : "s"} at $${p.toFixed(2)} (${money0(q * p)})`;
     const w = why[`${t}|${o.side}`];
-    if (o.side === "buy" && cid.startsWith("tap-")) msgs.push({ s: `bought ${t}`, title: `Bought ${t}`, body: `Your Buy-button order filled: ${sh}.` });
-    else if (o.side === "buy" && cid.startsWith("cs-")) msgs.push({ s: `bought ${t}`, title: `Tool bought ${t}`, body: sh + (w ? ` · ${w}` : "") + "." });
-    else if (o.side === "sell") msgs.push({ s: `sold ${t}`, title: `Sold ${t}`, body: sh + (w ? ` · ${w}` : "") + "." });
+    if (o.side === "buy" && cid.startsWith("tap-")) msgs.push({ t, s: `bought ${t}`, title: `Bought ${t}`, body: `Your Buy-button order filled: ${sh}.` });
+    else if (o.side === "buy" && cid.startsWith("cs-")) msgs.push({ t, s: `bought ${t}`, title: `Tool bought ${t}`, body: sh + (w ? ` · ${w}` : "") + "." });
+    else if (o.side === "sell") msgs.push({ t, s: `sold ${t}`, title: `Sold ${t}`, body: sh + (w ? ` · ${w}` : "") + "." });
   }
   await env.DATA.put("push/fills_state.json", JSON.stringify({ seen: [...seen].slice(-1500) }));
   if (msgs.length > 3) {
-    await sendAll(env, { title: `${msgs.length} trades filled`, body: msgs.map(m => m.s).join(", ").replace(/^./, c => c.toUpperCase()) + ".", tag: "fills", url: "/#port" });
+    await deliver(env, { title: `${msgs.length} trades filled`, body: msgs.map(m => m.s).join(", ").replace(/^./, c => c.toUpperCase()) + ".", tag: "fills",
+                         url: "", items: msgs.map(m => ({ l: `${m.title}: ${m.body}`, u: `/#port/${m.t}` })) });
   } else {
-    for (const m of msgs) await sendAll(env, { title: m.title, body: m.body, tag: "fill-" + m.title, url: "/#port" });
+    for (const m of msgs) await deliver(env, { title: m.title, body: m.body, tag: "fill-" + m.title, url: `/#port/${m.t}` });
   }
 }
 

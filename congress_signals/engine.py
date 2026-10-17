@@ -5595,8 +5595,51 @@ def _name_rx(key):
     return rx
 
 
+_GENERIC_KEY = {}
+_CORP_AFTER = re.compile(r"[\s,.&-]*(?:\(([a-z][a-z.\-]{0,6})\)|inc\b|incorporated|corp\b|corporation|co\b|company|companies|"
+                         r"holdings?|group|plc|ltd|limited|llc|l\.p\.|bancorp|bancshares|financial|common|stock|shares|"
+                         r"class [ab]\b|adr|ordinary|sponsored|n\.a\.)")
+
+
+def _generic_key(key):
+    """A company name made only of everyday words ("city", "progressive", "american international", "miami
+    international"): in free text it is usually just those words, not the company."""
+    g = _GENERIC_KEY.get(key)
+    if g is None:
+        def every(w):
+            if w in EVERYDAY_NAME_WORDS:
+                return True
+            try:      # very common words only (city 5.6, american 5.5); brands sit lower (microsoft 4.4, apple 4.8 is
+                from wordfreq import zipf_frequency      # kept by its own one-word rule below)
+                return zipf_frequency(w, "en") >= 5.0
+            except Exception:
+                return False
+        g = all(every(w) for w in key.split())
+        _GENERIC_KEY[key] = g
+    return g
+
+
+# words that show up in trip itineraries, charities and agency names as often as in company names
+EVERYDAY_NAME_WORDS = set("""city progressive american america international national first united general global miami
+community citizens peoples people southern northern western eastern central pacific atlantic regional standard capital
+union home energy health power trust security liberty heritage pioneer summit guardian republic federal state states
+public service services bank financial insurance mutual life group holding holdings company world new york texas
+florida california washington ohio virginia carolina georgia texas boston chicago dallas houston denver phoenix
+park river lake mountain valley bay harbor island coast north south east west great golden sun star eagle
+american express airlines air resources industries systems technologies technology solutions partners enterprises
+target visa ford gap travelers traveler trip travel booking""".split())
+
+
 def _name_hit(text_low, key):
-    return bool(key) and len(key) >= 4 and _name_rx(key).search(text_low) is not None
+    """The company is named in this (lower-case) text. A name made of everyday words only counts when a company
+    word or its ticker follows it ("progressive corp", "city holding co", "american international group (aig)");
+    before Oct 17 "city" or "progressive" anywhere matched City Holding and Progressive."""
+    if not key or len(key) < 4:
+        return False
+    rx = _name_rx(key)
+    if not _generic_key(key):
+        return rx.search(text_low) is not None
+    return any(_CORP_AFTER.match(text_low, m.end()) for m in rx.finditer(text_low))
 
 
 # ----------------------------------------------------------------------------
