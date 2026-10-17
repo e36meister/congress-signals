@@ -426,6 +426,10 @@ def main():
                 json.dump(d_, open(rp, "w"))
     except Exception as e:
         E.log(f"Rare-signal test: skipped ({type(e).__name__}: {e})")
+    try:      # weekly: rare signals' weights follow their per-trade results (kept only if the backtest isn't worse)
+        E.check_rare_weights(scored, px, cfg)
+    except Exception as e:
+        E.log(f"Rare-signal weights: skipped ({type(e).__name__}: {e})")
     try:
         E.check_exit_rule_once(scored, px, cfg)
     except Exception as e:
