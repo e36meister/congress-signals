@@ -857,9 +857,13 @@ def build_index(cfg, tg=None):
     n = 0
     press_seen = set()
     from congress_signals.press_backfill import norm_url
-    for src in sorted(os.listdir(root)) if os.path.exists(root) else []:
-        for fn in sorted(os.listdir(os.path.join(root, src))):
-            fpath = os.path.join(root, src, fn)
+    # archived releases of departed members are built by the parallel archive job in their own folder (./wb)
+    wb_root = os.path.join(cfg.get("WB_DIR") or "wb", "posts")
+    folders = [(root, src) for src in (sorted(os.listdir(root)) if os.path.exists(root) else [])]
+    folders += [(wb_root, src) for src in (sorted(os.listdir(wb_root)) if os.path.isdir(wb_root) else [])]
+    for base, src in folders:
+        for fn in sorted(os.listdir(os.path.join(base, src))):
+            fpath = os.path.join(base, src, fn)
             recs, redone = read_jsonl(fpath), False
             if src.startswith("press"):          # Congress Press first ("press" sorts first); backfills skip its URLs
                 keep = []
@@ -1027,7 +1031,7 @@ def update_all(cfg, minutes, history=True):
             left = deadline - time.time() - 600
             if left > 300:
                 ok &= PB.backfill_current(cfg, st, tg, leg, time.time() + left * 0.55)
-                ok &= PB.backfill_departed(cfg, st, tg, deadline - 600)
+                # departed members' archived releases: the parallel archive job (archive.yml) does these now
         except Exception as e:
             _log(f"Press backfill: stopped ({type(e).__name__}: {e})")
             ok = False

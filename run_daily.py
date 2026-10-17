@@ -330,6 +330,29 @@ def fetch_app_inputs():
         E.log(f"Family-tie reviews: couldn't read ({type(e).__name__})")
 
 
+def member_pages(scored, px):
+    """Members tab in the phone app: trades, results and what happened around each trade."""
+    try:
+        import congress_signals.members as M
+        quiet = lambda m: E.log(m) if "couldn't" in m else None
+        posts = None
+        try:
+            import congress_signals.social as S
+            posts = S.page_posts(S.load_index(cfg))
+        except Exception as e:
+            E.log(f"Member pages: posts skipped ({type(e).__name__}: {e})")
+        M.export_members(cfg, scored, px, E.LAST_DATA, E.log, posts=posts,
+                         put=lambda name, path: cloud_store.put(name, path, log=quiet))
+    except Exception as e:
+        E.log(f"Member pages: skipped ({type(e).__name__}: {e})")
+    finally:     # hand failure lines back to the main process for the collection check
+        try:
+            from congress_signals import runlog
+            json.dump(runlog.LINES, open(os.path.join(cfg["DATA_DIR"], "state", "_pages_lines.json"), "w"))
+        except Exception:
+            pass
+
+
 def main():
     fetch_app_inputs()
     try:
@@ -348,6 +371,14 @@ def main():
     except Exception as e:
         fr = None
         E.log(f"Foreign companies: report skipped ({type(e).__name__}: {e})")
+    pages_proc = None
+    try:      # member pages build on a second process while the rest of the update goes on
+        import multiprocessing as mp
+        pages_proc = mp.get_context("fork").Process(target=member_pages, args=(scored, px), daemon=False)
+        pages_proc.start()
+    except Exception as e:
+        E.log(f"Member pages: building in line instead ({type(e).__name__})")
+        member_pages(scored, px)
     bt = E.run_backtest(scored, px, cfg)
     E.backtest_report(bt, cfg)
     E.export_dashboard(cfg, bt=bt)
@@ -533,19 +564,20 @@ def main():
         send_weekly_summary()
     except Exception as e:
         E.log(f"Weekly summary: skipped ({type(e).__name__}: {e})")
-    try:      # member pages (Members tab in the phone app): trades, results and what happened around each trade
-        import congress_signals.members as M
-        quiet = lambda m: E.log(m) if "couldn't" in m else None
-        posts = None
+    if pages_proc is not None:
+        pages_proc.join(timeout=20 * 60)
+        if pages_proc.is_alive():
+            pages_proc.terminate()
+            E.log("Member pages: not finished after 20 minutes; stopped (they update next run)")
+        elif pages_proc.exitcode:
+            E.log(f"Member pages: failed (exit code {pages_proc.exitcode})")
         try:
-            import congress_signals.social as S
-            posts = S.page_posts(S.load_index(cfg))
-        except Exception as e:
-            E.log(f"Member pages: posts skipped ({type(e).__name__}: {e})")
-        M.export_members(cfg, scored, px, E.LAST_DATA, E.log, posts=posts,
-                         put=lambda name, path: cloud_store.put(name, path, log=quiet))
-    except Exception as e:
-        E.log(f"Member pages: skipped ({type(e).__name__}: {e})")
+            from congress_signals import runlog
+            lp = os.path.join(cfg["DATA_DIR"], "state", "_pages_lines.json")
+            runlog.LINES.extend(json.load(open(lp)))
+            os.remove(lp)
+        except Exception:
+            pass
     try:      # price charts with member trades for the tickers on Today, Defense and My portfolio
         d = json.load(open(os.path.join(cfg["DATA_DIR"], "dashboard_data.json")))
         w = d.get("watchlist") or {}

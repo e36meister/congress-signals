@@ -1,0 +1,122 @@
+name: Archived press releases of departed members (parallel, resumable)
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Minutes each shard spends collecting"
+        default: "300"
+      chain:
+        description: "Back-to-back runs so far (leave at 0)"
+        default: "0"
+permissions:
+  contents: read
+  actions: write          # start the next run while archive pages are still queued
+concurrency:
+  group: archive
+  cancel-in-progress: false
+env:
+  SHARDS: "8"
+jobs:
+  shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      TZ: America/New_York
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install libraries
+        run: |
+          for i in 1 2 3; do pip install -q -r requirements.txt && exit 0; sleep 20; done; exit 1
+      - name: Restore saved data (read-only, company names for tagging)
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: data-${{ github.run_id }}
+          restore-keys: data-
+      - name: Restore members' posts (read-only, releases already known)
+        uses: actions/cache/restore@v4
+        with:
+          path: social
+          key: social-${{ github.run_id }}
+          restore-keys: social-
+      - name: Restore archive progress
+        uses: actions/cache/restore@v4
+        with:
+          path: wb
+          key: wb-${{ github.run_id }}
+          restore-keys: wb-
+      - name: Collect this shard's members
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+        run: python backfill_archive.py ${{ matrix.shard }} $SHARDS ${{ github.event.inputs.minutes || '300' }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wb-${{ matrix.shard }}
+          path: wb_out/
+          retention-days: 2
+          if-no-files-found: ignore
+
+  merge:
+    needs: shard
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore archive progress
+        uses: actions/cache/restore@v4
+        with:
+          path: wb
+          key: wb-${{ github.run_id }}
+          restore-keys: wb-
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wb-*
+          path: wb
+          merge-multiple: true
+      - name: Combine the shards' progress
+        id: sum
+        run: |
+          python - <<'EOF'
+          import json, glob, os
+          prog = {}
+          try:
+              prog = json.load(open("wb/progress.json"))
+          except Exception:
+              pass
+          for f in sorted(glob.glob("wb/progress_*.json")):
+              prog.update(json.load(open(f)))
+              os.remove(f)
+          json.dump(prog, open("wb/progress.json", "w"))
+          for f in glob.glob("wb/left_*.txt"):
+              os.remove(f)
+          members = json.load(open("wb/members.json")) if os.path.exists("wb/members.json") else {}
+          done = sum(1 for b in members if (prog.get(b) or {}).get("done"))
+          left = len(members) - done if members else 1
+          print(f"Archive: {done} of {len(members)} departed members done; {left} left")
+          open(os.environ["GITHUB_OUTPUT"], "a").write(f"left={left}\n")
+          EOF
+      - name: Save archive progress
+        uses: actions/cache/save@v4
+        with:
+          path: wb
+          key: wb-${{ github.run_id }}
+      - name: Start the next run while members are left
+        if: steps.sum.outputs.left != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHAIN: ${{ github.event.inputs.chain || '0' }}
+        run: |
+          if [ "$CHAIN" -lt 30 ]; then
+            gh workflow run archive.yml -f chain=$((CHAIN + 1)) -f minutes=${{ github.event.inputs.minutes || '300' }}
+            echo "Started run $((CHAIN + 2))"
+          fi
