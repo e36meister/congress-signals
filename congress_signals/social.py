@@ -1085,6 +1085,11 @@ def update_all(cfg, minutes, history=True):
             ok = False
     else:
         collect_people(cfg, st, deadline, per_run=1)
+        try:        # every current member's newest press releases, from their own sites
+            import congress_signals.press_backfill as PB
+            PB.latest_current(cfg, tg, leg, min(deadline, time.time() + 300))
+        except Exception as e:
+            _log(f"Latest press releases: failed ({type(e).__name__}: {e})")
     _save_state(cfg, st)
     # sorting every stored post the first time takes a few long runs; a daily run sorts for at least 5 minutes
     idx = build_index(cfg, tg, sort_until=(deadline - 120) if history else max(deadline, time.time() + 300))

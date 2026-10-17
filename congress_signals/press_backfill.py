@@ -167,6 +167,65 @@ def backfill_current(cfg, st, tg, leg, deadline, workers=8, max_pages=400):
     return left == 0
 
 
+def latest_current(cfg, tg, leg, deadline, since=None, workers=12):
+    """Newest page of every current member's press-release list (the same 538 site readers), so releases arrive
+    within the hour instead of waiting for Congress Press. New ones go into posts/press_bf like the backfill."""
+    from congress_signals.social import rec, read_jsonl, write_jsonl, _dir
+    try:
+        from python_statement import Scraper
+        from python_statement.config import SCRAPER_CONFIG
+    except Exception as e:
+        _log(f"Latest press releases: scraper library missing ({type(e).__name__}); skipped")
+        return 0
+    since = since or (dt.date.today() - dt.timedelta(days=3)).isoformat()
+    bydom = _member_by_domain(leg)
+    seen = known_press_urls(cfg.get("SOCIAL_DIR") or "social")
+    names = sorted(SCRAPER_CONFIG)
+    fails = []
+
+    def one(name):
+        if time.time() > deadline:
+            return name, None, []
+        try:
+            res = Scraper.run_scraper(name, 1) or []
+        except Exception:
+            return name, None, None
+        b, out = None, []
+        for r in res:
+            u = r.get("url")
+            if not u:
+                continue
+            b = b or bydom.get(re.sub(r"^https?://(www\.)?", "", u.lower()).split("/")[0])
+            d = str(r.get("date") or "")[:10]
+            if norm_url(u) in seen or (d and d < since):
+                continue
+            d2, t2, text = _text(u)
+            d = d or (d2 or "")[:10]
+            if d and d >= since:
+                out.append((d, u, r.get("title") or t2 or "", text))
+        return name, b, out
+
+    added = 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for name, b, out in ex.map(one, names):
+            if out is None:
+                fails.append(name)
+                continue
+            if not b or not out:
+                continue
+            rows = [rec(d, b, "Press release", f"{title} — {text or ''}".strip(" —"), u, tg,
+                        full=(title or "") + "\n" + (text or "")) for d, u, title, text in out]
+            path = _dir(cfg, "posts", "press_bf", f"{b}.jsonl.gz")
+            old = read_jsonl(path) if os.path.exists(path) else []
+            write_jsonl(path, sorted(old + rows, key=lambda r: r[0]))
+            added += len(rows)
+            for r in rows:
+                seen.add(norm_url(r[4]))
+    _log(f"Latest press releases: {len(names)} member sites checked, +{added} new"
+         + (f"; {len(fails)} sites didn't answer" if fails else ""))
+    return added
+
+
 # ---------------------------------------------------------------------------
 # 2. members who left: Internet Archive copies of their sites
 # ---------------------------------------------------------------------------
