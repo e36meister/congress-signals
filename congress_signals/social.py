@@ -27,6 +27,8 @@ LEG_SOC = "https://unitedstates.github.io/congress-legislators/legislators-socia
 BSKY = "https://public.api.bsky.app/xrpc/"
 TWEETS_FIRST, TWEETS_LAST = dt.date(2017, 6, 21), dt.date(2023, 7, 15)
 START_YEAR = 2013
+MONTHS_DAYS = set("jan january feb february mar march apr april may jun june jul july aug august sep sept september oct "
+                  "october nov november dec december monday tuesday wednesday thursday friday saturday sunday".split())
 TAGGER_VERSION = 9       # 9: executives by last name or distinctive first name alone, scored
 
 SECTOR_WORDS = {
@@ -296,8 +298,12 @@ class Tagger:
                     if nxt_cap:
                         continue
                 else:
-                    if nxt_cap or prev in other_title:
-                        continue           # "Elon Musk" is a full name (handled above); "Jensen Ackles" isn't him
+                    # only checks that the word is used as someone's first name here (not a month, an acronym, a
+                    # place like "St. Louis" or "San Jose", or the last name in "Hillary Clinton")
+                    if nxt_cap or prev in other_title or prev_cap or spans[i][0].isupper() or w in MONTHS_DAYS \
+                            or prev in ("st", "san", "santa", "la", "los", "las", "el", "fort", "ft", "port", "lake",
+                                        "mount", "mt", "new", "saint", "de", "del", "le"):
+                        continue
                 z = _zipf(w)
                 rarity = max(0.0, min(1.0, (5.0 - z) / 3.0))
                 near = raw[max(0, spans[i][1] - 40):spans[i][1] + 60]
