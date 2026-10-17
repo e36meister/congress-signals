@@ -198,16 +198,48 @@ def _cdx(host, frm="2021", to="2025"):
     return None
 
 
-def backfill_departed(cfg, st, tg, deadline, per_run=40000, workers=4):
+def backfill_departed(cfg, st, tg, deadline, per_run=40000, workers=4, root=None, only=None, seed_from=None):
+    """Archived press releases of members who left. root: where output, queues and progress go (default: the
+    social folder, the old way). only: the members this call handles (one shard of the parallel archive job).
+    seed_from: a social folder whose earlier output/queues/progress are copied in on the first run."""
     from congress_signals.social import rec, read_jsonl, write_jsonl, _dir, _save_state
-    prog = st.setdefault("press_wb", {})       # bioguide -> {"done": bool, "total": n}; queues in social/wb_queue
-    mpath = _dir(cfg, "wb_members.json")
+    sdir = cfg.get("SOCIAL_DIR") or "social"
+    if root is None:
+        prog = st.setdefault("press_wb", {})       # bioguide -> {"done": bool, "total": n}
+        out_dir = _dir(cfg, "posts", "press_wb")
+        qdir = _dir(cfg, "wb_queue")
+        mpath = _dir(cfg, "wb_members.json")
+        save = lambda: _save_state(cfg, st)
+    else:
+        os.makedirs(os.path.join(root, "posts", "press_wb"), exist_ok=True)
+        os.makedirs(os.path.join(root, "queue"), exist_ok=True)
+        prog = st                                   # caller's progress dict, saved by `save` below
+        out_dir = os.path.join(root, "posts", "press_wb")
+        qdir = os.path.join(root, "queue")
+        mpath = os.path.join(root, "members.json")
+        save = lambda: json.dump(prog, open(os.path.join(root, "progress.json"), "w"))
     if not os.path.exists(mpath):
-        json.dump(departed_since(), open(mpath, "w"))
+        old = os.path.join(seed_from, "wb_members.json") if seed_from else None
+        json.dump(json.load(open(old)) if old and os.path.exists(old) else departed_since(), open(mpath, "w"))
     members = json.load(open(mpath))
-    qdir = _dir(cfg, "wb_queue")
-    seen = known_press_urls(cfg.get("SOCIAL_DIR") or "social")
-    fetched, added = 0, 0
+    if only is not None:
+        members = {b: h for b, h in members.items() if b in only}
+    if seed_from:                                   # first parallel run: carry over what the old single job did
+        try:
+            ost = json.load(open(os.path.join(seed_from, "state.json"))).get("press_wb") or {}
+        except Exception:
+            ost = {}
+        for b in members:
+            if b not in prog and b in ost:
+                prog[b] = ost[b]
+            q_old, q_new = os.path.join(seed_from, "wb_queue", f"{b}.json"), os.path.join(qdir, f"{b}.json")
+            if os.path.exists(q_old) and not os.path.exists(q_new):
+                open(q_new, "w").write(open(q_old).read())
+            p_old, p_new = os.path.join(seed_from, "posts", "press_wb", f"{b}.jsonl.gz"), os.path.join(out_dir, f"{b}.jsonl.gz")
+            if os.path.exists(p_old) and not os.path.exists(p_new):
+                open(p_new, "wb").write(open(p_old, "rb").read())
+    seen = known_press_urls(sdir)
+    fetched, added, cdx_fail = 0, 0, []
     for b, hosts in sorted(members.items()):
         p = prog.get(b) or {}
         if p.get("done"):
@@ -230,17 +262,19 @@ def backfill_departed(cfg, st, tg, deadline, per_run=40000, workers=4):
                         if norm_url(orig) not in seen:
                             urls.append([ts, orig])
             if urls is None:
+                cdx_fail.append(b)
                 continue                      # archive didn't answer; try next run
             json.dump(urls, open(qpath, "w"))
             p = {"total": len(urls)}
             prog[b] = p
-            _save_state(cfg, st)
+            save()
             time.sleep(1)
         queue = json.load(open(qpath))
         rows = []
 
         def get(item):
             ts, orig = item
+            html = None
             for a in range(3):
                 try:
                     r = requests.get(f"{WB}/web/{ts}id_/{orig}", headers=UA, timeout=60)
@@ -269,7 +303,7 @@ def backfill_departed(cfg, st, tg, deadline, per_run=40000, workers=4):
                         rows.append(r_)
                         seen.add(norm_url(r_[4].split("/", 5)[-1] if "/web/" in r_[4] else r_[4]))
         if rows:
-            path = _dir(cfg, "posts", "press_wb", f"{b}.jsonl.gz")
+            path = os.path.join(out_dir, f"{b}.jsonl.gz")
             old = read_jsonl(path) if os.path.exists(path) else []
             write_jsonl(path, sorted(old + rows, key=lambda r: r[0]))
             added += len(rows)
@@ -277,10 +311,12 @@ def backfill_departed(cfg, st, tg, deadline, per_run=40000, workers=4):
         if not queue:
             p["done"] = True
         prog[b] = p
-        _save_state(cfg, st)
+        save()
     left = sum(1 for b in members if not (prog.get(b) or {}).get("done"))
-    queued = sum(len(json.load(open(os.path.join(qdir, f)))) for f in os.listdir(qdir) if f.endswith(".json"))
-    _log(f"Archived press releases: {queued:,} saved pages still queued; "
-         f"{sum(1 for b in members if os.path.exists(os.path.join(qdir, f'{b}.json')))} members' archives listed")
+    queued = sum(len(json.load(open(os.path.join(qdir, f"{b}.json")))) for b in members
+                 if os.path.exists(os.path.join(qdir, f"{b}.json")))
+    _log(f"Archived press releases: {queued:,} saved pages still queued for {len(members)} members")
+    if cdx_fail:
+        _log(f"Archived press releases: the archive's index didn't answer for {len(cdx_fail)} member(s): {', '.join(cdx_fail[:10])}")
     _log(f"Archived press releases: +{added:,} from {fetched:,} saved pages; {left} of {len(members)} departed members left")
     return left == 0

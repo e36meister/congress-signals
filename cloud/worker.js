@@ -25,6 +25,7 @@ export default {
     const min = new Date(ev.scheduledTime).getUTCMinutes();
     if (min % 2 === 0) await checkFills(env);
     await startQuickCheck(env, min);
+    await startDailyOnTime(env, new Date(ev.scheduledTime));
   },
 };
 
@@ -313,6 +314,22 @@ async function checkFills(env) {
 // GitHub's own 15-minute schedule often runs 15-40 minutes late. This starts the quick check (new House and Senate
 // filings, Buy orders, portfolio) on time: every 5 minutes on weekdays 6 AM-9 PM Eastern, every 30 minutes otherwise.
 // A new filing then starts the full update within a few minutes of being posted.
+// The full update starts exactly on time from here (GitHub's own schedule runs 10-25 minutes late and is only a
+// fallback that skips itself when this one already started): 10:43 and 23:43 UTC.
+async function startDailyOnTime(env, now) {
+  if (!env.GH_DISPATCH_TOKEN) return;
+  const h = now.getUTCHours(), m = now.getUTCMinutes();
+  if (!((h === 10 || h === 23) && m === 43)) return;
+  try {
+    await fetch(`https://api.github.com/repos/${env.GH_REPO || "e36meister/congress-signals"}/actions/workflows/daily.yml/dispatches`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`, Accept: "application/vnd.github+json",
+                 "User-Agent": "capitol-capital-worker", "Content-Type": "application/json" },
+      body: JSON.stringify({ ref: "main", inputs: { chain: "0", why: "scheduled" } }),
+    });
+  } catch (e) {}
+}
+
 async function startQuickCheck(env, min) {
   if (!env.GH_DISPATCH_TOKEN) return;
   const et = ET(), h = et.getHours(), wd = et.getDay();

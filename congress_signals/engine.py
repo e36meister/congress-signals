@@ -4501,17 +4501,40 @@ def build_watchlist(scored, px, cfg, enrich_top=20):
     for df in (buys, sells):
         if len(df):
             firsts.update({t: (m.split(",")[0].split(" ")[-1] if m else "") for t, m in zip(df["ticker"], df["members"])})
+    # analyst/earnings lookups run side by side; the news site (GDELT) allows one request every few seconds, so
+    # its lookups go one at a time on their own thread at the same time
+    news = {}
+
+    def _news_all():
+        for t in top:
+            if not (cfg.get("USE_NEWS") and names.get(t)):
+                continue
+            try:
+                if firsts.get(t):
+                    news.setdefault(t, {})["news_with_member"] = news_together(firsts[t], company_key(names[t]) or t)
+                    time.sleep(3)
+                n = _news(company_key(names[t]) or t)
+                if n:
+                    news.setdefault(t, {}).update(n)
+                time.sleep(3)
+            except Exception as e:
+                log(f"Watchlist: news lookup failed for {t} ({type(e).__name__})")
+    import threading
+    nt = threading.Thread(target=_news_all, daemon=True)
+    nt.start()
+    with ThreadPoolExecutor(6) as ex:
+        mk = dict(zip(top, ex.map(_market_context, top)))
+    nt.join(timeout=20 * 60)
     for t in top:
-        c = _market_context(t)
-        if cfg.get("USE_NEWS") and names.get(t) and firsts.get(t):
-            c["news_with_member"] = news_together(firsts[t], company_key(names[t]) or t)
-            time.sleep(3)
-        if cfg.get("USE_NEWS") and names.get(t):
-            n = _news(company_key(names[t]) or t)
-            if n:
-                c.update(n)
-            time.sleep(3)
-        ctx[t] = c
+        ctx[t] = {**(mk.get(t) or {}), **news.get(t, {})}
+    if top:
+        got_mk = sum(1 for t in top if mk.get(t))
+        log(f"Watchlist: analyst/earnings for {got_mk} of {len(top)} tickers"
+            + (f", news for {len(news)}" if cfg.get("USE_NEWS") else ""))
+        if not got_mk:
+            log("Watchlist: analyst/earnings lookups failed for every ticker (Yahoo didn't answer)")
+        if cfg.get("USE_NEWS") and not news:
+            log("Watchlist: news lookups failed for every ticker (GDELT didn't answer)")
     for df in (buys, sells):
         if len(df):
             for k in ("analysts", "target_upside_%", "fwd_PE", "next_earnings", "news_7d", "news_30d", "headlines",

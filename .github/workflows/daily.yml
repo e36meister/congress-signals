@@ -2,13 +2,18 @@ name: Daily congress trade signals
 
 on:
   schedule:
-    - cron: "43 10 * * *"      # 6:43 AM New York time (summer): overnight filings, before the market opens
-    - cron: "43 23 * * *"      # 7:43 PM New York time (summer): filings posted during the day
+    # Cloudflare starts the update on time at 10:43 and 23:43 UTC (6:43 AM / 7:43 PM New York, summer);
+    # GitHub's own schedule (often 10-25 minutes late) is only a fallback and skips itself if an update already ran
+    - cron: "20 11 * * *"
+    - cron: "20 0 * * *"
   workflow_dispatch:           # "Run workflow" button, also used to chain runs while history is filling
     inputs:
       chain:
         description: "How many back-to-back runs came before this one (leave at 0)"
         default: "0"
+      why:
+        description: "Who started it (scheduled / filings / manual)"
+        default: "manual"
       dry_run:
         description: "Test run: no orders, no emails or alerts, no uploads, nothing saved"
         default: "false"
@@ -22,7 +27,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  run:
+  gate:                          # the late GitHub schedule runs only when Cloudflare's on-time start didn't happen
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.g.outputs.go }}
+    steps:
+      - id: g
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          go=1
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            since=$(date -u -d '-150 minutes' +%Y-%m-%dT%H:%M:%SZ)
+            n=$(gh api "repos/${{ github.repository }}/actions/workflows/daily.yml/runs?created=>$since&per_page=20" \
+                  --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }})] | length" || echo 0)
+            if [ "$n" -gt 0 ]; then go=0; echo "An update already started in the last 2.5 hours; skipping"; fi
+          fi
+          echo "go=$go" >> "$GITHUB_OUTPUT"
+
+  update:
+    needs: gate
+    if: needs.gate.outputs.go == '1'
     runs-on: ubuntu-latest
     env:
       TZ: America/New_York        # dates and times in Eastern
@@ -62,6 +87,13 @@ jobs:
           key: social-${{ github.run_id }}
           restore-keys: social-
 
+      - name: Restore archived press releases (departed members)
+        uses: actions/cache/restore@v4
+        with:
+          path: wb
+          key: wb-${{ github.run_id }}
+          restore-keys: wb-
+
       - name: Collect, score, backtest and update the dashboard
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
@@ -96,56 +128,6 @@ jobs:
           SENATE_SCANS_SEPARATE: "1"
         run: python run_daily.py
 
-      - name: Read scanned Senate reports (built-in reader, after the update)
-        if: always() && github.event.inputs.dry_run != 'true'
-        continue-on-error: true
-        timeout-minutes: 35
-        run: python scan_senate.py
-
-      - name: Read older scanned House reports (after the update)
-        if: always() && github.event.inputs.dry_run != 'true'
-        continue-on-error: true
-        timeout-minutes: 35
-        env:
-          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
-          OCR_SPACE_API_KEY: ${{ secrets.OCR_SPACE_API_KEY }}
-          GOOGLE_VISION_API_KEY: ${{ secrets.GOOGLE_VISION_API_KEY }}
-        run: python scan_house.py
-
-      - name: Update institutional data (after trading; only once the history build is complete)
-        id: inst
-        if: always() && github.event.inputs.dry_run != 'true' && hashFiles('inst/complete') != ''
-        continue-on-error: true
-        timeout-minutes: 15
-        env:
-          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
-          OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
-        run: python update_institutions.py 8
-
-      - name: Save institutional data
-        if: always() && steps.inst.outcome == 'success' && hashFiles('inst/.changed') != ''
-        uses: actions/cache/save@v4
-        with:
-          path: inst
-          key: inst-${{ github.run_id }}
-
-      - name: Update members' posts (after trading; only once the history build is complete)
-        id: social
-        if: always() && github.event.inputs.dry_run != 'true' && hashFiles('social/complete') != ''
-        continue-on-error: true
-        timeout-minutes: 20
-        env:
-          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
-          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-        run: python update_social.py 12 --daily
-
-      - name: Save members' posts
-        if: always() && steps.social.outcome == 'success' && hashFiles('social/.changed') != ''
-        uses: actions/cache/save@v4
-        with:
-          path: social
-          key: social-${{ github.run_id }}
-
       - name: Save data for tomorrow (even if the run stopped early)
         if: always() && github.event.inputs.dry_run != 'true'
         uses: actions/cache/save@v4
@@ -171,11 +153,168 @@ jobs:
           fi
 
       - name: Monthly keep-alive (GitHub pauses schedules after 60 quiet days)
-        if: always() && github.event_name == 'schedule' && github.event.schedule == '43 10 * * *'
+        if: always() && github.event.inputs.dry_run != 'true'
         run: |
-          if [ "$(date -u +%d)" = "01" ]; then
+          if [ "$(date -u +%d)" = "01" ] && [ "$(date -u +%H)" -lt 13 ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898+github-actions[bot]@users.noreply.github.com"
-            git commit --allow-empty -m "Monthly keep-alive"
-            git push
+            git commit --allow-empty -m "Monthly keep-alive" && git push || true
           fi
+
+  scans:                         # scanned paper reports, after the update (they add to the same saved data)
+    needs: update
+    if: always() && needs.update.result != 'skipped' && github.event.inputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    env:
+      TZ: America/New_York
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install libraries
+        run: |                  # retry: the package server occasionally hiccups
+          sudo apt-get install -y -qq tesseract-ocr >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr) || echo "tesseract not installed; scanned reports are skipped"
+          for i in 1 2 3 4; do pip install --retries 5 --timeout 60 -r requirements.txt && exit 0; sleep $((i * 20)); done
+          exit 1
+
+      - name: Restore saved data (just saved by the update)
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: data-${{ github.run_id }}-scans
+          restore-keys: data-
+
+      - name: Read scanned Senate reports (built-in reader)
+        continue-on-error: true
+        timeout-minutes: 35
+        run: python scan_senate.py
+
+      - name: Read older scanned House reports
+        continue-on-error: true
+        timeout-minutes: 35
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          OCR_SPACE_API_KEY: ${{ secrets.OCR_SPACE_API_KEY }}
+          GOOGLE_VISION_API_KEY: ${{ secrets.GOOGLE_VISION_API_KEY }}
+        run: python scan_house.py
+
+      - name: Save data for tomorrow
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: data-${{ github.run_id }}-scans
+
+  institutions:                  # runs alongside the update on its own machine
+    needs: gate
+    if: needs.gate.outputs.go == '1' && github.event.inputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    env:
+      TZ: America/New_York
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install libraries
+        run: |                  # retry: the package server occasionally hiccups
+          for i in 1 2 3 4; do pip install --retries 5 --timeout 60 -r requirements.txt && exit 0; sleep $((i * 20)); done
+          exit 1
+
+      - name: Restore saved data (read-only)
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: data-${{ github.run_id }}-inst
+          restore-keys: data-
+
+      - name: Restore institutional data
+        uses: actions/cache/restore@v4
+        with:
+          path: inst
+          key: inst-${{ github.run_id }}
+          restore-keys: inst-
+
+      - name: Update institutional data (once the history build is complete)
+        id: inst
+        if: hashFiles('inst/complete') != ''
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
+        run: python update_institutions.py 8
+
+      - name: Save institutional data
+        if: always() && steps.inst.outcome == 'success' && hashFiles('inst/.changed') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: inst
+          key: inst-${{ github.run_id }}
+
+  social:                        # runs alongside the update on its own machine
+    needs: gate
+    if: needs.gate.outputs.go == '1' && github.event.inputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    env:
+      TZ: America/New_York
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install libraries
+        run: |                  # retry: the package server occasionally hiccups
+          for i in 1 2 3 4; do pip install --retries 5 --timeout 60 -r requirements.txt && exit 0; sleep $((i * 20)); done
+          exit 1
+
+      - name: Restore saved data (read-only)
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: data-${{ github.run_id }}-social
+          restore-keys: data-
+
+      - name: Restore members' posts
+        uses: actions/cache/restore@v4
+        with:
+          path: social
+          key: social-${{ github.run_id }}
+          restore-keys: social-
+
+      - name: Restore archived press releases (departed members)
+        uses: actions/cache/restore@v4
+        with:
+          path: wb
+          key: wb-${{ github.run_id }}
+          restore-keys: wb-
+
+      - name: Update members' posts (once the history build is complete)
+        id: social
+        if: hashFiles('social/complete') != ''
+        continue-on-error: true
+        timeout-minutes: 20
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: python update_social.py 12 --daily
+
+      - name: Save members' posts
+        if: always() && steps.social.outcome == 'success' && hashFiles('social/.changed') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: social
+          key: social-${{ github.run_id }}
