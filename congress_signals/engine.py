@@ -1721,10 +1721,25 @@ def worth_a_look(scored, cfg, days=None):
              | (col("f_spouse_employer") > 0) | (col("volume_ratio").fillna(0) >= VOL_FLAG)
              | (col("f_reg_action") > 0) | (col("f_witness_after") > 0) | (col("f_markup_after") > 0)
              | (col("f_major_8k_after") > 0) | (col("f_closed_briefing") > 0))
+    # the member's own posts that line up with the trade (company named, an insider-style hint, or an industry boost)
+    links = {}
+    try:
+        from . import social as S_
+        idx_ = S_.load_index(cfg)
+        recs_ = r.to_dict("records")
+        lk = S_.trade_post_links(recs_, idx_)
+        links = {r.index[i]: v for i, v in lk.items()}
+        if idx_ is None:
+            log("Worth a look: posts index not found; trade-post links skipped")
+    except Exception as e:
+        log(f"Worth a look: trade-post links failed ({type(e).__name__}: {e})")
+    flags = flags | r.index.isin(list(links))
     r = r[flags]
     out = {}
-    for x in r.sort_values("filed_date", ascending=False).to_dict("records"):
+    for ix, x in zip(r.sort_values("filed_date", ascending=False).index, r.sort_values("filed_date", ascending=False).to_dict("records")):
         why = [x.get(k) for k in ("spouse_note", "relative_note", "family_note", "volume_note", "event_note") if x.get(k)]
+        for p_ in links.get(ix, []):
+            why.append(f"{str(x['member']).split(',')[0]} {p_['why']}: check the post")
         if x.get("f_spouse_employer", 0) > 0:
             why.append("the member's yearly disclosure says their spouse works for or is paid by the company")
         if x.get("f_closed_briefing", 0) > 0:
@@ -1733,7 +1748,11 @@ def worth_a_look(scored, cfg, days=None):
         if not why:
             continue
         o = out.setdefault(x["ticker"], {"t": x["ticker"], "co": x.get("company") or None, "who": [], "why": [],
-                                         "d": pd.Timestamp(x["filed_date"]).strftime("%Y-%m-%d")})
+                                         "d": pd.Timestamp(x["filed_date"]).strftime("%Y-%m-%d"), "posts": []})
+        for p_ in links.get(ix, []):
+            if p_.get("u") and all(q.get("u") != p_["u"] for q in o["posts"]):
+                o["posts"].append({"d": p_["d"], "u": p_["u"], "x": p_.get("x"), "src": p_.get("src"),
+                                   "who": str(x["member"]), "why": p_["why"]})
         if not any(w["n"] == x["member"] and w["ty"] == x["tx_type"] for w in o["who"]):
             o["who"].append({"n": str(x["member"]), "b": x.get("bioguide") if isinstance(x.get("bioguide"), str) else None,
                              "ty": x["tx_type"], "td": pd.Timestamp(x["trade_date"]).strftime("%Y-%m-%d"),
@@ -1741,8 +1760,9 @@ def worth_a_look(scored, cfg, days=None):
         for w in why:
             if w not in o["why"]:
                 o["why"].append(w)
-    res = sorted(out.values(), key=lambda o: o["d"], reverse=True)[:30]
-    log(f"Worth a look: {len(res)} recently disclosed stock(s) with a rare red flag")
+    res = sorted(out.values(), key=lambda o: o["d"], reverse=True)[:40]
+    log(f"Worth a look: {len(res)} recently disclosed stock(s) with a rare red flag"
+        + (f"; {sum(1 for o in res if o.get('posts'))} with the member's own posts lining up" if links else ""))
     return res
 
 

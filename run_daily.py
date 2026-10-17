@@ -132,7 +132,13 @@ def send_worth_alerts(items):
             first = fresh[0]
             body = (f"{first['t']}: " + "; ".join(first.get("why") or [])[:180]) if len(fresh) == 1 else \
                    f"{len(fresh)} recent trades with a rare red flag. Not buy signals on their own."
-            if cloud_store.notify(f"Worth a look: {ts}", body, "worth", "/#today", E.log):
+            wp = [o for o in fresh if o.get("posts")]
+            if wp:      # a trade that lines up with the member's own post: say so and point to the post
+                p0 = wp[0]["posts"][0]
+                body = f"{wp[0]['t']}: {p0.get('who', '').split(',')[0]} {p0['why']}. Check the post in Worth a look." + \
+                       (f" (+{len(fresh) - 1} more flagged trades)" if len(fresh) > 1 else "")
+            title = (f"Trade + post: {', '.join(o['t'] for o in wp[:4])}" if wp else f"Worth a look: {ts}")
+            if cloud_store.notify(title, body, "worth", "/#today-worth", E.log):
                 for o in fresh:
                     for w in o["who"]:
                         pushed.add(key(o, w))
@@ -143,7 +149,10 @@ def send_worth_alerts(items):
     if new:
         rows = "".join(f"<tr><td><b>{html.escape(o['t'])}</b><br><span style='color:#666'>{html.escape(o.get('co') or '')}</span></td>"
                        f"<td>{'<br>'.join(html.escape(w['n']) + (' bought ' if w['ty'] == 'buy' else ' sold ') + w['td'] for w in o['who'])}</td>"
-                       f"<td style='font-size:13px'>{html.escape('; '.join(o['why']))}</td></tr>" for o in new)
+                       f"<td style='font-size:13px'>{html.escape('; '.join(o['why']))}"
+                       + "".join(f"<br><a href='{html.escape(q['u'])}'>Post {html.escape(q['d'])}</a>: {html.escape((q.get('x') or '')[:140])}"
+                                 for q in (o.get("posts") or []) if q.get("u"))
+                       + "</td></tr>" for o in new)
         body = (f"<p>{len(new)} recently disclosed trade(s) with a rare red flag. These aren't buy signals on their own; "
                 f"they're worth a look.</p><table border=1 cellpadding=6 style='border-collapse:collapse;font-family:Arial'>"
                 f"<tr><th>Stock</th><th>Members</th><th>Why</th></tr>{rows}</table><p><a href='{DASHBOARD_URL}'>Open Capitol Capital</a></p>")
