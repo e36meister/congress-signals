@@ -6,4 +6,8 @@ import congress_signals.institutions as I
 
 cfg = {**E.DEFAULT_CONFIG, "DATA_DIR": "./data", "INST_DIR": "./inst",
        "SEC_USER_AGENT": os.environ.get("SEC_USER_AGENT", ""), "TIME_BUDGET_MIN": 0}
-I.update_all(cfg, float(sys.argv[1]) if len(sys.argv) > 1 else 8)
+try:
+    I.update_all(cfg, float(sys.argv[1]) if len(sys.argv) > 1 else 8)
+finally:
+    from congress_signals import runlog
+    runlog.check_institutions(cfg, E.log)

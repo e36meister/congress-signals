@@ -838,6 +838,19 @@ function renderAdjust(d) {
   return h;
 }
 
+function renderChecks(d) {
+  const cc = d.collection_check || {};
+  const names = { daily: "Daily update", social: "Posts", institutions: "Institutions" };
+  const jobs = Object.entries(cc).filter(([, v]) => v);
+  if (!jobs.length) return "";
+  const bad = jobs.reduce((n, [, v]) => n + (v.problems || []).length + (v.failures || []).length, 0);
+  return `<section class="panel"><div class="ph"><h2>Data check</h2><span class="sub">${bad ? `${bad} thing(s) came back empty or failed in the last runs; Claude reads these to fix them` : "Every source returned data in the last runs"}</span></div>
+  ${jobs.map(([k, v]) => `<details ${((v.problems || []).length) ? "open" : ""}><summary><b>${esc(names[k] || k)}</b> · ${esc(fmtET(v.at))} · ${(v.problems || []).length} problem(s), ${(v.failures || []).length} failure line(s)</summary>
+    ${(v.problems || []).length ? `<ul>${v.problems.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+    ${(v.failures || []).length ? `<ul class="foot">${v.failures.slice(0, 30).map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}</details>`).join("")}
+  </section>`;
+}
+
 function renderProgress(d) {
   const g = d.data_progress;
   if (!g) return "";
@@ -863,7 +876,7 @@ function renderProgress(d) {
 const REASON = { "bought out": "Bought out", "bankrupt": "Bankrupt", "failed": "Delisted (failed listing rules)", "moved": "Moved or went dark", "unknown": "Unknown" };
 function renderReal(d) {
   const wf = d.walk_forward, m = d.backtest?.missing;
-  let h = renderProgress(d) + `<p class="note">These are three checks that keep the numbers honest. First, results using only what was known at the time. Second, what the stocks we have no prices for could do to the results. Third, the fixes made so no signal uses information from after the disclosure date.</p>`;
+  let h = renderChecks(d) + renderProgress(d) + `<p class="note">These are three checks that keep the numbers honest. First, results using only what was known at the time. Second, what the stocks we have no prices for could do to the results. Third, the fixes made so no signal uses information from after the disclosure date.</p>`;
   if (wf) {
     const P = Object.fromEntries((wf.perf || []).map(p => [p.name, p]));
     const W = P["Never-seen-years picks"] || {}, R = P["Regular backtest, same years"] || {}, S = P["S&P 500 (SPY)"] || {};

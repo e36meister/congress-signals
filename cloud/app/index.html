@@ -82,7 +82,7 @@ section.panel{display:grid;gap:12px;align-content:start}
 .chip.avoid,.chip.mixed{background:var(--warn-soft);color:var(--warn)}
 .chip.watch{background:var(--sunken);color:var(--ink2)}
 .chip.new{background:var(--accent-soft);color:var(--accent)}
-.tie-box{padding:10px 4px;white-space:normal;max-width:640px}
+.tie-box{padding:10px 4px;white-space:normal;position:sticky;left:8px;width:min(640px,calc(100vw - 64px))}
 .tie-box textarea{width:100%;font:16px var(--body);padding:8px;border:1px solid var(--rule);border-radius:8px;background:var(--surface);color:var(--ink)}
 .tie-btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
 .btn{font:600 13px var(--body);padding:8px 14px;min-height:40px;border-radius:6px;border:1px solid var(--accent);background:var(--accent-soft);color:var(--accent);cursor:pointer}
@@ -933,6 +933,19 @@ function renderAdjust(d) {
   return h;
 }
 
+function renderChecks(d) {
+  const cc = d.collection_check || {};
+  const names = { daily: "Daily update", social: "Posts", institutions: "Institutions" };
+  const jobs = Object.entries(cc).filter(([, v]) => v);
+  if (!jobs.length) return "";
+  const bad = jobs.reduce((n, [, v]) => n + (v.problems || []).length + (v.failures || []).length, 0);
+  return `<section class="panel"><div class="ph"><h2>Data check</h2><span class="sub">${bad ? `${bad} thing(s) came back empty or failed in the last runs; Claude reads these to fix them` : "Every source returned data in the last runs"}</span></div>
+  ${jobs.map(([k, v]) => `<details ${((v.problems || []).length) ? "open" : ""}><summary><b>${esc(names[k] || k)}</b> · ${esc(fmtET(v.at))} · ${(v.problems || []).length} problem(s), ${(v.failures || []).length} failure line(s)</summary>
+    ${(v.problems || []).length ? `<ul>${v.problems.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+    ${(v.failures || []).length ? `<ul class="foot">${v.failures.slice(0, 30).map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}</details>`).join("")}
+  </section>`;
+}
+
 function renderProgress(d) {
   const g = d.data_progress;
   if (!g) return "";
@@ -958,7 +971,7 @@ function renderProgress(d) {
 const REASON = { "bought out": "Bought out", "bankrupt": "Bankrupt", "failed": "Delisted (failed listing rules)", "moved": "Moved or went dark", "unknown": "Unknown" };
 function renderReal(d) {
   const wf = d.walk_forward, m = d.backtest?.missing;
-  let h = renderProgress(d) + `<p class="note">These are three checks that keep the numbers honest. First, results using only what was known at the time. Second, what the stocks we have no prices for could do to the results. Third, the fixes made so no signal uses information from after the disclosure date.</p>`;
+  let h = renderChecks(d) + renderProgress(d) + `<p class="note">These are three checks that keep the numbers honest. First, results using only what was known at the time. Second, what the stocks we have no prices for could do to the results. Third, the fixes made so no signal uses information from after the disclosure date.</p>`;
   if (wf) {
     const P = Object.fromEntries((wf.perf || []).map(p => [p.name, p]));
     const W = P["Never-seen-years picks"] || {}, R = P["Regular backtest, same years"] || {}, S = P["S&P 500 (SPY)"] || {};
@@ -1025,10 +1038,11 @@ function tiesPanel(rows) {
     const open = TIE.open === r.key, v = tieRev(r), fam = (r.Spouse || "").replace(/\s*\(.*\)$/, "");
     const rel = (r.Spouse || "").match(/\(([^)]+)\)$/)?.[1] || (r.Source === "Yearly financial disclosure" ? "spouse" : "spouse");
     const web = "https://www.google.com/search?q=" + encodeURIComponent(`"${fam}" ${r.Member} ${String(r.Company).replace(/\s*\([^)]*\)$/, "")}`);
-    let h = `<tr><td>${esc(r.Member)}</td><td>${esc(r.Spouse || "–")}</td><td>${esc(r.Company)}</td><td>${esc(r.Role)}</td>
+    let h = `<tr><td>${esc(r.Member)}</td><td>${esc(r.Spouse || "–")}</td>
+      <td>${chip(r._c)}${r.key && canReview ? `<div style="margin-top:4px"><button class="btn sm" data-tie="${esc(r.key)}">${open ? "Close" : v ? "Change" : "Review"}</button></div>` : ""}${v && v.note ? `<div class="foot" style="margin:2px 0 0">${esc(v.note)}</div>` : ""}</td>
+      <td>${esc(r.Company)}</td><td>${esc(r.Role)}</td>
       <td class="nw">${esc(r.Since ? fmtDate(r.Since) : "–")}</td><td class="nw">${esc(r["Last filing"] ? fmtDate(r["Last filing"]) : "–")}</td>
-      <td>${chip(r._c)}${v && v.note ? `<div class="foot" style="margin:2px 0 0">${esc(v.note)}</div>` : ""}</td>
-      <td class="nw">${r.key && canReview ? `<button class="btn sm" data-tie="${esc(r.key)}">${open ? "Close" : v ? "Change" : "Review"}</button> ` : ""}${r.link ? `<a href="${esc(r.link)}" target="_blank" rel="noopener">SEC</a>` : esc(r.Source)}</td></tr>`;
+      <td class="nw">${r.link ? `<a href="${esc(r.link)}" target="_blank" rel="noopener">SEC filings</a>` : esc(r.Source)}</td></tr>`;
     if (open) {
       const m = TIE.msg[r.key];
       h += `<tr class="tie-open"><td colspan="8"><div class="tie-box">
@@ -1044,7 +1058,7 @@ function tiesPanel(rows) {
     return h;
   };
   return `<section class="panel"><div class="ph"><h2>Family ties to companies</h2><span class="sub">Spouses, and relatives who are public figures. Confirmed ties count in scores; the rest show in Worth a look. ${todo ? `<b>${todo} need your review</b>: tap Review to say whether the person is really the member's family.` : ""}</span></div>
-    <div class="tbl"><table><thead><tr><th>Member</th><th>Family member</th><th>Company</th><th>Role</th><th>Since</th><th>Last filing</th><th>Confidence</th><th>Check it</th></tr></thead><tbody>
+    <div class="tbl"><table><thead><tr><th>Member</th><th>Family member</th><th>Confidence</th><th>Company</th><th>Role</th><th>Since</th><th>Last filing</th><th>Check it</th></tr></thead><tbody>
     ${list.map(row).join("")}
     </tbody></table></div></section>`;
 }

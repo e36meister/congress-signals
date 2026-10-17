@@ -28,6 +28,11 @@ def norm_url(u):
 
 def _log(*a):
     print(dt.datetime.now().strftime("%H:%M:%S"), *a, flush=True)
+    try:
+        from congress_signals import runlog
+        runlog.capture(" ".join(map(str, a)))
+    except Exception:
+        pass
 
 
 def _text(url, html=None, timeout=40):

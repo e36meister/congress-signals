@@ -68,6 +68,11 @@ NEG = set("greed greedy price gouging gouge outrageous unacceptable fraud scam c
 
 def _log(*a):
     print(dt.datetime.now().strftime("%H:%M:%S"), *a, flush=True)
+    try:
+        from congress_signals import runlog
+        runlog.capture(" ".join(map(str, a)))
+    except Exception:
+        pass
 
 
 def _dir(cfg, *parts):
@@ -635,12 +640,14 @@ def collect_mastodon(cfg, st, tg, leg, acc, deadline):
     for b, a in acc.items():
         for v in a.get("masto") or []:
             handles.setdefault(v.lower(), b)
+    added, dead = 0, []
     for h, b in handles.items():
         if time.time() > deadline:
-            return
+            break
         user, host = h.split("@", 1)
         a = _get(f"https://{host}/api/v1/accounts/lookup", params={"acct": user}, tries=2)
         if not a or not a.get("id"):
+            dead.append(h)
             continue
         path = os.path.join(out_dir, re.sub(r"[^a-z0-9.@-]", "_", h) + ".jsonl.gz")
         old = read_jsonl(path) if os.path.exists(path) else []
@@ -669,17 +676,22 @@ def collect_mastodon(cfg, st, tg, leg, acc, deadline):
                 break
         if rows:
             write_jsonl(path, sorted(old + rows, key=lambda r: r[0]))
+            added += len(rows)
+    _log(f"Mastodon: {len(handles)} accounts, +{added:,} posts" + (f"; no answer from {len(dead)}: {', '.join(dead[:8])}" if dead else ""))
 
 
 def collect_substack(cfg, st, tg, acc, deadline):
     import xml.etree.ElementTree as ET
     out_dir = _dir(cfg, "posts", "substack")
+    added, dead, n = 0, [], 0
     for b, a in acc.items():
         for sub in a.get("substack") or []:
             if time.time() > deadline:
-                return
+                break
+            n += 1
             r = _get(f"https://{sub}.substack.com/feed", as_json=False, timeout=60, tries=2)
             if r is None:
+                dead.append(sub)
                 continue
             path = os.path.join(out_dir, f"{sub}.jsonl.gz")
             old = read_jsonl(path) if os.path.exists(path) else []
@@ -702,6 +714,8 @@ def collect_substack(cfg, st, tg, acc, deadline):
                 rows.append(rec(d.strftime("%Y-%m-%d"), b, "Substack", f"{title} — {body}", url, tg, full=title + "\n" + body))
             if rows or not os.path.exists(path):
                 write_jsonl(path, sorted(old + rows, key=lambda x: x[0]))
+            added += len(rows)
+    _log(f"Substack: {n} newsletters, +{added:,} posts" + (f"; no answer from {len(dead)}: {', '.join(dead[:8])}" if dead else ""))
 
 
 def collect_youtube(cfg, st, tg, leg, acc, deadline):
