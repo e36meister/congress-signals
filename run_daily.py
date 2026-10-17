@@ -335,13 +335,14 @@ def member_pages(scored, px):
     try:
         import congress_signals.members as M
         quiet = lambda m: E.log(m) if "couldn't" in m else None
-        posts = None
+        posts, profiles = None, None
         try:
             import congress_signals.social as S
-            posts = S.page_posts(S.load_index(cfg))
+            idx_ = S.load_index(cfg)
+            posts, profiles = S.page_posts(idx_), (idx_ or {}).get("profiles")
         except Exception as e:
             E.log(f"Member pages: posts skipped ({type(e).__name__}: {e})")
-        M.export_members(cfg, scored, px, E.LAST_DATA, E.log, posts=posts,
+        M.export_members(cfg, scored, px, E.LAST_DATA, E.log, posts=posts, post_profiles=profiles,
                          put=lambda name, path: cloud_store.put(name, path, log=quiet))
     except Exception as e:
         E.log(f"Member pages: skipped ({type(e).__name__}: {e})")

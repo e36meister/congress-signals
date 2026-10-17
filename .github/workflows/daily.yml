@@ -276,7 +276,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: America/New_York
-    timeout-minutes: 30
+      HF_HOME: ${{ github.workspace }}/.hf
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -287,7 +288,7 @@ jobs:
 
       - name: Install libraries
         run: |                  # retry: the package server occasionally hiccups
-          for i in 1 2 3 4; do pip install --retries 5 --timeout 60 -r requirements.txt && exit 0; sleep $((i * 20)); done
+          for i in 1 2 3 4; do pip install --retries 5 --timeout 60 -r requirements.txt -r requirements-ml.txt && exit 0; sleep $((i * 20)); done
           exit 1
 
       - name: Restore saved data (read-only)
@@ -296,6 +297,12 @@ jobs:
           path: data
           key: data-${{ github.run_id }}-social
           restore-keys: data-
+
+      - name: Restore the sentiment model
+        uses: actions/cache@v4
+        with:
+          path: .hf
+          key: hf-roberta-sentiment-v1
 
       - name: Restore members' posts
         uses: actions/cache/restore@v4
@@ -315,7 +322,7 @@ jobs:
         id: social
         if: hashFiles('social/complete') != ''
         continue-on-error: true
-        timeout-minutes: 20
+        timeout-minutes: 30
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}

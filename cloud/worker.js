@@ -26,6 +26,7 @@ export default {
     if (min % 2 === 0) await checkFills(env);
     await startQuickCheck(env, min);
     await startDailyOnTime(env, new Date(ev.scheduledTime));
+    if (min === 7) await dispatch(env, "posts.yml", {});      // members' posts, read and sorted every hour
   },
 };
 
@@ -46,6 +47,7 @@ async function api(req, env, url) {
   if (p === "/api/data" && req.method === "GET") return fromR2(req, env, "dashboard_data.json");
   if (p === "/api/charts" && req.method === "GET") return fromR2(req, env, "ticker_charts.json");
   if (p === "/api/members" && req.method === "GET") return fromR2(req, env, "members/index.json");
+  if (p === "/api/posts" && req.method === "GET") return fromR2(req, env, "posts/feed.json");
   if (p === "/api/member" && req.method === "GET") {
     const k = url.searchParams.get("k") || "";
     if (!/^([A-Z]\d{6}|n-[a-z0-9-]{1,40})$/.test(k)) return json({ error: "bad-member" }, 400);
@@ -316,6 +318,18 @@ async function checkFills(env) {
 // A new filing then starts the full update within a few minutes of being posted.
 // The full update starts exactly on time from here (GitHub's own schedule runs 10-25 minutes late and is only a
 // fallback that skips itself when this one already started): 10:43 and 23:43 UTC.
+async function dispatch(env, wf, inputs) {
+  if (!env.GH_DISPATCH_TOKEN) return;
+  try {
+    await fetch(`https://api.github.com/repos/${env.GH_REPO || "e36meister/congress-signals"}/actions/workflows/${wf}/dispatches`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`, Accept: "application/vnd.github+json",
+                 "User-Agent": "capitol-capital-worker", "Content-Type": "application/json" },
+      body: JSON.stringify({ ref: "main", inputs }),
+    });
+  } catch (e) {}
+}
+
 async function startDailyOnTime(env, now) {
   if (!env.GH_DISPATCH_TOKEN) return;
   const h = now.getUTCHours(), m = now.getUTCMinutes();

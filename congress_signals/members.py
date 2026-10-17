@@ -177,7 +177,7 @@ def member_wide_events(data, bioguide, cids):
 # ---------------------------------------------------------------------------
 # export
 # ---------------------------------------------------------------------------
-def export_members(cfg, scored, px, data, log=print, put=None, photos=None, posts=None):
+def export_members(cfg, scored, px, data, log=print, put=None, photos=None, posts=None, post_profiles=None):
     """Writes data/members/index.json and one file per member; uploads changed files with put(name, path)."""
     import congress_signals.engine as E
     data = data or {}
@@ -283,7 +283,8 @@ def export_members(cfg, scored, px, data, log=print, put=None, photos=None, post
                "photo": (photos or {}).get(b), "stats": st,
                "tcols": ["i", "td", "fd", "t", "co", "ty", "own", "lo", "hi", "sec", "x3m", "x1y", "r3m", "r1y"],
                "trades": trades, "ecols": ["d", "k", "x", "t", "sec", "u"], "events": [list(e) for e in evs],
-               "posts": [p for p in (posts or {}).get(key, [])][-300:]}
+               "posts": [p for p in (posts or {}).get(key, [])][-300:],
+               "pprof": (post_profiles or {}).get(key)}
         txt = json.dumps(_clean(doc), separators=(",", ":"), default=str)
         h = hashlib.md5(txt.encode()).hexdigest()
         path = os.path.join(out_dir, f"{key}.json")
