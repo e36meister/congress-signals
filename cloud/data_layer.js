@@ -1,3 +1,13 @@
+// phones: the bottom tab bar sits directly under <body>. Inside the sticky header, iPhone Safari let the "fixed" bar
+// scroll with the page.
+(() => {
+  const nav = document.querySelector("nav.tabs"), hdr = document.querySelector("header.top");
+  if (!nav || !hdr) return;
+  const mq = matchMedia("(max-width: 760px)");
+  const place = () => { const want = mq.matches ? document.body : hdr; if (nav.parentElement !== want) want.appendChild(nav); };
+  place();
+  try { mq.addEventListener("change", place); } catch (e) { mq.addListener(place); }
+})();
 // ---------- data from Cloudflare ----------
 async function loadMembersIndex() { return (await api("/api/members")).js; }
 async function loadMember(k) { return (await api("/api/member?k=" + encodeURIComponent(k))).js; }
