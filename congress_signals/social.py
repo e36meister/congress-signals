@@ -710,16 +710,40 @@ def collect_youtube(cfg, st, tg, leg, acc, deadline):
         return
     out_dir = _dir(cfg, "posts", "youtube")
     API = "https://www.googleapis.com/youtube/v3/"
+    try:            # one cheap call first, so a wrong key or a used-up day shows in the log
+        r = requests.get(API + "channels", params={"part": "id", "forHandle": "@YouTube", "key": key}, timeout=30)
+        if r.status_code != 200:
+            why = ((r.json().get("error") or {}).get("errors") or [{}])[0].get("reason", "") if r.text.startswith("{") else ""
+            _log(f"YouTube: key not accepted (HTTP {r.status_code} {why}); skipped")
+            return
+    except Exception as e:
+        _log(f"YouTube: not reachable ({type(e).__name__})")
+        return
     chans = {}
     for b, m in leg.items():
         s = m.get("social") or {}
         if s.get("youtube_id"):
             chans.setdefault(s["youtube_id"], b)
+    ids = st.setdefault("yt_ids", {})          # @handle / user name -> channel id ("" = not found)
+    units = 0
     for b, a in acc.items():
         for c in a.get("youtube") or []:
-            if c.startswith("UC"):
+            if c.startswith("UC") and len(c) >= 22:
                 chans.setdefault(c, b)
-    units = 0
+                continue
+            if c not in ids and time.time() < deadline and units < 2000:
+                js = _get(API + "channels", params={"part": "id", "forHandle": "@" + c.lstrip("@"), "key": key}, tries=2)
+                units += 1
+                if not (js or {}).get("items"):
+                    js = _get(API + "channels", params={"part": "id", "forUsername": c, "key": key}, tries=2)
+                    units += 1
+                if js is None:
+                    continue              # no answer (quota or network): try again next run
+                ids[c] = ((js.get("items") or [{}])[0]).get("id") or ""
+            if ids.get(c):
+                chans.setdefault(ids[c], b)
+    _log(f"YouTube: {len(chans)} member channels")
+    added = 0
     for cid, b in chans.items():
         if time.time() > deadline or units > 8000:
             break
@@ -748,6 +772,8 @@ def collect_youtube(cfg, st, tg, leg, acc, deadline):
                 break
         if rows:
             write_jsonl(path, sorted(old + rows, key=lambda x: x[0]))
+            added += len(rows)
+    _log(f"YouTube: +{added:,} videos ({units:,} of the 10,000 free daily units used)")
 
 
 def collect_people(cfg, st, deadline, per_run=6):
