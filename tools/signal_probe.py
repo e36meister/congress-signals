@@ -17,13 +17,9 @@ ins = pd.read_pickle(f"{D}/cache/insiders.pkl")
 ins["q"] = pd.to_datetime(ins["filed"]).dt.to_period("Q")
 print("insider trades by filing quarter (last 10):", ins.groupby("q").size().tail(10).to_dict())
 hdr = E._sec_headers(cfg)
-for k in ("2026q1", "2026q2", "2026q3", "2025q4"):
-    try:
-        r = requests.head(f"https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/{k}_form345.zip",
-                          headers=hdr, timeout=60, allow_redirects=True)
-        print(f"  SEC file {k}: HTTP {r.status_code}, {r.headers.get('Content-Length')} bytes")
-    except Exception as e:
-        print(f"  SEC file {k}: {type(e).__name__}")
+for k in ("2026q1", "2026q2", "2026q3"):
+    r = E.sec_345_zip(k, hdr)
+    print(f"  SEC file {k}: {'found, ' + str(len(r.content)) + ' bytes' if r is not None else 'NOT FOUND'}")
 
 print("\n=== 2. Options trades by year ===")
 for nm in ("house_tx", "senate_tx"):
@@ -34,7 +30,8 @@ for nm in ("house_tx", "senate_tx"):
     t["yr"] = pd.to_datetime(t.get("filed_date", t.get("trade_date")), errors="coerce").dt.year
     at = t["asset_type"] if "asset_type" in t else pd.Series("", index=t.index)
     opt = t["option"].notna() if "option" in t else pd.Series(False, index=t.index)
-    txt = (t.get("tx_raw", "").astype(str) + " " + t.get("note", "").astype(str) + " " + t.get("name", "").astype(str)).str.lower()
+    col = lambda c: t[c].astype(str) if c in t else pd.Series("", index=t.index)
+    txt = (col("tx_raw") + " " + col("note") + " " + col("name")).str.lower()
     words = txt.str.contains(r"\b(?:call|put)s?\b|strike|option", regex=True)
     g = pd.DataFrame({"yr": t["yr"], "OP tag": at.astype(str).eq("OP"), "option set": opt, "words, no option": words & ~opt})
     print(nm, "\n", g.groupby("yr")[["OP tag", "option set", "words, no option"]].sum().astype(int).T.to_string())

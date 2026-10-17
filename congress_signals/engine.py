@@ -496,9 +496,8 @@ def historical_company_names(cfg, per_run=16):
             if key in st["done"] or pd.Timestamp(y, 3 * q - 2, 1) > today or n >= per_run or out_of_time(cfg, 160):
                 continue
             try:
-                r = requests.get(f"https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/"
-                                 f"{key}_form345.zip", headers=hdr, timeout=180)
-                if r.status_code != 200:
+                r = sec_345_zip(key, hdr)
+                if r is None:
                     continue
                 sub = _read_tsv(zipfile.ZipFile(io.BytesIO(r.content)), "SUBMISSION.TSV",
                                 ["ISSUERNAME", "ISSUERTRADINGSYMBOL", "FILING_DATE"])
@@ -2386,9 +2385,8 @@ def ticker_renames(cfg):
             if out_of_time(cfg, 75):
                 break
             try:
-                r = requests.get(f"https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/"
-                                 f"{key}_form345.zip", headers=hdr, timeout=180)
-                if r.status_code != 200:
+                r = sec_345_zip(key, hdr)
+                if r is None:
                     continue
                 sub = _read_tsv(zipfile.ZipFile(io.BytesIO(r.content)), "SUBMISSION.TSV",
                                 ["ISSUERCIK", "ISSUERTRADINGSYMBOL", "FILING_DATE"])
@@ -2507,6 +2505,32 @@ def missing_price_scenarios(tx, px, cfg, horizons=None):
     return res
 
 
+SEC_345_BASES = ("https://www.sec.gov/files/datastandardsinnovation/data/insider-transactions-data-sets/",
+                 "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/")
+
+
+def sec_345_zip(key, hdr, timeout=180):
+    """The SEC's quarterly Form 3/4/5 data set for key like '2026q2'. The SEC moved these files to a new folder
+    from 2026 Q2 (datastandardsinnovation); both folders are tried. Logs when a quarter that should be out is missing."""
+    last = None
+    for base in SEC_345_BASES:
+        try:
+            r = requests.get(f"{base}{key}_form345.zip", headers=hdr, timeout=timeout)
+        except Exception as e:
+            last = type(e).__name__
+            continue
+        if r.status_code == 200 and r.content[:2] == b"PK":
+            return r
+        last = f"HTTP {r.status_code}"
+    try:
+        y, q = int(key[:4]), int(key[-1])
+        if pd.Timestamp(y, 3 * q, 1) + pd.offsets.MonthEnd(0) + pd.Timedelta(days=45) < pd.Timestamp.today():
+            log(f"SEC insider data set {key}: not found at the SEC ({last}) although it should be out by now")
+    except Exception:
+        pass
+    return None
+
+
 def collect_insiders(cfg):
     hdr = _sec_headers(cfg)
     cache = _p(cfg, "cache", "insiders.pkl")
@@ -2525,10 +2549,9 @@ def collect_insiders(cfg):
             key = f"{y}q{q}"
             if key in done or pd.Timestamp(y, 3 * q, 1) < start - pd.Timedelta(days=90) or pd.Timestamp(y, 3 * q - 2, 1) > today:
                 continue
-            url = f"https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/{key}_form345.zip"
             try:
-                r = requests.get(url, headers=hdr, timeout=180)
-                if r.status_code != 200:
+                r = sec_345_zip(key, hdr)
+                if r is None:
                     continue
                 z = zipfile.ZipFile(io.BytesIO(r.content))
                 sub = _read_tsv(z, "SUBMISSION.TSV", ["ACCESSION_NUMBER", "FILING_DATE", "ISSUERTRADINGSYMBOL"])
@@ -7940,9 +7963,8 @@ def collect_spouse_insiders(cfg, spouses, prefix="spouse"):
             if out_of_time(cfg, 75):
                 break
             try:
-                r = requests.get(f"https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/"
-                                 f"{key}_form345.zip", headers=hdr, timeout=180)
-                if r.status_code != 200:
+                r = sec_345_zip(key, hdr)
+                if r is None:
                     continue
                 z = zipfile.ZipFile(io.BytesIO(r.content))
                 own = _read_tsv(z, "REPORTINGOWNER.TSV", ["ACCESSION_NUMBER", "RPTOWNERCIK", "RPTOWNERNAME",
