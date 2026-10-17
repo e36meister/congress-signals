@@ -14,7 +14,7 @@ company, which reads tone better). Setting ANTHROPIC_API_KEY and POST_SORTER=hai
 Never raises; a post it can't read gets an empty result."""
 import os, re
 
-SORT_VERSION = 1
+SORT_VERSION = 2       # 2: tone toward industries too
 
 TYPE_RX = [
     ("meeting", re.compile(r"\b(met\b.{0,30}\bwith|meet(?:ing|s)?\b.{0,30}\bwith|sat down with|sit down with|hosted|"
@@ -47,6 +47,9 @@ INSIDER_RX = re.compile(
     r"(?:pending|upcoming) (?:approval|decision|contract|award|merger|deal))\b", re.I)
 
 MEET_RX = TYPE_RX[0][1]
+# wording that points to money or a policy push for an industry (for "post hinted at a boost, then a trade")
+BOOST_TYPES = {"funding", "legislation", "visit", "meeting", "praise"}
+HIT_TYPES = {"oversight", "criticism"}
 
 AGENCIES = {
     "FDA": r"\bFDA\b|Food and Drug Administration", "Pentagon": r"\bPentagon\b|Department of Defense|\bDoD\b",
@@ -147,8 +150,13 @@ def sort_record(r, names=None):
         for a, rx in AGENCY_RX.items():
             if rx.search(text):
                 targets.append({"k": "agency", "n": a})
+        try:
+            from congress_signals.social import SECTOR_WORDS
+        except Exception:
+            SECTOR_WORDS = {}
         for s in secs[:4]:
-            targets.append({"k": "industry", "n": s})
+            words = [w for w in (SECTOR_WORDS.get(s) or "").split() if len(w) > 2]
+            targets.append({"k": "industry", "n": s, "s": _target_tone(text, words, tone) if words else None})
         meet = None
         if MEET_RX.search(text) or re.search(r"\b(toured|visited)\b", text, re.I):
             who = [x["n"] for x in targets if x["k"] in ("person", "lobbyist")] + [x["t"] for x in targets if x["k"] == "co"]
@@ -161,7 +169,7 @@ def sort_record(r, names=None):
         return {"v": SORT_VERSION, "ty": ["other"], "tg": [], "ins": "", "meet": None, "strong": False, "m": "error"}
 
 
-def significance(r, srt, traded_by=None, crowd=None):
+def significance(r, srt, traded_by=None, crowd=None, member_sectors=None):
     """Why this post matters (owner, Oct 16: insider hints, a company the member or a colleague trades, strong
     for/against, several members at once, any company mention, or company people / lobbyists meeting a member).
     traded_by: {ticker: {bioguides who traded it in the last year}}; crowd: {ticker: distinct members naming it in 3 days}.
@@ -193,6 +201,12 @@ def significance(r, srt, traded_by=None, crowd=None):
         if n >= 3:
             why.append(f"{n} members named {t} in the last 3 days")
             lvl = max(lvl, 2)
+    # an industry the member traded in the last 90 days: {bioguide: {sector: [tickers]}}
+    ms = (member_sectors or {}).get(r[1]) or {}
+    for x in srt.get("tg", []):
+        if x["k"] == "industry" and x.get("n") in ms and (srt.get("ins") or set(srt.get("ty") or []) & (BOOST_TYPES | HIT_TYPES)):
+            why.append(f"about {x['n'].lower()}, where this member recently traded {', '.join(ms[x['n']][:3])}")
+            lvl = max(lvl, 3 if srt.get("ins") else 2)
     if cos and not why:
         why.append("names " + ", ".join(sorted(cos)[:4]))
         lvl = max(lvl, 1)

@@ -864,6 +864,8 @@ def build_index(cfg, tg=None, sort_until=None):
     root = _dir(cfg, "posts")
     pages, mentions, sectors, crowd = {}, {}, {}, {}
     profiles = {}
+    recent = {}          # each member's posts of the last ~15 months that name a company, person, industry or agency
+    recent_from = (dt.date.today() - dt.timedelta(days=450)).isoformat()
     names = getattr(tg, "names", None)
     n_sorted = n_unsorted = 0
     n = 0
@@ -894,7 +896,8 @@ def build_index(cfg, tg=None, sort_until=None):
                     r.append(tg.version)
                     redone = True
                 srt = r[11] if len(r) > 11 and isinstance(r[11], dict) and r[11].get("v") == SORT_VERSION else None
-                if srt is None and (sort_until is None or time.time() < sort_until):
+                # the last ~15 months are always sorted (trade-post links, alerts); older ones while time allows
+                if srt is None and (sort_until is None or time.time() < sort_until or str(r[0])[:10] >= recent_from):
                     srt = sort_record(r, names)
                     r[:] = (r + [""] * 11)[:11] + [srt]
                     redone = True
@@ -907,6 +910,16 @@ def build_index(cfg, tg=None, sort_until=None):
                 n += 1
                 lst = pages.setdefault(key, [[], []])
                 item = [d, s + (f" (repost of {rp})" if rp else ""), (text or "")[:300], tk, tone, url, ";".join(pp)]
+                if str(d) >= recent_from and isinstance(key, str):
+                    srt = srt or {}
+                    ag = [x["n"] for x in srt.get("tg", []) if x["k"] == "agency"]
+                    if tk or pp or secs or ag:
+                        recent.setdefault(key, []).append({
+                            "d": str(d)[:10], "u": url, "x": (text or "")[:220], "src": s, "t": list(tk or []),
+                            "p": [q.split("|")[0] for q in (pp or [])], "s": list(secs or []), "ag": ag,
+                            "ty": srt.get("ty") or [], "ins": srt.get("ins") or "", "meet": srt.get("meet") or [],
+                            "st": {(x.get("t") if x["k"] == "co" else x.get("n")): x.get("s") for x in srt.get("tg", [])
+                                   if x.get("s") is not None}})
                 if srt:      # what kind of post, insider hint, meeting, and tone toward each company or person
                     item += [srt.get("ty") or [], srt.get("ins") or "", srt.get("meet") or [],
                              [[x.get("n") if x["k"] in ("person", "lobbyist") else x.get("t"), x.get("s")] for x in srt.get("tg", [])
@@ -956,7 +969,7 @@ def build_index(cfg, tg=None, sort_until=None):
     profiles = {k: {"n": v["n"], "types": top(v["types"], 10), "for": top(v["for"]), "against": top(v["against"]),
                     "ins": v["ins"], "meet": top(v["meet"]), "agencies": top(v["agencies"], 6),
                     "industries": top(v["industries"], 6)} for k, v in profiles.items()}
-    idx = {"pages": pages, "profiles": profiles,
+    idx = {"pages": pages, "profiles": profiles, "recent_posts": {k: sorted(v, key=lambda x: x["d"]) for k, v in recent.items()},
            "mentions": {k: {t: sorted(v) for t, v in m.items()} for k, m in mentions.items()},
            "sectors": {k: {s: to_np(v) for s, v in m.items()} for k, m in sectors.items()},
            "crowd": {t: sorted(v) for t, v in crowd.items()}, "x_counts": xc,
@@ -966,6 +979,64 @@ def build_index(cfg, tg=None, sort_until=None):
          f"{sum(len(v) for m in mentions.values() for v in m.values()):,} company mentions; "
          f"sorted {n_sorted:,} posts this run" + (f", {n_unsorted:,} still to sort (next run)" if n_unsorted else ""))
     return idx
+
+
+AGENCY_SECTORS = {"FDA": ["Healthcare"], "HHS": ["Healthcare"], "Pentagon": ["Industrials"], "NASA": ["Industrials"],
+                  "Energy Dept": ["Energy", "Utilities"], "FERC": ["Energy", "Utilities"], "EPA": ["Energy", "Utilities", "Basic Materials"],
+                  "FCC": ["Communication Services", "Technology"], "SEC": ["Financial Services"], "Fed": ["Financial Services"],
+                  "CFPB": ["Financial Services"], "Treasury": ["Financial Services"], "USDA": ["Consumer Defensive"],
+                  "FAA": ["Industrials"], "DOT": ["Industrials", "Consumer Cyclical"], "NHTSA": ["Consumer Cyclical"],
+                  "FTC": ["Technology", "Communication Services", "Consumer Cyclical"], "Commerce Dept": ["Technology", "Industrials"],
+                  "DHS": ["Industrials", "Technology"], "VA": ["Healthcare"], "Justice Dept": []}
+
+
+def trade_post_links(trades, idx, before_days=90):
+    """Posts by the same member that line up with a trade (owner, Oct 16: "if Gottheimer posts hinting at a boost
+    in an industry, then trades a company in that industry, flag it and tell me to check the post").
+    trades: rows with bioguide, ticker, company, sector, tx_type, trade_date, filed_date.
+    A post counts when it is dated from `before_days` before the trade up to the filing date and:
+      1. names the company or one of its people, or
+      2. names the trade's industry (or an agency over it) with a hint of non-public information, or
+      3. names the industry the way a boost (buy) or a hit (sell) would read: money, a bill, a visit or meeting, or
+         praise and a positive tone for a purchase; a letter, criticism or a negative tone for a sale (30 days before).
+    -> {row position: [{"d", "u", "x", "src", "why"}...]} (up to 3 posts per trade, strongest first)."""
+    from congress_signals.post_sort import BOOST_TYPES, HIT_TYPES
+    rp = (idx or {}).get("recent_posts") or {}
+    out = {}
+    for i, r in enumerate(trades):
+        posts = rp.get(r.get("bioguide")) if isinstance(r.get("bioguide"), str) else None
+        if not posts:
+            continue
+        td = pd.Timestamp(r.get("trade_date") if pd.notna(r.get("trade_date")) else r.get("filed_date"))
+        fd = pd.Timestamp(r.get("filed_date"))
+        lo, lo30 = (td - pd.Timedelta(days=before_days)).strftime("%Y-%m-%d"), (td - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
+        hi = max(td, fd).strftime("%Y-%m-%d")
+        t, sec, buy = r.get("ticker"), r.get("sector"), r.get("tx_type") == "buy"
+        found = []
+        for p in posts:
+            if not (lo <= p["d"] <= hi):
+                continue
+            secs = set(p.get("s") or []) | {x for a in p.get("ag") or [] for x in AGENCY_SECTORS.get(a, [])}
+            when = "before the trade" if p["d"] <= td.strftime("%Y-%m-%d") else "after the trade, before it was disclosed"
+            if t in (p.get("t") or []):
+                tone = p.get("st", {}).get(t)
+                verb = f"met with {', '.join(p['meet'][:2])} of" if p.get("meet") else "posted about"
+                found.append((3, p, f"{verb} {r.get('company') or t} {when}" +
+                              (f" ({'positive' if tone >= 0.3 else 'negative' if tone <= -0.3 else 'neutral'} tone)" if tone is not None else "")))
+            elif sec and sec in secs and p.get("ins"):
+                found.append((3, p, f"hinted at something not yet public about {sec.lower()} (\"{p['ins']}\") {when}"))
+            elif sec and sec in secs and p["d"] >= lo30:
+                tone = p.get("st", {}).get(sec)
+                ty = set(p.get("ty") or [])
+                if buy and (ty & BOOST_TYPES) and (tone is None or tone >= 0.2):
+                    found.append((2, p, f"posted a {sec.lower()} boost ({', '.join(sorted(ty & BOOST_TYPES))}) {when}"))
+                elif not buy and ((ty & HIT_TYPES) or (tone is not None and tone <= -0.3)):
+                    found.append((2, p, f"posted against {sec.lower()} {when}"))
+        if found:
+            found.sort(key=lambda z: (-z[0], z[1]["d"]), reverse=False)
+            out[i] = [{"d": p["d"], "u": p.get("u"), "x": p.get("x"), "src": p.get("src"), "why": w, "lvl": lv}
+                      for lv, p, w in found[:3]]
+    return out
 
 
 def load_index(cfg):

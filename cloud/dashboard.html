@@ -73,6 +73,7 @@ section.panel{display:grid;gap:12px;align-content:start}
 .chip.watch{background:var(--sunken);color:var(--ink2)}
 .chip.new{background:var(--accent-soft);color:var(--accent)}
 .posts-feed{display:grid;gap:10px}
+ul.wposts{margin:6px 0 0;padding-left:18px;display:grid;gap:4px}
 nav.jump{position:sticky;top:var(--hdr,96px);z-index:4;display:flex;gap:6px;overflow-x:auto;padding:8px 0;margin-bottom:8px;
   background:var(--ground);border-bottom:1px solid var(--rule);scrollbar-width:none}
 nav.jump::-webkit-scrollbar{display:none}
@@ -562,7 +563,8 @@ function worthSection(d) {
       <div class="tk"><b>${tkBtn(r.t)}</b>${picks.has(r.t) ? `<span class="chip new">On the list</span>` : ""}</div>
       <div><div class="co">${esc(r.co || infoFor(r.t).co || r.t)}</div>
         <div class="ppl">${(r.who || []).map(w => `<span class="person">${avatar({ n: w.n, b: w.b })}<span><span class="pn">${esc(w.n)}${tagHtml({ n: w.n, b: w.b })}</span><span class="pr"><span class="bs ${w.ty}">${w.ty === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(w.td))} · disclosed ${esc(fmtDate(w.d))}</span></span></span>`).join("")}</div>
-        <div class="why">${(r.why || []).map(esc).join("; ")}</div></div>
+        <div class="why">${(r.why || []).map(esc).join("; ")}</div>
+        ${(r.posts || []).length ? `<ul class="wposts">${r.posts.map(q => `<li><a href="${esc(q.u)}" target="_blank" rel="noopener">Check the post</a> · ${esc(fmtDate(q.d))} · ${esc(q.src || "")}<br><span class="foot">${esc(q.why)}: “${esc(String(q.x || "").slice(0, 160))}”</span></li>`).join("")}</ul>` : ""}</div>
       <div class="side">${side(r)}</div>
       ${buyList.has(r.t) ? "" : confirmBox({ t: r.t })}</article>`).join("")}</div>
     <p class="foot">These aren't buy or sell signals on their own: the backtest hasn't shown these flags help yet. They're here so nothing unusual slips by. New ones are also emailed to you.</p></section>`;

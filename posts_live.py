@@ -80,13 +80,19 @@ for src, r in new_rows:
 E.log("Live posts: new this hour: " + ", ".join(f"{k} {v}" for k, v in counts.items()) + f"; {len(fresh)} not seen before")
 
 # who traded what in the last year (a company the member or a colleague trades)
-traded_by = {}
+traded_by, member_sectors = {}, {}
 try:
     sc = pd.read_pickle(os.path.join("data", "cache", "scored.pkl"))
     sc = sc[pd.to_datetime(sc["trade_date"], errors="coerce") >= pd.Timestamp(today) - pd.Timedelta(days=365)]
     for t, b in zip(sc["ticker"], sc["bioguide"]):
         if isinstance(b, str):
             traded_by.setdefault(t, set()).add(b)
+    s90 = sc[pd.to_datetime(sc["trade_date"], errors="coerce") >= pd.Timestamp(today) - pd.Timedelta(days=90)]
+    for t, b, sec in zip(s90["ticker"], s90["bioguide"], s90.get("sector", pd.Series(index=s90.index, dtype=object))):
+        if isinstance(b, str) and isinstance(sec, str):
+            lst = member_sectors.setdefault(b, {}).setdefault(sec, [])
+            if t not in lst:
+                lst.append(t)
 except Exception as e:
     E.log(f"Live posts: trades not available ({type(e).__name__})")
 
@@ -102,7 +108,7 @@ names = {b: m.get("name") or b for b, m in leg.items()}
 items = []
 for src, r in fresh:
     srt = r[11]
-    lvl, why = PS.significance(r, srt, traded_by, crowd_n)
+    lvl, why = PS.significance(r, srt, traded_by, crowd_n, member_sectors)
     items.append({"d": str(r[0])[:10], "b": r[1], "who": names.get(r[1], r[1]), "src": r[2], "text": (r[3] or "")[:300],
                   "url": r[4], "t": r[5] or [], "ty": srt.get("ty") or [], "ins": srt.get("ins") or "",
                   "meet": srt.get("meet") or [], "tg": [[x.get("n") if x["k"] in ("person", "lobbyist", "agency", "industry") else x.get("t"), x["k"], x.get("s")]
