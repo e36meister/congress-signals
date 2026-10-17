@@ -101,7 +101,10 @@ nav.jump .jn{font:600 11px var(--mono);color:var(--accent);margin-left:2px}
 #today-buy,#today-worth,#posts,#today-avoid,#today-unusual,#today-also{scroll-margin-top:calc(var(--hdr,96px) + 60px)}
 .post{border-top:1px solid var(--rule);padding-top:8px;overflow-wrap:anywhere}
 /* alerts tab + jump-to highlight */
-nav.tabs button{position:relative}
+header.top .brand{padding-right:48px}
+.bell{position:absolute;right:0;top:12px;width:40px;height:40px;border-radius:50%;border:1px solid var(--rule);background:var(--surface);color:var(--ink2);display:grid;place-items:center;cursor:pointer;padding:0;z-index:2}
+.bell[aria-pressed="true"]{color:var(--accent);border-color:var(--accent)}
+.bell .nb{position:absolute;top:-4px;right:-4px;margin:0}
 .nb{display:inline-block;min-width:18px;height:18px;padding:0 5px;margin-left:6px;border-radius:9px;background:var(--bad);color:#fff;font:700 11px/18px var(--body);text-align:center;vertical-align:1px}
 .alist{display:grid;gap:8px}
 .al{background:var(--surface);border:1px solid var(--rule);border-radius:10px;padding:10px 12px;display:grid;gap:4px;cursor:pointer;text-align:left;font:inherit;color:inherit;width:100%}
@@ -297,6 +300,7 @@ ol.posts li{background:var(--surface);border:1px solid var(--rule);border-radius
 
 <div class="wrap">
   <header class="top">
+    <button type="button" class="bell" id="bell" aria-label="Alerts" title="Alerts"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2H4.5z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg><span class="nb" id="alertsN" hidden></span></button>
     <div class="brand">
       <div>
         <div class="seal">The Purpose of a System is What It Does · STOCK Act</div>
@@ -306,7 +310,6 @@ ol.posts li{background:var(--surface);border:1px solid var(--rule);border-radius
     </div>
     <nav class="tabs" role="tablist" aria-label="Sections">
       <button role="tab" id="tab-today" aria-selected="true" data-tab="today" type="button">Today</button>
-      <button role="tab" id="tab-alerts" aria-selected="false" data-tab="alerts" type="button">Alerts<span class="nb" id="alertsN" hidden></span></button>
       <button role="tab" id="tab-record" aria-selected="false" data-tab="record" type="button">Track record</button>
       <button role="tab" id="tab-defense" aria-selected="false" data-tab="defense" type="button">Defense</button>
       <button role="tab" id="tab-small" aria-selected="false" data-tab="small" type="button">Small caps</button>
@@ -366,11 +369,19 @@ document.querySelectorAll("nav.tabs button").forEach(b => b.addEventListener("cl
   render();
 }));
 
+// the bell at the top right opens the alerts list (tap again to go back to Today)
+document.getElementById("bell").addEventListener("click", () => {
+  state.tab = state.tab === "alerts" ? "today" : "alerts";
+  if (state.tab === "alerts") ALERTS.items = null;
+  render(); window.scrollTo(0, 0);
+});
+
 // ---------- rendering ----------
 function render() {
   setHeaderHeight();
   TIPS = [];
   document.querySelectorAll("nav.tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === state.tab)));
+  $("#bell")?.setAttribute("aria-pressed", String(state.tab === "alerts"));
   const main = $("#main");
   const d = state.data;
   if (!d) {
