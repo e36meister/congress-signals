@@ -119,6 +119,12 @@ for src, r in fresh:
 raw = cloud_store.get("posts/feed.json", E.log)
 feed = json.loads(raw) if raw else {"items": []}
 old_items = [x for x in feed.get("items", []) if x.get("d", "") >= (today - dt.timedelta(days=7)).isoformat()]
+for x in old_items:      # sorted before Oct 17: a member's own name could count as a company person they "met"
+    last = str(x.get("who") or "").split(",")[0].split(" ")[-1].lower()
+    if last and any(last == str(m).split(" ")[-1].lower() for m in (x.get("meet") or [])):
+        x["meet"] = [m for m in x["meet"] if str(m).split(" ")[-1].lower() != last]
+        x["why"] = [w for w in (x.get("why") or []) if "met with or visited" not in w]
+        x["lvl"] = min(int(x.get("lvl") or 0), 1)
 allx = items + old_items
 keep = [x for x in allx if x.get("lvl", 0) >= 1][:600] + [x for x in allx if x.get("lvl", 0) < 1][:200]
 keep.sort(key=lambda x: (x.get("d", ""), x.get("at", "")), reverse=True)
