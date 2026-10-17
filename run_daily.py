@@ -138,7 +138,8 @@ def send_worth_alerts(items):
                 body = f"{wp[0]['t']}: {p0.get('who', '').split(',')[0]} {p0['why']}. Check the post in Worth a look." + \
                        (f" (+{len(fresh) - 1} more flagged trades)" if len(fresh) > 1 else "")
             title = (f"Trade + post: {', '.join(o['t'] for o in wp[:4])}" if wp else f"Worth a look: {ts}")
-            if cloud_store.notify(title, body, "worth", "/#today-worth", E.log):
+            links = [{"l": f"{o['t']}: " + "; ".join(o.get("why") or [])[:120], "u": f"/#worth/{o['t']}"} for o in fresh[:20]]
+            if cloud_store.notify(title, body, "worth", links[0]["u"] if len(fresh) == 1 else "", E.log, items=links):
                 for o in fresh:
                     for w in o["who"]:
                         pushed.add(key(o, w))
@@ -458,7 +459,7 @@ def main():
             ok_ = cloud_store.notify(("Signal switched on: " if ons else "Rare signal passed: ")
                                      + ", ".join(r["label"][:40] for r in (ons or fresh)[:2]),
                                      " ".join(f"{r['label'][:50]}: {(r['lift'] or 0) * 100:+.2f}%/trade. {what(r)}"
-                                              for r in fresh[:3]), "rare", "/#works", E.log)
+                                              for r in fresh[:3]), "rare", "/#works/rare", E.log)
             ok_ = _send_email("Capitol Capital: per-trade signal test", body, "Email: sent rare-signal notice") or ok_
             if ok_:
                 rp = os.path.join(cfg["DATA_DIR"], "state", E.RARE_FILE)

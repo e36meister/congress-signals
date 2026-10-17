@@ -109,7 +109,7 @@ items = []
 for src, r in fresh:
     srt = r[11]
     lvl, why = PS.significance(r, srt, traded_by, crowd_n, member_sectors)
-    items.append({"d": str(r[0])[:10], "b": r[1], "who": names.get(r[1], r[1]), "src": r[2], "text": (r[3] or "")[:300],
+    items.append({"id": cloud_store.post_id(r[4]), "d": str(r[0])[:10], "b": r[1], "who": names.get(r[1], r[1]), "src": r[2], "text": (r[3] or "")[:300],
                   "url": r[4], "t": r[5] or [], "ty": srt.get("ty") or [], "ins": srt.get("ins") or "",
                   "meet": srt.get("meet") or [], "tg": [[x.get("n") if x["k"] in ("person", "lobbyist", "agency", "industry") else x.get("t"), x["k"], x.get("s")]
                          for x in srt.get("tg", [])][:8],
@@ -130,7 +130,9 @@ top = sorted([x for x in items if x["lvl"] >= 2], key=lambda x: -x["lvl"])
 if top and not first:
     lines = [f"{x['who']}: {x['why'][0]}" for x in top[:3]]
     title = (f"{len(top)} notable post(s)" if len(top) > 1 else f"Post: {top[0]['who']}")[:120]
-    cloud_store.notify(title, " · ".join(lines)[:600], "posts", "/#posts", E.log)
+    links = [{"l": f"{x['who']}: {x['why'][0]}", "u": f"/#post/{x['id']}", "x": x.get("url")} for x in top[:20]]
+    # one post: tapping opens it in the app; several: the alert opens in the Alerts tab with each post listed
+    cloud_store.notify(title, " · ".join(lines)[:600], "posts", links[0]["u"] if len(top) == 1 else "", E.log, items=links)
     E.log(f"Live posts: alert sent for {len(top)} notable post(s)")
 elif first:
     E.log("Live posts: first run; learned what's already out there, no alert")

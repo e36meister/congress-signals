@@ -45,11 +45,30 @@ def get(name, log=print):
         return None
 
 
-def notify(title, body="", tag="", url="/", log=print):
-    """Queue a phone alert; the Cloudflare Worker sends it within a minute to every phone that turned alerts on."""
+def notify(title, body="", tag="", url="/", log=print, items=None):
+    """Queue a phone alert; the Cloudflare Worker sends it within a minute to every phone that turned alerts on and
+    keeps it in the app's Alerts tab. `url` is where tapping it goes in the app (e.g. "/#worth/NVDA", "/#post/<id>");
+    `items` ([{"l": label, "u": app link, "x": outside link}]) lists each thing an alert covers. With several items
+    and no url, tapping the alert opens it in the Alerts tab."""
     import json, time, random
     key = f"push/outbox/{int(time.time() * 1000)}-{random.randint(0, 99999):05d}.json"
-    return put(key, json.dumps({"title": title[:120], "body": body[:600], "tag": tag, "url": url}), log=lambda m: log(m.replace(key, "a phone alert")))
+    msg = {"title": title[:120], "body": body[:600], "tag": tag, "url": url or ""}
+    if items:
+        msg["items"] = [{k: str(v)[:500] for k, v in it.items() if v} for it in items[:20]]
+    return put(key, json.dumps(msg), log=lambda m: log(m.replace(key, "a phone alert")))
+
+
+def post_id(url):
+    """Short stable id for a post (its link), the same one the app computes (FNV-1a, base 36)."""
+    h = 0x811C9DC5
+    for b in str(url or "").encode("utf-8"):
+        h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
+    n, out = h, ""
+    while True:
+        n, r = divmod(n, 36)
+        out = "0123456789abcdefghijklmnopqrstuvwxyz"[r] + out
+        if not n:
+            return out
 
 
 def save_reasons(actions, log=print):
