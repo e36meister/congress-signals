@@ -12,6 +12,7 @@
 async function loadMembersIndex() { return (await api("/api/members")).js; }
 async function loadMember(k) { return (await api("/api/member?k=" + encodeURIComponent(k))).js; }
 async function loadPosts() { return (await api("/api/posts")).js; }
+async function loadAlerts() { return (await api("/api/notifications")).js; }
 async function loadTieReviews() { return (await api("/api/tie-reviews")).js; }
 async function saveTieReview(key, verdict, note) {
   return (await api("/api/tie-review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, verdict, note }) })).js;
@@ -299,5 +300,8 @@ state.folderId = "cloud";       // turns on the Buy buttons
 if (window.__CTD_SAMPLE) { state.data = window.__CTD_SAMPLE; state.confirm = window.__CTD_CONFIRM || null; state.taps = window.__CTD_TAPS || [];
   if (window.__CTD_LOGIN) showLogin(); setStatus("ok", "Results updated " + ago(state.data.updated), true); render(); return; }
 render();
-api("/api/session").then(() => { loadData(); alertsState(); }, e => { if (e.code !== "login") { state.error = errorText(e); setStatus("err", "Can't reach the server", true); render(); } });
+// the Alerts tab's unread count: checked on open, every 3 minutes while the app is on screen, and when it comes back
+setInterval(() => { if (document.visibilityState === "visible") refreshAlerts(); }, 180000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshAlerts(); });
+api("/api/session").then(() => { loadData(); alertsState(); refreshAlerts(); }, e => { if (e.code !== "login") { state.error = errorText(e); setStatus("err", "Can't reach the server", true); render(); } });
 

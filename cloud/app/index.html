@@ -110,6 +110,20 @@ nav.jump button:active{background:var(--accent-soft);color:var(--accent)}
 nav.jump .jn{font:600 11px var(--mono);color:var(--accent);margin-left:2px}
 #today-buy,#today-worth,#posts,#today-avoid,#today-unusual,#today-also{scroll-margin-top:calc(var(--hdr,96px) + 60px)}
 .post{border-top:1px solid var(--rule);padding-top:8px;overflow-wrap:anywhere}
+/* alerts tab + jump-to highlight */
+nav.tabs button{position:relative}
+.nb{display:inline-block;min-width:18px;height:18px;padding:0 5px;margin-left:6px;border-radius:9px;background:var(--bad);color:#fff;font:700 11px/18px var(--body);text-align:center;vertical-align:1px}
+.alist{display:grid;gap:8px}
+.al{background:var(--surface);border:1px solid var(--rule);border-radius:10px;padding:10px 12px;display:grid;gap:4px;cursor:pointer;text-align:left;font:inherit;color:inherit;width:100%}
+.al.unread{border-left:4px solid var(--accent)}
+.al .at{font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center}
+.al .tt{font-weight:600}
+.al .bd{font-size:13.5px;color:var(--ink2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.al.open .bd{-webkit-line-clamp:unset;display:block}
+.al ul{margin:4px 0 0;padding:0;list-style:none;display:grid;gap:4px}
+.al li a,.al li button{font:inherit;font-size:13.5px;color:var(--accent);background:none;border:0;padding:4px 0;text-align:left;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+.hl{animation:hl 2.6s ease-out 1;border-radius:10px}
+@keyframes hl{0%,35%{box-shadow:0 0 0 3px var(--accent);background:var(--accent-soft)}100%{box-shadow:0 0 0 0 transparent}}
 .post .why{margin:2px 0}
 .post.lvl3 .why b{color:var(--bad)}
 .tie-box{padding:10px 4px;white-space:normal;position:sticky;left:8px;width:min(640px,calc(100vw - 64px))}
@@ -336,7 +350,7 @@ nav.tabs button{overflow:hidden}
 #ptr.go{color:var(--accent)}
 @media (max-width: 760px){
   body{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
-  nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:50;margin:0;gap:0;display:grid;grid-template-columns:repeat(8,minmax(0,1fr));
+  nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:50;margin:0;gap:0;display:grid;grid-template-columns:repeat(9,minmax(0,1fr));
     overflow:visible;background:color-mix(in srgb,var(--surface) 92%,transparent);-webkit-backdrop-filter:saturate(1.6) blur(14px);
     backdrop-filter:saturate(1.6) blur(14px);border-top:1px solid var(--rule);padding:6px 2px calc(6px + env(safe-area-inset-bottom,0px))}
   nav.tabs button{font-size:0;border:0;padding:4px 0 2px;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--muted);
@@ -344,6 +358,7 @@ nav.tabs button{overflow:hidden}
   nav.tabs button::before{content:"";width:24px;height:24px;background:currentColor;-webkit-mask:var(--ic) center/contain no-repeat;mask:var(--ic) center/contain no-repeat}
   nav.tabs button::after{font:600 10.5px/1.1 var(--body);letter-spacing:.1px;white-space:nowrap}
   nav.tabs button[aria-selected="true"]{color:var(--accent);border:0}
+  nav.tabs button .nb{position:absolute;top:0;left:52%;margin:0;min-width:16px;height:16px;font-size:10px;line-height:16px;padding:0 4px}
   nav.tabs button[data-tab="today"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Crect%20x%3D%223.5%22%20y%3D%225%22%20width%3D%2217%22%20height%3D%2215.5%22%20rx%3D%222%22/%3E%3Cpath%20d%3D%22M3.5%2010h17M8%203v4M16%203v4%22/%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2215%22%20r%3D%221.6%22%20fill%3D%22%23000%22/%3E%3C/svg%3E")}
   nav.tabs button[data-tab="today"]::after{content:"Today"}
   nav.tabs button[data-tab="record"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M4%2020V4M4%2020h16%22/%3E%3Cpath%20d%3D%22M7%2015l4-4%203%203%205-6%22/%3E%3C/svg%3E")}
@@ -357,7 +372,9 @@ nav.tabs button{overflow:hidden}
   nav.tabs button[data-tab="real"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Ccircle%20cx%3D%2210.5%22%20cy%3D%2210.5%22%20r%3D%226%22/%3E%3Cpath%20d%3D%22M15%2015l5.5%205.5M8%2010.5l2%202%203.5-4%22/%3E%3C/svg%3E")}
   nav.tabs button[data-tab="real"]::after{content:"Reality"}
   nav.tabs button[data-tab="port"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Crect%20x%3D%223%22%20y%3D%227%22%20width%3D%2218%22%20height%3D%2213%22%20rx%3D%222%22/%3E%3Cpath%20d%3D%22M9%207V5a1%201%200%200%201%201-1h4a1%201%200%200%201%201%201v2M3%2012.5h18%22/%3E%3C/svg%3E")}
-  nav.tabs button[data-tab="port"]::after{content:"Portfolio"}
+  nav.tabs button[data-tab="port"]::after{content:"Account"}
+  nav.tabs button[data-tab="alerts"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M6%2016.5V11a6%206%200%200%201%2012%200v5.5l1.5%202H4.5z%22/%3E%3Cpath%20d%3D%22M10%2020.5a2%202%200%200%200%204%200%22/%3E%3C/svg%3E")}
+  nav.tabs button[data-tab="alerts"]::after{content:"Alerts"}
   nav.tabs button[data-tab="members"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Ccircle%20cx%3D%229%22%20cy%3D%228.5%22%20r%3D%223.2%22/%3E%3Cpath%20d%3D%22M3%2019.5c.6-3.3%203-5.2%206-5.2s5.4%201.9%206%205.2%22/%3E%3Cpath%20d%3D%22M15.5%205.6a3%203%200%200%201%200%205.8M17.5%2014.6c1.8.6%203%202.3%203.4%204.9%22/%3E%3C/svg%3E")}
   nav.tabs button[data-tab="members"]::after{content:"Members"}
 }
@@ -383,6 +400,7 @@ nav.tabs button{overflow:hidden}
     </div>
     <nav class="tabs" role="tablist" aria-label="Sections">
       <button role="tab" id="tab-today" aria-selected="true" data-tab="today" type="button">Today</button>
+      <button role="tab" id="tab-alerts" aria-selected="false" data-tab="alerts" type="button">Alerts<span class="nb" id="alertsN" hidden></span></button>
       <button role="tab" id="tab-record" aria-selected="false" data-tab="record" type="button">Track record</button>
       <button role="tab" id="tab-defense" aria-selected="false" data-tab="defense" type="button">Defense</button>
       <button role="tab" id="tab-small" aria-selected="false" data-tab="small" type="button">Small caps</button>
@@ -426,8 +444,7 @@ function ago(iso) {
   return Math.round(h / 24) + " days ago";
 }
 try { const t = localStorage.getItem("ctd-tab"); if (t) state.tab = t; } catch (e) {}
-if (/^#(today|record|defense|small|works|real|port|members)$/.test(location.hash)) state.tab = location.hash.slice(1);
-if (location.hash === "#posts") { state.tab = "today"; setTimeout(() => document.getElementById("posts")?.scrollIntoView(), 1500); }
+if (/^#(today|record|defense|small|works|real|port|members|alerts)$/.test(location.hash)) state.tab = location.hash.slice(1);
 
 // ---------- status ----------
 function setStatus(kind, text, showRefresh) {
@@ -465,8 +482,10 @@ function render() {
   if (state.tab === "real") html += renderReal(d);
   if (state.tab === "port") html += renderPortfolio(d);
   if (state.tab === "members") html += renderMembers(d);
+  if (state.tab === "alerts") html += renderAlerts();
   main.innerHTML = html;
   bind();
+  setTimeout(focusTarget, 0);
   try { document.querySelector('nav.tabs button[aria-selected="true"]')?.scrollIntoView({ inline: "nearest", block: "nearest" }); } catch (e) {}
 }
 
@@ -581,6 +600,8 @@ const TAG_RULES = [
   [/sold shortly before a company event/i, () => "Before event", "Sold shortly before a company event (earnings, FDA decision...)."],
   [/trading volume hit ([\d.]+)x normal/i, m => `Volume ${m[1]}×`, "Trading volume was unusually heavy in the two weeks before the trade."],
   [/closed committee briefing/i, () => "Closed briefing", "A closed (non-public) committee briefing shortly before the trade."],
+  [/^FORMER tie: their last SEC filing for the company was (\w+ \d{4})/i, m => `Former · left ~${m[1]}`, "This family member's last SEC filing for the company is over 18 months old, so they may have left. The trade still counts, at half weight; check whether the tie still matters.", "neg"],
+  [/^FORMER tie/i, () => "Former tie", "The family member may have left the company. The trade still counts, at half weight.", "neg"],
   [/spouse .* (?:company insider|insider)/i, () => "Spouse insider", "The member's spouse is a company insider per SEC filings."],
   [/possible family tie/i, () => "Family tie?", "A possible family tie to the company (name match, not confirmed). Review it in What works."],
   [/spouse works for or is paid by/i, () => "Spouse job", "The member's yearly disclosure says their spouse works for or is paid by the company."],
@@ -654,7 +675,7 @@ function pickRow(r, side) {
   if (r.nwm) ctx.push(tipBtn(`${r.nwm} member+co news`, "In the news together", `<p>${esc(r.nwm)} stories mention the member and the company together.</p>`, "ctx"));
   (r.hear || []).forEach(h => ctx.push(tipBtn(`Testifies ${fmtShort(h.date)}`, "Testifies before Congress", `<p><b>${esc(fmtDate(h.date))}</b>: ${esc(h.title)}</p>`, "neg")));
   const pctTop = r.pct != null ? Math.max(1, Math.round(100 - r.pct)) : null;
-  return `<article class="pick">
+  return `<article class="pick" data-hl="pick:${esc(r.t)}">
     <div class="tk"><b>${tkBtn(r.t)}</b><span class="chip ${esc(r.action)}">${esc(r.action)}</span>${isNew ? `<span class="chip new">New</span>` : ""}${r.def ? `<span class="chip watch">Defense</span>` : ""}${r.ags ? `<span class="chip avoid" title="The member bought while most analysts rated it hold or worse">Against Wall Street</span>` : ""}</div>
     <div>
       <div class="co">${esc(r.co || r.t)}${r.sec ? ` <span class="who">· ${esc(r.sec)}</span>` : ""}</div>
@@ -747,7 +768,7 @@ function postsSection() {
     const detail = `<p><b>${esc(x.who)}</b> · ${esc(fmtDate(x.d))} · ${esc(x.src)}</p>${(x.why || []).length ? `<p><b>${esc(x.why.join("; "))}</b></p>` : ""}
       <p>“${esc(x.text)}”</p>${(x.tg || []).filter(g => g[2] != null).length ? `<p class="foot">Tone: ${x.tg.filter(g => g[2] != null).map(g => `${esc(g[0])} ${stanceTxt(g[2])}`).join(" · ")}</p>` : ""}
       ${x.url ? `<p><a href="${esc(x.url)}" target="_blank" rel="noopener">Go to post</a></p>` : ""}`;
-    return `<article class="post lvl${x.lvl}"><div class="prow">
+    return `<article class="post lvl${x.lvl}" data-hl="post:${esc(x.id || postId(x.url))}"><div class="prow">
       ${tipBtn(who, x.who, detail, "who")}
       <span class="ms">${esc(fmtShort(x.d))}</span>
       ${(x.ty || []).filter(t => t !== "other").slice(0, 2).map(t => `<span class="chip watch">${esc(POST_TY[t] || t)}</span>`).join("")}
@@ -779,7 +800,7 @@ function worthSection(d) {
   // Buy button here too; a stock already on the buy list keeps its button up there (one order form per stock)
   const side = r => buyList.has(r.t) ? `<span class="foot">Buy it from Buy candidates above</span>` : buyArea({ t: r.t });
   return `<section class="panel" id="today-worth"><div class="ph"><h2>Worth a look</h2><span class="sub">Recent disclosures with a rare red flag, whatever their score</span></div>
-    <div class="picks">${u.map(r => `<article class="pick">
+    <div class="picks">${u.map(r => `<article class="pick" data-hl="worth:${esc(r.t)}">
       <div class="tk"><b>${tkBtn(r.t)}</b>${picks.has(r.t) ? `<span class="chip new">On the list</span>` : ""}</div>
       <div><div class="co">${esc(r.co || infoFor(r.t).co || r.t)}</div>
         <div class="ppl">${(r.who || []).map(w => `<span class="person">${avatar({ n: w.n, b: w.b })}<span><span class="pn">${esc(w.n)}${tagHtml({ n: w.n, b: w.b })}</span><span class="pr"><span class="bs ${w.ty}">${w.ty === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(w.td))} · disclosed ${esc(fmtDate(w.d))}</span></span></span>`).join("")}</div>
@@ -1042,7 +1063,7 @@ function renderPortfolio(d) {
   <p class="note">Each new BUY pick gets ${L.dollars ? "about " + money(L.dollars) : "an equal share of the account, sized like the backtest"} and is sold after ${L.hold_days ?? 60} trading days${L.hold_small && L.hold_small !== L.hold_days ? ` (${L.hold_small} for companies under $2B)` : ""}. Up to ${Math.round(L.max_invested_pct ?? 90)}% of the account is invested at once${L.max_positions ? `, in at most ${L.max_positions} positions` : ""}. Positions you buy yourself, including with the Buy button, are never sold by the tool.</p>
   <section class="panel"><div class="ph"><h2>Positions</h2>${alpLink}</div>
     ${pos.length ? `<div class="tbl"><table><thead><tr><th>Ticker</th><th class="n">Shares</th><th class="n">Avg cost</th><th class="n">Price</th><th class="n">Value</th><th class="n">Gain</th><th>Held</th></tr></thead><tbody>
-    ${pos.map(x => `<tr><td class="mono">${tkBtn(x.t)}${soldNote(x)}</td><td class="n">${Number(x.qty).toLocaleString()}</td><td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.px, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${heldCell(x, L)}</td></tr>`).join("")}
+    ${pos.map(x => `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${soldNote(x)}</td><td class="n">${Number(x.qty).toLocaleString()}</td><td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.px, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${heldCell(x, L)}</td></tr>`).join("")}
     </tbody></table></div>
     <p class="foot">Suggested sell dates for your own positions use the current best holding period from the weekly check (What works → Automatic adjustments): ${(state.data.adaptive?.policy?.hold_other) ?? L.hold_days ?? 60} trading days for most stocks, ${(state.data.adaptive?.policy?.hold_small) ?? L.hold_small ?? L.hold_days ?? 60} for companies under $2B. They update if the check changes. The tool never sells your own positions.</p>` : `<div class="empty">No open positions yet. New BUY picks are bought at the next market open.</div>`}</section>
   ${divSection(p)}
@@ -1240,7 +1261,7 @@ function tiesPanel(rows) {
     let h = `<tr><td>${esc(r.Member)}</td><td>${esc(r.Spouse || "–")}</td>
       <td>${chip(r._c)}${r.key && canReview ? `<div style="margin-top:4px"><button class="btn sm" data-tie="${esc(r.key)}">${open ? "Close" : v ? "Change" : "Review"}</button></div>` : ""}${v && v.note ? `<div class="foot" style="margin:2px 0 0">${esc(v.note)}</div>` : ""}</td>
       <td>${esc(r.Company)}</td><td>${esc(r.Role)}</td>
-      <td class="nw">${esc(r.Since ? fmtDate(r.Since) : "–")}</td><td class="nw">${esc(r["Last filing"] ? fmtDate(r["Last filing"]) : "–")}</td>
+      <td class="nw">${esc(r.Since ? fmtDate(r.Since) : "–")}</td><td class="nw">${esc(r["Last filing"] ? fmtDate(r["Last filing"]) : "–")}${r["Last filing"] && (Date.now() - Date.parse(r["Last filing"])) > 548 * 864e5 ? ` <span class="chip avoid" title="No SEC filing for 18+ months: they may have left. Trades still count at half weight, with a warning.">Former?</span>` : ""}</td>
       <td class="nw">${r.link ? `<a href="${esc(r.link)}" target="_blank" rel="noopener">SEC filings</a>` : esc(r.Source)}</td></tr>`;
     if (open) {
       const m = TIE.msg[r.key];
@@ -1790,6 +1811,111 @@ addEventListener("popstate", () => {
 });
 { const m = location.hash.match(/^#members(?:\/([A-Za-z0-9-]+))?$/); if (m) { state.tab = "members"; MEM.key = m[1] || null; } }
 
+
+// ---------- Alerts tab: every phone alert, newest first; tapping one opens what it's about ----------
+const ALERTS = { items: null, err: null, loading: false, open: null };
+let SEEN = 0;
+try { SEEN = Date.parse(localStorage.getItem("cc-alerts-seen") || "") || 0; } catch (e) {}
+const ALERT_KIND = { posts: "Posts", worth: "Worth a look", fills: "Trades", fill: "Trade", close: "Market close", rare: "Signals", welcome: "Alerts" };
+function refreshAlerts() {
+  if (ALERTS.loading) return;
+  ALERTS.loading = true;
+  loadAlerts().then(js => { ALERTS.items = (js && js.items) || []; ALERTS.err = null; })
+    .catch(e => { ALERTS.err = e; })
+    .finally(() => { ALERTS.loading = false; alertsBadge(); if (state.tab === "alerts") render(); });
+}
+function unread() { return (ALERTS.items || []).filter(a => Date.parse(a.at) > SEEN).length; }
+function alertsBadge() {
+  const b = document.getElementById("alertsN"); if (!b) return;
+  const n = unread(); b.hidden = !n; b.textContent = n > 99 ? "99+" : String(n);
+}
+function markSeen() {
+  const top = (ALERTS.items || [])[0];
+  if (top) { SEEN = Math.max(SEEN, Date.parse(top.at) || 0); try { localStorage.setItem("cc-alerts-seen", new Date(SEEN).toISOString()); } catch (e) {} }
+  alertsBadge();
+}
+function renderAlerts() {
+  if (ALERTS.items === null && !ALERTS.err) refreshAlerts();
+  if (ALERTS.err?.code === "app_only") return `<div class="empty">Alerts are in the Capitol Capital app (home-screen app or its web address).</div>`;
+  const list = ALERTS.items || [];
+  const before = SEEN;
+  setTimeout(markSeen, 1500);           // seen once the tab has been open a moment
+  const row = a => {
+    const isOpen = ALERTS.open === a.id, many = (a.items || []).length > 1;
+    return `<div class="al ${Date.parse(a.at) > before ? "unread" : ""} ${isOpen ? "open" : ""}" data-hl="alert:${esc(a.id)}" data-alert="${esc(a.id)}" role="button" tabindex="0">
+      <div class="at"><span class="chip watch">${esc(ALERT_KIND[a.kind] || ALERT_KIND[String(a.kind).split("-")[0]] || "Alert")}</span>${esc(ago(a.at))} · ${esc(fmtET(a.at))}</div>
+      <div class="tt">${esc(a.title)}</div>${a.body ? `<div class="bd">${esc(a.body)}</div>` : ""}
+      ${many && isOpen ? `<ul>${a.items.map(x => `<li>${x.u ? `<button type="button" data-go="${esc(x.u)}">${esc(x.l)}</button>` : esc(x.l)}${x.x ? ` · <a href="${esc(x.x)}" target="_blank" rel="noopener">Go to post</a>` : ""}</li>`).join("")}</ul>` :
+        many ? `<div class="foot">${a.items.length} items · tap to see them</div>` : ""}
+    </div>`;
+  };
+  return `<section class="panel"><div class="ph"><h2>Alerts</h2><span class="sub">Every alert sent to your phone, newest first. Tap one to go to it.</span>
+    <button type="button" class="link" data-arefresh="1">Refresh</button></div>
+    ${ALERTS.loading && !ALERTS.items ? `<div class="empty">Loading…</div>` : ALERTS.err ? `<div class="note warn">${esc(errorText(ALERTS.err))}</div>` :
+      list.length ? `<div class="alist">${list.map(row).join("")}</div>` : `<div class="empty">No alerts yet. New ones show up here as they're sent.</div>`}
+  </section>`;
+}
+document.getElementById("main").addEventListener("click", ev => {
+  const g = ev.target.closest("[data-go]");
+  if (g) { ev.stopPropagation(); go(g.dataset.go); return; }
+  if (ev.target.closest("a")) return;
+  if (ev.target.closest("[data-arefresh]")) { ALERTS.items = null; refreshAlerts(); render(); return; }
+  const a = ev.target.closest("[data-alert]");
+  if (!a) return;
+  const it = (ALERTS.items || []).find(x => x.id === a.dataset.alert);
+  if (!it) return;
+  if ((it.items || []).length > 1 || !it.url || /#alerts/.test(it.url)) { ALERTS.open = ALERTS.open === it.id ? null : it.id; render(); }
+  else go(it.url);
+});
+
+// ---------- deep links: "#post/<id>", "#worth/NVDA", "#port/NVDA", "#t/NVDA", "#alerts/<id>", "#members/<id>", "#works/rare" ----------
+let TARGET = null;        // {sel, until}: element to scroll to and flash once it's on the page
+function postId(u) {      // same as cloud_store.post_id (FNV-1a, base 36)
+  let h = 0x811c9dc5;
+  for (const b of new TextEncoder().encode(String(u || ""))) { h ^= b; h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(36);
+}
+function go(link) {
+  const u = new URL(link, location.href);
+  try { history.pushState({}, "", u.hash || "#"); } catch (e) {}
+  route(u.hash);
+}
+function route(hash) {
+  const [a, ...rest] = String(hash || "").replace(/^#/, "").split("/");
+  const b = decodeURIComponent(rest.join("/") || "");
+  const tab = t => { state.tab = t; try { localStorage.setItem("ctd-tab", t); } catch (e) {} };
+  const aim = sel => { TARGET = { sel, until: Date.now() + 20000 }; };
+  if (a === "post" && b) {
+    tab("today"); POSTS.show = "all"; POSTS.n = 400; aim(`[data-hl="post:${CSS.escape(b)}"]`);
+    if (POSTS.err) { POSTS.err = null; POSTS.feed = null; }
+  } else if (a === "worth" && b) { tab("today"); aim(`[data-hl="worth:${CSS.escape(b)}"],[data-hl="pick:${CSS.escape(b)}"]`); }
+  else if (a === "port") { tab("port"); if (b) aim(`[data-hl="pos:${CSS.escape(b)}"]`); }
+  else if (a === "t" && b) { tab("today"); render(); openChart(b); return; }
+  else if (a === "alerts") { tab("alerts"); ALERTS.items = null; if (b) { ALERTS.open = b; aim(`[data-hl="alert:${CSS.escape(b)}"]`); } }
+  else if (a === "posts") { tab("today"); aim("#posts"); }
+  else if (a === "works") { tab("works"); }
+  else if (/^today-/.test(a)) { tab("today"); aim("#" + a); }
+  else if (["today", "record", "defense", "small", "works", "real", "port", "alerts"].includes(a)) tab(a);
+  else return;            // members links are handled by the member pages
+  render(); scrollTo(0, 0);
+}
+function focusTarget() {
+  if (!TARGET) return;
+  if (Date.now() > TARGET.until) { TARGET = null; return; }
+  const el = document.querySelector(TARGET.sel);
+  if (!el) return;                       // not on the page yet (posts still loading): try again on the next render
+  TARGET = null;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.remove("hl"); void el.offsetWidth; el.classList.add("hl");
+}
+addEventListener("hashchange", () => route(location.hash));
+// a tapped phone alert, when the app is already open: the service worker says where to go
+try { navigator.serviceWorker && navigator.serviceWorker.addEventListener("message", ev => { if (ev.data && ev.data.type === "open") { go(ev.data.url); refreshAlerts(); } }); } catch (e) {}
+// opened from an alert: "?n=<id>" marks it read; then go to what it's about
+{ const q = new URLSearchParams(location.search);
+  if (q.get("n")) { try { history.replaceState({}, "", location.pathname + location.hash); } catch (e) {} }
+  if (/^#(post|worth|port|t|alerts|posts|works|today-)/.test(location.hash)) setTimeout(() => route(location.hash), 0); }
+
 // phones: the bottom tab bar sits directly under <body>. Inside the sticky header, iPhone Safari let the "fixed" bar
 // scroll with the page.
 (() => {
@@ -1804,6 +1930,7 @@ addEventListener("popstate", () => {
 async function loadMembersIndex() { return (await api("/api/members")).js; }
 async function loadMember(k) { return (await api("/api/member?k=" + encodeURIComponent(k))).js; }
 async function loadPosts() { return (await api("/api/posts")).js; }
+async function loadAlerts() { return (await api("/api/notifications")).js; }
 async function loadTieReviews() { return (await api("/api/tie-reviews")).js; }
 async function saveTieReview(key, verdict, note) {
   return (await api("/api/tie-review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, verdict, note }) })).js;
@@ -2091,7 +2218,10 @@ state.folderId = "cloud";       // turns on the Buy buttons
 if (window.__CTD_SAMPLE) { state.data = window.__CTD_SAMPLE; state.confirm = window.__CTD_CONFIRM || null; state.taps = window.__CTD_TAPS || [];
   if (window.__CTD_LOGIN) showLogin(); setStatus("ok", "Results updated " + ago(state.data.updated), true); render(); return; }
 render();
-api("/api/session").then(() => { loadData(); alertsState(); }, e => { if (e.code !== "login") { state.error = errorText(e); setStatus("err", "Can't reach the server", true); render(); } });
+// the Alerts tab's unread count: checked on open, every 3 minutes while the app is on screen, and when it comes back
+setInterval(() => { if (document.visibilityState === "visible") refreshAlerts(); }, 180000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshAlerts(); });
+api("/api/session").then(() => { loadData(); alertsState(); refreshAlerts(); }, e => { if (e.code !== "login") { state.error = errorText(e); setStatus("err", "Can't reach the server", true); render(); } });
 
 })();
 </script>

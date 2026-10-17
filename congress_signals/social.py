@@ -29,7 +29,35 @@ TWEETS_FIRST, TWEETS_LAST = dt.date(2017, 6, 21), dt.date(2023, 7, 15)
 START_YEAR = 2013
 MONTHS_DAYS = set("jan january feb february mar march apr april may jun june jul july aug august sep sept september oct "
                   "october nov november dec december monday tuesday wednesday thursday friday saturday sunday".split())
-TAGGER_VERSION = 9       # 9: executives by last name or distinctive first name alone, scored
+TAGGER_VERSION = 10       # 9: executives by last name or distinctive first name alone, scored
+
+# 10: a member's own name is never a company person, nicknames included ("Chris Murphy" = Sen. Christopher Murphy)
+_NICK_GROUPS = ["christopher chris kit", "robert bob rob bobby", "william bill will billy", "james jim jimmy jamie",
+                "michael mike mick", "charles chuck charlie", "thomas tom tommy", "richard dick rick rich", "edward ed ted eddie",
+                "theodore ted", "joseph joe joey", "john jack johnny", "daniel dan danny", "david dave", "steven steve stephen",
+                "anthony tony", "elizabeth liz beth betsy", "katherine kathy kate katie", "catherine cathy kate", "patricia pat patty",
+                "patrick pat", "margaret maggie peggy", "jennifer jen jenny", "kenneth ken", "gregory greg", "jeffrey jeff",
+                "benjamin ben", "nicholas nick", "andrew andy drew", "matthew matt", "timothy tim", "donald don", "ronald ron",
+                "gerald jerry", "lawrence larry", "raymond ray", "samuel sam", "alexander alex", "alexandria alex", "frederick fred",
+                "douglas doug", "russell russ", "randall randy", "zachary zach", "jonathan jon", "joshua josh", "deborah debbie deb",
+                "susan sue suzan", "suzanne sue", "rebecca becky", "victoria vicky", "kimberly kim", "cynthia cindy", "pamela pam",
+                "christine chris", "christina chris", "abigail abby", "harold hal harry", "henry hank", "gabriel gabe", "jacob jake",
+                "phillip phil", "philip phil", "leonard len", "lucille lucy", "terrence terry", "vernon vern", "mitchell mitch",
+                "earl buddy", "jose pepe", "francisco frank", "francis frank", "eugene gene", "albert al", "alan al", "alfonso al"]
+NICKNAMES = {}
+for _g in _NICK_GROUPS:
+    _w = _g.split()
+    for _x in _w:
+        NICKNAMES.setdefault(_x, set()).update(_w)
+
+
+def _same_first(first, known):
+    """True when `first` is one of a member's first names, a nickname of it, or the start of it (Chris/Christopher)."""
+    if not known:
+        return False
+    if first in known or NICKNAMES.get(first, set()) & set(known):
+        return True
+    return len(first) >= 3 and any(k.startswith(first) or first.startswith(k) for k in known if len(k) >= 3)
 
 SECTOR_WORDS = {
     "Energy": "oil gas pipeline pipelines drilling fracking refinery refineries lng crude petroleum keystone opec gasoline energy",
@@ -203,8 +231,10 @@ class Tagger:
                 last = re.findall(r"[a-z]+", E._strip_accents(m.get("last") or "").lower())
                 if last:
                     self.surnames.add(last[-1])
-                    self.firsts.setdefault(last[-1], set()).update(
-                        x for x in re.findall(r"[a-z]+", E._strip_accents(f"{m.get('first') or ''} {m.get('nick') or ''}").lower()))
+                    fs = set(re.findall(r"[a-z]+", E._strip_accents(f"{m.get('first') or ''} {m.get('nick') or ''}").lower()))
+                    for f in list(fs):          # Chris Murphy is Christopher Murphy, Bob Casey is Robert Casey
+                        fs |= NICKNAMES.get(f, set())
+                    self.firsts.setdefault(last[-1], set()).update(fs)
         except Exception:
             pass
         self.sectors = {}
@@ -264,7 +294,7 @@ class Tagger:
                         continue
                     tick.add(t)
                 else:
-                    if ct[-1] in self.surnames and ct[0] in self.firsts.get(ct[-1], ()):
+                    if ct[-1] in self.surnames and _same_first(ct[0], self.firsts.get(ct[-1], ())):
                         continue                                # it's a member of Congress, not the executive
                     ppl.append((" ".join(x.capitalize() for x in ct), t, kind[3:]))
                     tick.add(t)
