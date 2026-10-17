@@ -50,7 +50,9 @@ leg = S.legislators(cfg, st)
 acc = S.discover_accounts(cfg, leg, st, time.time() + 30)
 hmap = S.bluesky_accounts(cfg, leg, acc, st, time.time() + 30)
 counts = {}
-for name, fn in (("Press releases", lambda: S.collect_press(cfg, st, tg, deadline, years=False)),
+import congress_signals.press_backfill as PB
+for name, fn in (("Members' own sites", lambda: PB.latest_current(cfg, tg, leg, time.time() + 300)),
+                 ("Press releases", lambda: S.collect_press(cfg, st, tg, deadline, years=False)),
                  ("Bluesky", lambda: S.collect_bluesky(cfg, st, tg, hmap, deadline, ocr_days=3, max_ocr=40)),
                  ("Mastodon", lambda: S.collect_mastodon(cfg, st, tg, leg, acc, deadline)),
                  ("Substack", lambda: S.collect_substack(cfg, st, tg, acc, deadline)),
@@ -127,8 +129,35 @@ if top and not first:
 elif first:
     E.log("Live posts: first run; learned what's already out there, no alert")
 
+now = dt.datetime.utcnow()
+last_new = state.get("last_new") or {}
+for k, v in counts.items():
+    if v > 0:
+        last_new[k] = now.isoformat(timespec="seconds")
+runs = int(state.get("runs") or 0) + 1
 state = {"seen": {u: d for u, d in seen.items() if d >= (today - dt.timedelta(days=21)).isoformat()},
-         "crowd": crowd, "last": dt.datetime.utcnow().isoformat(timespec="seconds")}
+         "crowd": crowd, "last": now.isoformat(timespec="seconds"), "last_new": last_new, "runs": runs}
 cloud_store.put("posts/live_state.json", json.dumps(state), E.log)
-runlog.report("live", "social", {k: (v, f"{v}:{dt.datetime.utcnow():%Y%m%d%H}", None) for k, v in counts.items()}, E.log)
+# collection check: a source is flagged only when it has brought nothing new for longer than it normally goes
+LIVE_MAX_DAYS = {"Members' own sites": 2, "Press releases": 3, "Bluesky": 2, "Mastodon": 14, "Substack": 30, "YouTube": 7}
+problems = []
+for k in counts:
+    mx = LIVE_MAX_DAYS.get(k, 7)
+    if k in last_new:
+        days = (now - dt.datetime.fromisoformat(last_new[k])).total_seconds() / 86400
+        if days > mx:
+            problems.append(f"{k}: nothing new for {days:.0f} days (normally new within {mx})")
+    elif runs > mx * 24:
+        problems.append(f"{k}: nothing new since these hourly checks started")
+fails = sorted(set(runlog.LINES))
+if problems or fails:
+    E.log(f"COLLECTION CHECK (live): {len(problems)} source problem(s), {len(fails)} failure line(s)")
+    for x in problems:
+        E.log(f"   - {x}")
+    for x in fails[:30]:
+        E.log(f"   ! {x}")
+else:
+    E.log("COLLECTION CHECK (live): every source on time; no failures logged")
+cloud_store.put("posts/live_check.json", json.dumps({"at": now.isoformat(timespec="seconds"), "problems": problems,
+                                                     "failures": fails[:60]}), E.log)
 E.log(f"Live posts: done in {(time.time() - t0) / 60:.1f} min; {len(items)} new, {len(top)} notable; sorter {PS.model_name()}")
