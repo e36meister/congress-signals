@@ -268,26 +268,46 @@ class Tagger:
         # how many companies have an executive by that name. High = counts as a mention; medium = for review.
         self.last_cands = []
         got = {p_[0].split()[-1].lower() for p_ in ppl}
-        titles = re.compile(r"\b(ceo|chief|founder|chair(?:man|woman)?|president|executive|mr|ms|mrs|cfo|coo|cto)\b", re.I)
+        exec_title = re.compile(r"\b(ceo|chief executive|founder|co-founder|chair(?:man|woman)?|mr|ms|mrs|executive)\b", re.I)
+        other_title = {"mayor", "judge", "justice", "sheriff", "governor", "gov", "secretary", "sec", "senator", "sen",
+                       "rep", "representative", "congressman", "congresswoman", "director", "dr", "admiral", "general",
+                       "gen", "commissioner", "nominee", "officer", "deputy", "chief", "speaker", "leader", "ambassador",
+                       "president", "pres", "colonel", "col", "captain", "sgt", "sergeant", "councilman", "councilwoman",
+                       "councilmember", "superintendent", "principal", "professor", "prof", "coach", "pastor", "rev",
+                       "bishop", "father", "minister", "attorney", "ag", "chairwoman", "chairman"}
         for i, w in enumerate(toks):
             if w in got or w in self.surnames or len(w) < 3 or not spans[i][0][:1].isupper():
                 continue
+            prev = toks[i - 1] if i > 0 else ""
+            prev_cap = i > 0 and spans[i - 1][0][:1].isupper() and raw[spans[i - 1][1] - 2:spans[i - 1][1]].strip() not in (".", "!", "?")
+            nxt_cap = i + 1 < len(toks) and spans[i + 1][0][:1].isupper()
             for kind, table, weight in (("last", self.last_idx, 1.0), ("first", self.first_idx, 0.6)):
                 cands = table.get(w)
                 if not cands:
                     continue
-                if kind == "last" and i > 0 and toks[i - 1] in self.first_idx and spans[i - 1][0][:1].isupper():
-                    continue                     # "Jensen Huang" was already handled as a full name (or isn't one)
+                if kind == "last":
+                    # part of someone else's full name ("Emil Bove", "Mayor Busse", "Rhode Island", "Proffitt Act")
+                    if prev in other_title or (prev_cap and prev not in ("mr", "ms", "mrs", "ceo", "founder", "chairman", "chairwoman")):
+                        continue
+                    if nxt_cap:
+                        continue
+                else:
+                    if nxt_cap or prev in other_title:
+                        continue           # "Elon Musk" is a full name (handled above); "Jensen Ackles" isn't him
                 z = _zipf(w)
                 rarity = max(0.0, min(1.0, (5.0 - z) / 3.0))
                 if kind == "first" and z >= 3.2:
-                    continue                     # ordinary first names ("Tim", "Mary") never count alone
+                    continue                 # ordinary first names ("Tim", "Mary") never count alone
                 near = raw[max(0, spans[i][1] - 40):spans[i][1] + 60]
-                title = bool(titles.search(near))
+                title = bool(exec_title.search(near))
                 for t, (full, role) in list(cands.items())[:12]:
+                    if not re.search(r"ceo|chief executive|founder|chair", str(role), re.I):
+                        continue             # only the people whose name stands for the company
                     co = t in tick
                     sec = bool(self.sector_of.get(t)) and self.sector_of.get(t) in secs
-                    conf = (0.45 * rarity + 0.3 * title + 0.35 * co + 0.15 * sec) * weight / (len(cands) ** 0.5)
+                    if not (co or (sec and title)):
+                        continue             # no sign of the company in the post: not a candidate at all
+                    conf = (0.35 * rarity + 0.25 * title + 0.45 * co + 0.15 * sec) * weight / (len(cands) ** 0.5)
                     if conf >= 0.3:
                         self.last_cands.append({"n": full, "t": t, "role": role, "w": spans[i][0], "by": kind,
                                                 "c": round(conf, 2), "title": title, "co": co, "sec": sec})
