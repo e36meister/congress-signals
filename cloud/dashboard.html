@@ -72,7 +72,24 @@ section.panel{display:grid;gap:12px;align-content:start}
 .chip.avoid,.chip.mixed{background:var(--warn-soft);color:var(--warn)}
 .chip.watch{background:var(--sunken);color:var(--ink2)}
 .chip.new{background:var(--accent-soft);color:var(--accent)}
-.posts-feed{display:grid;gap:10px}
+.posts-feed{display:grid;gap:8px}
+.tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.tag{font:600 12px var(--body);padding:4px 9px;border-radius:999px;border:1px solid var(--rule);background:var(--sunken);color:var(--ink2);cursor:pointer;
+  text-decoration:none;min-height:28px;display:inline-flex;align-items:center;white-space:nowrap}
+.tag.neg{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.tag.post{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+.tag.ctx{background:none}
+.tag.more{background:none;border-style:dashed}
+.tag.go{background:var(--accent);color:var(--surface);border-color:var(--accent)}
+.tag.who{background:none;border:0;padding:0;font-size:14px;color:var(--ink);text-decoration:underline dotted;min-height:0}
+.prow{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px}
+.tipbg{position:fixed;inset:0;z-index:70;background:rgba(10,15,25,.4);display:flex;align-items:flex-end;justify-content:center}
+.tipsheet{background:var(--surface);color:var(--ink);width:min(560px,100%);max-height:70vh;overflow:auto;border-radius:14px 14px 0 0;
+  padding:14px 16px calc(16px + env(safe-area-inset-bottom,0px));box-shadow:0 -6px 24px rgba(0,0,0,.18)}
+@media (min-width:761px){.tipbg{align-items:center}.tipsheet{border-radius:12px}}
+.tiph{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:6px}
+.tipb p{margin:6px 0}
+ul.tipl{margin:4px 0;padding-left:18px;display:grid;gap:4px}
 ul.wposts{margin:6px 0 0;padding-left:18px;display:grid;gap:4px}
 nav.jump{position:sticky;top:var(--hdr,96px);z-index:4;display:flex;gap:6px;overflow-x:auto;padding:8px 0;margin-bottom:8px;
   background:var(--ground);border-bottom:1px solid var(--rule);scrollbar-width:none}
@@ -338,6 +355,7 @@ document.querySelectorAll("nav.tabs button").forEach(b => b.addEventListener("cl
 // ---------- rendering ----------
 function render() {
   setHeaderHeight();
+  TIPS = [];
   document.querySelectorAll("nav.tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === state.tab)));
   const main = $("#main");
   const d = state.data;
@@ -429,21 +447,119 @@ function confirmBox(r) {
     <span class="foot">Placed within about 15 minutes, or at the next market open.</span></div>`;
 }
 
+// ---------- shorthand tags: a short word on the card, the full reason in a popup ----------
+const TAG_RULES = [
+  [/past buys ([+\-]?[\d.]+%) vs SPY avg \((\d+)\)/i, m => `Track ${m[1]}`, "Their earlier purchases vs the S&P 500, on average (number of trades in brackets)."],
+  [/past buys beat the market consistently/i, () => "Proven buyer", "This member's purchases have beaten the market consistently over many trades."],
+  [/stocks this member sold lagged SPY by ([\d.]+%)/i, m => `Sales lag ${m[1]}`, "Stocks this member sold went on to lag the S&P 500 by this much on average."],
+  [/(\d+) members? (bought|sold) within 30d/i, m => `${m[1]} ${m[2]}`, "Several members made the same trade within 30 days."],
+  [/committee oversees ([A-Za-z ]+)/i, m => `Committee: ${m[1].trim()}`, "The member sits on a committee that oversees this company's industry."],
+  [/\$([\d.,]+[MBK]?) federal contracts/i, m => `$${m[1]} contracts`, "Federal contracts the company has won."],
+  [/company lobbies this member's committees/i, () => "Lobbies committee", "The company lobbies the committees this member sits on."],
+  [/company PAC gave member \$([\d,]+)/i, m => `PAC $${m[1]}`, "The company's PAC gave this member money."],
+  [/sponsored (\d+) (.+?) bill/i, m => `Bill sponsor`, "The member sponsored a bill in this area."],
+  [/voted on a bill in this industry near the trade/i, () => "Vote nearby", "The member voted on a bill in this industry close to the trade date."],
+  [/first time trading this stock/i, () => "First trade", "The first time this member traded this stock."],
+  [/defense awards rising \(\$([\d.,]+[MB]?)/i, m => `Defense $${m[1]}`, "Defense Department awards to the company are rising."],
+  [/federal grants or loans/i, () => "Federal grants", "The company received federal grants or loans."],
+  [/their campaign paid the company/i, () => "Campaign paid co.", "The member's campaign paid this company."],
+  [/usually trades before their trading partners/i, () => "Trades first", "This member usually trades before the members they often trade alongside."],
+  [/bill passed recently/i, () => "Bill passed", "A bill in this industry passed recently."],
+  [/jumped on disclosure day/i, () => "Already jumped", "The stock already jumped on the day the trade was disclosed, so some of the move may be gone.", "neg"],
+  [/federal rule naming the company was published (\d+) days? after/i, m => `Rule +${m[1]}d`, "A federal rule naming the company came out shortly after the trade."],
+  [/bill they back passed a chamber after the trade/i, () => "Their bill passed", "A bill this member backs passed the House or Senate after the trade."],
+  [/already held it per yearly disclosure/i, () => "Already owned", "The member already owned this stock according to their yearly financial disclosure."],
+  [/named in their yearly disclosure/i, () => "In disclosure", "The company appears in the member's yearly disclosure (job, income, travel or gift)."],
+  [/committee colleague (?:made the same trade|also sold)/i, () => "Colleague too", "A colleague on the same committee made the same trade."],
+  [/company lobbyist used to work for the (.+?) committee/i, () => "Ex-staff lobbyist", "A company lobbyist used to work for one of this member's committees."],
+  [/but (\d+) members sold/i, m => `${m[1]} sold`, "Other members sold this stock around the same time.", "neg"],
+  [/company is based in their state/i, () => "Home state", "The company is based in the member's state."],
+  [/used options/i, () => "Options", "The trade used options."],
+  [/spouse or family account/i, () => "Spouse/family", "The trade was in a spouse's or family member's account."],
+  [/(\d+)x their usual (?:trade )?size/i, m => `${m[1]}× size`, "Much bigger than this member's usual trade."],
+  [/former member of Congress lobbies/i, () => "Ex-member lobbyist", "A former member of Congress lobbies for the company."],
+  [/holds a position with the company/i, () => "Position held", "The member holds a position with the company (yearly disclosure)."],
+  [/top executive change (\d+) days? after/i, m => `Exec change +${m[1]}d`, "The company announced a top executive change shortly after the trade (8-K filing)."],
+  [/8-K/i, () => "8-K after", "A major company announcement (8-K) shortly after the trade."],
+  [/sold the entire position/i, () => "Sold all", "The member sold their entire position."],
+  [/(\d+) company insider\(s\) (sold|bought)/i, m => `${m[1]} insiders ${m[2]}`, "Company insiders (executives, directors) made the same kind of trade."],
+  [/already lagging SPY (-?[\d.]+%) over 3m/i, m => `Lagging ${m[1]}`, "The stock has already been lagging the S&P 500 over 3 months."],
+  [/company testified before their committee/i, () => "Testified", "The company testified before this member's committee."],
+  [/sold shortly before a company event/i, () => "Before event", "Sold shortly before a company event (earnings, FDA decision...)."],
+  [/trading volume hit ([\d.]+)x normal/i, m => `Volume ${m[1]}×`, "Trading volume was unusually heavy in the two weeks before the trade."],
+  [/closed committee briefing/i, () => "Closed briefing", "A closed (non-public) committee briefing shortly before the trade."],
+  [/spouse .* (?:company insider|insider)/i, () => "Spouse insider", "The member's spouse is a company insider per SEC filings."],
+  [/possible family tie/i, () => "Family tie?", "A possible family tie to the company (name match, not confirmed). Review it in What works."],
+  [/spouse works for or is paid by/i, () => "Spouse job", "The member's yearly disclosure says their spouse works for or is paid by the company."],
+  [/relative .* insider|is a company insider/i, () => "Relative insider", "A relative is a company insider per SEC filings."],
+  [/met with .* of/i, () => "Post: met them", "The member posted about meeting the company or its people.", "post"],
+  [/hinted at something not yet public/i, () => "Post: hint", "The member's post hinted at something not public yet about this industry.", "post"],
+  [/posted a .* boost/i, () => "Post: boost", "The member posted about money, a bill or a visit boosting this industry shortly before buying.", "post"],
+  [/posted against/i, () => "Post: against", "The member posted against this industry shortly before selling.", "post"],
+  [/posted about/i, () => "Post: named it", "The member posted about this company around the trade.", "post"],
+  [/markup/i, () => "Markup after", "Their committee marked up an industry bill soon after the trade."],
+  [/testif/i, () => "Testimony after", "The company testified to their committee soon after the trade."],
+];
+let TIPS = [];
+function reasonTag(text) {
+  const t = String(text || "").trim();
+  for (const [rx, lab, about, tone] of TAG_RULES) {
+    const m = t.match(rx);
+    if (m) return { label: lab(m), about, tone: tone || (/^but\b/i.test(t) ? "neg" : ""), full: t };
+  }
+  const words = t.replace(/^but\s+/i, "").split(/\s+/);
+  return { label: words.slice(0, 3).join(" ") + (words.length > 3 ? "…" : ""), about: "", tone: /^but\b/i.test(t) ? "neg" : "", full: t };
+}
+function tipBtn(label, title, body, cls = "") {
+  const id = TIPS.push({ title, body }) - 1;
+  return `<button type="button" class="tag ${cls}" data-tip="${id}">${esc(label)}</button>`;
+}
+function tagsHtml(reasons, max = 6, title = "Why it's flagged") {
+  const rs = (Array.isArray(reasons) ? reasons : String(reasons || "").split(/;\s*/)).map(x => String(x).trim()).filter(Boolean);
+  if (!rs.length) return "";
+  const tags = rs.map(reasonTag);
+  const seen = new Set(), uniq = tags.filter(g => !seen.has(g.label) && seen.add(g.label));
+  const all = `<ul class="tipl">${rs.map(x => `<li>${esc(x)}</li>`).join("")}</ul>`;
+  const shown = uniq.slice(0, max).map(g => tipBtn(g.label, g.label, `<p>${esc(g.full)}</p>${g.about ? `<p class="foot">${esc(g.about)}</p>` : ""}`, g.tone));
+  if (uniq.length > max) shown.push(tipBtn(`+${uniq.length - max} more`, title, all, "more"));
+  else if (rs.length > 1) shown.push(tipBtn("All", title, all, "more"));
+  return `<div class="tags">${shown.join("")}</div>`;
+}
+function openTip(i) {
+  const t = TIPS[i]; if (!t) return;
+  let bg = document.getElementById("tipbg");
+  if (!bg) { bg = document.createElement("div"); bg.id = "tipbg"; bg.className = "tipbg"; document.body.appendChild(bg); }
+  bg.innerHTML = `<div class="tipsheet" role="dialog" aria-modal="true" aria-label="${esc(t.title)}"><div class="tiph"><b>${esc(t.title)}</b><button type="button" class="link" data-tipclose="1" aria-label="Close">Close</button></div><div class="tipb">${t.body}</div></div>`;
+  bg.hidden = false;
+}
+document.addEventListener("click", ev => {
+  const b = ev.target.closest("[data-tip]");
+  if (b) { ev.preventDefault(); openTip(+b.dataset.tip); return; }
+  const bg = document.getElementById("tipbg");
+  if (bg && !bg.hidden && (ev.target === bg || ev.target.closest("[data-tipclose]"))) { bg.hidden = true; bg.innerHTML = ""; }
+});
+addEventListener("keydown", e => { const bg = document.getElementById("tipbg"); if (e.key === "Escape" && bg && !bg.hidden) { bg.hidden = true; bg.innerHTML = ""; } });
+
+function fmtShort(d) {
+  const x = new Date(String(d).slice(0, 10) + "T12:00:00");
+  return isNaN(x) ? String(d || "") : x.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
 function tradeLine(r) {
   const d = r.d ? String(r.d).slice(0, 10) : null, td = r.td ? String(r.td).slice(0, 10) : null;
   if (!td) return `Disclosed ${esc(fmtDate(d))}`;
   const lag = r.lag != null ? Math.round(r.lag) : (d ? Math.round((Date.parse(d) - Date.parse(td)) / 864e5) : null);
-  return `${r.action === "SHORT" || r.action === "avoid" ? "Sold" : "Bought"} ${esc(fmtDate(td))} · disclosed ${esc(fmtDate(d))}${lag != null ? ` (${lag} day${lag === 1 ? "" : "s"} later)` : ""}`;
+  return `${r.action === "SHORT" || r.action === "avoid" ? "Sold" : "Bought"} ${esc(fmtShort(td))} · filed ${esc(fmtShort(d))}${lag != null ? ` (${lag}d)` : ""}`;
 }
 function pickRow(r, side) {
   const isNew = (state.data.watchlist?.new || []).some(n => n.t === r.t && (side === "sell" ? n.action === "SHORT" : n.action === "BUY"));
   const ctx = [];
-  if (r.an) ctx.push("Analysts: " + esc(r.an.replace(/_/g, " ")));
-  if (r.up != null) ctx.push("Target upside " + pnum(r.up, 0));
-  if (r.earn) ctx.push("Earnings " + esc(fmtDate(String(r.earn).slice(0, 10))));
-  if (r.news != null) ctx.push(esc(r.news) + " news stories this week");
-  if (r.nwm) ctx.push(esc(r.nwm) + " stories mention the member and company together");
-  (r.hear || []).forEach(h => ctx.push(`<b>Testifies before Congress ${esc(fmtDate(h.date))}</b>: ${esc(h.title.length > 90 ? h.title.slice(0, 88) + "…" : h.title)}`));
+  const ctxNote = "Context only: not part of the score.";
+  if (r.an) ctx.push(tipBtn(`Analysts ${r.an.replace(/_/g, " ")}`, "Analysts", `<p>Wall Street analysts' average rating: <b>${esc(r.an.replace(/_/g, " "))}</b>.</p><p class="foot">${ctxNote}</p>`, "ctx"));
+  if (r.up != null) ctx.push(tipBtn(`Target ${pnum(r.up, 0)}`, "Analyst price target", `<p>Analysts' average price target is ${esc(pnum(r.up, 0))} from today's price.</p><p class="foot">${ctxNote}</p>`, "ctx"));
+  if (r.earn) ctx.push(tipBtn(`Earnings ${fmtShort(r.earn)}`, "Next earnings report", `<p>${esc(fmtDate(String(r.earn).slice(0, 10)))}</p><p class="foot">${ctxNote}</p>`, "ctx"));
+  if (r.news != null) ctx.push(tipBtn(`${r.news} news`, "News this week", `<p>${esc(r.news)} news stories about the company this week.</p><p class="foot">${ctxNote}</p>`, "ctx"));
+  if (r.nwm) ctx.push(tipBtn(`${r.nwm} member+co news`, "In the news together", `<p>${esc(r.nwm)} stories mention the member and the company together.</p>`, "ctx"));
+  (r.hear || []).forEach(h => ctx.push(tipBtn(`Testifies ${fmtShort(h.date)}`, "Testifies before Congress", `<p><b>${esc(fmtDate(h.date))}</b>: ${esc(h.title)}</p>`, "neg")));
   const pctTop = r.pct != null ? Math.max(1, Math.round(100 - r.pct)) : null;
   return `<article class="pick">
     <div class="tk"><b>${tkBtn(r.t)}</b><span class="chip ${esc(r.action)}">${esc(r.action)}</span>${isNew ? `<span class="chip new">New</span>` : ""}${r.def ? `<span class="chip watch">Defense</span>` : ""}${r.ags ? `<span class="chip avoid" title="The member bought while most analysts rated it hold or worse">Against Wall Street</span>` : ""}</div>
@@ -451,8 +567,8 @@ function pickRow(r, side) {
       <div class="co">${esc(r.co || r.t)}${r.sec ? ` <span class="who">· ${esc(r.sec)}</span>` : ""}</div>
       <div class="who">${tradeLine(r)}</div>
       ${peopleRow(r, side)}
-      <div class="why">${esc(r.why)}</div>
-      ${ctx.length ? `<div class="ctx">${ctx.map(c => `<span>${c}</span>`).join("")}</div>` : ""}
+      ${tagsHtml(r.why, 6, `Why ${r.t} is on the list`)}
+      ${ctx.length ? `<div class="tags">${ctx.join("")}</div>` : ""}
     </div>
     <div class="side">
       <div class="meter" title="Score ${r.s}"><i style="width:${Math.max(3, Math.min(100, r.s || 0))}%"></i></div>
@@ -531,12 +647,23 @@ function postsSection() {
   if (POSTS.err?.code === "app_only") return "";
   const all = (POSTS.feed?.items || []);
   const pick = POSTS.show === "notable" ? all.filter(x => x.lvl >= 2) : POSTS.show === "co" ? all.filter(x => x.lvl >= 1) : all;
-  const item = x => `<article class="post lvl${x.lvl}">
-      <div class="ms">${esc(fmtDate(x.d))} · <b>${esc(x.who)}</b> · ${esc(x.src)}${(x.ty || []).filter(t => t !== "other").map(t => ` <span class="chip watch">${esc(POST_TY[t] || t)}</span>`).join("")}${x.ins ? ` <span class="chip avoid">Insider hint</span>` : ""}${(x.meet || []).length ? ` <span class="chip new">Meeting</span>` : ""}</div>
-      ${(x.why || []).length ? `<div class="why"><b>${esc(x.why.join("; "))}</b></div>` : ""}
-      <div>${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.text)}</a>` : esc(x.text)}</div>
-      ${(x.tg || []).filter(g => g[2] != null).length ? `<div class="foot">${x.tg.filter(g => g[2] != null).map(g => `${esc(g[0])}: ${stanceTxt(g[2])}`).join(" · ")}</div>` : ""}
-    </article>`;
+  const arrow = s => s == null ? "" : s >= 0.3 ? " ↑" : s <= -0.3 ? " ↓" : "";
+  const item = x => {
+    const who = String(x.who || "").split(",")[0].split(" ").slice(-1)[0];
+    const tg = (x.tg || []).filter(g => g[1] === "co" || g[1] === "person" || g[1] === "lobbyist").slice(0, 3);
+    const detail = `<p><b>${esc(x.who)}</b> · ${esc(fmtDate(x.d))} · ${esc(x.src)}</p>${(x.why || []).length ? `<p><b>${esc(x.why.join("; "))}</b></p>` : ""}
+      <p>“${esc(x.text)}”</p>${(x.tg || []).filter(g => g[2] != null).length ? `<p class="foot">Tone: ${x.tg.filter(g => g[2] != null).map(g => `${esc(g[0])} ${stanceTxt(g[2])}`).join(" · ")}</p>` : ""}
+      ${x.url ? `<p><a href="${esc(x.url)}" target="_blank" rel="noopener">Go to post</a></p>` : ""}`;
+    return `<article class="post lvl${x.lvl}"><div class="prow">
+      ${tipBtn(who, x.who, detail, "who")}
+      <span class="ms">${esc(fmtShort(x.d))}</span>
+      ${(x.ty || []).filter(t => t !== "other").slice(0, 2).map(t => `<span class="chip watch">${esc(POST_TY[t] || t)}</span>`).join("")}
+      ${x.ins ? tipBtn("Hint", "Insider-style wording", `<p>“${esc(x.ins)}”</p>${detail}`, "neg") : ""}
+      ${(x.meet || []).length ? `<span class="chip new">Met ${esc(x.meet[0])}</span>` : ""}
+      ${tg.map(g => `<span class="mono">${esc(g[0])}${arrow(g[2])}</span>`).join(" ")}
+      ${x.url ? `<a class="tag go" href="${esc(x.url)}" target="_blank" rel="noopener">Go to post</a>` : ""}
+    </div>${(x.why || []).length ? `<div class="foot">${esc(x.why[0])}${x.why.length > 1 ? ` ${tipBtn(`+${x.why.length - 1}`, "Why it's notable", `<ul class="tipl">${x.why.map(w => `<li>${esc(w)}</li>`).join("")}</ul>`, "more")}` : ""}</div>` : ""}</article>`;
+  };
   return `<section class="panel" id="posts"><div class="ph"><h2>Members' posts</h2><span class="sub">Read and sorted every hour${POSTS.feed?.updated ? ` · last checked ${esc(ago(POSTS.feed.updated))}` : ""}</span>
     <div class="seg" role="group" aria-label="Which posts">${[["notable", "Notable"], ["co", "Name a company"], ["all", "All new"]].map(([v, l]) => `<button type="button" data-pshow="${v}" aria-pressed="${POSTS.show === v}">${l}</button>`).join("")}</div></div>
     ${POSTS.loading && !POSTS.feed ? `<div class="empty">Loading…</div>` : POSTS.err ? `<div class="note warn">${errorText(POSTS.err)}</div>` :
@@ -563,8 +690,8 @@ function worthSection(d) {
       <div class="tk"><b>${tkBtn(r.t)}</b>${picks.has(r.t) ? `<span class="chip new">On the list</span>` : ""}</div>
       <div><div class="co">${esc(r.co || infoFor(r.t).co || r.t)}</div>
         <div class="ppl">${(r.who || []).map(w => `<span class="person">${avatar({ n: w.n, b: w.b })}<span><span class="pn">${esc(w.n)}${tagHtml({ n: w.n, b: w.b })}</span><span class="pr"><span class="bs ${w.ty}">${w.ty === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(w.td))} · disclosed ${esc(fmtDate(w.d))}</span></span></span>`).join("")}</div>
-        <div class="why">${(r.why || []).map(esc).join("; ")}</div>
-        ${(r.posts || []).length ? `<ul class="wposts">${r.posts.map(q => `<li><a href="${esc(q.u)}" target="_blank" rel="noopener">Check the post</a> · ${esc(fmtDate(q.d))} · ${esc(q.src || "")}<br><span class="foot">${esc(q.why)}: “${esc(String(q.x || "").slice(0, 160))}”</span></li>`).join("")}</ul>` : ""}</div>
+        ${tagsHtml(r.why, 5, `Why ${r.t} is flagged`)}
+        ${(r.posts || []).length ? `<div class="tags">${r.posts.map(q => `<a class="tag go" href="${esc(q.u)}" target="_blank" rel="noopener">Go to post</a>${tipBtn(reasonTag(q.why).label + " · " + fmtShort(q.d), "The post", `<p><b>${esc(q.who || "")}</b> ${esc(q.why)}</p><p class="foot">${esc(fmtDate(q.d))} · ${esc(q.src || "")}</p><p>“${esc(String(q.x || ""))}”</p><p><a href="${esc(q.u)}" target="_blank" rel="noopener">Go to post</a></p>`, "post")}`).join("")}</div>` : ""}</div>
       <div class="side">${side(r)}</div>
       ${buyList.has(r.t) ? "" : confirmBox({ t: r.t })}</article>`).join("")}</div>
     <p class="foot">These aren't buy or sell signals on their own: the backtest hasn't shown these flags help yet. They're here so nothing unusual slips by. New ones are also emailed to you.</p></section>`;
