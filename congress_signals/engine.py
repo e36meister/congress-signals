@@ -3585,9 +3585,12 @@ def _social():
     return social
 
 
-def active_weights(cfg, signals_on=None):
+def active_weights(cfg, signals_on=None, rare_weights=None):
     bw, sw = cfg["BUY_WEIGHTS"], cfg["SHORT_WEIGHTS"]
-    on = load_adaptive(cfg)["policy"].get("signals_on", []) if signals_on is None else signals_on
+    pol_ = load_adaptive(cfg)["policy"]
+    on = pol_.get("signals_on", []) if signals_on is None else signals_on
+    rw = pol_.get("rare_weights") or {} if rare_weights is None else rare_weights
+    tuned_or_learned = False
     bw = {**{k: 0.0 for k in TRIAL_SIGNALS}, **bw, **{k: TRIAL_SIGNALS[k] for k in on if k in TRIAL_SIGNALS}}
     path = os.path.join(cfg["DATA_DIR"], "state", "tuned_weights.json")
     use = cfg.get("USE_TUNED_WEIGHTS")
@@ -3596,13 +3599,23 @@ def active_weights(cfg, signals_on=None):
     if use and os.path.exists(path):
         t = json.load(open(path))
         bw, sw = t.get("buy", bw), t.get("short", sw)
+        tuned_or_learned = True
         log("Using tuned weights from the last tuning run")
     lpath = os.path.join(cfg["DATA_DIR"], "state", "learned_weights.json")
     if load_adaptive(cfg)["policy"].get("main_method") == "learned" and os.path.exists(lpath):
         bw = {**{k: 0.0 for k in cfg["BUY_WEIGHTS"]}, **json.load(open(lpath)).get("buy", {})}
+        tuned_or_learned = True
     # trial signals follow the weekly check's on/off list whichever weight set is in use
+    bw = dict(bw)
     for k in TRIAL_SIGNALS:
         bw[k] = (bw.get(k) or TRIAL_SIGNALS[k]) if k in on else 0.0
+    # rare signals' weights set from their per-trade results (owner, Oct 16), on the hand-set weights only
+    if not tuned_or_learned:
+        for k, w in rw.items():
+            if k in TRIAL_SIGNALS and k not in on:
+                continue
+            if k in bw:
+                bw[k] = float(w)
     return bw, sw
 
 
@@ -9225,6 +9238,87 @@ def small_cap_backtest(scored, px, cfg, hold=None, coverage=None, price_exit=Non
 RARE_FILE = "rare_test.json"
 RARE_MAX_SHARE = 0.10          # "rare": on at most 10% of purchases
 RARE_MIN_N = 30
+
+
+RARE_W_SCALES = (10, 20, 30)     # weight per unit of per-trade gain: +2%/trade -> 0.2 / 0.4 / 0.6
+RARE_W_LABEL = "Rare-signal weights from per-trade results"
+
+
+def rare_weight_targets(rows, cfg, on, scale):
+    """Weight of each rare signal in the score = scale x its per-trade gain, shrunk when the result is unsure
+    (sureness under 2), capped at 1. A signal that doesn't help gets 0. Direction kept from the signal's design."""
+    out = {}
+    for r in rows or []:
+        k = r.get("signal")
+        base = cfg["BUY_WEIGHTS"].get(k) or (TRIAL_SIGNALS.get(k) if k in on else None)
+        if not base or r.get("lift") is None:
+            continue
+        shrink = max(0.0, min(1.0, (r.get("t") or 0) / 2.0))
+        w = float(np.clip(scale * r["lift"] * shrink, 0.0, 1.0))
+        out[k] = round(-w if base < 0 else w, 3) + 0.0
+    return out
+
+
+def check_rare_weights(scored, px, cfg, force=False):
+    """Weekly: try the rare-signal weights from results at a few scales; keep the best one whose full backtest is
+    not worse than the current weights (all years and the last 3 years)."""
+    a = load_adaptive(cfg)
+    last = a.get("rare_weights_checked_at")
+    if not force and last and (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(last)).days < 7:
+        return None
+    try:
+        rows = json.load(open(_p(cfg, "state", RARE_FILE))).get("rows") or []
+    except Exception:
+        return None
+    pol = dict(a["policy"])
+    on = list(pol.get("signals_on", []))
+    cur_w = dict(pol.get("rare_weights") or {})
+    base = dict(cfg, _nested=True)
+
+    def run(rw):
+        bw, sw = active_weights(cfg, signals_on=on, rare_weights=rw)
+        return run_backtest(apply_hold_policy(apply_scores(scored, cfg, buy_w=bw, short_w=sw), px, cfg, pol), px, base)
+    vs = lambda b: float(b["perf"].loc["Per year vs S&P 500", "Long picks"])
+    t0 = time.time()
+    cur = run(cur_w)
+    r_cur = _long_daily(cur)
+    ev = [r for r in (a.get("evaluation") or []) if r.get("Setting") != RARE_W_LABEL]
+    ev.append({"Setting": RARE_W_LABEL, "Option": ("Set from results" if cur_w else "Hand-set (current)") +
+               (" (current)" if cur_w else ""), "Per year vs S&P": vs(cur), "Gain vs current": 0.0, "Sureness": None,
+               "Verdict": "Current"})
+    best = None
+    for sc in RARE_W_SCALES:
+        tw = rare_weight_targets(rows, cfg, on, sc)
+        if not tw or tw == cur_w:
+            continue
+        b = run(tw)
+        c = _compare(_long_daily(b), r_cur)
+        ok = bool(c) and c["gain"] >= 0 and c["recent"] >= 0
+        ev.append({"Setting": RARE_W_LABEL, "Option": f"From results, scale {sc} (+2%/trade = {sc * 0.02:.1f})",
+                   "Per year vs S&P": vs(b), "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
+                   "Verdict": "Not worse" if ok else ("Worse" if c else "Not enough data")})
+        if ok and (best is None or _rank(c) > _rank(best[2])):
+            best = (sc, tw, c)
+    today = dt.date.today().isoformat()
+    if best:
+        sc, tw, c = best
+        changed = {k: (cfg["BUY_WEIGHTS"].get(k, TRIAL_SIGNALS.get(k)), w) for k, w in tw.items()}
+        a.setdefault("history", []).append({"date": today, "change": RARE_W_LABEL, "from": "hand-set" if not cur_w else "earlier fit",
+                                            "to": f"scale {sc}: " + ", ".join(f"{k} {w:+.2f}" for k, (_, w) in list(changed.items())[:12]),
+                                            "gain_per_year": c["gain"], "sureness": c["t"]})
+        pol["rare_weights"] = tw
+        for r in ev:
+            if r["Setting"] == RARE_W_LABEL and r["Option"].startswith(f"From results, scale {sc} "):
+                r["Verdict"] = "Switched automatically"
+        log(f"Rare-signal weights: set from results (scale {sc}); backtest {c['gain'] * 100:+.2f}%/yr vs before, "
+            f"last 3 years {c['recent'] * 100:+.2f}%/yr: " + ", ".join(f"{k} {w:+.2f}" for k, w in tw.items()))
+    else:
+        log("Rare-signal weights: kept as they are (no scale was at least as good in the backtest)")
+    a["policy"], a["evaluation"] = pol, ev
+    a["rare_weights_checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    save_adaptive(cfg, a)
+    log(f"Rare-signal weights: checked in {(time.time() - t0) / 60:.1f} min")
+    return best
 
 
 def _quarter_t(lifts, when):
