@@ -73,6 +73,14 @@ section.panel{display:grid;gap:12px;align-content:start}
 .chip.watch{background:var(--sunken);color:var(--ink2)}
 .chip.new{background:var(--accent-soft);color:var(--accent)}
 .posts-feed{display:grid;gap:10px}
+nav.jump{position:sticky;top:var(--hdr,96px);z-index:4;display:flex;gap:6px;overflow-x:auto;padding:8px 0;margin-bottom:8px;
+  background:var(--ground);border-bottom:1px solid var(--rule);scrollbar-width:none}
+nav.jump::-webkit-scrollbar{display:none}
+nav.jump button{flex:0 0 auto;font:600 13px var(--body);color:var(--ink2);background:var(--surface);border:1px solid var(--rule);
+  border-radius:999px;padding:7px 12px;min-height:36px;cursor:pointer;white-space:nowrap}
+nav.jump button:active{background:var(--accent-soft);color:var(--accent)}
+nav.jump .jn{font:600 11px var(--mono);color:var(--accent);margin-left:2px}
+#today-buy,#today-worth,#posts,#today-avoid,#today-unusual,#today-also{scroll-margin-top:calc(var(--hdr,96px) + 60px)}
 .post{border-top:1px solid var(--rule);padding-top:8px;overflow-wrap:anywhere}
 .post .why{margin:2px 0}
 .post.lvl3 .why b{color:var(--bad)}
@@ -328,6 +336,7 @@ document.querySelectorAll("nav.tabs button").forEach(b => b.addEventListener("cl
 
 // ---------- rendering ----------
 function render() {
+  setHeaderHeight();
   document.querySelectorAll("nav.tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === state.tab)));
   const main = $("#main");
   const d = state.data;
@@ -455,6 +464,28 @@ function pickRow(r, side) {
   </article>`;
 }
 
+// a jump bar for the Today tab: one tap to each section (it stays under the header while scrolling)
+function todayJump(d, nb, nAvoid, nAlso) {
+  const notable = (POSTS.feed?.items || []).filter(x => x.lvl >= 2).length;
+  const items = [["today-buy", "Buy", nb], ["today-worth", "Worth a look", (d.worth || []).length],
+    ["posts", "Posts", POSTS.err?.code === "app_only" ? null : notable], ["today-avoid", "Avoid", nAvoid],
+    ["today-unusual", "Unusual", (d.unusual || []).length], ["today-also", "Also bought", nAlso]]
+    .filter(([id, , n]) => n !== null && (id === "today-buy" || id === "posts" || n > 0));
+  return `<nav class="jump" aria-label="Sections on this page">${items.map(([id, l, n]) =>
+    `<button type="button" data-jump="${id}">${esc(l)}${n ? ` <span class="jn">${n}</span>` : ""}</button>`).join("")}</nav>`;
+}
+document.getElementById("main").addEventListener("click", ev => {
+  const b = ev.target.closest("[data-jump]");
+  if (!b) return;
+  document.getElementById(b.dataset.jump)?.scrollIntoView({ behavior: "smooth", block: "start" });
+});
+function setHeaderHeight() {
+  const h = document.querySelector("header.top");
+  if (h) document.documentElement.style.setProperty("--hdr", h.offsetHeight + "px");
+}
+addEventListener("resize", setHeaderHeight);
+setTimeout(setHeaderHeight, 300);
+
 function renderToday(d) {
   const w = d.watchlist;
   if (!w) return `<div class="empty">No watchlist yet. Run the new notebook through <b>Step 3</b> and today's picks show up here.</div>`;
@@ -468,18 +499,19 @@ function renderToday(d) {
     <div class="tile"><span class="v">${na}</span><span class="l">Stocks to avoid</span></div>
     <div class="tile"><span class="v">${(w.new || []).length}</span><span class="l">New since the last run</span></div>
   </div>
-  <section class="panel">
+  ${todayJump(d, nb, sells.length, watch.length)}
+  <section class="panel" id="today-buy">
     <div class="ph"><h2>Buy candidates</h2><span class="sub">Purchases disclosed in the last ${w.lookback} days that score in the top of all past buy signals</span></div>
     ${topBuys.length ? `<div class="picks">${topBuys.map(r => pickRow(r, "buy")).join("")}</div>` : `<div class="empty">No purchase cleared the bar right now.</div>`}
   </section>
   ${worthSection(d)}
   ${postsSection()}
-  <section class="panel">
+  <section class="panel" id="today-avoid">
     <div class="ph"><h2>${sells.some(r => r.action === "SHORT") ? "Short and avoid" : "Stocks to avoid"}</h2><span class="sub">Sales that look like the ones that were followed by drops</span></div>
     ${sells.length ? `<div class="picks">${sells.map(r => pickRow(r, "sell")).join("")}</div>` : `<div class="empty">No strong sell signals right now.</div>`}
   </section>
   ${unusualSection(d)}
-  ${watch.length ? `<section class="panel"><div class="ph"><h2>Also bought recently</h2><span class="sub">Below the bar; for reference</span></div>
+  ${watch.length ? `<section class="panel" id="today-also"><div class="ph"><h2>Also bought recently</h2><span class="sub">Below the bar; for reference</span></div>
     <div class="tbl scroll"><table><thead><tr><th>Ticker</th><th>Company</th><th class="n">Score</th><th>Bought by</th><th>Disclosed</th><th class="n">Since</th></tr></thead><tbody>
     ${watch.map(r => `<tr><td class="mono">${tkBtn(r.t)}</td><td>${esc(r.co || "")}</td><td class="n">${r.s != null ? Number(r.s).toFixed(0) : "–"}</td><td>${peopleCell(r)}</td><td class="nw">${esc(fmtDate(r.d))}</td><td class="n ${cls(r.move)}">${pct(r.move)}</td></tr>`).join("")}
     </tbody></table></div></section>` : ""}
@@ -525,7 +557,7 @@ function worthSection(d) {
   const buyList = new Set((d.watchlist?.buys || []).filter(r => r.action === "BUY").map(r => r.t));
   // Buy button here too; a stock already on the buy list keeps its button up there (one order form per stock)
   const side = r => buyList.has(r.t) ? `<span class="foot">Buy it from Buy candidates above</span>` : buyArea({ t: r.t });
-  return `<section class="panel"><div class="ph"><h2>Worth a look</h2><span class="sub">Recent disclosures with a rare red flag, whatever their score</span></div>
+  return `<section class="panel" id="today-worth"><div class="ph"><h2>Worth a look</h2><span class="sub">Recent disclosures with a rare red flag, whatever their score</span></div>
     <div class="picks">${u.map(r => `<article class="pick">
       <div class="tk"><b>${tkBtn(r.t)}</b>${picks.has(r.t) ? `<span class="chip new">On the list</span>` : ""}</div>
       <div><div class="co">${esc(r.co || infoFor(r.t).co || r.t)}</div>
@@ -539,7 +571,7 @@ function unusualSection(d) {
   const u = d.unusual || [];
   if (!u.length) return "";
   const xf = v => v == null ? "–" : v.toFixed(1) + "×";
-  return `<section class="panel"><div class="ph"><h2>Unusual activity</h2><span class="sub">Stocks members traded in the last 90 days with unusually heavy trading this past week</span></div>
+  return `<section class="panel" id="today-unusual"><div class="ph"><h2>Unusual activity</h2><span class="sub">Stocks members traded in the last 90 days with unusually heavy trading this past week</span></div>
     <div class="tbl scroll"><table><thead><tr><th>Ticker</th><th>Company</th><th class="n">Volume, last week</th><th class="n">Busiest day</th><th class="n">Price, 5 days</th><th>Members who traded</th></tr></thead><tbody>
     ${u.map(r => `<tr><td class="mono">${tkBtn(r.t)}</td><td>${esc(r.co || infoFor(r.t).co || "")}</td><td class="n">${xf(r.ratio)} normal</td><td class="n">${xf(r.peak)}</td><td class="n ${cls(r.move5)}">${pct(r.move5)}</td>
       <td><div class="who-cell">${(r.who || []).map(w => `<span class="nm">${avatar({ n: w.n, b: w.b }, true)}${esc(w.n)}${tagHtml({ n: w.n, b: w.b })} <span class="bs ${w.ty}">${w.ty === "buy" ? "bought" : "sold"}</span> <span class="foot">${esc(fmtDate(w.td))}</span></span>`).join("")}</div></td></tr>`).join("")}
