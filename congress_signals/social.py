@@ -250,6 +250,10 @@ class Tagger:
                     continue                                    # someone else's handle or a hashtag
                 near_cue = any(abs(k - i) <= 5 for k in cue_at)
                 if kind == "co":
+                    if n == 1 and i > 0 and spans[i - 1][0][:1].isupper() and spans[i - 1][0].isalpha() \
+                            and raw[max(0, spans[i - 1][1] - 2):spans[i - 1][1]].strip() not in (".", "!", "?", ":") \
+                            and toks[i - 1] not in ("the", "at", "with", "from", "of", "and", "ceo", "inc"):
+                        continue                                # "Brooke Rollins", "Elon Musk": a person, not the company
                     acronym = n == 1 and words[0].isupper() and len(words[0]) <= 5
                     weak = acronym or _generic(ct) or ct[0] in self.surnames
                     if n == 1 and not weak:       # one-word name: a well-known company, or a company word nearby
@@ -303,7 +307,7 @@ class Tagger:
                 for t, (full, role) in list(cands.items())[:12]:
                     if not re.search(r"ceo|chief executive|founder|chair", str(role), re.I):
                         continue             # only the people whose name stands for the company
-                    co = t in tick
+                    co = t in tick and w not in self.names.get(t, ())     # the company named by other words
                     sec = bool(self.sector_of.get(t)) and self.sector_of.get(t) in secs
                     if not (co or (sec and title)):
                         continue             # no sign of the company in the post: not a candidate at all
