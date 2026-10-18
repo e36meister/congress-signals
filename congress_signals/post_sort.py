@@ -14,7 +14,7 @@ company, which reads tone better). Setting ANTHROPIC_API_KEY and POST_SORTER=hai
 Never raises; a post it can't read gets an empty result."""
 import os, re
 
-SORT_VERSION = 2       # 2: tone toward industries too
+SORT_VERSION = 3       # 2: tone toward industries too; 3: 'met with' and 'strong' only when the company is what the sentence is about
 
 TYPE_RX = [
     ("meeting", re.compile(r"\b(met\b.{0,30}\bwith|meet(?:ing|s)?\b.{0,30}\bwith|sat down with|sit down with|hosted|"
@@ -157,12 +157,35 @@ def sort_record(r, names=None):
         for s in secs[:4]:
             words = [w for w in (SECTOR_WORDS.get(s) or "").split() if len(w) > 2]
             targets.append({"k": "industry", "n": s, "s": _target_tone(text, words, tone) if words else None})
-        meet = None
-        if MEET_RX.search(text) or re.search(r"\b(toured|visited)\b", text, re.I):
-            who = [x["n"] for x in targets if x["k"] in ("person", "lobbyist")] + [x["t"] for x in targets if x["k"] == "co"]
-            if who:
-                meet = who[:4]
-        strong = [x for x in targets if x["k"] in ("co", "person", "lobbyist", "industry") and abs(x.get("s") or 0) >= 0.6]
+        # "met with": the company or person must be in the same sentence as the meeting or visit words (Oct 18:
+        # a Memphis roundtable post that listed FedEx among the city's employers was flagged as meeting FedEx)
+        sents = _sentences(text)
+        visit_rx = re.compile(r"\b(toured|tour(?:ing)? (?:of|the)|visited|visiting|site visit|stopped by)\b", re.I)
+        def words_of(x):
+            if x["k"] in ("person", "lobbyist"):
+                return [x["n"].split()[-1]]
+            return [w for w in ((names or {}).get(x["t"]) or []) if len(w) > 2] or [x["t"]]
+        def named_in(sent, x):
+            low = sent.lower()
+            ws = words_of(x)
+            return all(w.lower() in low for w in ws[:2]) if x["k"] == "co" and len(ws) > 1 else any(w.lower() in low for w in ws)
+        who = []
+        for x in targets:
+            if x["k"] not in ("person", "lobbyist", "co"):
+                continue
+            if any((MEET_RX.search(sn) or visit_rx.search(sn)) and named_in(sn, x) for sn in sents):
+                who.append(x["n"] if x["k"] != "co" else x["t"])
+        meet = who[:4] or None
+        # strong for/against only counts for a company the post is about: in the headline, or named at least twice
+        head = sents[0] if sents else ""
+        def central(x):
+            if x["k"] != "co":
+                return True
+            return named_in(head, x) or sum(1 for sn in sents if named_in(sn, x)) >= 2
+        strong = [x for x in targets if x["k"] in ("co", "person", "lobbyist", "industry") and abs(x.get("s") or 0) >= 0.6 and central(x)]
+        for x in targets:
+            if x["k"] == "co" and not central(x):
+                x["side"] = True         # mentioned in passing
         return {"v": SORT_VERSION, "ty": types[:4], "tg": targets[:12], "ins": ins.group(0) if ins else "",
                 "meet": meet, "strong": bool(strong), "m": model_name()}
     except Exception:
@@ -183,8 +206,14 @@ def significance(r, srt, traded_by=None, crowd=None, member_sectors=None):
         who = ", ".join(srt["meet"][:3])
         why.append(f"met with or visited {who}")
         lvl = max(lvl, 3 if any(x["k"] in ("person", "lobbyist") for x in srt.get("tg", [])) else 2)
+    side = {x["t"] for x in srt.get("tg", []) if x.get("side") and x.get("t")}     # named only in passing
     for t in sorted(cos):
         tb = (traded_by or {}).get(t) or set()
+        if t in side:
+            if tb:
+                why.append(f"mentions {t} in passing" + (" (this member traded it in the last year)" if r[1] in tb else ""))
+                lvl = max(lvl, 2 if r[1] in tb else 1)
+            continue
         if r[1] in tb:
             why.append(f"names {t}, which this member traded in the last year")
             lvl = max(lvl, 3)
@@ -193,7 +222,7 @@ def significance(r, srt, traded_by=None, crowd=None, member_sectors=None):
             lvl = max(lvl, 2)
     for x in srt.get("tg", []):
         s = x.get("s") or 0
-        if x["k"] in ("co", "person", "lobbyist", "industry") and abs(s) >= 0.6:
+        if x["k"] in ("co", "person", "lobbyist", "industry") and abs(s) >= 0.6 and not x.get("side"):
             why.append(f"strongly {'for' if s > 0 else 'against'} {x.get('n') or x.get('t')}")
             lvl = max(lvl, 2)
     for t in sorted(cos):
