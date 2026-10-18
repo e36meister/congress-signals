@@ -110,6 +110,8 @@ nav.jump button:active{background:var(--accent-soft);color:var(--accent)}
 nav.jump .jn{font:600 11px var(--mono);color:var(--accent);margin-left:2px}
 #today-buy,#today-worth,#posts,#today-avoid,#today-unusual,#today-also{scroll-margin-top:calc(var(--hdr,96px) + 60px)}
 .post{border-top:1px solid var(--rule);padding-top:8px;overflow-wrap:anywhere}
+.mlink{color:inherit;font:inherit;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px;text-decoration-color:color-mix(in srgb,currentColor 40%,transparent);cursor:pointer}
+.mlink:hover{text-decoration-color:currentColor}
 /* alerts tab + jump-to highlight */
 header.top .brand{padding-right:48px}
 .bell{position:absolute;right:0;top:12px;width:40px;height:40px;border-radius:50%;border:1px solid var(--rule);background:var(--surface);color:var(--ink2);display:grid;place-items:center;cursor:pointer;padding:0;z-index:2}
@@ -515,7 +517,7 @@ function tagHtml(p) { const t = tagOf(p); return t ? `<span class="ptag ${esc(t[
 function membersText(m) {
   return String(m || "").split(/,\s*(?![^()]*\))/).filter(Boolean).map(x => {
     const mm = x.match(/^(.*?)\s*\(([^)]+)\)\s*$/); const n = (mm ? mm[1] : x).trim();
-    return esc(x.trim()) + tagHtml({ n });
+    return mlink(n) + (mm ? ` (${esc(mm[2])})` : "") + tagHtml({ n });
   }).join(", ");
 }
 function avatar(p, small) {
@@ -528,10 +530,10 @@ function avatar(p, small) {
 }
 function peopleRow(r, side) {
   const ps = peopleOf(r);
-  return `<div class="ppl"><span class="lbl">${side === "sell" ? "Sold by" : "Bought by"}</span>${ps.map(p => `<span class="person">${avatar(p)}<span><span class="pn">${esc(p.n)}${tagHtml(p)}</span>${p.r ? `<span class="pr">${esc(p.r)}</span>` : ""}</span></span>`).join("")}</div>`;
+  return `<div class="ppl"><span class="lbl">${side === "sell" ? "Sold by" : "Bought by"}</span>${ps.map(p => `<span class="person">${avatar(p)}<span><span class="pn">${mlink(p.n, p.b)}${tagHtml(p)}</span>${p.r ? `<span class="pr">${esc(p.r)}</span>` : ""}</span></span>`).join("")}</div>`;
 }
 function peopleCell(r) {
-  return `<div class="who-cell">${peopleOf(r).map(p => `<span class="nm">${avatar(p, true)}${esc(p.n)}${tagHtml(p)}</span>`).join("")}</div>`;
+  return `<div class="who-cell">${peopleOf(r).map(p => `<span class="nm">${avatar(p, true)}${mlink(p.n, p.b)}${tagHtml(p)}</span>`).join("")}</div>`;
 }
 
 const OPEN = ["new", "accepted", "pending_new", "partially_filled", "accepted_for_bidding", "held", "calculated"];
@@ -777,11 +779,11 @@ function postsSection() {
   const item = x => {
     const who = String(x.who || "").split(",")[0].split(" ").slice(-1)[0];
     const tg = (x.tg || []).filter(g => g[1] === "co" || g[1] === "person" || g[1] === "lobbyist").slice(0, 3);
-    const detail = `<p><b>${esc(x.who)}</b> · ${esc(fmtDate(x.d))} · ${esc(x.src)}</p>${(x.why || []).length ? `<p><b>${esc(x.why.join("; "))}</b></p>` : ""}
+    const detail = `<p><b>${mlink(x.who, x.b)}</b> · ${esc(fmtDate(x.d))} · ${esc(x.src)}</p>${(x.why || []).length ? `<p><b>${esc(x.why.join("; "))}</b></p>` : ""}
       <p>“${esc(x.text)}”</p>${(x.tg || []).filter(g => g[2] != null).length ? `<p class="foot">Tone: ${x.tg.filter(g => g[2] != null).map(g => `${esc(g[0])} ${stanceTxt(g[2])}`).join(" · ")}</p>` : ""}
       ${x.url ? `<p><a href="${esc(x.url)}" target="_blank" rel="noopener">Go to post</a></p>` : ""}`;
     return `<article class="post lvl${x.lvl}" data-hl="post:${esc(x.id || postId(x.url))}"><div class="prow">
-      ${tipBtn(who, x.who, detail, "who")}
+      ${mlink(x.who, x.b, who)}${tipBtn("More", x.who, detail, "more")}
       <span class="ms">${esc(fmtShort(x.d))}</span>
       ${(x.ty || []).filter(t => t !== "other").slice(0, 2).map(t => `<span class="chip watch">${esc(POST_TY[t] || t)}</span>`).join("")}
       ${x.ins ? tipBtn("Hint", "Insider-style wording", `<p>“${esc(x.ins)}”</p>${detail}`, "neg") : ""}
@@ -815,7 +817,7 @@ function worthSection(d) {
     <div class="picks">${u.map(r => `<article class="pick" data-hl="worth:${esc(r.t)}">
       <div class="tk"><b>${tkBtn(r.t)}</b>${picks.has(r.t) ? `<span class="chip new">On the list</span>` : ""}</div>
       <div><div class="co">${esc(r.co || infoFor(r.t).co || r.t)}</div>
-        <div class="ppl">${(r.who || []).map(w => `<span class="person">${avatar({ n: w.n, b: w.b })}<span><span class="pn">${esc(w.n)}${tagHtml({ n: w.n, b: w.b })}</span><span class="pr"><span class="bs ${w.ty}">${w.ty === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(w.td))} · disclosed ${esc(fmtDate(w.d))}</span></span></span>`).join("")}</div>
+        <div class="ppl">${(r.who || []).map(w => `<span class="person">${avatar({ n: w.n, b: w.b })}<span><span class="pn">${mlink(w.n, w.b)}${tagHtml({ n: w.n, b: w.b })}</span><span class="pr"><span class="bs ${w.ty}">${w.ty === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(w.td))} · disclosed ${esc(fmtDate(w.d))}</span></span></span>`).join("")}</div>
         ${tagsHtml(r.why, 5, `Why ${r.t} is flagged`)}
         ${(r.posts || []).length ? `<div class="tags">${r.posts.map(q => `<a class="tag go" href="${esc(q.u)}" target="_blank" rel="noopener">Go to post</a>${tipBtn(reasonTag(q.why).label + " · " + fmtShort(q.d), "The post", `<p><b>${esc(q.who || "")}</b> ${esc(q.why)}</p><p class="foot">${esc(fmtDate(q.d))} · ${esc(q.src || "")}</p><p>“${esc(String(q.x || ""))}”</p><p><a href="${esc(q.u)}" target="_blank" rel="noopener">Go to post</a></p>`, "post")}`).join("")}</div>` : ""}</div>
       <div class="side">${side(r)}</div>
@@ -829,7 +831,7 @@ function unusualSection(d) {
   return `<section class="panel" id="today-unusual"><div class="ph"><h2>Unusual activity</h2><span class="sub">Stocks members traded in the last 90 days with unusually heavy trading this past week</span></div>
     <div class="tbl scroll"><table><thead><tr><th>Ticker</th><th>Company</th><th class="n">Volume, last week</th><th class="n">Busiest day</th><th class="n">Price, 5 days</th><th>Members who traded</th></tr></thead><tbody>
     ${u.map(r => `<tr><td class="mono">${tkBtn(r.t)}</td><td>${esc(r.co || infoFor(r.t).co || "")}</td><td class="n">${xf(r.ratio)} normal</td><td class="n">${xf(r.peak)}</td><td class="n ${cls(r.move5)}">${pct(r.move5)}</td>
-      <td><div class="who-cell">${(r.who || []).map(w => `<span class="nm">${avatar({ n: w.n, b: w.b }, true)}${esc(w.n)}${tagHtml({ n: w.n, b: w.b })} <span class="bs ${w.ty}">${w.ty === "buy" ? "bought" : "sold"}</span> <span class="foot">${esc(fmtDate(w.td))}</span></span>`).join("")}</div></td></tr>`).join("")}
+      <td><div class="who-cell">${(r.who || []).map(w => `<span class="nm">${avatar({ n: w.n, b: w.b }, true)}${mlink(w.n, w.b)}${tagHtml({ n: w.n, b: w.b })} <span class="bs ${w.ty}">${w.ty === "buy" ? "bought" : "sold"}</span> <span class="foot">${esc(fmtDate(w.td))}</span></span>`).join("")}</div></td></tr>`).join("")}
     </tbody></table></div>
     <p class="foot">Heavy trading can mean others are acting on news before it's public, but it also follows earnings, index changes and ordinary headlines. Treat it as a reason to look closer, not a signal on its own. Volume as of ${esc(fmtDate(u[0].asof))}.</p></section>`;
 }
@@ -1017,7 +1019,7 @@ function soldNote(x) {
   const seen = new Set(), list = m.sales.filter(s => !seen.has(s.n) && seen.add(s.n));
   const auto = state.data?.adaptive?.policy?.exit_on_member_sell && x.bot && x.sleeve !== "small";
   return `<div><span class="chip avoid" title="A member whose purchase was behind this buy has disclosed a sale">Member sold</span></div>
-    <div class="foot" style="font-family:var(--body);white-space:normal;min-width:160px">${list.map(s => `${esc(s.n)}${tagHtml({ n: s.n, b: s.b })} sold ${esc(fmtDate(s.td))}, disclosed ${esc(fmtDate(s.d))}`).join("<br>")}${auto ? "<br>The tool sells it at the next update." : ""}</div>`;
+    <div class="foot" style="font-family:var(--body);white-space:normal;min-width:160px">${list.map(s => `${mlink(s.n, s.b)}${tagHtml({ n: s.n, b: s.b })} sold ${esc(fmtDate(s.td))}, disclosed ${esc(fmtDate(s.d))}`).join("<br>")}${auto ? "<br>The tool sells it at the next update." : ""}</div>`;
 }
 function heldCell(x, L) {
   if (x.sleeve === "park") return `Tool's unused money<div class="foot">Parked in ${["SGOV", "BIL", "SHV"].includes(x.t) ? "a Treasury-bill fund" : "the S&amp;P 500"} until picks need it</div>`;
@@ -1270,7 +1272,7 @@ function tiesPanel(rows) {
     const open = TIE.open === r.key, v = tieRev(r), fam = (r.Spouse || "").replace(/\s*\(.*\)$/, "");
     const rel = (r.Spouse || "").match(/\(([^)]+)\)$/)?.[1] || (r.Source === "Yearly financial disclosure" ? "spouse" : "spouse");
     const web = "https://www.google.com/search?q=" + encodeURIComponent(`"${fam}" ${r.Member} ${String(r.Company).replace(/\s*\([^)]*\)$/, "")}`);
-    let h = `<tr><td>${esc(r.Member)}</td><td>${esc(r.Spouse || "–")}</td>
+    let h = `<tr><td>${mlink(r.Member, r.b)}</td><td>${esc(r.Spouse || "–")}</td>
       <td>${chip(r._c)}${r.key && canReview ? `<div style="margin-top:4px"><button class="btn sm" data-tie="${esc(r.key)}">${open ? "Close" : v ? "Change" : "Review"}</button></div>` : ""}${v && v.note ? `<div class="foot" style="margin:2px 0 0">${esc(v.note)}</div>` : ""}</td>
       <td>${esc(r.Company)}</td><td>${esc(r.Role)}</td>
       <td class="nw">${esc(r.Since ? fmtDate(r.Since) : "–")}</td><td class="nw">${esc(r["Last filing"] ? fmtDate(r["Last filing"]) : "–")}${r["Last filing"] && (Date.now() - Date.parse(r["Last filing"])) > 548 * 864e5 ? ` <span class="chip avoid" title="No SEC filing for 18+ months: they may have left. Trades still count at half weight, with a warning.">Former?</span>` : ""}</td>
@@ -1502,7 +1504,7 @@ function headshot(tr, cls, size) {
 function tradeLineText(tr) {
   const lag = tr.d ? Math.round((Date.parse(tr.d) - Date.parse(tr.td)) / 864e5) : null;
   const sh = shares(tr);
-  return `<b>${esc(tr.n)}</b>${tagHtml({ n: tr.n, b: tr.b })} <span class="bs ${tr.ty}">${tr.ty === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(tr.td))}
+  return `<b>${mlink(tr.n, tr.b)}</b>${tagHtml({ n: tr.n, b: tr.b })} <span class="bs ${tr.ty}">${tr.ty === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(tr.td))}
     <div>${priceText(tr)} · ${kfmt(tr.lo)}${tr.hi ? "–" + kfmt(tr.hi) : "+"} reported${sh ? ` · ${sh}` : ""}</div>
     ${tr.note ? `<div style="margin-top:2px">Filing note: “${esc(tr.note)}”</div>` : ""}
     <div class="foot">Disclosed ${esc(fmtDate(tr.d))}${lag != null ? ` (${lag} days later)` : ""}${tr.own && OWN[tr.own] ? " · " + OWN[tr.own] : ""}</div>`;
@@ -1596,7 +1598,7 @@ function drawTickerChart() {
   // trades in this span, newest first
   const rows = trades.slice().sort((a, b) => b.td.localeCompare(a.td));
   list.innerHTML = rows.length ? `<div class="tbl scroll tlist"><table><thead><tr><th>Member</th><th></th><th>Traded</th><th class="n">Price</th><th class="n">Amount</th><th>Disclosed</th></tr></thead><tbody>
-    ${rows.map(tr => `<tr data-k="${tr.k}"><td><span class="nm" style="display:inline-flex;align-items:center;gap:6px">${headshot(tr, "av sm", 0)}${esc(tr.n)}${tagHtml({ n: tr.n, b: tr.b })}</span></td><td><span class="bs ${tr.ty}">${tr.ty === "buy" ? "Buy" : "Sell"}</span></td><td class="nw">${esc(fmtDate(tr.td))}</td><td class="n">${priceCell(tr)}</td><td class="n">${kfmt(tr.lo)}${tr.hi ? "–" + kfmt(tr.hi) : "+"}<div class="foot">${esc(shares(tr) || "")}</div></td><td class="nw">${esc(fmtDate(tr.d))}</td></tr>`).join("")}
+    ${rows.map(tr => `<tr data-k="${tr.k}"><td><span class="nm" style="display:inline-flex;align-items:center;gap:6px">${headshot(tr, "av sm", 0)}${mlink(tr.n, tr.b)}${tagHtml({ n: tr.n, b: tr.b })}</span></td><td><span class="bs ${tr.ty}">${tr.ty === "buy" ? "Buy" : "Sell"}</span></td><td class="nw">${esc(fmtDate(tr.td))}</td><td class="n">${priceCell(tr)}</td><td class="n">${kfmt(tr.lo)}${tr.hi ? "–" + kfmt(tr.hi) : "+"}<div class="foot">${esc(shares(tr) || "")}</div></td><td class="nw">${esc(fmtDate(tr.d))}</td></tr>`).join("")}
     </tbody></table></div>` : `<div class="foot">No member trades of ${esc(t)} in this period${(C.trades[t] || []).length ? "; try a longer timespan" : ""}.</div>`;
   list.querySelectorAll("tr[data-k]").forEach(el => el.addEventListener("click", () => { const k = +el.dataset.k; select(pop.sel && pop.sel.k === k ? null : k); }));
   // crosshair with the day's close
@@ -1629,7 +1631,8 @@ const EV_KIND = {
 function memLoadIndex() {
   if (MEM.index || MEM.loading.index) return;
   MEM.loading.index = true;
-  loadMembersIndex().then(js => { MEM.index = js; MEM.err = null; }).catch(e => { MEM.err = e; })
+  loadMembersIndex().then(js => { MEM.index = js; MEM.err = null;
+    if (PENDING_MEM) { const k = memKeyFor(PENDING_MEM.n, PENDING_MEM.b); PENDING_MEM = null; if (k) { MEM.key = k; try { history.replaceState({}, "", "#members/" + k); } catch (e) {} } } }).catch(e => { MEM.err = e; })
     .finally(() => { MEM.loading.index = false; if (state.tab === "members") render(); });
 }
 function memLoad(k) {
@@ -1824,6 +1827,40 @@ addEventListener("popstate", () => {
 { const m = location.hash.match(/^#members(?:\/([A-Za-z0-9-]+))?$/); if (m) { state.tab = "members"; MEM.key = m[1] || null; } }
 
 
+
+// ---------- member names link to their profile (any page) ----------
+function mlink(n, b, label) {
+  if (!n) return "";
+  return `<a class="mlink" href="#members${b ? "/" + esc(b) : ""}" data-mname="${esc(n)}"${b ? ` data-mb="${esc(b)}"` : ""}>${esc(label || n)}</a>`;
+}
+const normName = s => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+  .replace(/\b(hon|mr|mrs|ms|dr|jr|sr|ii|iii|iv)\b\.?/g, "").replace(/[^a-z ]/g, " ").replace(/\s+/g, " ").trim();
+function memKeyFor(n, b) {
+  if (b && /^[A-Z]\d{6}$/.test(b)) return b;
+  const list = MEM.index?.members; if (!list) return null;
+  const k = normName(n); if (!k) return null;
+  let m = list.find(x => normName(x.n) === k);
+  if (!m) { const w = k.split(" "), last = w[w.length - 1], f = w[0];
+    const c = list.filter(x => { const v = normName(x.n).split(" "); return v[v.length - 1] === last && (v[0][0] === f[0] || v.includes(f)); });
+    if (c.length === 1) m = c[0]; }
+  return m ? m.k : null;
+}
+let PENDING_MEM = null;
+function openMember(n, b) {
+  const k = memKeyFor(n, b);
+  if (pop.t) closeChart();
+  const tb = document.getElementById("tipbg"); if (tb && !tb.hidden) { tb.hidden = true; tb.innerHTML = ""; }
+  if (k) { go("#members/" + k); return; }
+  PENDING_MEM = { n, b };          // the member list isn't loaded yet: open the profile as soon as it is
+  memLoadIndex(); go("#members");
+}
+document.addEventListener("click", ev => {
+  const a = ev.target.closest("a.mlink");
+  if (!a) return;
+  ev.preventDefault(); ev.stopPropagation();
+  openMember(a.dataset.mname, a.dataset.mb);
+}, true);
+
 // ---------- Alerts tab: every phone alert, newest first; tapping one opens what it's about ----------
 const ALERTS = { items: null, err: null, loading: false, open: null };
 let SEEN = 0;
@@ -1907,8 +1944,9 @@ function route(hash) {
   else if (a === "posts") { tab("today"); aim("#posts"); }
   else if (a === "works") { tab("works"); }
   else if (/^today-/.test(a)) { tab("today"); aim("#" + a); }
+  else if (a === "members") { tab("members"); MEM.key = b || null; MEM.open = null; MEM.tq = ""; MEM.tshow = 40; }
   else if (["today", "record", "defense", "small", "works", "real", "port", "alerts"].includes(a)) tab(a);
-  else return;            // members links are handled by the member pages
+  else return;
   render(); scrollTo(0, 0);
 }
 function focusTarget() {
