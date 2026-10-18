@@ -109,7 +109,7 @@ items = []
 for src, r in fresh:
     srt = r[11]
     lvl, why = PS.significance(r, srt, traded_by, crowd_n, member_sectors)
-    items.append({"id": cloud_store.post_id(r[4]), "d": str(r[0])[:10], "b": r[1], "who": names.get(r[1], r[1]), "src": r[2], "text": (r[3] or "")[:300],
+    items.append({"id": cloud_store.post_id(r[4]), "sv": PS.SORT_VERSION, "d": str(r[0])[:10], "b": r[1], "who": names.get(r[1], r[1]), "src": r[2], "text": (r[3] or "")[:300],
                   "url": r[4], "t": r[5] or [], "ty": srt.get("ty") or [], "ins": srt.get("ins") or "",
                   "meet": srt.get("meet") or [], "tg": [[x.get("n") if x["k"] in ("person", "lobbyist", "agency", "industry") else x.get("t"), x["k"], x.get("s")]
                          for x in srt.get("tg", [])][:8],
@@ -119,6 +119,12 @@ for src, r in fresh:
 raw = cloud_store.get("posts/feed.json", E.log)
 feed = json.loads(raw) if raw else {"items": []}
 old_items = [x for x in feed.get("items", []) if x.get("d", "") >= (today - dt.timedelta(days=7)).isoformat()]
+for x in old_items:      # sorted before Oct 18: "met with" / "strongly for" could come from a company named in passing
+    if (x.get("sv") or 0) < 3 and x.get("meet") and not any(" " in str(m) for m in x["meet"]):
+        x["why"] = [w for w in (x.get("why") or []) if not w.startswith(("met with or visited", "strongly "))]
+        x["meet"] = []
+        x["lvl"] = min(int(x.get("lvl") or 0), 1)
+        x["sv"] = 3
 for x in old_items:      # sorted before Oct 17: a member's own name could count as a company person they "met"
     last = str(x.get("who") or "").split(",")[0].split(" ")[-1].lower()
     if last and any(last == str(m).split(" ")[-1].lower() for m in (x.get("meet") or [])):
