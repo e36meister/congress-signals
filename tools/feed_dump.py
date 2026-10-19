@@ -2,4 +2,4 @@
 import sys, json
 sys.path.insert(0, ".")
 import cloud_store
-print("FEEDJSON " + (cloud_store.get("posts/feed.json", print) or "{}").replace("\n", " "))
+print("FEEDJSON " + json.dumps(json.loads(cloud_store.get("posts/feed.json", print) or b"{}")))
