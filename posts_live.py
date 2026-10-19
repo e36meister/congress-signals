@@ -27,7 +27,9 @@ seen = state.get("seen") or {}
 first = not seen
 
 # every post a collector writes that wasn't in that file before, and is recent
+import threading
 new_rows = []
+_tag, _cur = {}, {}        # which source each captured post came from (two collectors run at once)
 _orig_write = S.write_jsonl
 
 
@@ -38,6 +40,7 @@ def _capture(path, rows):
         for r in rows:
             if len(r) > 4 and r[4] and r[4] not in old and str(r[0]) >= recent_from:
                 new_rows.append((src, r))
+                _tag[id(r)] = _cur.get(threading.get_ident(), "?")
     except Exception as e:
         E.log(f"Live posts: couldn't compare {os.path.basename(path)} ({type(e).__name__})")
     _orig_write(path, rows)
@@ -51,21 +54,34 @@ acc = S.discover_accounts(cfg, leg, st, time.time() + 30)
 hmap = S.bluesky_accounts(cfg, leg, acc, st, time.time() + 30)
 counts = {}
 import congress_signals.press_backfill as PB
-for name, fn in (("Members' own sites", lambda: PB.latest_current(cfg, tg, leg, time.time() + 300)),
-                 ("Press releases", lambda: S.collect_press(cfg, st, tg, deadline, years=False)),
-                 ("Bluesky", lambda: S.collect_bluesky(cfg, st, tg, hmap, deadline, ocr_days=3, max_ocr=40)),
-                 ("Mastodon", lambda: S.collect_mastodon(cfg, st, tg, leg, acc, deadline)),
-                 ("Substack", lambda: S.collect_substack(cfg, st, tg, acc, deadline)),
-                 ("YouTube", lambda: S.collect_youtube(cfg, st, tg, leg, acc, deadline) if dt.datetime.utcnow().hour % 3 == 0 else None)):
-    n0 = len(new_rows)
-    if time.time() > deadline:
+from concurrent.futures import ThreadPoolExecutor
+# Oct 19: reading all 538 members' own sites takes ~15 minutes, and it ran first, so Bluesky, Mastodon, Substack and
+# YouTube were skipped as "out of time" every hour. Now the sites run on their own thread next to the others.
+tg_sites = S.Tagger(cfg)          # its own copy: the tagger keeps per-post state
+SITES = ("Members' own sites", lambda: PB.latest_current(cfg, tg_sites, leg, time.time() + 300))
+REST = (("Press releases", lambda: S.collect_press(cfg, st, tg, deadline, years=False)),
+        ("Bluesky", lambda: S.collect_bluesky(cfg, st, tg, hmap, deadline, ocr_days=3, max_ocr=40)),
+        ("Mastodon", lambda: S.collect_mastodon(cfg, st, tg, leg, acc, deadline)),
+        ("Substack", lambda: S.collect_substack(cfg, st, tg, acc, deadline)),
+        ("YouTube", lambda: S.collect_youtube(cfg, st, tg, leg, acc, deadline) if dt.datetime.utcnow().hour % 3 == 0 else None))
+def run_one(name, fn):
+    if time.time() > deadline and name != SITES[0]:
         E.log(f"Live posts: {name} skipped (out of time)")
-        continue
+        return
+    n0 = len([1 for _, r in new_rows if _tag.get(id(r)) == name])
+    _cur[threading.get_ident()] = name
     try:
         fn()
     except Exception as e:
         E.log(f"Live posts: {name} failed ({type(e).__name__}: {e})")
-    counts[name] = len(new_rows) - n0
+    counts[name] = sum(1 for _, r in new_rows if _tag.get(id(r)) == name) - n0
+
+
+with ThreadPoolExecutor(2) as ex:
+    f_sites = ex.submit(run_one, *SITES)
+    f_rest = ex.submit(lambda: [run_one(n, f) for n, f in REST])
+    f_rest.result()
+    f_sites.result()
 S.write_jsonl = _orig_write
 
 # keep posts not already handled by an earlier hour
