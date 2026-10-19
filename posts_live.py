@@ -6,7 +6,7 @@ releases, Bluesky, Mastodon, Substack; YouTube every third hour to stay within G
 posts it hasn't seen before (state kept on Cloudflare, posts/live_state.json), sorts each one (post_sort.py), scores
 why it matters, sends one phone alert for the notable ones and updates posts/feed.json for the app.
 Nothing is saved to the GitHub cache: the twice-daily posts job stores everything for good."""
-import os, sys, json, time, datetime as dt
+import os, re, sys, json, time, datetime as dt
 import pandas as pd
 import congress_signals.engine as E
 import congress_signals.social as S
@@ -80,9 +80,11 @@ for src, r in new_rows:
 E.log("Live posts: new this hour: " + ", ".join(f"{k} {v}" for k, v in counts.items()) + f"; {len(fresh)} not seen before")
 
 # who traded what in the last year (a company the member or a colleague trades)
-traded_by, member_sectors = {}, {}
+traded_by, member_sectors, traders, sc_all = {}, {}, set(), None
 try:
     sc = pd.read_pickle(os.path.join("data", "cache", "scored.pkl"))
+    sc_all = sc
+    traders = {b for b in sc["bioguide"] if isinstance(b, str)}       # members with any disclosed trade, ever
     sc = sc[pd.to_datetime(sc["trade_date"], errors="coerce") >= pd.Timestamp(today) - pd.Timedelta(days=365)]
     for t, b in zip(sc["ticker"], sc["bioguide"]):
         if isinstance(b, str):
@@ -115,6 +117,60 @@ for src, r in fresh:
                          for x in srt.get("tg", [])][:8],
                   "lvl": lvl, "why": why, "at": dt.datetime.utcnow().isoformat(timespec="seconds")})
 
+# owner, Oct 19: posts from members who have never disclosed a trade aren't shown (they still count for "3+ members
+# on a company", and their strong posts are watched below in case other members then trade that company);
+# a member's posts show from their first disclosed trade on
+hidden = [x for x in items if traders and x["b"] not in traders]
+items = [x for x in items if not traders or x["b"] in traders]
+
+# watched posts: strong posts by anyone (a company or its people named, an insider-style hint, a meeting). When another member trades that company (or, after an insider-style hint, that industry)
+# within 30 days after the post, it's a "post, then trade" alert.
+raw_w = cloud_store.get("posts/watch.json", E.log)
+watch = json.loads(raw_w) if raw_w else {"posts": [], "hit": []}
+def strong(x):
+    tgs = x.get("tg") or []
+    named = [g[0] for g in tgs if g[1] in ("co", "person", "lobbyist")]
+    return bool(named or x.get("ins") or x.get("meet"))
+for x in items + hidden:
+    if strong(x):
+        watch["posts"].append({k: x.get(k) for k in ("id", "d", "b", "who", "url", "t", "ins", "meet", "ty", "text")} |
+                              {"secs": [g[0] for g in x.get("tg") or [] if g[1] == "industry"]})
+cut60 = (today - dt.timedelta(days=60)).isoformat()
+watch["posts"] = [w for w in {w["id"]: w for w in watch["posts"]}.values() if w.get("d", "") >= cut60][-3000:]
+seen_hits = set(watch.get("hit") or [])
+ptt = []
+if sc_all is not None and len(sc_all):
+    st_ = sc_all[pd.to_datetime(sc_all["trade_date"], errors="coerce") >= pd.Timestamp(cut60)]
+    tr_rows = list(zip(st_["bioguide"], st_["member"], st_["ticker"], st_.get("sector", pd.Series(index=st_.index, dtype=object)),
+                       pd.to_datetime(st_["trade_date"], errors="coerce"), st_["tx_type"]))
+    for w in watch["posts"]:
+        d0 = pd.Timestamp(w["d"])
+        for b, m, t, sec, td, ty in tr_rows:
+            if not isinstance(b, str) or b == w["b"] or pd.isna(td) or not (d0 <= td <= d0 + pd.Timedelta(days=30)):
+                continue
+            by_co = t in (w.get("t") or [])
+            by_sec = bool(w.get("ins")) and isinstance(sec, str) and sec in (w.get("secs") or [])
+            if not (by_co or by_sec):
+                continue
+            key = f"{w['id']}|{b}|{t}|{td:%Y-%m-%d}"
+            if key in seen_hits:
+                continue
+            seen_hits.add(key)
+            days = (td - d0).days
+            ptt.append({"w": w, "line": f"{str(m).split(',')[0]} {'bought' if ty == 'buy' else 'sold'} {t} {days} day(s) after "
+                                         f"{w['who']}'s post" + ("" if by_co else f" hinting at {sec.lower()}")})
+watch["hit"] = sorted(seen_hits)[-5000:]
+cloud_store.put("posts/watch.json", json.dumps(watch, default=str), E.log)
+for h in ptt:          # the post goes in the feed (even a non-trader's), with what happened after it
+    w = h["w"]
+    items.append({"id": w["id"], "sv": PS.SORT_VERSION, "d": w["d"], "b": w["b"], "who": w["who"], "src": "Post, then trade",
+                  "text": w.get("text") or "", "url": w["url"], "t": w.get("t") or [], "ty": w.get("ty") or [], "ins": w.get("ins") or "",
+                  "meet": w.get("meet") or [], "tg": [], "lvl": 3, "why": [h["line"]], "at": dt.datetime.utcnow().isoformat(timespec="seconds")})
+if ptt:
+    E.log(f"Live posts: {len(ptt)} trade(s) by other members after a watched post")
+E.log(f"Live posts: {len(hidden)} new post(s) from members with no disclosed trades kept out of the feed; "
+      f"{len(watch['posts'])} strong posts watched for trades")
+
 # the app's feed: notable posts from the last 7 days plus the newest others
 raw = cloud_store.get("posts/feed.json", E.log)
 feed = json.loads(raw) if raw else {"items": []}
@@ -131,6 +187,13 @@ for x in old_items:      # sorted before Oct 17: a member's own name could count
         x["meet"] = [m for m in x["meet"] if str(m).split(" ")[-1].lower() != last]
         x["why"] = [w for w in (x.get("why") or []) if "met with or visited" not in w]
         x["lvl"] = min(int(x.get("lvl") or 0), 1)
+old_items = [x for x in old_items if not traders or x.get("b") in traders or x.get("src") == "Post, then trade"]
+for x in old_items:      # ranked before Oct 19: industry tone and passing mentions no longer count
+    if (x.get("sv") or 0) < 4:
+        x["why"] = [w for w in (x.get("why") or []) if not re.match(r"strongly (for|against) (Real Estate|Technology|Energy|Healthcare|"
+                    r"Financial Services|Communication Services|Consumer Cyclical|Consumer Defensive|Industrials|Basic Materials|Utilities)", w)]
+        x["lvl"] = 0 if not x["why"] else min(int(x.get("lvl") or 0), 2)
+        x["sv"] = 4
 allx = items + old_items
 keep = [x for x in allx if x.get("lvl", 0) >= 1][:600] + [x for x in allx if x.get("lvl", 0) < 1][:200]
 keep.sort(key=lambda x: (x.get("d", ""), x.get("at", "")), reverse=True)
@@ -138,7 +201,7 @@ feed = {"updated": dt.datetime.utcnow().isoformat(timespec="seconds"), "sorter":
 cloud_store.put("posts/feed.json", json.dumps(feed, default=str), E.log)
 
 # one phone alert for this hour's notable posts (none on the very first run, which only learns what exists)
-top = sorted([x for x in items if x["lvl"] >= 2], key=lambda x: -x["lvl"])
+top = sorted([x for x in items if x["lvl"] >= 3], key=lambda x: -x["lvl"])     # push: the four alert kinds only
 if top and not first:
     lines = [f"{x['who']}: {x['why'][0]}" for x in top[:3]]
     title = (f"{len(top)} notable post(s)" if len(top) > 1 else f"Post: {top[0]['who']}")[:120]

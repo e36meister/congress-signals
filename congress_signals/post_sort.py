@@ -14,7 +14,7 @@ company, which reads tone better). Setting ANTHROPIC_API_KEY and POST_SORTER=hai
 Never raises; a post it can't read gets an empty result."""
 import os, re
 
-SORT_VERSION = 3       # 2: tone toward industries too; 3: 'met with' and 'strong' only when the company is what the sentence is about
+SORT_VERSION = 4       # 2: tone toward industries too; 3: 'met with' and 'strong' only when the company is what the sentence is about; 4: alert levels (Oct 19)
 
 TYPE_RX = [
     ("meeting", re.compile(r"\b(met\b.{0,30}\bwith|meet(?:ing|s)?\b.{0,30}\bwith|sat down with|sit down with|hosted|"
@@ -193,50 +193,48 @@ def sort_record(r, names=None):
 
 
 def significance(r, srt, traded_by=None, crowd=None, member_sectors=None):
-    """Why this post matters (owner, Oct 16: insider hints, a company the member or a colleague trades, strong
-    for/against, several members at once, any company mention, or company people / lobbyists meeting a member).
-    traded_by: {ticker: {bioguides who traded it in the last year}}; crowd: {ticker: distinct members naming it in 3 days}.
-    -> (level 0-3, [reasons])"""
+    """Why this post matters. Levels (owner, Oct 19): 3 = push alert (3+ members naming the same company, an
+    insider-style hint naming a company, a real meeting or visit with a company, its people or a lobbyist);
+    2 = shown as notable (names a company this member traded in the last year); 1 = shown (names a company others
+    trade, a strong stance on a company, a post about an industry the member trades); 0 = everything else.
+    Tone toward whole industries isn't a reason: it was mostly noise (a post about student journalists read as
+    "strongly for Real Estate"). traded_by: {ticker: {bioguides who traded it in the last year}};
+    crowd: {ticker: distinct members naming it in 3 days}. -> (level 0-3, [reasons])"""
     why, lvl = [], 0
-    cos = {x["t"] for x in srt.get("tg", []) if x.get("t")}
-    if srt.get("ins") and (cos or any(x["k"] in ("agency", "industry") for x in srt.get("tg", []))):
-        why.append(f"hint of non-public information (\"{srt['ins']}\")")
+    tg = srt.get("tg", [])
+    side = {x["t"] for x in tg if x.get("side") and x.get("t")}
+    cos = {x["t"] for x in tg if x.get("t") and x["k"] == "co"} | {x["t"] for x in tg if x.get("t") and x["k"] in ("person", "lobbyist")}
+    main = cos - side
+    if srt.get("ins") and main:
+        why.append(f"hint of non-public information (\"{srt['ins']}\") naming {', '.join(sorted(main)[:3])}")
         lvl = max(lvl, 3)
     if srt.get("meet"):
-        who = ", ".join(srt["meet"][:3])
-        why.append(f"met with or visited {who}")
-        lvl = max(lvl, 3 if any(x["k"] in ("person", "lobbyist") for x in srt.get("tg", [])) else 2)
-    side = {x["t"] for x in srt.get("tg", []) if x.get("side") and x.get("t")}     # named only in passing
-    for t in sorted(cos):
-        tb = (traded_by or {}).get(t) or set()
-        if t in side:
-            if tb:
-                why.append(f"mentions {t} in passing" + (" (this member traded it in the last year)" if r[1] in tb else ""))
-                lvl = max(lvl, 2 if r[1] in tb else 1)
-            continue
-        if r[1] in tb:
-            why.append(f"names {t}, which this member traded in the last year")
-            lvl = max(lvl, 3)
-        elif tb:
-            why.append(f"names {t}, traded by {len(tb)} other member(s) in the last year")
-            lvl = max(lvl, 2)
-    for x in srt.get("tg", []):
-        s = x.get("s") or 0
-        if x["k"] in ("co", "person", "lobbyist", "industry") and abs(s) >= 0.6 and not x.get("side"):
-            why.append(f"strongly {'for' if s > 0 else 'against'} {x.get('n') or x.get('t')}")
-            lvl = max(lvl, 2)
+        why.append(f"met with or visited {', '.join(srt['meet'][:3])}")
+        lvl = max(lvl, 3)
     for t in sorted(cos):
         n = (crowd or {}).get(t, 0)
         if n >= 3:
             why.append(f"{n} members named {t} in the last 3 days")
-            lvl = max(lvl, 2)
-    # an industry the member traded in the last 90 days: {bioguide: {sector: [tickers]}}
+            lvl = max(lvl, 3)
+    for t in sorted(cos):
+        tb = (traded_by or {}).get(t) or set()
+        if r[1] in tb:
+            why.append(f"{'mentions' if t in side else 'names'} {t}, which this member traded in the last year")
+            lvl = max(lvl, 2 if t not in side else 1)
+        elif tb and t not in side:
+            why.append(f"names {t}, traded by {len(tb)} other member(s) in the last year")
+            lvl = max(lvl, 1)
+    for x in tg:
+        s_ = x.get("s") or 0
+        if x["k"] in ("co", "person", "lobbyist") and abs(s_) >= 0.6 and not x.get("side"):
+            why.append(f"strongly {'for' if s_ > 0 else 'against'} {x.get('n') or x.get('t')}")
+            lvl = max(lvl, 1)
     ms = (member_sectors or {}).get(r[1]) or {}
-    for x in srt.get("tg", []):
+    for x in tg:
         if x["k"] == "industry" and x.get("n") in ms and (srt.get("ins") or set(srt.get("ty") or []) & (BOOST_TYPES | HIT_TYPES)):
             why.append(f"about {x['n'].lower()}, where this member recently traded {', '.join(ms[x['n']][:3])}")
-            lvl = max(lvl, 3 if srt.get("ins") else 2)
-    if cos and not why:
-        why.append("names " + ", ".join(sorted(cos)[:4]))
+            lvl = max(lvl, 1)
+    if main and not why:
+        why.append("names " + ", ".join(sorted(main)[:4]))
         lvl = max(lvl, 1)
     return lvl, why

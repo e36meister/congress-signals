@@ -367,6 +367,7 @@ function setStatus(kind, text, showRefresh) {
 // ---------- tabs ----------
 document.querySelectorAll("nav.tabs button").forEach(b => b.addEventListener("click", () => {
   state.tab = b.dataset.tab;
+  if (typeof MEM !== "undefined") MEM.missing = null;
   try { localStorage.setItem("ctd-tab", state.tab); } catch (e) {}
   render();
 }));
@@ -700,7 +701,7 @@ function postsSection() {
     ${POSTS.loading && !POSTS.feed ? `<div class="empty">Loading…</div>` : POSTS.err ? `<div class="note warn">${errorText(POSTS.err)}</div>` :
       pick.length ? `<div class="posts-feed">${pick.slice(0, POSTS.n).map(item).join("")}</div>${pick.length > POSTS.n ? `<button type="button" class="link" data-pmore="1">Show more (${pick.length - POSTS.n})</button>` : ""}` :
       `<div class="empty">${POSTS.show === "notable" ? "No notable posts in the last 7 days yet." : "No new posts yet."}</div>`}
-    <p class="foot">Notable = hints of non-public information, meetings with a company, its people or a lobbyist, a company the member or a colleague traded in the last year, strong for/against, or 3+ members on the same company. Notable posts are also sent to your phone.</p></section>`;
+    <p class="foot">Sent to your phone: 3+ members naming the same company within 3 days, a hint of non-public information that names a company, a meeting or visit with a company, its people or a lobbyist, and a trade by another member within 30 days after a post about that company. Notable also includes posts naming a company the member traded in the last year. Only members who have disclosed a trade are shown; every other post signal is tested in the background each week and switches on only if it proves itself.</p></section>`;
 }
 document.getElementById("main").addEventListener("click", ev => {
   const t = ev.target.closest("[data-pshow],[data-pmore]");
@@ -1542,7 +1543,7 @@ function memLoadIndex() {
   if (MEM.index || MEM.loading.index) return;
   MEM.loading.index = true;
   loadMembersIndex().then(js => { MEM.index = js; MEM.err = null;
-    if (PENDING_MEM) { const k = memKeyFor(PENDING_MEM.n, PENDING_MEM.b); PENDING_MEM = null; if (k) { MEM.key = k; try { history.replaceState({}, "", "#members/" + k); } catch (e) {} } } }).catch(e => { MEM.err = e; })
+    if (PENDING_MEM) { const k = memKeyFor(PENDING_MEM.n, PENDING_MEM.b); if (k) { MEM.key = k; MEM.missing = null; try { history.replaceState({}, "", "#members/" + k); } catch (e) {} } else MEM.missing = PENDING_MEM.n; PENDING_MEM = null; } }).catch(e => { MEM.err = e; })
     .finally(() => { MEM.loading.index = false; if (state.tab === "members") render(); });
 }
 function memLoad(k) {
@@ -1574,6 +1575,7 @@ function renderMembers(d) {
   rows = [...rows].sort(sorters[MEM.sort]);
   const shown = rows.slice(0, MEM.show);
   return `<section class="panel">
+    ${MEM.missing ? `<div class="note warn"><b>${esc(MEM.missing)}</b> hasn't disclosed any stock trades, so there's no profile yet. Their posts stay out of your feed until their first trade (they still count when several members name the same company).</div>` : ""}
     <div class="ph"><h2>Members</h2><span class="sub">${(MEM.index.members || []).length} members with disclosed trades</span></div>
     <div class="filters"><input type="search" id="mq" placeholder="Search name, state, party" value="${esc(MEM.q)}" aria-label="Search members">
       <div class="seg" role="group" aria-label="Sort">${[["recent", "Recent"], ["most", "Most trades"], ["best", "Best buys"]].map(([k, l]) =>
@@ -1720,7 +1722,7 @@ document.getElementById("main").addEventListener("click", ev => {
   const t = ev.target.closest("[data-mem],[data-mback],[data-msort],[data-mmore],[data-mtr],[data-mbs],[data-mbh],[data-tmore],[data-mpo]");
   if (!t) return;
   const D = t.dataset;
-  if (D.mem) { MEM.key = D.mem; MEM.open = null; MEM.tq = ""; MEM.tshow = 40; MEM.err = null; try { history.pushState({ mem: D.mem }, "", "#members/" + D.mem); } catch (e) {} render(); scrollTo(0, 0); }
+  if (D.mem) { MEM.missing = null; MEM.key = D.mem; MEM.open = null; MEM.tq = ""; MEM.tshow = 40; MEM.err = null; try { history.pushState({ mem: D.mem }, "", "#members/" + D.mem); } catch (e) {} render(); scrollTo(0, 0); }
   else if (D.mback) { MEM.key = null; try { history.pushState({}, "", "#members"); } catch (e) {} render(); }
   else if (D.msort) { MEM.sort = D.msort; render(); }
   else if (D.mmore) { MEM.show += 60; render(); }
@@ -1746,8 +1748,8 @@ function mlink(n, b, label) {
 const normName = s => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
   .replace(/\b(hon|mr|mrs|ms|dr|jr|sr|ii|iii|iv)\b\.?/g, "").replace(/[^a-z ]/g, " ").replace(/\s+/g, " ").trim();
 function memKeyFor(n, b) {
-  if (b && /^[A-Z]\d{6}$/.test(b)) return b;
   const list = MEM.index?.members; if (!list) return null;
+  if (b && list.some(x => x.k === b)) return b;           // a member page exists only for members with disclosed trades
   const k = normName(n); if (!k) return null;
   let m = list.find(x => normName(x.n) === k);
   if (!m) { const w = k.split(" "), last = w[w.length - 1], f = w[0];
@@ -1760,7 +1762,8 @@ function openMember(n, b) {
   const k = memKeyFor(n, b);
   if (pop.t) closeChart();
   const tb = document.getElementById("tipbg"); if (tb && !tb.hidden) { tb.hidden = true; tb.innerHTML = ""; }
-  if (k) { go("#members/" + k); return; }
+  if (k) { go("#members/" + k); MEM.missing = null; return; }
+  if (MEM.index) { MEM.missing = n; MEM.q = ""; go("#members"); return; }    // no disclosed trades: no profile
   PENDING_MEM = { n, b };          // the member list isn't loaded yet: open the profile as soon as it is
   memLoadIndex(); go("#members");
 }
