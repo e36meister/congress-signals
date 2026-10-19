@@ -67,8 +67,9 @@ cap = lambda m: min(deadline, time.time() + m * 60)
 REST = (("Bluesky", lambda: S.collect_bluesky(cfg, st, tg, hmap, cap(5), ocr_days=3, max_ocr=40)),
         ("Mastodon", lambda: S.collect_mastodon(cfg, st, tg, leg, acc, cap(2))),
         ("Substack", lambda: S.collect_substack(cfg, st, tg, acc, cap(1.5))),
-        ("YouTube", lambda: S.collect_youtube(cfg, st, tg, leg, acc, cap(1.5)) if dt.datetime.utcnow().hour % 3 == 0 else None),
-        ("Press releases", lambda: S.collect_press(cfg, st, tg, cap(1.5), years=False)))
+        ("YouTube", lambda: S.collect_youtube(cfg, st, tg, leg, acc, cap(1.5)) if dt.datetime.utcnow().hour % 3 == 0 else None))
+# The Congress press-release index is left to the twice-daily posts job: hourly it ignored its time cap (21 minutes
+# on one month's index) and never found anything the members' own sites hadn't already.
 def run_one(name, fn):
     if time.time() > deadline and name != SITES[0]:
         E.log(f"Live posts: {name} skipped (out of time)")
@@ -243,7 +244,7 @@ state = {"seen": {u: d for u, d in seen.items() if d >= (today - dt.timedelta(da
          "crowd": crowd, "last": now.isoformat(timespec="seconds"), "last_new": last_new, "runs": runs}
 cloud_store.put("posts/live_state.json", json.dumps(state), E.log)
 # collection check: a source is flagged only when it has brought nothing new for longer than it normally goes
-LIVE_MAX_DAYS = {"Members' own sites": 2, "Press releases": 3, "Bluesky": 2, "Mastodon": 14, "Substack": 30, "YouTube": 7}
+LIVE_MAX_DAYS = {"Members' own sites": 2, "Bluesky": 2, "Mastodon": 14, "Substack": 30, "YouTube": 7}
 problems = []
 for k in counts:
     mx = LIVE_MAX_DAYS.get(k, 7)
