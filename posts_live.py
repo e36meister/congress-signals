@@ -61,11 +61,14 @@ tg_sites = S.Tagger(cfg)          # its own copy: the tagger keeps per-post stat
 SITES = ("Members' own sites", lambda: PB.latest_current(cfg, tg_sites, leg, time.time() + 300))
 # The Congress press-release index walks whole months and found nothing new hourly (members' own sites cover it), so it
 # goes last with a 3-minute cap; it was the step using up the hour before.
-REST = (("Bluesky", lambda: S.collect_bluesky(cfg, st, tg, hmap, deadline, ocr_days=3, max_ocr=40)),
-        ("Mastodon", lambda: S.collect_mastodon(cfg, st, tg, leg, acc, deadline)),
-        ("Substack", lambda: S.collect_substack(cfg, st, tg, acc, deadline)),
-        ("YouTube", lambda: S.collect_youtube(cfg, st, tg, leg, acc, deadline) if dt.datetime.utcnow().hour % 3 == 0 else None),
-        ("Press releases", lambda: S.collect_press(cfg, st, tg, min(deadline, time.time() + 180), years=False)))
+# each source gets its own time cap so one slow source can't starve the rest (Bluesky alone took 12 minutes when
+# it first caught up)
+cap = lambda m: min(deadline, time.time() + m * 60)
+REST = (("Bluesky", lambda: S.collect_bluesky(cfg, st, tg, hmap, cap(5), ocr_days=3, max_ocr=40)),
+        ("Mastodon", lambda: S.collect_mastodon(cfg, st, tg, leg, acc, cap(2))),
+        ("Substack", lambda: S.collect_substack(cfg, st, tg, acc, cap(1.5))),
+        ("YouTube", lambda: S.collect_youtube(cfg, st, tg, leg, acc, cap(1.5)) if dt.datetime.utcnow().hour % 3 == 0 else None),
+        ("Press releases", lambda: S.collect_press(cfg, st, tg, cap(1.5), years=False)))
 def run_one(name, fn):
     if time.time() > deadline and name != SITES[0]:
         E.log(f"Live posts: {name} skipped (out of time)")
