@@ -55,15 +55,17 @@ hmap = S.bluesky_accounts(cfg, leg, acc, st, time.time() + 30)
 counts = {}
 import congress_signals.press_backfill as PB
 from concurrent.futures import ThreadPoolExecutor
-# Oct 19: reading all 538 members' own sites takes ~15 minutes, and it ran first, so Bluesky, Mastodon, Substack and
-# YouTube were skipped as "out of time" every hour. Now the sites run on their own thread next to the others.
+# Oct 19: Bluesky, Mastodon, Substack and YouTube were skipped as "out of time" every hour. Members' own sites
+# (~2 min) now run on their own thread next to the others.
 tg_sites = S.Tagger(cfg)          # its own copy: the tagger keeps per-post state
 SITES = ("Members' own sites", lambda: PB.latest_current(cfg, tg_sites, leg, time.time() + 300))
-REST = (("Press releases", lambda: S.collect_press(cfg, st, tg, deadline, years=False)),
-        ("Bluesky", lambda: S.collect_bluesky(cfg, st, tg, hmap, deadline, ocr_days=3, max_ocr=40)),
+# The Congress press-release index walks whole months and found nothing new hourly (members' own sites cover it), so it
+# goes last with a 3-minute cap; it was the step using up the hour before.
+REST = (("Bluesky", lambda: S.collect_bluesky(cfg, st, tg, hmap, deadline, ocr_days=3, max_ocr=40)),
         ("Mastodon", lambda: S.collect_mastodon(cfg, st, tg, leg, acc, deadline)),
         ("Substack", lambda: S.collect_substack(cfg, st, tg, acc, deadline)),
-        ("YouTube", lambda: S.collect_youtube(cfg, st, tg, leg, acc, deadline) if dt.datetime.utcnow().hour % 3 == 0 else None))
+        ("YouTube", lambda: S.collect_youtube(cfg, st, tg, leg, acc, deadline) if dt.datetime.utcnow().hour % 3 == 0 else None),
+        ("Press releases", lambda: S.collect_press(cfg, st, tg, min(deadline, time.time() + 180), years=False)))
 def run_one(name, fn):
     if time.time() > deadline and name != SITES[0]:
         E.log(f"Live posts: {name} skipped (out of time)")
