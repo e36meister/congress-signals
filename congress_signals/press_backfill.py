@@ -248,8 +248,10 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
             added += len(rows)
             for r in rows:
                 seen.add(norm_url(r[4]))
-    _log(f"Latest press releases: {len(names)} member sites checked, +{added} new"
-         + (f"; {len(fails)} sites didn't answer" if fails else ""))
+    _log(f"Latest press releases: {len(names)} member sites checked, +{added} new")
+    if fails:
+        _log(f"Latest press releases: {len(fails)} member site(s) failed with both the site reader and the backup: "
+             + ", ".join(sorted(fails)))
     return added
 
 

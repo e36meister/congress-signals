@@ -20,13 +20,15 @@ export default {
     }
   },
   // every minute: send alerts the GitHub runs queued; every 2 minutes in market hours: alert on new fills
+  // each step reports to Data health when it fails, instead of failing silently
   async scheduled(ev, env, ctx) {
-    await drainOutbox(env);
+    const step = async (src, label, fn) => { try { await fn(); await wOk(env, src); } catch (e) { await wProblem(env, src, `${label} failed: ${String(e && e.message || e).slice(0, 160)}`); } };
+    await step("outbox", "Sending phone alerts", () => drainOutbox(env));
     const min = new Date(ev.scheduledTime).getUTCMinutes();
-    if (min % 2 === 0) await checkFills(env);
-    await startQuickCheck(env, min);
-    await startDailyOnTime(env, new Date(ev.scheduledTime));
-    if (min === 7) await dispatch(env, "posts.yml", {});      // members' posts, read and sorted every hour
+    if (min % 2 === 0) await step("fills", "Checking for new fills", () => checkFills(env));
+    await step("quick", "Starting the filings check", () => startQuickCheck(env, min));
+    await step("daily", "Starting the daily update", () => startDailyOnTime(env, new Date(ev.scheduledTime)));
+    if (min === 7) await step("posts", "Starting the hourly posts job", () => dispatch(env, "posts.yml", {}));
   },
 };
 
@@ -56,6 +58,7 @@ async function api(req, env, url) {
   if (p === "/api/notifications" && req.method === "GET") return json({ items: await alertLog(env) });
   if (p === "/api/tie-reviews" && req.method === "GET") return json(await tieReviews(env));
   if (p === "/api/context" && req.method === "GET") return tradeContext(env, url);
+  if (p === "/api/health" && req.method === "GET") return health(env);
   if (p === "/api/people-review" && req.method === "GET") return peopleReviewList(env);
   if (p === "/api/people-review" && req.method === "POST") return peopleReview(req, env);
   if (p === "/api/tie-review" && req.method === "POST") return tieReview(req, env);
@@ -164,7 +167,13 @@ async function live(env) {
     a.get("/v2/account"), a.get("/v2/positions"), a.get("/v2/clock"),
     a.get(`/v2/orders?status=all&limit=200&direction=desc&after=${encodeURIComponent(after)}`),
     a.get("https://data.alpaca.markets/v2/stocks/SPY/snapshot?feed=iex")]);
-  if (!acct.ok || !pos.ok) return json({ error: "alpaca", status: acct.status }, 502);
+  if (!acct.ok || !pos.ok) {
+    await wProblem(env, "alpaca-live", `Alpaca didn't answer the live account check (HTTP ${acct.status}/${pos.status})`);
+    return json({ error: "alpaca", status: acct.status }, 502);
+  }
+  await wOk(env, "alpaca-live");
+  if (!spy.ok || !spy.data?.latestTrade) await wProblem(env, "spy-live", `Live S&P price didn't load (HTTP ${spy.status}); the Account "vs the S&P" box is using the last close`);
+  else await wOk(env, "spy-live");
   const n = v => v == null ? null : +v;
   return json({
     at: new Date().toISOString(), mode: a.mode,
@@ -245,6 +254,8 @@ async function secCik(env, t) {
   let m = await r2json(env, "cache/sec_tickers.json", null);
   if (!m || !m.at || Date.now() - Date.parse(m.at) > 7 * 864e5) {
     const r = await secFetch(env, "https://www.sec.gov/files/company_tickers.json");
+    if (!r.ok) await wProblem(env, "sec-tickers", `SEC company list didn't load (HTTP ${r.status}); trade Context uses the copy from ${m && m.at ? m.at.slice(0, 10) : "never"}`);
+    else await wOk(env, "sec-tickers");
     if (r.ok) {
       const js = await r.json(), map = {};
       for (const v of Object.values(js)) map[String(v.ticker).toUpperCase().replace(/\./g, "-")] = v.cik_str;
@@ -262,9 +273,14 @@ async function tradeContext(env, url) {
   const td = Date.parse(d + "T12:00:00Z"), lo = new Date(td - 45 * 864e5).toISOString().slice(0, 10), hi = new Date(td + 60 * 864e5).toISOString().slice(0, 10);
   const pad = String(cik).padStart(10, "0");
   const r = await secFetch(env, `https://data.sec.gov/submissions/CIK${pad}.json`);
-  if (!r.ok) return json({ t, d, filings: [], note: "The SEC didn't answer; try again in a minute." });
+  if (!r.ok) {
+    await wProblem(env, "sec-filings", `SEC filings for trade Context didn't load (HTTP ${r.status})`);
+    return json({ t, d, filings: [], error: "sec", note: "The SEC didn't answer, so this trade's filings aren't shown. It's been logged in Data health; try again in a minute." });
+  }
+  await wOk(env, "sec-filings");
   const js = await r.json();
   const blocks = [js.filings?.recent || {}];
+  let partial = false;
   // older trades: the filings list for that period is in a separate file
   const oldest = (blocks[0].filingDate || []).slice(-1)[0];
   if (oldest && oldest > lo) {
@@ -272,6 +288,7 @@ async function tradeContext(env, url) {
       if (f.filingFrom <= hi && f.filingTo >= lo) {
         const r2 = await secFetch(env, `https://data.sec.gov/submissions/${f.name}`);
         if (r2.ok) blocks.push(await r2.json());
+        else { partial = true; await wProblem(env, "sec-older", `SEC older filings list didn't load (HTTP ${r2.status}); some trade Context lists were partial`); }
       }
     }
   }
@@ -290,7 +307,41 @@ async function tradeContext(env, url) {
     }
   }
   out.sort((a, b) => a.d.localeCompare(b.d));
-  return json({ t, d, company: js.name, filings: out, insiders: ins });
+  return json({ t, d, company: js.name, filings: out, insiders: ins, ...(partial ? { note: "Part of this company's older filings list didn't load; the list may be incomplete. Logged in Data health." } : {}) });
+}
+
+// ---------- Data health from the app's server side: failures are saved and alerted, never silently skipped ----------
+const WHEALTH = "health/app.json";
+async function wProblem(env, src, text) {
+  try {
+    const st = await r2json(env, WHEALTH, {}), now = new Date().toISOString();
+    const cur = st[src], isNew = !cur || !cur.open;
+    const recentFix = cur && cur.fixed && (Date.now() - Date.parse(cur.fixed)) < 24 * 3600e3;
+    st[src] = { text, open: true, first: isNew ? now : cur.first, last: now, n: ((cur && cur.open && cur.n) || 0) + 1, fixed: null };
+    await env.DATA.put(WHEALTH, JSON.stringify(st));
+    if (isNew && !recentFix) {
+      const key = `push/outbox/${Date.now()}-${Math.floor(Math.random() * 1e5)}.json`;
+      await env.DATA.put(key, JSON.stringify({ title: ("Data problem: " + text).slice(0, 120), body: text.slice(0, 600), tag: "health", url: "/#health" }));
+    }
+  } catch (e) {}
+}
+async function health(env) {
+  const list = await env.DATA.list({ prefix: "health/jobs/", limit: 100 });
+  const jobs = {}, fixed = [];
+  for (const o of list.objects || []) {
+    const j = await r2json(env, o.key, null);
+    if (!j) continue;
+    const name = j.job || o.key.replace(/^health\/jobs\/|\.json$/g, "");
+    jobs[name] = { at: j.at, open: j.open || [], minutes: j.minutes };
+    for (const f of j.fixed || []) fixed.push({ ...f, job: name });
+  }
+  return json({ jobs: { jobs, fixed }, app: await r2json(env, WHEALTH, {}) });
+}
+async function wOk(env, src) {
+  try {
+    const st = await r2json(env, WHEALTH, null);
+    if (st && st[src] && st[src].open) { st[src] = { ...st[src], open: false, fixed: new Date().toISOString() }; await env.DATA.put(WHEALTH, JSON.stringify(st)); }
+  } catch (e) {}
 }
 
 // ---------- possible company people in posts (a first or last name alone): the owner says "it's them" or not ----------
@@ -431,44 +482,47 @@ async function checkFills(env) {
 // The full update starts exactly on time from here (GitHub's own schedule runs 10-25 minutes late and is only a
 // fallback that skips itself when this one already started): 10:43 and 23:43 UTC.
 async function dispatch(env, wf, inputs) {
-  if (!env.GH_DISPATCH_TOKEN) return;
-  try {
-    await fetch(`https://api.github.com/repos/${env.GH_REPO || "e36meister/congress-signals"}/actions/workflows/${wf}/dispatches`, {
+  if (!env.GH_DISPATCH_TOKEN) throw new Error("the GitHub start key (GH_DISPATCH_TOKEN) isn't set");
+  {
+    const r = await fetch(`https://api.github.com/repos/${env.GH_REPO || "e36meister/congress-signals"}/actions/workflows/${wf}/dispatches`, {
       method: "POST",
       headers: { Authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`, Accept: "application/vnd.github+json",
                  "User-Agent": "capitol-capital-worker", "Content-Type": "application/json" },
       body: JSON.stringify({ ref: "main", inputs }),
     });
-  } catch (e) {}
+    if (!r.ok) throw new Error(`GitHub refused to start the job (HTTP ${r.status}): ${(await r.text()).slice(0, 120)}`);
+  }
 }
 
 async function startDailyOnTime(env, now) {
-  if (!env.GH_DISPATCH_TOKEN) return;
+  if (!env.GH_DISPATCH_TOKEN) throw new Error("the GitHub start key (GH_DISPATCH_TOKEN) isn't set");
   const h = now.getUTCHours(), m = now.getUTCMinutes();
   if (!((h === 10 || h === 23) && m === 43)) return;
-  try {
-    await fetch(`https://api.github.com/repos/${env.GH_REPO || "e36meister/congress-signals"}/actions/workflows/daily.yml/dispatches`, {
+  {
+    const r = await fetch(`https://api.github.com/repos/${env.GH_REPO || "e36meister/congress-signals"}/actions/workflows/daily.yml/dispatches`, {
       method: "POST",
       headers: { Authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`, Accept: "application/vnd.github+json",
                  "User-Agent": "capitol-capital-worker", "Content-Type": "application/json" },
       body: JSON.stringify({ ref: "main", inputs: { chain: "0", why: "scheduled" } }),
     });
-  } catch (e) {}
+    if (!r.ok) throw new Error(`GitHub refused to start the job (HTTP ${r.status}): ${(await r.text()).slice(0, 120)}`);
+  }
 }
 
 async function startQuickCheck(env, min) {
-  if (!env.GH_DISPATCH_TOKEN) return;
+  if (!env.GH_DISPATCH_TOKEN) throw new Error("the GitHub start key (GH_DISPATCH_TOKEN) isn't set");
   const et = ET(), h = et.getHours(), wd = et.getDay();
   const busy = wd >= 1 && wd <= 5 && h >= 6 && h < 21;
   if (min % (busy ? 5 : 30) !== 0) return;
-  try {
-    await fetch(`https://api.github.com/repos/${env.GH_REPO || "e36meister/congress-signals"}/actions/workflows/quick.yml/dispatches`, {
+  {
+    const r = await fetch(`https://api.github.com/repos/${env.GH_REPO || "e36meister/congress-signals"}/actions/workflows/quick.yml/dispatches`, {
       method: "POST",
       headers: { Authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`, Accept: "application/vnd.github+json",
                  "User-Agent": "capitol-capital-worker", "Content-Type": "application/json" },
       body: JSON.stringify({ ref: "main" }),
     });
-  } catch (e) {}
+    if (!r.ok) throw new Error(`GitHub refused to start the job (HTTP ${r.status}): ${(await r.text()).slice(0, 120)}`);
+  }
 }
 
 // ---------- home-screen widget (Scriptable) ----------

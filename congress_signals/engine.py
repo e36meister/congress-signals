@@ -82,6 +82,12 @@ DEFAULT_CONFIG = {
     "WORKERS": 8,
 }
 
+try:          # every web request is tallied per site; jobs report problems and alert (congress_signals/health.py)
+    from . import health as _health
+    _health.install()
+except Exception:
+    pass
+
 # ----------------------------------------------------------------------------
 # helpers
 # ----------------------------------------------------------------------------
@@ -635,8 +641,8 @@ def collect_house_paper(cfg):
     for y in range(start.year, dt.date.today().year + 1):
         try:
             idx.append(house_index(y))
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"House paper: the {y} filing index failed ({type(e).__name__}: {e})")
     if not idx:
         return tx
     idx = pd.concat(idx, ignore_index=True)
@@ -1190,6 +1196,9 @@ def collect_fmp(cfg):
     return df
 
 
+PART_SIZES = {}       # trades read from each source this run (checked before auto-buying)
+
+
 def collect_all(cfg):
     parts = []
     if cfg.get("USE_HOUSE", True):
@@ -1208,6 +1217,9 @@ def collect_all(cfg):
             log(f"House paper: skipped ({type(e).__name__}: {e})")
     parts.append(("quiver", collect_quiver(cfg)))
     parts.append(("fmp", collect_fmp(cfg)))
+    PART_SIZES.clear()
+    PART_SIZES.update({k: int(len(d)) if d is not None else 0 for k, d in parts})
+    log("Trades by source: " + ", ".join(f"{k} {v:,}" for k, v in PART_SIZES.items()))
     frames = [finalize_tx(d) for _, d in parts if d is not None and len(d)]
     if not frames:
         raise RuntimeError("No trade data collected from any source.")
@@ -6465,6 +6477,9 @@ def collect_bluesky(cfg):
 # ----------------------------------------------------------------------------
 # 18. Company events: earnings dates (Yahoo) and FDA approvals (openFDA)
 # ----------------------------------------------------------------------------
+_EV_FAILS = []
+
+
 def collect_events(cfg, meta, tickers, deep=False):
     import yfinance as yf
     cache, path = _cache_json(cfg, "company_events.json", {})
@@ -6482,8 +6497,8 @@ def collect_events(cfg, meta, tickers, deep=False):
             ed = yf.Ticker(t).get_earnings_dates(limit=60 if deep else 40)
             if ed is not None and len(ed):
                 ev += [["earnings", d.strftime("%Y-%m-%d")] for d in pd.to_datetime(ed.index)]
-        except Exception:
-            pass
+        except Exception as e:
+            _EV_FAILS.append(f"{t}: {type(e).__name__}")
         if (meta.get(t) or {}).get("sector") == "Healthcare" and company_key(meta[t].get("name")):
             js = _get_json("https://api.fda.gov/drug/drugsfda.json",
                            params={"search": f'sponsor_name:"{company_key(meta[t]["name"])}"', "limit": 100})
@@ -6500,6 +6515,9 @@ def collect_events(cfg, meta, tickers, deep=False):
             json.dump(cache, open(path, "w"))
             log(f"Company events: {i}/{len(todo)}")
     json.dump(cache, open(path, "w"))
+    if len(_EV_FAILS) >= 3 and len(_EV_FAILS) >= 0.1 * max(1, len(todo)):
+        log(f"Company events: earnings dates failed for {len(_EV_FAILS)} of {len(todo)} companies (e.g. {', '.join(_EV_FAILS[:5])})")
+    _EV_FAILS.clear()
     return cache
 
 

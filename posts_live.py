@@ -294,4 +294,6 @@ else:
     E.log("COLLECTION CHECK (live): every source on time; no failures logged")
 cloud_store.put("posts/live_check.json", json.dumps({"at": now.isoformat(timespec="seconds"), "problems": problems,
                                                      "failures": fails[:60]}), E.log)
+from congress_signals import health
+health.finish("live", problems, fails, E.log)
 E.log(f"Live posts: done in {(time.time() - t0) / 60:.1f} min; {len(items)} new, {len(top)} notable; sorter {PS.model_name()}")

@@ -394,7 +394,10 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             sold.add(sym)                            # don't buy it back in the same run
 
     # 2. buy new picks: the main strategy (BUY picks) and the separate small-company portfolio
-    if s["auto"] and trade:
+    #    (paused while the data the picks are built from is broken: congress_signals/health.py critical())
+    if s["auto"] and trade and cfg.get("_pause_buys"):
+        log("Broker: new auto-buys paused because the picks' data has a problem: " + "; ".join(cfg["_pause_buys"]))
+    if s["auto"] and trade and not cfg.get("_pause_buys"):
         sleeve_pct = max(0.0, min(0.9, float(env("SMALL_SLEEVE_PCT") or 30) / 100))
         is_sleeve = lambda sym: (bot.get(sym, {}).get("client_order_id") or "").startswith(PREFIX + "sm-")
         val = lambda sym: float(positions[sym].get("market_value") or 0)

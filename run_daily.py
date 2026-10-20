@@ -314,7 +314,7 @@ def trade_now(scored, px):
         slots = (json.load(open(os.path.join(cfg["DATA_DIR"], "dashboard_data.json"))).get("small") or {}).get("slots")
     except Exception:
         slots = None
-    snap = broker.sync(dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=slots,
+    snap = broker.sync(dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=slots, _pause_buys=PAUSE,
                             _live_picks=live_p, _small_fresh=small_f, _caps=caps,
                             _member_sales=msales, _price_hist=phist), None, None, last, E.log, trade=not DRY_RUN)
     if snap is not None and not DRY_RUN:
@@ -366,11 +366,17 @@ def member_pages(scored, px):
 
 def main():
     fetch_app_inputs()
+    global PAUSE
     try:
         scored, px = E.prepare(cfg)
     except RuntimeError as e:
-        E.log(f"Stopped early: {e}")
+        E.log(f"Stopped early (the update failed): {e}")
         return
+    # the data the picks are built from: if any of it is broken, picks are marked and new auto-buys wait
+    from congress_signals import health
+    PAUSE = health.critical(cfg, E.PART_SIZES, px)
+    if PAUSE:
+        E.log("DATA HEALTH: picks marked and new auto-buys paused: " + "; ".join(PAUSE))
     early, helpers = None, None
     try:
         early, helpers = trade_now(scored, px)
@@ -544,7 +550,7 @@ def main():
             pxf = px.ffill() if px is not None else None
             phist = lambda t, since: pxf.loc[E.pd.Timestamp(since):, t].dropna().values if pxf is not None and t in pxf else None
         sm = (bt.get("small") or {}) if isinstance(bt, dict) else {}
-        base = dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=sm.get("slots"),
+        base = dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=sm.get("slots"), _pause_buys=PAUSE,
                     _caps=h.get("caps") or {}, _member_sales=msales, _price_hist=phist)
         if early is not None:
             # already traded right after scoring: just refresh the account snapshot, keeping what that step did
@@ -566,6 +572,8 @@ def main():
                 if s_:
                     ms[p["t"]] = {"bought": p["bought"], "sales": s_}
         d["member_sold"] = ms
+        # shown on Today and Account while the picks' data is broken
+        d["data_warning"] = {"at": dt.datetime.utcnow().isoformat(timespec="seconds") + "Z", "problems": PAUSE} if PAUSE else None
         json.dump(d, open(path, "w"))
     except Exception as e:
         E.log(f"Broker: skipped this run ({type(e).__name__})")
@@ -603,6 +611,9 @@ def main():
     E.log(f"Finished. {len(new)} new signal(s).")
 
 
+PAUSE = []
+
+
 def flag_unfinished():
     """Tells the workflow to start another run right away when this one ran out of time."""
     path = os.path.join(cfg["DATA_DIR"], "state", "needs_more_runs")
@@ -617,8 +628,13 @@ def flag_unfinished():
 if __name__ == "__main__":
     try:
         main()
-    except Exception:
+    except Exception as e:
         traceback.print_exc()
+        try:
+            from congress_signals import health
+            health._JOB["crash"] = f"{type(e).__name__}: {str(e)[:200]}"
+        except Exception:
+            pass
         raise
     finally:
         flag_unfinished()
