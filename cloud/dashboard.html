@@ -685,7 +685,7 @@ function reviewList() {
   if (!left.length) return `<div class="empty">Nothing to review. When a post names a company's executive by first or last name only, it shows up here.</div>`;
   const hl = (txt, w) => esc(txt).replace(new RegExp(`\\b(${String(w).replace(/[^A-Za-z'\-]/g, "")})\\b`, "g"), "<mark>$1</mark>");
   return `<div class="posts-feed">${left.slice(0, 40).map(q => `<article class="post"><div class="prow"><b>Is “${esc(q.w)}” ${esc(q.n)}${q.role ? ` (${esc(String(q.role).toLowerCase())})` : ""} of ${tkBtn(q.t)}?</b></div>
-      <div class="foot">${mlink(q.who, q.b)} · ${esc(fmtShort(q.d))}${q.by === "first" ? " · first name only" : " · last name only"}</div>
+      <div class="foot">${mlink(q.who, q.b)} · ${esc(fmtShort(q.d))}${q.by === "first" ? " · first name only" : " · last name only"}${(q.cnt || 1) > 1 ? ` · in ${q.cnt} posts (newest shown)` : ""}</div>
       <p style="margin:6px 0">“${hl(String(q.text || "").slice(0, 420), q.w)}${String(q.text || "").length > 420 ? "…" : ""}”</p>
       <div class="tags"><button type="button" class="buybtn" data-prev="yes" data-pk="${esc(q.key)}" data-pn="${esc(q.n)}"${PREV.busy ? " disabled" : ""}>It's them</button>
         <button type="button" class="tag" data-prev="no" data-pk="${esc(q.key)}" data-pn="${esc(q.n)}"${PREV.busy ? " disabled" : ""}>Not them</button>
@@ -1485,7 +1485,7 @@ function drawPopup() {
     body = `<div class="empty">No chart for ${esc(t)} yet. It's added on the next full update.</div>`;
   } else {
     body = `<div class="spans" role="group" aria-label="Timespan">${SPANS.map(([k]) => `<button type="button" data-span="${k}" aria-pressed="${pop.span === k}">${k}</button>`).join("")}
-      <span class="lg"><span><i style="border-color:var(--good)"></i>Bought</span><span><i style="border-color:var(--bad)"></i>Sold</span><span><b style="font:600 10px var(--mono)">disc.</b> disclosed</span></span></div>
+      <span class="lg"><span><i style="border-color:var(--good)"></i>Bought</span><span><i style="border-color:var(--bad)"></i>Sold</span><span><b style="font:600 10px var(--mono)">disc.</b> disclosed</span><span style="color:var(--accent)">▲▼ you</span></span></div>
       <div class="tc" id="tc"></div><div id="tdet"></div><div id="tlist"></div>
       <p class="foot" style="margin:0">The line shows daily closes; all prices are adjusted for splits and dividends, so a note's price can differ after a split. The forms give the trade date and a dollar range, not the time, price or share count. So the price shown is that day's low-to-high range and the share count is estimated from it, unless the member wrote the shares or price in the filing.</p>`;
   }
@@ -1533,9 +1533,23 @@ function drawTickerChart() {
   });
   const dz = trades.filter(tr => tr.d && tr.d <= last).map(tr => ({ tr, x: xOfD(tr.d) }));
   const dzUsed = []; dz.forEach(o => { let row = 0; while (dzUsed.some(u => u.r === row && Math.abs(u.x - o.x) < 28)) row++; dzUsed.push({ x: o.x, r: row }); o.row = row; });
+  // your own buys and sells (Alpaca fills) and, while you hold it, your average cost
+  const P = state.data?.portfolio || {};
+  const myF = ((P.fills || {})[t] || []).filter(f => f[0] && f[0] >= first && f[0] <= last);
+  const held = (P.positions || []).find(x => x.t === t);
+  const BY = { you: "you", tap: "Buy button", tool: "the tool" };
+  const mine = myF.map(f => {
+    const x = xOfD(f[0]); if (x == null) return "";
+    const yy = y(all[dayIndex(f[0])] ?? f[3]), up = f[1] === "buy", s_ = 7;
+    const pts = up ? `${x},${yy - s_} ${x - s_},${yy + s_ * 0.6} ${x + s_},${yy + s_ * 0.6}` : `${x},${yy + s_} ${x - s_},${yy - s_ * 0.6} ${x + s_},${yy - s_ * 0.6}`;
+    return `<polygon points="${pts}" fill="${cv("--accent")}" stroke="${cv("--surface")}" stroke-width="1.5"><title>You ${up ? "bought" : "sold"} ${f[2]} sh at ${money2(f[3])} on ${fmtDate(f[0])} (${BY[f[4]] || f[4]})</title></polygon>`;
+  }).join("");
+  const costY = held && held.avg && held.avg >= lo && held.avg <= hi ? y(held.avg) : null;
+  const costLine = costY == null ? "" : `<line x1="${m.l}" x2="${W - m.r}" y1="${costY}" y2="${costY}" stroke="${cv("--accent")}" stroke-dasharray="6 4" opacity=".8"/><text x="${W - m.r - 4}" y="${costY - 5}" text-anchor="end" style="fill:${cv("--accent")}">Your cost ${money2(held.avg)}</text>`;
+  pop.mine = { fills: myF, held, BY };
   const stems = mk.filter(o => o.y !== o.base).map(o => `<line x1="${o.x}" x2="${o.x}" y1="${o.base}" y2="${o.y}" stroke="${cv(o.tr.ty === "buy" ? "--good" : "--bad")}" stroke-width="1" opacity=".6"/>`).join("");
   host.innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(t)} price, ${pop.span}">${g}
-    <path d="${line}" fill="none" stroke="${cv("--s1")}" stroke-width="2" stroke-linejoin="round"/>${stems}
+    <path d="${line}" fill="none" stroke="${cv("--s1")}" stroke-width="2" stroke-linejoin="round"/>${costLine}${stems}${mine}
     ${mk.map(o => `<circle cx="${o.x}" cy="${o.base}" r="3" fill="${cv(o.tr.ty === "buy" ? "--good" : "--bad")}"/>`).join("")}
     <line id="tln" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" stroke="${cv("--accent")}" stroke-dasharray="3 3" visibility="hidden"/>
     <line id="txh" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" stroke="${cv("--muted")}" visibility="hidden"/>
@@ -1558,11 +1572,16 @@ function drawTickerChart() {
     det.innerHTML = pop.sel ? `<div class="tdet">${headshot(pop.sel, "av", 0)}<div>${tradeLineText(pop.sel)}</div></div>` : "";
   };
   host.querySelectorAll(".mk,.dz").forEach(el => el.addEventListener("click", ev => { ev.stopPropagation(); const k = +el.dataset.k; select(pop.sel && pop.sel.k === k ? null : k); }));
+  // your own trades of this stock in this span
+  const myRows = myF.slice().sort((a, b) => b[0].localeCompare(a[0]));
+  const myHtml = myRows.length || held ? `<div class="tdet" style="display:block"><b>Your trades</b>${held ? ` · holding ${Number(held.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh, cost ${money2(held.avg)}, ${pct(held.plpc)}` : ""}
+    ${myRows.map(f => `<div class="foot" style="color:var(--ink2)"><span class="bs ${f[1]}">${f[1] === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(f[0]))} · ${Number(f[2]).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at ${money2(f[3])} · ${esc(BY[f[4]] || f[4])}</div>`).join("")}
+    ${!myRows.length && held ? `<div class="foot">Bought before this timespan; try a longer one.</div>` : ""}</div>` : "";
   // trades in this span, newest first
   const rows = trades.slice().sort((a, b) => b.td.localeCompare(a.td));
-  list.innerHTML = rows.length ? `<div class="tbl scroll tlist"><table><thead><tr><th>Member</th><th></th><th>Traded</th><th class="n">Price</th><th class="n">Amount</th><th>Disclosed</th></tr></thead><tbody>
+  list.innerHTML = myHtml + (rows.length ? `<div class="tbl scroll tlist"><table><thead><tr><th>Member</th><th></th><th>Traded</th><th class="n">Price</th><th class="n">Amount</th><th>Disclosed</th></tr></thead><tbody>
     ${rows.map(tr => `<tr data-k="${tr.k}"><td><span class="nm" style="display:inline-flex;align-items:center;gap:6px">${headshot(tr, "av sm", 0)}${mlink(tr.n, tr.b)}${tagHtml({ n: tr.n, b: tr.b })}</span></td><td><span class="bs ${tr.ty}">${tr.ty === "buy" ? "Buy" : "Sell"}</span></td><td class="nw">${esc(fmtDate(tr.td))}</td><td class="n">${priceCell(tr)}</td><td class="n">${kfmt(tr.lo)}${tr.hi ? "–" + kfmt(tr.hi) : "+"}<div class="foot">${esc(shares(tr) || "")}</div></td><td class="nw">${esc(fmtDate(tr.d))}</td></tr>`).join("")}
-    </tbody></table></div>` : `<div class="foot">No member trades of ${esc(t)} in this period${(C.trades[t] || []).length ? "; try a longer timespan" : ""}.</div>`;
+    </tbody></table></div>` : `<div class="foot">No member trades of ${esc(t)} in this period${(C.trades[t] || []).length ? "; try a longer timespan" : ""}.</div>`);
   list.querySelectorAll("tr[data-k]").forEach(el => el.addEventListener("click", () => { const k = +el.dataset.k; select(pop.sel && pop.sel.k === k ? null : k); }));
   // crosshair with the day's close
   const hit = host.querySelector("#thit"), tip = host.querySelector("#tcip"), xh = host.querySelector("#txh");
