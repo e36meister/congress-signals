@@ -541,6 +541,20 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         recent = api.get("/v2/orders", status="all", limit=40, direction="desc")
     except Exception:
         positions, recent = list(positions.values()), []
+    fills = {}
+    try:      # every filled order (up to 500, newest first) for the "you bought / you sold" marks on the stock charts
+        since = (dt.date.today() - dt.timedelta(days=5 * 365)).isoformat() + "T00:00:00Z"
+        for o in api.get("/v2/orders", status="closed", limit=500, direction="desc", after=since):
+            if o.get("status") != "filled" and not float(o.get("filled_qty") or 0):
+                continue
+            cid = o.get("client_order_id") or ""
+            if cid.startswith(PARK_PREFIX):
+                continue                      # spare cash parked in the S&P fund
+            fills.setdefault(from_alpaca(o["symbol"]), []).append(
+                [str(o.get("filled_at") or "")[:10], o["side"], float(o.get("filled_qty") or 0), float(o.get("filled_avg_price") or 0),
+                 "tool" if cid.startswith(PREFIX) else "tap" if cid.startswith("tap-") else "you"])
+    except Exception as e:
+        log(f"Broker: fill history skipped ({type(e).__name__})")
     bot = _bot_buys(api) if actions else bot
     try:
         first = _bot_buys(api, any_buyer=True)
@@ -595,7 +609,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                         or (o["side"] == "sell" and o["symbol"] in bot and not o.get("client_order_id", "").startswith("tap-")
                             and o["symbol"] not in others)
                         else ("tap" if (o.get("client_order_id") or "").startswith("tap-") else "you")} for o in recent],
-            "this_run": actions, "dividends": _safe(lambda: dividend_estimate(api))}
+            "fills": fills, "this_run": actions, "dividends": _safe(lambda: dividend_estimate(api))}
 
 
 def _safe(fn):
