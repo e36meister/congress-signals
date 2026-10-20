@@ -670,6 +670,35 @@ function renderToday(d) {
 const POST_TY = { funding: "Funding/jobs", visit: "Visit", meeting: "Meeting", oversight: "Letter/oversight", legislation: "Legislation",
   hearing: "Hearing", praise: "Praise", criticism: "Criticism", other: "Other" };
 const POSTS = { feed: null, loading: false, err: null, show: "notable", n: 30 };
+const PREV = { items: null, verdicts: {}, err: null, loading: false, busy: false };
+function loadReview() {
+  if (PREV.loading || PREV.items) return;
+  PREV.loading = true;
+  loadPeopleReview().then(js => { PREV.items = js.items || []; PREV.verdicts = js.verdicts || {}; PREV.err = null; })
+    .catch(e => { PREV.err = e; }).finally(() => { PREV.loading = false; render(); });
+}
+function reviewCount() { loadReview(); return (PREV.items || []).filter(q => !PREV.verdicts[q.key]).length; }
+function reviewList() {
+  if (PREV.err?.code === "app_only") return `<div class="empty">Reviews are in the Capitol Capital app.</div>`;
+  if (!PREV.items) return `<div class="empty">${PREV.err ? esc(errorText(PREV.err)) : "Loading…"}</div>`;
+  const left = PREV.items.filter(q => !PREV.verdicts[q.key]);
+  if (!left.length) return `<div class="empty">Nothing to review. When a post names a company's executive by first or last name only, it shows up here.</div>`;
+  const hl = (txt, w) => esc(txt).replace(new RegExp(`\\b(${String(w).replace(/[^A-Za-z'\-]/g, "")})\\b`, "g"), "<mark>$1</mark>");
+  return `<div class="posts-feed">${left.slice(0, 40).map(q => `<article class="post"><div class="prow"><b>Is “${esc(q.w)}” ${esc(q.n)}${q.role ? ` (${esc(String(q.role).toLowerCase())})` : ""} of ${tkBtn(q.t)}?</b></div>
+      <div class="foot">${mlink(q.who, q.b)} · ${esc(fmtShort(q.d))}${q.by === "first" ? " · first name only" : " · last name only"}</div>
+      <p style="margin:6px 0">“${hl(String(q.text || "").slice(0, 420), q.w)}${String(q.text || "").length > 420 ? "…" : ""}”</p>
+      <div class="tags"><button type="button" class="buybtn" data-prev="yes" data-pk="${esc(q.key)}" data-pn="${esc(q.n)}"${PREV.busy ? " disabled" : ""}>It's them</button>
+        <button type="button" class="tag" data-prev="no" data-pk="${esc(q.key)}" data-pn="${esc(q.n)}"${PREV.busy ? " disabled" : ""}>Not them</button>
+        ${q.url ? `<a class="tag go" href="${esc(q.url)}" target="_blank" rel="noopener">Go to post</a>` : ""}</div></article>`).join("")}</div>
+    <p class="foot">“It's them” makes that name count as the company's executive in every future post that also points to the company or its industry; “Not them” stops that name from ever matching that company again.</p>`;
+}
+document.getElementById("main").addEventListener("click", async ev => {
+  const b = ev.target.closest("[data-prev]");
+  if (!b || PREV.busy) return;
+  PREV.busy = true; render();
+  try { const js = await savePeopleReview(b.dataset.pk, b.dataset.prev, b.dataset.pn); if (js.review) PREV.verdicts[b.dataset.pk] = js.review; }
+  catch (e) { PREV.err = e; } finally { PREV.busy = false; render(); }
+});
 function stanceTxt(s) { return s == null ? "" : s >= 0.3 ? "for" : s <= -0.3 ? "against" : "neutral"; }
 function postsSection() {
   if (POSTS.feed === null && !POSTS.loading && !POSTS.err) {
@@ -697,8 +726,8 @@ function postsSection() {
     </div>${(x.why || []).length ? `<div class="foot">${esc(x.why[0])}${x.why.length > 1 ? ` ${tipBtn(`+${x.why.length - 1}`, "Why it's notable", `<ul class="tipl">${x.why.map(w => `<li>${esc(w)}</li>`).join("")}</ul>`, "more")}` : ""}</div>` : ""}</article>`;
   };
   return `<section class="panel" id="posts"><div class="ph"><h2>Members' posts</h2><span class="sub">Read and sorted every hour${POSTS.feed?.updated ? ` · last checked ${esc(ago(POSTS.feed.updated))}` : ""}</span>
-    <div class="seg" role="group" aria-label="Which posts">${[["notable", "Notable"], ["co", "Name a company"], ["all", "All new"]].map(([v, l]) => `<button type="button" data-pshow="${v}" aria-pressed="${POSTS.show === v}">${l}</button>`).join("")}</div></div>
-    ${POSTS.loading && !POSTS.feed ? `<div class="empty">Loading…</div>` : POSTS.err ? `<div class="note warn">${errorText(POSTS.err)}</div>` :
+    <div class="seg" role="group" aria-label="Which posts">${[["notable", "Notable"], ["co", "Name a company"], ["all", "All new"], ["review", `Needs review${reviewCount() ? " " + reviewCount() : ""}`]].map(([v, l]) => `<button type="button" data-pshow="${v}" aria-pressed="${POSTS.show === v}">${l}</button>`).join("")}</div></div>
+    ${POSTS.show === "review" ? reviewList() : POSTS.loading && !POSTS.feed ? `<div class="empty">Loading…</div>` : POSTS.err ? `<div class="note warn">${errorText(POSTS.err)}</div>` :
       pick.length ? `<div class="posts-feed">${pick.slice(0, POSTS.n).map(item).join("")}</div>${pick.length > POSTS.n ? `<button type="button" class="link" data-pmore="1">Show more (${pick.length - POSTS.n})</button>` : ""}` :
       `<div class="empty">${POSTS.show === "notable" ? "No notable posts in the last 7 days yet." : "No new posts yet."}</div>`}
     <p class="foot">Sent to your phone: 3+ members naming the same company within 3 days, a hint of non-public information that names a company, a meeting or visit with a company, its people or a lobbyist, and a trade by another member within 30 days after a post about that company. Notable also includes posts naming a company the member traded in the last year. Only members who have disclosed a trade are shown; every other post signal is tested in the background each week and switches on only if it proves itself.</p></section>`;
@@ -1219,11 +1248,34 @@ document.getElementById("main").addEventListener("click", ev => {
 });
 document.getElementById("main").addEventListener("input", ev => { if (ev.target.id === "tienote" && TIE.open) TIE.note[TIE.open] = ev.target.value; });
 
+// members' posts: every post signal's background test (the weekly per-trade test, state/rare_test.json)
+const POST_SIG = { post_crowd: "3+ members named the company in posts (2 weeks before the filing)",
+  post_named_before: "Member named the company or its people in a post (30 days before)",
+  post_sector_burst: "Member posted about the industry twice as often as usual",
+  post_tone_clash: "Bought after criticizing the company in posts (or sold after praising it)",
+  social_post: "Member posted about the company (older signal)" };
+function postTests(d) {
+  const rt = d.rare_test || {}, rows = rt.rows || [], on = new Set(d.adaptive?.policy?.signals_on || []);
+  const f = v => v == null ? "–" : (v > 0 ? "+" : "") + (v * 100).toFixed(2) + "%";
+  const sure = t => t == null ? "–" : t >= 1.65 ? "sure enough" : t >= 1 ? "maybe" : "could be chance";
+  const list = Object.entries(POST_SIG).map(([k, label]) => {
+    const r = rows.find(x => x.signal === k);
+    const status = on.has(k) ? `<span class="chip BUY">On</span>` : r?.passes ? `<span class="chip BUY">Passing</span>` :
+      !r ? `<span class="chip watch">Too few trades</span>` : `<span class="chip watch">Testing</span>`;
+    return `<tr><td>${esc(label)}</td><td>${status}</td><td class="n">${r ? Number(r.n).toLocaleString() : "–"}</td>
+      <td class="n ${cls(r?.lift_early)}">${r ? f(r.lift_early) : "–"}<div class="foot">${r ? sure(r.t_early) : ""}</div></td>
+      <td class="n ${cls(r?.lift_recent)}">${r ? f(r.lift_recent) : "–"}<div class="foot">${r ? (r.n_recent || 0) + " trades" : ""}</div></td></tr>`;
+  }).join("");
+  return `<section class="panel" id="works-posts"><div class="ph"><h2>Members' posts: background tests</h2><span class="sub">Checked every week${rt.hold ? ` · ${rt.hold}-day hold` : ""}</span></div>
+    <div class="tbl"><table><thead><tr><th>Signal</th><th>Status</th><th class="n">Purchases</th><th class="n">Earlier years</th><th class="n">Last 3 years</th></tr></thead><tbody>${list}</tbody></table></div>
+    <p class="foot">Each number: how purchases with the signal did against similar purchases filed the same month in the same industry, per trade. A signal switches on by itself once it's ahead in earlier years and sure enough to rule out luck, and still ahead in the last 3 years (which played no part in choosing). "Too few trades" means fewer than 30 purchases had it so far; that changes as post history fills in.</p></section>`;
+}
 function renderWorks(d) {
   const b = d.backtest, tu = d.tuning;
   let h = "";
   if (!b) return `<div class="empty">No backtest yet. Run the new notebook through <b>Step 2</b>.</div>`;
   h += renderAdjust(d);
+  h += postTests(d);
   h += `<p class="note">Each signal splits every past disclosed trade into groups (low, mid, high or no, yes). A signal is useful when its high or yes group clearly beats its low or no group. Numbers read: average result vs the S&amp;P 500 · share of trades that worked · number of trades.</p>`;
   if (b.lag && b.lag.length) {
     const k2 = Object.keys(b.lag[0]);
@@ -1885,6 +1937,8 @@ function loadMember() { return Promise.reject({ code: "app_only" }); }
 function loadTieReviews() { return Promise.reject({ code: "app_only" }); }
 function loadPosts() { return Promise.reject({ code: "app_only" }); }
 function loadAlerts() { return Promise.reject({ code: "app_only" }); }
+function loadPeopleReview() { return Promise.reject({ code: "app_only" }); }
+function savePeopleReview() { return Promise.reject({ code: "app_only" }); }
 function saveTieReview() { return Promise.reject({ code: "app_only" }); }
 function decodeB64(b64) {
   const bin = atob(b64); const bytes = new Uint8Array(bin.length);

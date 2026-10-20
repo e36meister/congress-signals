@@ -10,6 +10,13 @@ cfg = {**E.DEFAULT_CONFIG, "DATA_DIR": "./data", "SOCIAL_DIR": "./social",
 marker = os.path.join("social", "needs_more_runs")
 if os.path.exists(marker):
     os.remove(marker)
+try:      # the owner's verdicts on possible company people (saved by the app); the tagger reads them
+    import cloud_store
+    rv = cloud_store.get("inputs/people_reviews.json", print)
+    if rv:
+        open(S._dir(cfg, "people_reviews.json"), "wb").write(rv if isinstance(rv, bytes) else rv.encode())
+except Exception as e:
+    print(f"People reviews not loaded ({type(e).__name__})")
 mins = float(sys.argv[1]) if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else 10
 try:
     ok = S.update_all(cfg, mins, history="--daily" not in sys.argv)

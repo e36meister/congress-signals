@@ -237,6 +237,11 @@ class Tagger:
                     self.firsts.setdefault(last[-1], set()).update(fs)
         except Exception:
             pass
+        # owner's verdicts on possible company people ("elon|tsla": yes / no), saved by the app
+        try:
+            self.people_rev = {k: (v or {}).get("verdict") for k, v in json.load(open(_dir(cfg, "people_reviews.json"))).items()}
+        except Exception:
+            self.people_rev = {}
         self.sectors = {}
         for s, words in SECTOR_WORDS.items():
             for w in words.split():
@@ -357,6 +362,16 @@ class Tagger:
                     if conf >= 0.3:
                         self.last_cands.append({"n": full, "t": t, "role": role, "w": spans[i][0], "by": kind,
                                                 "c": round(conf, 2), "title": title, "co": co, "sec": sec})
+        rev = getattr(self, "people_rev", {}) or {}
+        kept = []
+        for c in self.last_cands:
+            v = rev.get(f"{str(c['w']).lower()}|{str(c['t']).lower()}")
+            if v == "no":
+                continue                         # owner said it isn't them
+            if v == "yes":
+                c["c"] = max(c["c"], 0.75)       # owner said it is: counts like a full-name mention
+            kept.append(c)
+        self.last_cands = kept
         for c in self.last_cands:
             if c["c"] >= 0.75 and all(x[0] != c["n"] for x in ppl):
                 ppl.append((c["n"], c["t"], c["role"]))
