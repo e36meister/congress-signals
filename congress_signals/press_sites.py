@@ -6,11 +6,35 @@ How it reads a site:
    "Press Releases" / "News Releases" / "Press", else a few common paths.
 2. Take every link on that page that points at a single release: a page under the list's own path, a
    documentsingle.aspx page, or a /press|news|media/... page with a slug.
-3. If the site refuses us (403), try its RSS feed instead.
-The release dates and text come from the release pages themselves (press_backfill._text)."""
-import re
+3. WordPress sites: their built-in data feed (/wp-json), which gives each release's date, title and full text.
+   This also works for Senate sites whose firewall refuses plain page reads from cloud servers.
+4. Otherwise its RSS feed.
+Elsewhere the release dates and text come from the release pages themselves (press_backfill._text).
+
+The hourly job uses this for sites in BACKUP (readers known to be blind) and for any reader that errors or
+returns nothing."""
+import re, html as _html
 from urllib.parse import urljoin, urlparse
 import requests
+
+# python-statement readers that went blind (checked Oct 20, 2026), with the site's current press page where it moved
+BACKUP = {
+    "britt": "https://www.britt.senate.gov/", "kim": "https://www.kim.senate.gov/", "paul": "https://www.paul.senate.gov/",
+    "comer": "https://comer.house.gov/", "mast": "https://mast.house.gov/",
+    "curtis": "https://www.curtis.senate.gov/newsroom/press-releases/",
+    "davidson": "https://davidson.house.gov/media/press-releases",
+    "landsman": "https://landsman.house.gov/media/press-releases",
+    "morrison": "https://morrison.house.gov/news",
+    "norcross": "https://norcross.house.gov/media/press-releases",
+    "sessions": "https://sessions.house.gov/press-releases",
+    "stanton": "https://stanton.house.gov/media/press-releases",
+    "sullivan": "https://www.sullivan.senate.gov/newsroom/press-releases/",
+    "warren": "https://www.warren.senate.gov/newsroom/press-releases/",
+    "wicker": "https://www.wicker.senate.gov/",
+    "yakym": "https://yakym.house.gov/media-center/press-releases",
+    "dustyjohnson": "https://dustyjohnson.house.gov/media/press-releases",
+}
+WP_TYPES = ("press_release", "press_releases", "press-releases", "press-release", "pressreleases", "news", "posts")
 
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
                     "Chrome/130.0 Safari/537.36 CapitolCapital-research"}
@@ -86,6 +110,37 @@ def rss_links(base, list_url, limit=25):
     return None, []
 
 
+def _strip(h):
+    return re.sub(r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", " ", h or ""))).strip()
+
+
+def wp_items(url, limit=20):
+    """WordPress data feed: [{'url','date','title','text'}] newest first, or [] if the site has none."""
+    root = f"{urlparse(url).scheme or 'https'}://{urlparse(url).netloc}"
+    try:
+        r = requests.get(root + "/wp-json/", headers=UA, timeout=30)
+        routes = r.json().get("routes", {}) if r.status_code == 200 else {}
+    except Exception:
+        return []
+    have = [t for t in WP_TYPES if f"/wp/v2/{t}" in routes]
+    for t in have:
+        try:
+            r = requests.get(f"{root}/wp-json/wp/v2/{t}", headers=UA, timeout=30,
+                             params={"per_page": limit, "_fields": "date,link,title,content"})
+            js = r.json() if r.status_code == 200 else []
+        except Exception:
+            js = []
+        if not isinstance(js, list) or not js:
+            continue
+        items = [{"url": x.get("link"), "date": str(x.get("date") or "")[:10], "title": _strip((x.get("title") or {}).get("rendered")),
+                  "text": _strip((x.get("content") or {}).get("rendered"))} for x in js if x.get("link")]
+        # a site's generic "posts" can hold a stray page or two; only use it if it's actually kept up
+        if t == "posts" and len(items) < 3:
+            continue
+        return items
+    return []
+
+
 def find_list(url):
     """(list page URL, its html, how found) or (None, '', why)."""
     st, html, final = _get(url) if url else (None, "", url)
@@ -108,7 +163,11 @@ def find_list(url):
 
 
 def read_site(url):
-    """{'list': url, 'how': str, 'links': [...]} — links newest-first as the site lists them; empty if blind."""
+    """{'list': url, 'how': str, 'links': [...], 'items': [...]} — links newest-first as the site lists them;
+    'items' (date, title, text included) when they came from a WordPress feed; empty if blind."""
+    items = wp_items(url)
+    if items:
+        return {"list": url, "how": "WordPress feed", "links": [x["url"] for x in items], "items": items}
     lst, html, how = find_list(url)
     if lst:
         return {"list": lst, "how": how, "links": release_links(html, lst)}
