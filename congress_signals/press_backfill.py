@@ -167,7 +167,7 @@ def backfill_current(cfg, st, tg, leg, deadline, workers=8, max_pages=400):
     return left == 0
 
 
-def latest_current(cfg, tg, leg, deadline, since=None, workers=12):
+def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
     """Newest page of every current member's press-release list (the same 538 site readers), so releases arrive
     within the hour instead of waiting for Congress Press. New ones go into posts/press_bf like the backfill."""
     from congress_signals.social import rec, read_jsonl, write_jsonl, _dir
@@ -180,16 +180,40 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12):
     since = since or (dt.date.today() - dt.timedelta(days=3)).isoformat()
     bydom = _member_by_domain(leg)
     seen = known_press_urls(cfg.get("SOCIAL_DIR") or "social")
-    names = sorted(SCRAPER_CONFIG)
+    names = sorted(only or SCRAPER_CONFIG)
     fails = []
+
+    from congress_signals import press_sites as PS
+
+    def backup(name):
+        """The backup reader (press_sites) for a site whose library reader is blind or failed."""
+        cfg_url = (SCRAPER_CONFIG.get(name) or {}).get("url_base") or (SCRAPER_CONFIG.get(name) or {}).get("url") or ""
+        if isinstance(cfg_url, (list, tuple)):
+            cfg_url = cfg_url[0] if cfg_url else ""
+        url = PS.BACKUP.get(name) or cfg_url
+        if not url:
+            return None
+        try:
+            r = PS.read_site(url)
+        except Exception:
+            return None
+        if r.get("items"):
+            return [{"url": x["url"], "date": x["date"], "title": x["title"], "text": x["text"]} for x in r["items"]]
+        return [{"url": u} for u in r["links"]] or None
 
     def one(name):
         if time.time() > deadline:
             return name, None, []
-        try:
-            res = Scraper.run_scraper(name, 1) or []
-        except Exception:
-            return name, None, None
+        res = None
+        if name not in PS.BACKUP:
+            try:
+                res = Scraper.run_scraper(name, 1) or []
+            except Exception:
+                res = None
+        if not res:
+            res = backup(name)
+            if res is None:
+                return name, None, None
         b, out = None, []
         for r in res:
             u = r.get("url")
@@ -198,6 +222,9 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12):
             b = b or bydom.get(re.sub(r"^https?://(www\.)?", "", u.lower()).split("/")[0])
             d = str(r.get("date") or "")[:10]
             if norm_url(u) in seen or (d and d < since):
+                continue
+            if r.get("text"):                       # backup reader's WordPress feed already has the text
+                out.append((d, u, r.get("title") or "", r["text"]))
                 continue
             d2, t2, text = _text(u)
             d = d or (d2 or "")[:10]
