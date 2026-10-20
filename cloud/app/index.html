@@ -1789,9 +1789,35 @@ function tradeCard(doc, tr, h, sec) {
         <span>1 yr: <b class="${cls(edge(tr, "1y"))}">${pct(edge(tr, "1y"))}</b> vs S&amp;P${tr.r1y != null ? ` (stock ${pct(tr.r1y)})` : ""}</span>
         <span>Disclosed ${esc(fmtDate(tr.fd))}${lag != null ? ` (${lag} days later)` : ""}</span>${tr.sec ? `<span>${esc(tr.sec)}</span>` : ""}</div>
       ${timeline(ev, tr)}
+      ${ctxBlock(tr)}
     </div>` : ""}
   </article>`;
 }
+// a trade's context: what the tool flagged, the stock's month before, and the company's SEC filings around it
+const CTX = {};
+function ctxBlock(tr) {
+  const k = tr.t + "|" + tr.td, c = CTX[k];
+  const flags = (tr.sg || []).length ? `<div class="foot" style="color:var(--ink2)"><b>Flagged:</b> ${tr.sg.map(esc).join(" · ")}</div>` : `<div class="foot">Nothing unusual flagged on this trade.</div>`;
+  const before = tr.p30 != null ? `<div class="foot" style="color:var(--ink2)"><b>Stock in the 30 days before:</b> <span class="${cls(tr.p30)}">${pct(tr.p30)}</span></div>` : "";
+  let sec;
+  if (!c) sec = `<button type="button" class="link" data-ctx="${esc(k)}">Show the company's SEC filings around this trade</button>`;
+  else if (c.loading) sec = `<div class="foot">Loading SEC filings…</div>`;
+  else if (c.err) sec = `<div class="foot">${c.err.code === "app_only" ? "SEC filings show in the Capitol Capital app." : "Couldn't load SEC filings: " + esc(c.err.message || c.err.code || "error")}</div>`;
+  else {
+    const f = c.js.filings || [], ins = c.js.insiders || {};
+    sec = `<div class="foot" style="color:var(--ink2)"><b>SEC filings, 45 days before to 60 after:</b>${c.js.note ? " " + esc(c.js.note) : ""}</div>
+      ${f.length ? `<ol class="tl">${f.map(x => `<li class="${x.off < 0 ? "k-co" : "k-co"}"><span class="tl-o">${x.off > 0 ? "+" : ""}${x.off}d</span><span><span class="kl">${esc(x.form)}</span> ${x.u ? `<a href="${esc(x.u)}" target="_blank" rel="noopener">${esc(x.items.join(", ") || x.form)}</a>` : esc(x.items.join(", ") || x.form)}</span></li>`).join("")}</ol>` : `<div class="foot">No 8-Ks or big-holder filings in that window.</div>`}
+      ${ins.before || ins.after ? `<div class="foot">Company insider trades (Form 4): ${ins.before || 0} before, ${ins.after || 0} after.</div>` : ""}`;
+  }
+  return `<div class="ctx" style="display:grid;gap:6px;margin-top:10px;border-top:1px solid var(--rule);padding-top:8px"><b style="font-size:13.5px">Context</b>${before}${flags}${sec}</div>`;
+}
+document.getElementById("main").addEventListener("click", ev => {
+  const b = ev.target.closest("[data-ctx]");
+  if (!b) return;
+  const k = b.dataset.ctx, [t, d] = k.split("|");
+  CTX[k] = { loading: true }; render();
+  loadContext(t, d).then(js => { CTX[k] = { js }; }).catch(e => { CTX[k] = { err: e }; }).finally(render);
+});
 function timeline(ev, tr) {
   if (!ev.length) return `<div class="foot">Nothing on file in this window (${MEM.before} days before to ${MEM.after} days after). Widen the window above.</div>`;
   const rows = [...ev].sort((a, b) => a.d.localeCompare(b.d));
@@ -2056,6 +2082,7 @@ async function loadMember(k) { return (await api("/api/member?k=" + encodeURICom
 async function loadPosts() { return (await api("/api/posts")).js; }
 async function loadAlerts() { return (await api("/api/notifications")).js; }
 async function loadPeopleReview() { return (await api("/api/people-review")).js; }
+async function loadContext(t, d) { return (await api(`/api/context?t=${encodeURIComponent(t)}&d=${encodeURIComponent(String(d).slice(0, 10))}`)).js; }
 async function savePeopleReview(key, verdict, n) {
   return (await api("/api/people-review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, verdict, n }) })).js;
 }

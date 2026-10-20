@@ -14,6 +14,7 @@ async function loadMember(k) { return (await api("/api/member?k=" + encodeURICom
 async function loadPosts() { return (await api("/api/posts")).js; }
 async function loadAlerts() { return (await api("/api/notifications")).js; }
 async function loadPeopleReview() { return (await api("/api/people-review")).js; }
+async function loadContext(t, d) { return (await api(`/api/context?t=${encodeURIComponent(t)}&d=${encodeURIComponent(String(d).slice(0, 10))}`)).js; }
 async function savePeopleReview(key, verdict, n) {
   return (await api("/api/people-review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, verdict, n }) })).js;
 }

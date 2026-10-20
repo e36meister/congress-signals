@@ -11,6 +11,30 @@ import pandas as pd
 
 WINDOW = 92            # days kept on each side of a trade (the app's sliders go up to 13 weeks = 91 days)
 HORIZONS = {"3m": 63, "1y": 252}     # trading days
+# what the tool had flagged on a trade, for the trade's Context view (generic scoring inputs left out)
+SIG_LABELS = {"committee": "their committee oversees the industry", "contracts": "company has big federal contracts",
+              "lobbying": "company lobbies their committees", "grants": "company got federal grants or loans",
+              "grant_after_trade": "a grant or loan came after the trade", "campaign_vendor": "their campaign paid the company",
+              "spouse_employer": "spouse works for the company", "spouse_insider": "spouse is a company insider",
+              "relative_tie": "a relative is a company insider", "family_possible": "possible family tie",
+              "paid_travel": "company paid for travel", "outside_position": "holds a position with the company",
+              "disclosure_tie": "company named in their yearly disclosure", "already_owned": "already owned it",
+              "insider_buying": "company insiders were buying", "insider_selling": "company insiders were selling",
+              "unusual_volume": "unusual trading volume before the trade", "reg_action": "federal rule naming the company after",
+              "witness_after": "company testified to their committee after", "markup_after": "their committee marked up an industry bill after",
+              "major_8k_after": "major company announcement after", "bill_advanced": "a bill they back advanced after",
+              "closed_briefing": "closed committee briefing before", "testified": "company testified to their committee",
+              "home_state": "company based in their state", "contract_in_state": "company has contracts in their state",
+              "speech": "named the company in a floor speech", "pre_event": "traded before a company event",
+              "option": "used options", "against_street": "bought against Wall Street ratings", "after_downgrade": "bought after a downgrade",
+              "no_coverage": "no analyst covers the company", "activist_13d": "an activist investor took a stake",
+              "new_5pct": "a new 5% holder", "funds_adding": "funds were adding the stock", "short_heavy": "heavy short selling",
+              "post_named_before": "named the company in a post before", "post_sector_burst": "posting burst about the industry",
+              "post_crowd": "3+ members posted about the company", "post_tone_clash": "post tone clashes with the trade",
+              "buddy": "a frequent trading partner made the same trade", "revolving_door": "ex-staff lobbyist for the company",
+              "employee_donations": "company employees donated to them", "vote_sector": "voted on an industry bill near the trade",
+              "bills": "sponsored a bill in the industry", "first_time": "first time trading this stock",
+              "defense_company": "defense company", "small_cap": "company under $2B", "full_sale": "sold the whole position"}
 SECTOR_ALL = "*"
 MAX_EVENTS = 6000      # per member file (keeps the busiest traders' pages under ~1 MB)
 
@@ -183,8 +207,11 @@ def export_members(cfg, scored, px, data, log=print, put=None, photos=None, post
     data = data or {}
     out_dir = os.path.join(cfg["DATA_DIR"], "members")
     os.makedirs(out_dir, exist_ok=True)
+    sigc = [f"f_{k}" for k in SIG_LABELS if f"f_{k}" in scored]
+    notec = [c for c in ("spouse_note", "relative_note", "family_note", "post_note", "volume_note", "event_note", "buddy_note",
+                         "bill_adv_note") if c in scored]
     cols = [c for c in ("member", "bioguide", "ticker", "company", "tx_type", "trade_date", "filed_date", "owner", "amt_lo",
-                        "amt_hi", "sector", "chamber", "state", "party", "cids", "option", "score") if c in scored]
+                        "amt_hi", "sector", "chamber", "state", "party", "cids", "option", "score") if c in scored] + sigc + notec
     tr = scored[cols].copy()
     tr = tr[tr["tx_type"].isin(["buy", "sell"])].reset_index(drop=True)
     tr["key"] = [member_key(b, m) for b, m in zip(tr.get("bioguide", [None] * len(tr)), tr["member"])]
@@ -222,12 +249,25 @@ def export_members(cfg, scored, px, data, log=print, put=None, photos=None, post
         tag = (tags.get("bio") or {}).get(b) or (tags.get("names") or {}).get(name) or ""
         cids = {c for s in g.get("cids", pd.Series([""])).fillna("") for c in str(s).split(";") if c}
         trades = []
+        sig_rows = []
+        for rr in g[sigc + notec].to_dict("records") if sigc or notec else [{}] * len(g):
+            sg = [SIG_LABELS[c[2:]] for c in sigc if pd.notna(rr.get(c)) and float(rr.get(c) or 0) > 0]
+            sg += [str(rr.get(c)) for c in notec if rr.get(c)]
+            sig_rows.append(sg[:16])
         for i, r in enumerate(g.itertuples()):
+            p30 = None
+            try:
+                if r.ticker in px.columns and pd.notna(r.td):
+                    pp = px[r.ticker].loc[r.td - pd.Timedelta(days=30):r.td].dropna()
+                    p30 = round(float(pp.iloc[-1] / pp.iloc[0] - 1), 4) if len(pp) > 1 else None
+            except Exception:
+                p30 = None
             trades.append([i, _d(r.td), _d(r.filed_date), r.ticker, (r.company or "")[:60], r.tx_type,
                            str(r.owner or "")[:12], None if pd.isna(r.amt_lo) else int(r.amt_lo),
                            None if pd.isna(r.amt_hi) else int(r.amt_hi), r.sector or "",
                            *[None if pd.isna(getattr(r, f"x{k}")) else round(float(getattr(r, f"x{k}")), 4) for k in HORIZONS],
-                           *[None if pd.isna(getattr(r, f"r{k}")) else round(float(getattr(r, f"r{k}")), 4) for k in HORIZONS]])
+                           *[None if pd.isna(getattr(r, f"r{k}")) else round(float(getattr(r, f"r{k}")), 4) for k in HORIZONS],
+                           p30, sig_rows[i]])
         # events within WINDOW days of one of the member's trades in that company / sector
         tdates = {t: np.sort(gg["td"].values) for t, gg in g.groupby("ticker")}
         sdates = {s: np.sort(gg["td"].values) for s, gg in g.groupby("sector") if s}
@@ -281,7 +321,7 @@ def export_members(cfg, scored, px, data, log=print, put=None, photos=None, post
               "sx3m": _mean(-sx["x3m"]), "sx1y": _mean(-sx["x1y"]), "tickers": int(g["ticker"].nunique())}
         doc = {"k": key, "b": b, "n": name, "tag": tag, "ch": str(g["chamber"].iloc[0]) if "chamber" in g else "",
                "photo": (photos or {}).get(b), "stats": st,
-               "tcols": ["i", "td", "fd", "t", "co", "ty", "own", "lo", "hi", "sec", "x3m", "x1y", "r3m", "r1y"],
+               "tcols": ["i", "td", "fd", "t", "co", "ty", "own", "lo", "hi", "sec", "x3m", "x1y", "r3m", "r1y", "p30", "sg"],
                "trades": trades, "ecols": ["d", "k", "x", "t", "sec", "u"], "events": [list(e) for e in evs],
                "posts": [p for p in (posts or {}).get(key, [])][-300:],
                "pprof": (post_profiles or {}).get(key)}
