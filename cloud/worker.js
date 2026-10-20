@@ -160,15 +160,19 @@ async function live(env) {
   const a = alpaca(env);
   if (!a.ready) return json({ error: "no-keys" }, 503);
   const after = new Date(Date.now() - 7 * 864e5).toISOString();
-  const [acct, pos, clock, ords] = await Promise.all([
+  const [acct, pos, clock, ords, spy] = await Promise.all([
     a.get("/v2/account"), a.get("/v2/positions"), a.get("/v2/clock"),
-    a.get(`/v2/orders?status=all&limit=200&direction=desc&after=${encodeURIComponent(after)}`)]);
+    a.get(`/v2/orders?status=all&limit=200&direction=desc&after=${encodeURIComponent(after)}`),
+    a.get("https://data.alpaca.markets/v2/stocks/SPY/snapshot?feed=iex")]);
   if (!acct.ok || !pos.ok) return json({ error: "alpaca", status: acct.status }, 502);
   const n = v => v == null ? null : +v;
   return json({
     at: new Date().toISOString(), mode: a.mode,
     equity: n(acct.data.equity), cash: n(acct.data.cash), last_equity: n(acct.data.last_equity), buying_power: n(acct.data.buying_power),
     market_open: !!(clock.data && clock.data.is_open), next_open: clock.data && clock.data.next_open,
+    // S&P 500 (SPY) now, at the last close and today's bar, for the live "vs the S&P" number on Account
+    spy: spy.ok && spy.data ? { px: n(spy.data.latestTrade?.p), prev: n(spy.data.prevDailyBar?.c), day: n(spy.data.dailyBar?.c),
+      day_t: spy.data.dailyBar?.t || null } : null,
     positions: (pos.data || []).map(p => ({ t: p.symbol.replace(/\./g, "-"), qty: n(p.qty), avg: n(p.avg_entry_price), px: n(p.current_price),
       mv: n(p.market_value), pl: n(p.unrealized_pl), plpc: n(p.unrealized_plpc), day: n(p.change_today) })),
     taps: (ords.data || []).filter(o => (o.client_order_id || "").startsWith("tap-") && o.side === "buy").map(o => ({

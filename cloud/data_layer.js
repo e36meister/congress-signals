@@ -85,7 +85,7 @@ function applyLive(L) {
   p.positions = (L.positions || []).map(x => ({ bot: false, sleeve: null, hold: null, bought: null, held: null, ...(old[x.t] || {}), ...x }))
     .sort((a, b) => (b.mv || 0) - (a.mv || 0));
   if (L.equity != null) { p.equity = L.equity; p.cash = L.cash; if (L.last_equity) p.day_pl = L.equity - L.last_equity; }
-  p.market_open = L.market_open; p.next_open = L.next_open; p.updated = L.at;
+  p.market_open = L.market_open; p.next_open = L.next_open; p.updated = L.at; p.spy = L.spy || p.spy;
 }
 async function loadLive() {
   clearTimeout(liveTimer);
