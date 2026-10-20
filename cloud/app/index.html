@@ -66,6 +66,10 @@ section.panel{display:grid;gap:12px;align-content:start}
 .ph h2{font-size:19px;font-weight:600}
 .ph .sub{font-size:13px;color:var(--muted)}
 .morelist{display:grid}
+.hlist{display:grid;gap:10px}
+.hrow{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;font-size:14px;border-top:1px solid var(--rule);padding-top:10px}
+.hrow:first-child{border-top:0;padding-top:0}
+.hrow .chip{white-space:nowrap}
 .moreitem{display:grid;grid-template-columns:1fr auto;grid-template-areas:"l c" "d c";align-items:center;gap:2px 12px;text-align:left;
   background:none;border:0;border-top:1px solid var(--rule);padding:14px 4px;cursor:pointer;color:var(--ink);font:inherit}
 .moreitem:first-child{border-top:0}
@@ -498,13 +502,52 @@ const MORE_TABS = [
   { k: "record", l: "Track record", d: "How past picks did against the S&P 500" },
   { k: "works", l: "What works", d: "Which signals hold up, and the weekly automatic adjustments" },
   { k: "real", l: "Reality check", d: "Walk-forward test: the strategy on years it never saw" },
+  { k: "health", l: "Data health", d: "Every data source: what's broken right now and what was fixed" },
 ];
 function goTab(t) {
   state.tab = t;
+  if (t === "health") { HEALTH.js = null; HEALTH.err = null; }
   if (typeof MEM !== "undefined") MEM.missing = null;
   try { localStorage.setItem("ctd-tab", t); } catch (e) {}
   render(); window.scrollTo(0, 0);
 }
+// ---------- Data health: every source's open problems (from each job and the app's server), and recent fixes ----------
+const HEALTH = { js: null, err: null, loading: false };
+const JOB_LABEL = { daily: "Daily update", live: "Hourly posts", social: "Posts (daily)", close: "Market-close report", quick: "Filings and orders check",
+  institutions: "Institutions", watchdog: "Job watchdog", scan_house: "House scanned reports", scan_senate: "Senate scanned reports", backfill_enrich: "Backfill" };
+function dataWarning(w) {
+  return `<div class="note err"><b>Picks may be off: some of the data they're built from is broken, so new auto-buys are paused.</b>
+    <ul style="margin:6px 0 0 18px">${w.problems.map(x => `<li>${esc(x)}</li>`).join("")}</ul>
+    <button type="button" class="link" data-more="health">See Data health</button></div>`;
+}
+function renderHealth() {
+  if (!HEALTH.js && !HEALTH.loading && !HEALTH.err) {
+    HEALTH.loading = true;
+    loadHealth().then(js => { HEALTH.js = js || {}; HEALTH.err = null; }).catch(e => { HEALTH.err = e; })
+      .finally(() => { HEALTH.loading = false; if (state.tab === "health") render(); });
+  }
+  if (HEALTH.err) return `<div class="note err">Couldn't load Data health${HEALTH.err.code === "app_only" ? " (it's in the phone app)" : ""}. <button type="button" class="link" data-more="health" onclick="HEALTH.err=null">Try again</button></div>`;
+  if (!HEALTH.js) return `<div class="empty">Loading…</div>`;
+  const jobs = Object.entries(HEALTH.js.jobs?.jobs || {}), app = Object.entries(HEALTH.js.app || {});
+  const open = [];
+  for (const [j, v] of jobs) for (const x of (v.open || [])) open.push({ where: JOB_LABEL[j] || j, ...x });
+  for (const [k, v] of app) if (v.open) open.push({ where: "App server", kind: "app", text: v.text, first: v.first, last: v.last, runs: v.n });
+  const rank = { critical: 0, crash: 1, watchdog: 2, site: 3, app: 3, problem: 4, failure: 5 };
+  open.sort((a, b) => (rank[a.kind] ?? 9) - (rank[b.kind] ?? 9) || String(b.last).localeCompare(String(a.last)));
+  const fixed = [...(HEALTH.js.jobs?.fixed || []).map(x => ({ where: JOB_LABEL[x.job] || x.job, text: x.text, at: x.at })),
+    ...app.filter(([, v]) => !v.open && v.fixed).map(([, v]) => ({ where: "App server", text: v.text, at: v.fixed }))]
+    .sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 30);
+  const kindTag = k => ({ critical: "Picks paused", crash: "Job crashed", watchdog: "Job silent", site: "Website", app: "App", problem: "Data", failure: "Error" })[k] || "Problem";
+  const runs = jobs.filter(([j]) => j !== "watchdog").map(([j, v]) => `${esc(JOB_LABEL[j] || j)} ${esc(ago(v.at))}`).join(" · ");
+  return `<section class="panel"><div class="ph"><h2>${open.length ? `${open.length} open problem${open.length === 1 ? "" : "s"}` : "Everything is working"}</h2>
+    <span class="sub">You get an alert when a new one appears. Claude checks this every morning and fixes what it can.</span></div>
+  ${open.length ? `<div class="hlist">${open.map(x => `<div class="hrow"><span class="chip ${["critical", "crash"].includes(x.kind) ? "SHORT" : x.kind === "failure" ? "watch" : "avoid"}">${kindTag(x.kind)}</span>
+      <div><div>${esc(x.text)}</div><div class="foot">${esc(x.where)} · since ${esc(fmtET(x.first))}${x.runs > 1 ? ` · ${x.runs} runs in a row` : ""}</div></div></div>`).join("")}</div>`
+    : `<div class="empty">No source failed or came back empty in the latest runs.</div>`}
+  <p class="foot">Last reports: ${runs || "–"}</p></section>
+  ${fixed.length ? `<section class="panel"><div class="ph"><h2>Fixed in the last 2 weeks</h2></div><div class="hlist">${fixed.map(x => `<div class="hrow"><span class="chip BUY">Fixed</span><div><div>${esc(x.text)}</div><div class="foot">${esc(x.where)} · ${esc(fmtET(x.at))}</div></div></div>`).join("")}</div></section>` : ""}`;
+}
+
 function renderMore() {
   return `<section class="panel"><div class="morelist">
   ${MORE_TABS.map(m => `<button type="button" class="moreitem" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}
@@ -536,6 +579,8 @@ function render() {
   if (d.version === 1) html += `<div class="note warn"><b>Showing results from the first version (5 signals).</b> Run the new notebook (Run all) and this page switches to the full version with buy, short and avoid picks.</div>`;
   if (MORE_TABS.some(m => m.k === state.tab)) html += `<button type="button" class="moreback" data-more="more">‹ More</button>`;
   if (state.tab === "more") html += renderMore();
+  if (state.tab === "health") html += renderHealth();
+  if (d.data_warning && (d.data_warning.problems || []).length && ["today", "port"].includes(state.tab)) html += dataWarning(d.data_warning);
   if (state.tab === "today") html += renderToday(d);
   if (state.tab === "record") html += renderRecord(d);
   if (state.tab === "defense") html += renderDefense(d);
@@ -2135,6 +2180,7 @@ function route(hash) {
   else if (a === "works") { tab("works"); }
   else if (/^today-/.test(a)) { tab("today"); aim("#" + a); }
   else if (a === "members") { tab("members"); MEM.key = b || null; MEM.open = null; MEM.tq = ""; MEM.tshow = 40; }
+  else if (a === "health") { tab("health"); HEALTH.js = null; }
   else if (["today", "record", "defense", "small", "works", "real", "port", "alerts"].includes(a)) tab(a);
   else return;
   render(); scrollTo(0, 0);
@@ -2171,6 +2217,7 @@ async function loadMembersIndex() { return (await api("/api/members")).js; }
 async function loadMember(k) { return (await api("/api/member?k=" + encodeURIComponent(k))).js; }
 async function loadPosts() { return (await api("/api/posts")).js; }
 async function loadAlerts() { return (await api("/api/notifications")).js; }
+async function loadHealth() { return (await api("/api/health")).js; }
 async function loadPeopleReview() { return (await api("/api/people-review")).js; }
 async function loadContext(t, d) { return (await api(`/api/context?t=${encodeURIComponent(t)}&d=${encodeURIComponent(String(d).slice(0, 10))}`)).js; }
 async function savePeopleReview(key, verdict, n) {

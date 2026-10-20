@@ -126,6 +126,11 @@ def report(job, state_dir, items, log=print, labels=None):
             log(f"COLLECTION CHECK ({job}): every source returned data; no failures logged")
     except Exception:
         pass
+    try:
+        from . import health
+        health.finish(job, problems, fails, log)
+    except Exception:
+        pass
     return res
 
 

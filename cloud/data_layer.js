@@ -13,6 +13,7 @@ async function loadMembersIndex() { return (await api("/api/members")).js; }
 async function loadMember(k) { return (await api("/api/member?k=" + encodeURIComponent(k))).js; }
 async function loadPosts() { return (await api("/api/posts")).js; }
 async function loadAlerts() { return (await api("/api/notifications")).js; }
+async function loadHealth() { return (await api("/api/health")).js; }
 async function loadPeopleReview() { return (await api("/api/people-review")).js; }
 async function loadContext(t, d) { return (await api(`/api/context?t=${encodeURIComponent(t)}&d=${encodeURIComponent(String(d).slice(0, 10))}`)).js; }
 async function savePeopleReview(key, verdict, n) {
