@@ -55,6 +55,8 @@ async function api(req, env, url) {
   }
   if (p === "/api/notifications" && req.method === "GET") return json({ items: await alertLog(env) });
   if (p === "/api/tie-reviews" && req.method === "GET") return json(await tieReviews(env));
+  if (p === "/api/people-review" && req.method === "GET") return peopleReviewList(env);
+  if (p === "/api/people-review" && req.method === "POST") return peopleReview(req, env);
   if (p === "/api/tie-review" && req.method === "POST") return tieReview(req, env);
   if (p === "/api/live" && req.method === "GET") return live(env);
   if (p === "/api/buy" && req.method === "POST") return buy(req, env);
@@ -224,6 +226,25 @@ async function buy(req, env) {
   if (!r.ok) return json({ ok: false, why: "rejected-" + r.status, message: r.data && r.data.message }, 400);
   return json({ ok: true, status: r.data.status, market_open: !!(clock.data && clock.data.is_open), next_open: clock.data && clock.data.next_open,
     qty: order.qty ? +order.qty : null });
+}
+
+// ---------- possible company people in posts (a first or last name alone): the owner says "it's them" or not ----------
+const PEOPLE_FILE = "inputs/people_reviews.json", PEOPLE_QUEUE = "posts/review.json";
+async function r2json(env, key, dflt) { try { const o = await env.DATA.get(key); if (o) return await o.json(); } catch (e) {} return dflt; }
+async function peopleReviewList(env) {
+  return json({ items: await r2json(env, PEOPLE_QUEUE, []), verdicts: await r2json(env, PEOPLE_FILE, {}) });
+}
+async function peopleReview(req, env) {
+  let b = {};
+  try { b = await req.json(); } catch (e) {}
+  const key = String(b.key || "").toLowerCase(), verdict = String(b.verdict || "");
+  if (!/^[a-z][a-z'\-]{1,30}\|[a-z0-9.\-]{1,12}$/.test(key)) return json({ ok: false, why: "bad-key" }, 400);
+  if (!["yes", "no", "clear"].includes(verdict)) return json({ ok: false, why: "bad-verdict" }, 400);
+  const all = await r2json(env, PEOPLE_FILE, {});
+  if (verdict === "clear") delete all[key];
+  else all[key] = { verdict, n: String(b.n || "").slice(0, 80), at: new Date().toISOString() };
+  await env.DATA.put(PEOPLE_FILE, JSON.stringify(all), { httpMetadata: { contentType: "application/json" } });
+  return json({ ok: true, review: all[key] || null });
 }
 
 // ---------- family-tie reviews (the owner says whether a name match is really the member's family) ----------

@@ -48,6 +48,12 @@ def _capture(path, rows):
 
 S.write_jsonl = _capture
 st = S._state(cfg)
+try:      # the owner's verdicts on possible company people, saved by the app; the tagger reads them
+    rv = cloud_store.get("inputs/people_reviews.json", E.log)
+    if rv:
+        open(S._dir(cfg, "people_reviews.json"), "wb").write(rv if isinstance(rv, bytes) else rv.encode())
+except Exception as e:
+    E.log(f"Live posts: people reviews not loaded ({type(e).__name__})")
 tg = S.Tagger(cfg)
 leg = S.legislators(cfg, st)
 acc = S.discover_accounts(cfg, leg, st, time.time() + 30)
@@ -192,6 +198,29 @@ if ptt:
     E.log(f"Live posts: {len(ptt)} trade(s) by other members after a watched post")
 E.log(f"Live posts: {len(hidden)} new post(s) from members with no disclosed trades kept out of the feed; "
       f"{len(watch['posts'])} strong posts watched for trades")
+
+# "Needs review": a company person named by first or last name alone, too unsure to count by itself. The owner says
+# "it's them" (counts from then on) or "not them" (never again) in the app.
+try:
+    revq = json.loads(cloud_store.get("posts/review.json", E.log) or b"[]")
+    verd = json.loads(cloud_store.get("inputs/people_reviews.json", E.log) or b"{}")
+    have = {(q["key"], q["id"]) for q in revq}
+    add = 0
+    for src, r in fresh:
+        for c in (r[11] or {}).get("cand") or []:
+            key = f"{str(c['w']).lower()}|{str(c['t']).lower()}"
+            if key in verd or (key, cloud_store.post_id(r[4])) in have:
+                continue
+            revq.append({"key": key, "id": cloud_store.post_id(r[4]), "w": c["w"], "n": c["n"], "t": c["t"], "role": c.get("role"),
+                         "by": c.get("by"), "c": c.get("c"), "who": names.get(r[1], r[1]), "b": r[1], "d": str(r[0])[:10],
+                         "url": r[4], "text": (r[3] or "")[:600]})
+            add += 1
+    revq = [q for q in revq if q["key"] not in verd][-500:]
+    if add or not revq:
+        cloud_store.put("posts/review.json", json.dumps(revq, default=str), E.log)
+    E.log(f"Live posts: {add} possible company people added for review ({len(revq)} waiting)")
+except Exception as e:
+    E.log(f"Live posts: review list skipped ({type(e).__name__}: {e})")
 
 # the app's feed: notable posts from the last 7 days plus the newest others
 raw = cloud_store.get("posts/feed.json", E.log)

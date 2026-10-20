@@ -13,6 +13,10 @@ async function loadMembersIndex() { return (await api("/api/members")).js; }
 async function loadMember(k) { return (await api("/api/member?k=" + encodeURIComponent(k))).js; }
 async function loadPosts() { return (await api("/api/posts")).js; }
 async function loadAlerts() { return (await api("/api/notifications")).js; }
+async function loadPeopleReview() { return (await api("/api/people-review")).js; }
+async function savePeopleReview(key, verdict, n) {
+  return (await api("/api/people-review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, verdict, n }) })).js;
+}
 async function loadTieReviews() { return (await api("/api/tie-reviews")).js; }
 async function saveTieReview(key, verdict, note) {
   return (await api("/api/tie-review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, verdict, note }) })).js;
