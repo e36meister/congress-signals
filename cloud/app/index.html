@@ -65,6 +65,29 @@ section.panel{display:grid;gap:12px;align-content:start}
 .ph{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 12px}
 .ph h2{font-size:19px;font-weight:600}
 .ph .sub{font-size:13px;color:var(--muted)}
+.morelist{display:grid}
+.moreitem{display:grid;grid-template-columns:1fr auto;grid-template-areas:"l c" "d c";align-items:center;gap:2px 12px;text-align:left;
+  background:none;border:0;border-top:1px solid var(--rule);padding:14px 4px;cursor:pointer;color:var(--ink);font:inherit}
+.moreitem:first-child{border-top:0}
+.moreitem .ml{grid-area:l;font:600 16px var(--head)}
+.moreitem .md{grid-area:d;font-size:13px;color:var(--muted)}
+.moreitem .mc{grid-area:c;font-size:22px;color:var(--muted)}
+.moreback{background:none;border:0;color:var(--accent);font:600 14px var(--body);padding:0;cursor:pointer;justify-self:start}
+.newline{font-size:13px;color:var(--ink2);display:flex;align-items:center;gap:8px}
+.newline b{font:600 13px var(--mono)}
+.daypick{display:flex;gap:6px;margin:4px 0 12px;overflow-x:auto;padding-bottom:4px;scrollbar-width:thin}
+.daypick button{flex:0 0 auto}
+.daypick button{font:600 12.5px var(--body);padding:6px 11px;border-radius:999px;border:1px solid var(--rule);background:var(--surface);color:var(--ink2);cursor:pointer}
+.daypick button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+:root[data-theme="dark"] .daypick button[aria-pressed="true"]{color:#0E131A}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .daypick button[aria-pressed="true"]{color:#0E131A}}
+.days{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.dayc{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:12px 14px;display:grid;gap:6px;align-content:start}
+.dayc h3{margin:0;font:600 14px var(--head)}
+.dayc .r{display:flex;justify-content:space-between;gap:8px;font-size:13px}
+.dayc .r span:first-child{color:var(--muted)}
+.dayc .r span:last-child{font-family:var(--mono)}
+.dayc .ords{border-top:1px solid var(--rule);padding-top:6px;font-size:12.5px;display:grid;gap:3px}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
 .tile{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:14px 16px;display:grid;gap:2px}
 .tile .v{font:500 26px var(--mono);letter-spacing:-.5px}
@@ -357,7 +380,7 @@ nav.tabs button{overflow:hidden}
 #ptr.go{color:var(--accent)}
 @media (max-width: 760px){
   body{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
-  nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:50;margin:0;gap:0;display:grid;grid-template-columns:repeat(8,minmax(0,1fr));
+  nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:50;margin:0;gap:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 64px;
     overflow:visible;background:color-mix(in srgb,var(--surface) 92%,transparent);-webkit-backdrop-filter:saturate(1.6) blur(14px);
     backdrop-filter:saturate(1.6) blur(14px);border-top:1px solid var(--rule);padding:6px 2px calc(6px + env(safe-area-inset-bottom,0px))}
   nav.tabs button{font-size:0;border:0;padding:4px 0 2px;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--muted);
@@ -365,6 +388,8 @@ nav.tabs button{overflow:hidden}
   nav.tabs button::before{content:"";width:24px;height:24px;background:currentColor;-webkit-mask:var(--ic) center/contain no-repeat;mask:var(--ic) center/contain no-repeat}
   nav.tabs button::after{font:600 10.5px/1.1 var(--body);letter-spacing:.1px;white-space:nowrap}
   nav.tabs button[aria-selected="true"]{color:var(--accent);border:0}
+  nav.tabs button[data-tab="more"]{justify-content:center}
+  nav.tabs button[data-tab="more"]::after{display:none}
   nav.tabs button[data-tab="today"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Crect%20x%3D%223.5%22%20y%3D%225%22%20width%3D%2217%22%20height%3D%2215.5%22%20rx%3D%222%22/%3E%3Cpath%20d%3D%22M3.5%2010h17M8%203v4M16%203v4%22/%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2215%22%20r%3D%221.6%22%20fill%3D%22%23000%22/%3E%3C/svg%3E")}
   nav.tabs button[data-tab="today"]::after{content:"Today"}
   nav.tabs button[data-tab="record"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M4%2020V4M4%2020h16%22/%3E%3Cpath%20d%3D%22M7%2015l4-4%203%203%205-6%22/%3E%3C/svg%3E")}
@@ -378,9 +403,11 @@ nav.tabs button{overflow:hidden}
   nav.tabs button[data-tab="real"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Ccircle%20cx%3D%2210.5%22%20cy%3D%2210.5%22%20r%3D%226%22/%3E%3Cpath%20d%3D%22M15%2015l5.5%205.5M8%2010.5l2%202%203.5-4%22/%3E%3C/svg%3E")}
   nav.tabs button[data-tab="real"]::after{content:"Reality"}
   nav.tabs button[data-tab="port"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Crect%20x%3D%223%22%20y%3D%227%22%20width%3D%2218%22%20height%3D%2213%22%20rx%3D%222%22/%3E%3Cpath%20d%3D%22M9%207V5a1%201%200%200%201%201-1h4a1%201%200%200%201%201%201v2M3%2012.5h18%22/%3E%3C/svg%3E")}
-  nav.tabs button[data-tab="port"]::after{content:"Portfolio"}
+  nav.tabs button[data-tab="port"]::after{content:"Account"}
   nav.tabs button[data-tab="alerts"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M6%2016.5V11a6%206%200%200%201%2012%200v5.5l1.5%202H4.5z%22/%3E%3Cpath%20d%3D%22M10%2020.5a2%202%200%200%200%204%200%22/%3E%3C/svg%3E")}
   nav.tabs button[data-tab="alerts"]::after{content:"Alerts"}
+  nav.tabs button[data-tab="more"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M4%207h16M4%2012h16M4%2017h16%22/%3E%3C/svg%3E")}
+  nav.tabs button[data-tab="more"]::after{content:""}
   nav.tabs button[data-tab="members"]{--ic:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%221.8%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Ccircle%20cx%3D%229%22%20cy%3D%228.5%22%20r%3D%223.2%22/%3E%3Cpath%20d%3D%22M3%2019.5c.6-3.3%203-5.2%206-5.2s5.4%201.9%206%205.2%22/%3E%3Cpath%20d%3D%22M15.5%205.6a3%203%200%200%201%200%205.8M17.5%2014.6c1.8.6%203%202.3%203.4%204.9%22/%3E%3C/svg%3E")}
   nav.tabs button[data-tab="members"]::after{content:"Members"}
 }
@@ -403,17 +430,13 @@ nav.tabs button{overflow:hidden}
         <div class="seal">The Purpose of a System is What It Does · STOCK Act</div>
         <h1>Capitol Capital</h1>
       </div>
-      <div class="status" id="status"><span class="dot" id="dot"></span><span id="statusText">Loading…</span><button class="link" id="refresh" type="button" hidden>Refresh</button><button class="link" id="alerts" type="button" hidden>Turn on alerts</button><button class="link" id="widgetBtn" type="button">Widget</button></div>
+      <div class="status" id="status"><span class="dot" id="dot"></span><span id="statusText">Loading…</span><button class="link" id="refresh" type="button" hidden>Refresh</button><button class="link" id="alerts" type="button" hidden>Turn on alerts</button></div>
     </div>
     <nav class="tabs" role="tablist" aria-label="Sections">
-      <button role="tab" id="tab-today" aria-selected="true" data-tab="today" type="button">Today</button>
-      <button role="tab" id="tab-record" aria-selected="false" data-tab="record" type="button">Track record</button>
-      <button role="tab" id="tab-defense" aria-selected="false" data-tab="defense" type="button">Defense</button>
-      <button role="tab" id="tab-small" aria-selected="false" data-tab="small" type="button">Small caps</button>
-      <button role="tab" id="tab-works" aria-selected="false" data-tab="works" type="button">What works</button>
-      <button role="tab" id="tab-real" aria-selected="false" data-tab="real" type="button">Reality check</button>
-      <button role="tab" id="tab-port" aria-selected="false" data-tab="port" type="button">My portfolio</button>
       <button role="tab" id="tab-members" aria-selected="false" data-tab="members" type="button">Members</button>
+      <button role="tab" id="tab-today" aria-selected="true" data-tab="today" type="button">Today</button>
+      <button role="tab" id="tab-port" aria-selected="false" data-tab="port" type="button">Account</button>
+      <button role="tab" id="tab-more" aria-selected="false" data-tab="more" type="button" aria-label="More">More</button>
     </nav>
   </header>
   <main id="main"><div class="empty">Loading your latest results…</div></main>
@@ -468,6 +491,27 @@ document.querySelectorAll("nav.tabs button").forEach(b => b.addEventListener("cl
   window.scrollTo(0, 0);
 }));
 
+// pages behind the ☰ More button, in menu order
+const MORE_TABS = [
+  { k: "small", l: "Small caps", d: "The small-company portfolio and its picks" },
+  { k: "defense", l: "Defense", d: "Defense stocks members bought or sold" },
+  { k: "record", l: "Track record", d: "How past picks did against the S&P 500" },
+  { k: "works", l: "What works", d: "Which signals hold up, and the weekly automatic adjustments" },
+  { k: "real", l: "Reality check", d: "Walk-forward test: the strategy on years it never saw" },
+];
+function goTab(t) {
+  state.tab = t;
+  if (typeof MEM !== "undefined") MEM.missing = null;
+  try { localStorage.setItem("ctd-tab", t); } catch (e) {}
+  render(); window.scrollTo(0, 0);
+}
+function renderMore() {
+  return `<section class="panel"><div class="ph"><h2>More</h2></div><div class="morelist">
+  ${MORE_TABS.map(m => `<button type="button" class="moreitem" data-go="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}
+  </div></section>`;
+}
+document.addEventListener("click", ev => { const b = ev.target.closest("[data-go]"); if (b) { ev.preventDefault(); goTab(b.dataset.go); } });
+
 // the bell at the top right opens the alerts list (tap again to go back to Today)
 document.getElementById("bell").addEventListener("click", () => {
   state.tab = state.tab === "alerts" ? "today" : "alerts";
@@ -479,7 +523,8 @@ document.getElementById("bell").addEventListener("click", () => {
 function render() {
   setHeaderHeight();
   TIPS = [];
-  document.querySelectorAll("nav.tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === state.tab)));
+  const navTab = MORE_TABS.some(m => m.k === state.tab) ? "more" : state.tab;
+  document.querySelectorAll("nav.tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === navTab)));
   $("#bell")?.setAttribute("aria-pressed", String(state.tab === "alerts"));
   const main = $("#main");
   const d = state.data;
@@ -489,6 +534,8 @@ function render() {
   }
   let html = "";
   if (d.version === 1) html += `<div class="note warn"><b>Showing results from the first version (5 signals).</b> Run the new notebook (Run all) and this page switches to the full version with buy, short and avoid picks.</div>`;
+  if (MORE_TABS.some(m => m.k === state.tab)) html += `<button type="button" class="moreback" data-go="more">‹ More</button>`;
+  if (state.tab === "more") html += renderMore();
   if (state.tab === "today") html += renderToday(d);
   if (state.tab === "record") html += renderRecord(d);
   if (state.tab === "defense") html += renderDefense(d);
@@ -739,12 +786,7 @@ function renderToday(d) {
   const nb = buys.filter(r => r.action === "BUY").length, ns = sells.filter(r => r.action === "SHORT").length, na = sells.filter(r => r.action === "avoid").length;
   const topBuys = buys.filter(r => r.action === "BUY"), watch = buys.filter(r => r.action !== "BUY");
   return `
-  <div class="tiles">
-    <div class="tile"><span class="v">${nb}</span><span class="l">Buy candidates</span></div>
-    ${ns ? `<div class="tile"><span class="v">${ns}</span><span class="l">Short candidates</span></div>` : ""}
-    <div class="tile"><span class="v">${na}</span><span class="l">Stocks to avoid</span></div>
-    <div class="tile"><span class="v">${(w.new || []).length}</span><span class="l">New since the last run</span></div>
-  </div>
+  <div class="newline"><b>${(w.new || []).length}</b> new since the last run</div>
   ${todayJump(d, nb, sells.length, watch.length)}
   <section class="panel" id="today-buy">
     <div class="ph"><h2>Buy candidates</h2><span class="sub">Purchases disclosed in the last ${w.lookback} days that score in the top of all past buy signals</span></div>
@@ -1065,7 +1107,6 @@ function heldCell(x, L) {
 function closeSection(d) {
   const c = d.close_report;
   if (!c) return `<section class="panel"><div class="ph"><h2>Paper account vs the backtest</h2></div><div class="empty">The first market-close report arrives after today's close (about 4:15 PM ET).</div></section>`;
-  const hist = (d.close_history || []).slice(-10).reverse();
   const expCell = e => e && e.avg != null ? `${pct(e.avg)}<div class="foot">likely ${pct(e.low)} to ${pct(e.high)}</div>` : "–";
   return `<section class="panel"><div class="ph"><h2>Paper account vs the backtest</h2><span class="sub">Market close ${esc(fmtDate(c.date))} · since ${esc(fmtDate(c.start))}</span></div>
   <div class="tiles">
@@ -1079,11 +1120,41 @@ function closeSection(d) {
   ${c.sleeves.map(x => `<tr><td>${esc(x.name)}</td><td class="n">${x.positions}</td><td class="n">${x.avg_days}</td><td class="n ${cls(x.ret)}">${pct(x.ret)}</td><td class="n">${pct(x.spy)}</td><td class="n ${cls(x.diff)}">${pct(x.diff)}</td><td class="n">${expCell(x.expected)}</td></tr>`).join("")}
   </tbody></table></div>` : ""}
   <p class="foot">"Backtest expects" is how the backtest's average pick in that group did against the S&amp;P after about the same number of days. Over the first few weeks, day-to-day swings swamp any edge, so the comparison means more with time.</p>
-  ${hist.length > 1 ? `<div class="tbl"><table><thead><tr><th>Close</th><th class="n">Account</th><th class="n">That day</th><th class="n">Since start</th><th class="n">S&amp;P since start</th></tr></thead><tbody>
-  ${hist.map(x => `<tr><td class="nw">${esc(fmtDate(x.date))}</td><td class="n">${money(x.equity)}</td><td class="n ${cls(x.day_pl)}">${x.day_pl == null ? "–" : (x.day_pl > 0 ? "+" : "") + money(x.day_pl)}</td><td class="n ${cls(x.since_start)}">${pnum(x.since_start, 2)}</td><td class="n ${cls(x.spy_since_start)}">${pnum(x.spy_since_start, 2)}</td></tr>`).join("")}
-  </tbody></table></div>` : ""}
+  ${daysSection(d)}
   </section>`;
 }
+// day picker on Account: tap dates to see each day; several selected sit side by side
+const DAYS = { sel: null };
+function daysSection(d) {
+  const hist = (d.close_history || []).filter(x => x.date).slice().reverse();
+  if (!hist.length) return "";
+  if (!DAYS.sel || !DAYS.sel.some(x => hist.find(h => h.date === x))) DAYS.sel = [hist[0].date];
+  const short = x => new Date(x + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const ords = (d.portfolio?.orders || []);
+  const card = date => {
+    const x = hist.find(h => h.date === date); if (!x) return "";
+    const gap = x.since_start != null && x.spy_since_start != null ? x.since_start - x.spy_since_start : null;
+    const dayOrds = ords.filter(o => o.at && fmtETDate(o.at) === date && o.filled_px);
+    return `<div class="dayc"><h3>${esc(fmtDate(x.date))}</h3>
+      <div class="r"><span>Account</span><span>${money(x.equity)}</span></div>
+      <div class="r"><span>That day</span><span class="${cls(x.day_pl)}">${x.day_pl == null ? "–" : (x.day_pl > 0 ? "+" : "") + money(x.day_pl)}</span></div>
+      <div class="r"><span>Since start</span><span class="${cls(x.since_start)}">${pnum(x.since_start, 2)}</span></div>
+      <div class="r"><span>S&amp;P since start</span><span class="${cls(x.spy_since_start)}">${pnum(x.spy_since_start, 2)}</span></div>
+      <div class="r"><span>Vs the S&amp;P</span><span class="${cls(gap)}">${gap == null ? "–" : pnum(gap, 2)}</span></div>
+      ${dayOrds.length ? `<div class="ords">${dayOrds.map(o => `<div>${esc(o.side === "buy" ? "Bought" : "Sold")} ${tkBtn(o.t)} ${esc(o.qty ?? "")} at ${money(+o.filled_px, 2)}</div>`).join("")}</div>` : ""}
+    </div>`;
+  };
+  return `<div class="ph"><h2 style="font-size:15px">Pick days</h2><span class="sub">Tap one or more dates to compare them side by side</span></div>
+  <div class="daypick">${hist.map(h => `<button type="button" data-day="${esc(h.date)}" aria-pressed="${DAYS.sel.includes(h.date)}">${esc(short(h.date))}</button>`).join("")}</div>
+  <div class="days">${hist.filter(h => DAYS.sel.includes(h.date)).reverse().map(h => card(h.date)).join("")}</div>`;
+}
+function fmtETDate(iso) { try { return new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" }); } catch (e) { return ""; } }
+document.addEventListener("click", ev => {
+  const b = ev.target.closest("[data-day]"); if (!b) return;
+  const k = b.dataset.day, i = DAYS.sel.indexOf(k);
+  if (i >= 0) { if (DAYS.sel.length > 1) DAYS.sel.splice(i, 1); } else DAYS.sel.push(k);
+  const y = window.scrollY; render(); window.scrollTo(0, y);
+});
 function renderPortfolio(d) {
   const p = d.portfolio;
   if (!p) return `<div class="empty">No brokerage account connected yet. Add your Alpaca paper keys as GitHub secrets (ALPACA_PAPER_KEY_ID and ALPACA_PAPER_SECRET_KEY); the next update fills this tab in.</div>`;
@@ -1104,7 +1175,6 @@ function renderPortfolio(d) {
   </div>
   ${L.small_pct ? `<p class="note">${Math.round(L.small_pct)}% of the account runs the small-company portfolio (see the Small caps tab), holding each pick ${L.hold_sleeve ?? 250} trading days. The rest follows the main BUY picks.</p>` : ""}
   ${closeSection(d)}
-  <p class="note">Each new BUY pick gets ${L.dollars ? "about " + money(L.dollars) : "an equal share of the account, sized like the backtest"} and is sold after ${L.hold_days ?? 60} trading days${L.hold_small && L.hold_small !== L.hold_days ? ` (${L.hold_small} for companies under $2B)` : ""}. Up to ${Math.round(L.max_invested_pct ?? 90)}% of the account is invested at once${L.max_positions ? `, in at most ${L.max_positions} positions` : ""}. Positions you buy yourself, including with the Buy button, are never sold by the tool.</p>
   <section class="panel"><div class="ph"><h2>Positions</h2>${alpLink}</div>
     ${pos.length ? `<div class="tbl"><table><thead><tr><th>Ticker</th><th class="n">Shares</th><th class="n">Avg cost</th><th class="n">Price</th><th class="n">Value</th><th class="n">Gain</th><th>Held</th></tr></thead><tbody>
     ${pos.map(x => `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${soldNote(x)}</td><td class="n">${Number(x.qty).toLocaleString()}</td><td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.px, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${heldCell(x, L)}</td></tr>`).join("")}
@@ -1114,7 +1184,7 @@ function renderPortfolio(d) {
   ${reqSection()}
   <section class="panel"><div class="ph"><h2>Recent orders</h2></div>
     ${ords.length ? `<div class="tbl scroll"><table><thead><tr><th>When</th><th>Ticker</th><th>Side</th><th class="n">Shares</th><th class="n">Fill price</th><th>Status</th><th>Placed by</th></tr></thead><tbody>
-    ${ords.map(o => `<tr><td class="nw">${esc(fmtET(o.at))}</td><td class="mono">${esc(o.t)}</td><td>${esc(o.side)}</td><td class="n">${esc(o.qty ?? "–")}</td><td class="n">${o.filled_px ? money(+o.filled_px, 2) : "–"}</td><td>${esc(String(o.status).replace(/_/g, " "))}</td><td>${o.by === "tool" || (o.by == null && o.bot) ? "This tool" : o.by === "tap" ? "Buy button" : "You"}</td></tr>`).join("")}
+    ${ords.map(o => `<tr><td class="nw">${esc(fmtET(o.at))}</td><td class="mono">${tkBtn(o.t)}</td><td>${esc(o.side)}</td><td class="n">${esc(o.qty ?? "–")}</td><td class="n">${o.filled_px ? money(+o.filled_px, 2) : "–"}</td><td>${esc(String(o.status).replace(/_/g, " "))}</td><td>${o.by === "tool" || (o.by == null && o.bot) ? "This tool" : o.by === "tap" ? "Buy button" : "You"}</td></tr>`).join("")}
     </tbody></table></div>` : `<div class="empty">No orders yet.</div>`}</section>`;
   return h;
 }

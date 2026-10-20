@@ -56,8 +56,12 @@ login = """<div class="login" id="login" hidden><form id="loginForm" autocomplet
 """
 src = sub("<div class=\"wrap\">", login + "<div class=\"wrap\">", src)
 src = sub("Connecting to your Google Drive…", "Loading…", src)
+# The home-screen widget setup button is hidden for now. Its code (widgetModal in data_layer.js) stays in place;
+# set SHOW_WIDGET_BUTTON = True and rebuild to bring the button back when the widget needs updating.
+SHOW_WIDGET_BUTTON = False
 src = sub('<button class="link" id="refresh" type="button" hidden>Refresh</button>',
-          '<button class="link" id="refresh" type="button" hidden>Refresh</button><button class="link" id="alerts" type="button" hidden>Turn on alerts</button><button class="link" id="widgetBtn" type="button">Widget</button>', src)
+          '<button class="link" id="refresh" type="button" hidden>Refresh</button><button class="link" id="alerts" type="button" hidden>Turn on alerts</button>'
+          + ('<button class="link" id="widgetBtn" type="button">Widget</button>' if SHOW_WIDGET_BUTTON else ''), src)
 
 # ---- phone: tab bar at the bottom (thumb reach), icons + short labels; desktop keeps the top tabs ----
 from urllib.parse import quote
@@ -70,15 +74,16 @@ _ic = {  # 24px outline icons
     "real": '<circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5.5 5.5M8 10.5l2 2 3.5-4"/>',
     "port": '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M3 12.5h18"/>',
     "alerts": '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2H4.5z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
+    "more": '<path d="M4 7h16M4 12h16M4 17h16"/>',
     "members": '<circle cx="9" cy="8.5" r="3.2"/><path d="M3 19.5c.6-3.3 3-5.2 6-5.2s5.4 1.9 6 5.2"/><path d="M15.5 5.6a3 3 0 0 1 0 5.8M17.5 14.6c1.8.6 3 2.3 3.4 4.9"/>',
 }
 _short = {"today": "Today", "alerts": "Alerts", "record": "Record", "defense": "Defense", "small": "Small", "works": "Works",
-          "real": "Reality", "port": "Portfolio", "members": "Members"}
+          "real": "Reality", "port": "Account", "members": "Members", "more": ""}
 _svg = lambda body: ("url(\"data:image/svg+xml," + quote('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
                      'stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + body + '</svg>') + "\")")
 tabcss = "\n@media (max-width: 760px){\n" + \
 """  body{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
-  nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:50;margin:0;gap:0;display:grid;grid-template-columns:repeat(8,minmax(0,1fr));
+  nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:50;margin:0;gap:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 64px;
     overflow:visible;background:color-mix(in srgb,var(--surface) 92%,transparent);-webkit-backdrop-filter:saturate(1.6) blur(14px);
     backdrop-filter:saturate(1.6) blur(14px);border-top:1px solid var(--rule);padding:6px 2px calc(6px + env(safe-area-inset-bottom,0px))}
   nav.tabs button{font-size:0;border:0;padding:4px 0 2px;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--muted);
@@ -86,6 +91,8 @@ tabcss = "\n@media (max-width: 760px){\n" + \
   nav.tabs button::before{content:"";width:24px;height:24px;background:currentColor;-webkit-mask:var(--ic) center/contain no-repeat;mask:var(--ic) center/contain no-repeat}
   nav.tabs button::after{font:600 10.5px/1.1 var(--body);letter-spacing:.1px;white-space:nowrap}
   nav.tabs button[aria-selected="true"]{color:var(--accent);border:0}
+  nav.tabs button[data-tab="more"]{justify-content:center}
+  nav.tabs button[data-tab="more"]::after{display:none}
 """ + "".join(f'  nav.tabs button[data-tab="{k}"]{{--ic:{_svg(v)}}}\n  nav.tabs button[data-tab="{k}"]::after{{content:"{_short[k]}"}}\n'
               for k, v in _ic.items()) + "}\n</style>"
 src = sub("env(safe-area-inset-top,0px))} }\n</style>", "env(safe-area-inset-top,0px))} }" + tabcss, src)
