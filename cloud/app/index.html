@@ -433,8 +433,8 @@ nav.tabs button{overflow:hidden}
       <div class="status" id="status"><span class="dot" id="dot"></span><span id="statusText">Loading…</span><button class="link" id="refresh" type="button" hidden>Refresh</button><button class="link" id="alerts" type="button" hidden>Turn on alerts</button></div>
     </div>
     <nav class="tabs" role="tablist" aria-label="Sections">
-      <button role="tab" id="tab-members" aria-selected="false" data-tab="members" type="button">Members</button>
       <button role="tab" id="tab-today" aria-selected="true" data-tab="today" type="button">Today</button>
+      <button role="tab" id="tab-members" aria-selected="false" data-tab="members" type="button">Members</button>
       <button role="tab" id="tab-port" aria-selected="false" data-tab="port" type="button">Account</button>
       <button role="tab" id="tab-more" aria-selected="false" data-tab="more" type="button" aria-label="More">More</button>
     </nav>
@@ -506,11 +506,11 @@ function goTab(t) {
   render(); window.scrollTo(0, 0);
 }
 function renderMore() {
-  return `<section class="panel"><div class="ph"><h2>More</h2></div><div class="morelist">
-  ${MORE_TABS.map(m => `<button type="button" class="moreitem" data-go="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}
+  return `<section class="panel"><div class="morelist">
+  ${MORE_TABS.map(m => `<button type="button" class="moreitem" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}
   </div></section>`;
 }
-document.addEventListener("click", ev => { const b = ev.target.closest("[data-go]"); if (b) { ev.preventDefault(); goTab(b.dataset.go); } });
+document.addEventListener("click", ev => { const b = ev.target.closest("[data-more]"); if (b) { ev.preventDefault(); goTab(b.dataset.more); } });
 
 // the bell at the top right opens the alerts list (tap again to go back to Today)
 document.getElementById("bell").addEventListener("click", () => {
@@ -534,7 +534,7 @@ function render() {
   }
   let html = "";
   if (d.version === 1) html += `<div class="note warn"><b>Showing results from the first version (5 signals).</b> Run the new notebook (Run all) and this page switches to the full version with buy, short and avoid picks.</div>`;
-  if (MORE_TABS.some(m => m.k === state.tab)) html += `<button type="button" class="moreback" data-go="more">‹ More</button>`;
+  if (MORE_TABS.some(m => m.k === state.tab)) html += `<button type="button" class="moreback" data-more="more">‹ More</button>`;
   if (state.tab === "more") html += renderMore();
   if (state.tab === "today") html += renderToday(d);
   if (state.tab === "record") html += renderRecord(d);
@@ -1155,6 +1155,26 @@ document.addEventListener("click", ev => {
   if (i >= 0) { if (DAYS.sel.length > 1) DAYS.sel.splice(i, 1); } else DAYS.sel.push(k);
   const y = window.scrollY; render(); window.scrollTo(0, y);
 });
+// live: account since start minus the S&P since start, carried forward from the last close report with
+// the account's value now and SPY's price now (both on the same starting point as the close report)
+function liveVsSpy(d) {
+  const c = d.close_report, p = d.portfolio;
+  if (!c || c.since_start == null || c.spy_since_start == null || !c.equity || !p?.equity) return null;
+  const e0 = c.equity / (1 + c.since_start / 100), acct = (p.equity / e0 - 1) * 100;
+  let spy = c.spy_since_start, live = false;
+  const S = p.spy;
+  if (S && S.px) {
+    const dayOfBar = S.day_t ? fmtETDate(S.day_t) : null;
+    const ref = dayOfBar === c.date ? S.day : S.prev;          // SPY's close on the report's day
+    if (ref) { spy = ((1 + c.spy_since_start / 100) * (S.px / ref) - 1) * 100; live = true; }
+  }
+  return { acct, spy, gap: acct - spy, live };
+}
+function liveVsSpyTile(d) {
+  const v = liveVsSpy(d);
+  if (!v) return "";
+  return `<div class="tile"><span class="v ${cls(v.gap)}">${pnum(v.gap, 2)}</span><span class="l">${v.gap >= 0 ? "Ahead of" : "Behind"} the S&amp;P since start</span><span class="c">You ${pnum(v.acct, 2)} · S&amp;P ${pnum(v.spy, 2)}${v.live ? "" : " (last close)"}</span></div>`;
+}
 function renderPortfolio(d) {
   const p = d.portfolio;
   if (!p) return `<div class="empty">No brokerage account connected yet. Add your Alpaca paper keys as GitHub secrets (ALPACA_PAPER_KEY_ID and ALPACA_PAPER_SECRET_KEY); the next update fills this tab in.</div>`;
@@ -1171,9 +1191,9 @@ function renderPortfolio(d) {
     <div class="tile"><span class="v ${cls(p.day_pl)}">${p.day_pl == null ? "–" : (p.day_pl > 0 ? "+" : "") + money(p.day_pl)}</span><span class="l">${esc(dayLabel(p))}</span></div>
     <div class="tile"><span class="v ${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain)}</span><span class="l">Gain on open positions</span><span class="c">${money(invested)} invested</span></div>
     <div class="tile"><span class="v">${pos.length}</span><span class="l">Open positions</span>${L.max_positions ? `<span class="c">Limit ${L.max_positions}</span>` : ""}</div>
+    ${liveVsSpyTile(d)}
     ${p.dividends ? `<div class="tile"><span class="v ${p.dividends.total > 0 ? "pos" : ""}">${money(p.dividends.total, 2)}</span><span class="l">Dividends${p.mode === "live" ? "" : " (estimated)"}</span><span class="c">${p.mode === "live" ? "Received " + money(p.dividends.received, 2) : "Not paid on paper; real money would get them"}</span></div>` : ""}
   </div>
-  ${L.small_pct ? `<p class="note">${Math.round(L.small_pct)}% of the account runs the small-company portfolio (see the Small caps tab), holding each pick ${L.hold_sleeve ?? 250} trading days. The rest follows the main BUY picks.</p>` : ""}
   ${closeSection(d)}
   <section class="panel"><div class="ph"><h2>Positions</h2>${alpLink}</div>
     ${pos.length ? `<div class="tbl"><table><thead><tr><th>Ticker</th><th class="n">Shares</th><th class="n">Avg cost</th><th class="n">Price</th><th class="n">Value</th><th class="n">Gain</th><th>Held</th></tr></thead><tbody>
@@ -2223,7 +2243,7 @@ function applyLive(L) {
   p.positions = (L.positions || []).map(x => ({ bot: false, sleeve: null, hold: null, bought: null, held: null, ...(old[x.t] || {}), ...x }))
     .sort((a, b) => (b.mv || 0) - (a.mv || 0));
   if (L.equity != null) { p.equity = L.equity; p.cash = L.cash; if (L.last_equity) p.day_pl = L.equity - L.last_equity; }
-  p.market_open = L.market_open; p.next_open = L.next_open; p.updated = L.at;
+  p.market_open = L.market_open; p.next_open = L.next_open; p.updated = L.at; p.spy = L.spy || p.spy;
 }
 async function loadLive() {
   clearTimeout(liveTimer);
