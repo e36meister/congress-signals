@@ -70,6 +70,7 @@ jobs:
           ALPACA_LIVE_KEY_ID: ${{ secrets.ALPACA_LIVE_KEY_ID }}
           ALPACA_LIVE_SECRET_KEY: ${{ secrets.ALPACA_LIVE_SECRET_KEY }}
           GH_DISPATCH_TOKEN: ${{ secrets.GH_DISPATCH_TOKEN }}
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
         run: |
           umask 077
           python3 - <<'EOF'
@@ -81,7 +82,8 @@ jobs:
                      "MAX_TAP_DOLLARS": os.environ.get("MAX_TAP_DOLLARS") or "25000",
                      "ALPACA_KEY": os.environ.get(f"ALPACA_{m}_KEY_ID") or "",
                      "ALPACA_SECRET": os.environ.get(f"ALPACA_{m}_SECRET_KEY") or "",
-                     "GH_DISPATCH_TOKEN": os.environ.get("GH_DISPATCH_TOKEN") or ""},
+                     "GH_DISPATCH_TOKEN": os.environ.get("GH_DISPATCH_TOKEN") or "",
+                     "SEC_USER_AGENT": os.environ.get("SEC_USER_AGENT") or ""},
                     open(os.path.join(os.environ["RUNNER_TEMP"], "s.json"), "w"))
           EOF
           npx --yes wrangler@4 secret bulk "$RUNNER_TEMP/s.json" 2>&1 | sed -E 's#[A-Za-z0-9./:-]*workers\.dev#(hidden)#g'

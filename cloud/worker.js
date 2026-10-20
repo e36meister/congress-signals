@@ -55,6 +55,7 @@ async function api(req, env, url) {
   }
   if (p === "/api/notifications" && req.method === "GET") return json({ items: await alertLog(env) });
   if (p === "/api/tie-reviews" && req.method === "GET") return json(await tieReviews(env));
+  if (p === "/api/context" && req.method === "GET") return tradeContext(env, url);
   if (p === "/api/people-review" && req.method === "GET") return peopleReviewList(env);
   if (p === "/api/people-review" && req.method === "POST") return peopleReview(req, env);
   if (p === "/api/tie-review" && req.method === "POST") return tieReview(req, env);
@@ -226,6 +227,66 @@ async function buy(req, env) {
   if (!r.ok) return json({ ok: false, why: "rejected-" + r.status, message: r.data && r.data.message }, 400);
   return json({ ok: true, status: r.data.status, market_open: !!(clock.data && clock.data.is_open), next_open: clock.data && clock.data.next_open,
     qty: order.qty ? +order.qty : null });
+}
+
+// ---------- a trade's context: the company's SEC filings around the trade date (8-K items, big holders, insiders) ----------
+const ITEMS = { "1.01": "material agreement", "1.02": "agreement ended", "1.03": "bankruptcy", "2.01": "acquisition or sale completed",
+  "2.02": "earnings results", "2.03": "new debt", "2.05": "restructuring", "2.06": "impairment", "3.01": "listing notice",
+  "3.02": "share sale", "4.01": "auditor change", "4.02": "restatement", "5.01": "change in control", "5.02": "executive or director change",
+  "5.03": "bylaws change", "5.07": "shareholder vote", "7.01": "investor disclosure", "8.01": "other event" };
+async function secFetch(env, u) {
+  return fetch(u, { headers: { "User-Agent": env.SEC_USER_AGENT || "Capitol Capital research app", Accept: "application/json" } });
+}
+async function secCik(env, t) {
+  let m = await r2json(env, "cache/sec_tickers.json", null);
+  if (!m || !m.at || Date.now() - Date.parse(m.at) > 7 * 864e5) {
+    const r = await secFetch(env, "https://www.sec.gov/files/company_tickers.json");
+    if (r.ok) {
+      const js = await r.json(), map = {};
+      for (const v of Object.values(js)) map[String(v.ticker).toUpperCase().replace(/\./g, "-")] = v.cik_str;
+      m = { at: new Date().toISOString(), map };
+      await env.DATA.put("cache/sec_tickers.json", JSON.stringify(m));
+    }
+  }
+  return m ? m.map[t] : null;
+}
+async function tradeContext(env, url) {
+  const t = String(url.searchParams.get("t") || "").toUpperCase(), d = String(url.searchParams.get("d") || "");
+  if (!/^[A-Z][A-Z0-9-]{0,7}$/.test(t) || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return json({ error: "bad-request" }, 400);
+  const cik = await secCik(env, t);
+  if (!cik) return json({ t, d, filings: [], note: "No SEC filer found for this ticker (it may have been renamed or delisted)." });
+  const td = Date.parse(d + "T12:00:00Z"), lo = new Date(td - 45 * 864e5).toISOString().slice(0, 10), hi = new Date(td + 60 * 864e5).toISOString().slice(0, 10);
+  const pad = String(cik).padStart(10, "0");
+  const r = await secFetch(env, `https://data.sec.gov/submissions/CIK${pad}.json`);
+  if (!r.ok) return json({ t, d, filings: [], note: "The SEC didn't answer; try again in a minute." });
+  const js = await r.json();
+  const blocks = [js.filings?.recent || {}];
+  // older trades: the filings list for that period is in a separate file
+  const oldest = (blocks[0].filingDate || []).slice(-1)[0];
+  if (oldest && oldest > lo) {
+    for (const f of js.filings?.files || []) {
+      if (f.filingFrom <= hi && f.filingTo >= lo) {
+        const r2 = await secFetch(env, `https://data.sec.gov/submissions/${f.name}`);
+        if (r2.ok) blocks.push(await r2.json());
+      }
+    }
+  }
+  const out = [], ins = { before: 0, after: 0 };
+  for (const b of blocks) {
+    const n = (b.form || []).length;
+    for (let i = 0; i < n; i++) {
+      const fd = b.filingDate[i], form = b.form[i];
+      if (fd < lo || fd > hi) continue;
+      const off = Math.round((Date.parse(fd + "T12:00:00Z") - td) / 864e5);
+      if (form === "4") { off < 0 ? ins.before++ : ins.after++; continue; }
+      if (!/^(8-K|8-K\/A|SC 13D|SC 13G|SCHEDULE 13D|SCHEDULE 13G|SC 13D\/A|10-Q|10-K|S-1|S-3|424B\d?)$/.test(form)) continue;
+      const items = String(b.items?.[i] || "").split(",").map(x => x.trim()).filter(x => x && x !== "9.01").map(x => ITEMS[x] || x);
+      const acc = String(b.accessionNumber?.[i] || "").replace(/-/g, "");
+      out.push({ d: fd, off, form, items, u: acc ? `https://www.sec.gov/Archives/edgar/data/${cik}/${acc}/${b.primaryDocument?.[i] || ""}` : "" });
+    }
+  }
+  out.sort((a, b) => a.d.localeCompare(b.d));
+  return json({ t, d, company: js.name, filings: out, insiders: ins });
 }
 
 // ---------- possible company people in posts (a first or last name alone): the owner says "it's them" or not ----------
