@@ -92,7 +92,9 @@ def release_links(html, list_url, limit=25):
             out.append(u.split("#")[0])
         if len(out) >= limit:
             break
-    return out
+    # when the page clearly has a press-release section, keep only those (drops "in the media", videos, etc.)
+    pr = [u for u in out if re.search(r"/(press|news)-releases?/", u, re.I)]
+    return pr if len(pr) >= 3 else out
 
 
 def rss_links(base, list_url, limit=25):
