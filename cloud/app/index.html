@@ -1839,7 +1839,11 @@ function drawPopup() {
     body = `<div class="spans" role="group" aria-label="Timespan">${SPANS.map(([k]) => `<button type="button" data-span="${k}" aria-pressed="${pop.span === k}">${k}</button>`).join("")}
       <span class="lg"><span><i style="border-color:var(--good)"></i>Bought</span><span><i style="border-color:var(--bad)"></i>Sold</span><span><b style="font:600 10px var(--mono)">disc.</b> disclosed</span><span style="display:inline-flex;align-items:center;gap:4px"><img src="/me.jpg" alt="" style="width:14px;height:14px;border-radius:50%;object-fit:cover" onerror="this.outerHTML='▲▼'">you</span></span></div>
       <div class="tc" id="tc"></div><div id="tdet"></div><div id="tlist"></div>
-      <p class="foot" style="margin:0">The line shows daily closes; all prices are adjusted for splits and dividends, so a note's price can differ after a split. The forms give the trade date and a dollar range, not the time, price or share count. So the price shown is that day's low-to-high range and the share count is estimated from it, unless the member wrote the shares or price in the filing.</p>`;
+`;
+      // (owner, Oct 21: the chart note is kept in the project doc instead of under every chart) The line shows daily
+      // closes; all prices are adjusted for splits and dividends, so a note's price can differ after a split. The
+      // forms give the trade date and a dollar range, not the time, price or share count. So the price shown is that
+      // day's low-to-high range and the share count is estimated from it, unless the member wrote the shares or price.
   }
   bg.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="${esc(t)} price chart">${head}${body}</div>`;
   bg.querySelectorAll("[data-span]").forEach(b => b.addEventListener("click", () => { pop.span = b.dataset.span; pop.sel = null; drawPopup(); }));
