@@ -192,6 +192,9 @@ jobs:
       - name: Read scanned Senate reports (built-in reader)
         continue-on-error: true
         timeout-minutes: 35
+        env:        # Cloudflare only for the Data health report
+          CLOUDFLARE_API_TOKEN: ${{ github.event.inputs.dry_run != 'true' && secrets.CLOUDFLARE_API_TOKEN || '' }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: python scan_senate.py
 
       - name: Read older scanned House reports
@@ -201,6 +204,8 @@ jobs:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
           OCR_SPACE_API_KEY: ${{ secrets.OCR_SPACE_API_KEY }}
           GOOGLE_VISION_API_KEY: ${{ secrets.GOOGLE_VISION_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ github.event.inputs.dry_run != 'true' && secrets.CLOUDFLARE_API_TOKEN || '' }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: python scan_house.py
 
       - name: Fill older years and less-traded companies (lobbying, grants, speeches, contracts, events)
@@ -210,6 +215,8 @@ jobs:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
           CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
           LDA_API_KEY: ${{ secrets.LDA_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ github.event.inputs.dry_run != 'true' && secrets.CLOUDFLARE_API_TOKEN || '' }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: python backfill_enrich.py 45
 
       - name: Save data for tomorrow
@@ -261,6 +268,8 @@ jobs:
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
           OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ github.event.inputs.dry_run != 'true' && secrets.CLOUDFLARE_API_TOKEN || '' }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: python update_institutions.py 8
 
       - name: Save institutional data
@@ -329,6 +338,14 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: python update_social.py 12 --daily
+
+      - name: Report a posts update that didn't finish (Data health)
+        if: always() && steps.social.outcome == 'failure'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          python -c "from congress_signals import health as H; H.finish('social', ['Daily posts update stopped before finishing (30-minute limit or an error), so today\'s new posts were not saved'])"
 
       - name: Save members' posts
         if: always() && steps.social.outcome == 'success' && hashFiles('social/.changed') != ''

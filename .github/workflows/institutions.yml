@@ -38,6 +38,8 @@ jobs:
       - name: Collect
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
         run: python update_institutions.py ${{ github.event.inputs.minutes || '300' }}
       - name: Save institutional data

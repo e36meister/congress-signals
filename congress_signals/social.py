@@ -563,11 +563,19 @@ def collect_press(cfg, st, tg, deadline, years=True):
         if kind == "m":
             r = _get(PRESS + f"{k}.jsonl", as_json=False, timeout=180)
             if r is None:
+                _log(f"Press releases: {k}: Congress Press download failed")
                 continue
             lines = r.content.decode("utf-8", "ignore").splitlines()
-            rows = _press_rows(lines, tg)
-            write_jsonl(os.path.join(out_dir, f"{k}.jsonl.gz"), rows)
-            _log(f"Press releases: {k}: {len(rows):,}")
+            # releases already on file keep their tags and sorting (re-tagging and re-sorting ~6,000 releases every
+            # run took the daily posts update past its 30-minute limit, so it never saved, Oct 17-21)
+            path = os.path.join(out_dir, f"{k}.jsonl.gz")
+            old = {}
+            for x in (read_jsonl(path) if os.path.exists(path) else []):
+                if len(x) > 4 and x[4]:
+                    old[(x[4], x[1], str(x[0])[:10])] = x
+            rows, fresh = _press_rows(lines, tg, reuse=old)
+            write_jsonl(path, rows)
+            _log(f"Press releases: {k}: {len(rows):,} ({fresh:,} new)")
         else:
             r = _get(PRESS + f"{k}.zip", as_json=False, timeout=600)
             if r is None:
@@ -579,7 +587,7 @@ def collect_press(cfg, st, tg, deadline, years=True):
             rows = []
             for nm in z.namelist():
                 if nm.endswith(".jsonl") or nm.endswith(".json"):
-                    rows += _press_rows(z.read(nm).decode("utf-8", "ignore").splitlines(), tg)
+                    rows += _press_rows(z.read(nm).decode("utf-8", "ignore").splitlines(), tg)[0]
             write_jsonl(os.path.join(out_dir, f"{k}.jsonl.gz"), rows)
             done.add(k)
             st["press_years"] = sorted(done)
@@ -588,8 +596,10 @@ def collect_press(cfg, st, tg, deadline, years=True):
     return all(str(y) in done for y in range(START_YEAR, today.year))
 
 
-def _press_rows(lines, tg):
-    rows = []
+def _press_rows(lines, tg, reuse=None):
+    """(rows, number tagged fresh). `reuse`: {(url, bioguide, date): row already on file} kept as they are."""
+    rows, fresh = [], 0
+    reuse = reuse or {}
     for ln in lines:
         try:
             j = json.loads(ln)
@@ -600,9 +610,14 @@ def _press_rows(lines, tg):
         d = (j.get("date") or "")[:10]
         if not b or not d:
             continue
+        hit = reuse.get((j.get("url"), b, d)) if j.get("url") else None
+        if hit is not None:
+            rows.append(hit)
+            continue
         title, text = j.get("title") or "", j.get("text") or ""
         rows.append(rec(d, b, "Press release", (title + " — " + text).strip(" —"), j.get("url"), tg, full=title + "\n" + text))
-    return rows
+        fresh += 1
+    return rows, fresh
 
 
 def collect_tweets(cfg, st, tg, deadline):
@@ -810,23 +825,33 @@ def collect_mastodon(cfg, st, tg, leg, acc, deadline):
 def collect_substack(cfg, st, tg, acc, deadline):
     import xml.etree.ElementTree as ET
     out_dir = _dir(cfg, "posts", "substack")
-    added, dead, n = 0, [], 0
+    added, dead, n, mirrored = 0, [], 0, 0
+    subs = sorted({sub for a in acc.values() for sub in (a.get("substack") or [])})
+    try:        # the list the Cloudflare Worker reads hourly (Substack refuses GitHub's servers; see _substack_mirror)
+        import cloud_store
+        if subs:
+            cloud_store.put("feeds/substack/list.json", json.dumps(subs), log=lambda m: None)
+    except Exception:
+        pass
     for b, a in acc.items():
         for sub in a.get("substack") or []:
             if time.time() > deadline:
                 break
             n += 1
             r = _get(f"https://{sub}.substack.com/feed", as_json=False, timeout=60, tries=2)
-            if r is None:
+            content = r.content if r is not None else _substack_mirror(sub)
+            if content is None:
                 dead.append(sub)
                 continue
+            mirrored += r is None
             path = os.path.join(out_dir, f"{sub}.jsonl.gz")
             old = read_jsonl(path) if os.path.exists(path) else []
             seen = {x[4] for x in old}
             rows = []
             try:
-                root = ET.fromstring(r.content)
+                root = ET.fromstring(content)
             except Exception:
+                dead.append(sub)
                 continue
             for it in root.iter("item"):
                 url = it.findtext("link") or ""
@@ -842,7 +867,22 @@ def collect_substack(cfg, st, tg, acc, deadline):
             if rows or not os.path.exists(path):
                 write_jsonl(path, sorted(old + rows, key=lambda x: x[0]))
             added += len(rows)
-    _log(f"Substack: {n} newsletters, +{added:,} posts" + (f"; no answer from {len(dead)}: {', '.join(dead[:8])}" if dead else ""))
+    _log(f"Substack: {n} newsletters, +{added:,} posts" + (f" ({mirrored} read from the Worker's copy)" if mirrored else "")
+         + (f"; no answer from {len(dead)}: {', '.join(dead[:8])}" if dead else ""))
+
+
+def _substack_mirror(sub, max_hours=30):
+    """The feed as the Cloudflare Worker last read it (feeds/substack/<sub>.json), if it's recent."""
+    try:
+        import cloud_store
+        raw = cloud_store.get(f"feeds/substack/{sub}.json", log=lambda m: None)
+        if not raw:
+            return None
+        j = json.loads(raw)
+        age = (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(j["at"].replace("Z", "+00:00"))).total_seconds()
+        return j["xml"].encode("utf-8") if age < max_hours * 3600 and j.get("xml") else None
+    except Exception:
+        return None
 
 
 def collect_youtube(cfg, st, tg, leg, acc, deadline):
@@ -1263,11 +1303,16 @@ def update_all(cfg, minutes, history=True):
     acc = discover_accounts(cfg, leg, st, min(deadline, time.time() + minutes * 60 * 0.15))
     hmap = bluesky_accounts(cfg, leg, acc, st, min(deadline, time.time() + minutes * 60 * 0.1))
     # fresh posts first (small), then the history backfills
-    collect_press(cfg, st, tg, deadline, years=False)
-    collect_bluesky(cfg, st, tg, hmap, deadline)
-    collect_mastodon(cfg, st, tg, leg, acc, deadline)
-    collect_substack(cfg, st, tg, acc, deadline)
-    collect_youtube(cfg, st, tg, leg, acc, deadline)
+    # each source gets its turn; one that the time limit cut out is logged (it shows on Data health), never dropped quietly
+    for name, fn in (("Congress Press releases", lambda: collect_press(cfg, st, tg, deadline, years=False)),
+                     ("Bluesky", lambda: collect_bluesky(cfg, st, tg, hmap, deadline)),
+                     ("Mastodon", lambda: collect_mastodon(cfg, st, tg, leg, acc, deadline)),
+                     ("Substack", lambda: collect_substack(cfg, st, tg, acc, deadline)),
+                     ("YouTube", lambda: collect_youtube(cfg, st, tg, leg, acc, deadline))):
+        if time.time() > deadline:
+            _log(f"Social: {name} skipped: the {minutes:g}-minute time limit ran out before it")
+            continue
+        fn()
     ok = True
     if history:
         ok &= collect_people(cfg, st, deadline - 600, per_run=60)

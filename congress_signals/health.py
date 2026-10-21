@@ -20,9 +20,12 @@ SIZES_KEY = "health/sizes.json"
 _HTTP = {}                 # host -> {"n", "ok", "nf" (404/410), "bad" (other 4xx/5xx), "exc", "last"}
 _JOB = {"name": None, "finished": False, "crash": None, "t0": time.time()}
 # how often each job normally reports (hours); a job silent for longer is flagged
-EXPECT_HOURS = {"daily": 30, "live": 3, "social": 30, "close": 80, "quick": 6, "institutions": 30}
+EXPECT_HOURS = {"daily": 30, "live": 3, "social": 30, "close": 80, "quick": 6, "institutions": 30,
+                "scan_senate": 30, "scan_house": 30, "backfill_enrich": 30}
 JOB_NAMES = {"daily": "Daily update", "live": "Hourly posts", "social": "Posts (twice daily)", "close": "Market-close report",
-             "quick": "Filings and orders check", "institutions": "Institutions", "watchdog": "Job watchdog"}
+             "quick": "Filings and orders check", "institutions": "Institutions", "watchdog": "Job watchdog",
+             "scan_senate": "Scanned Senate reports", "scan_house": "Scanned House reports",
+             "backfill_enrich": "Older years and less-traded companies"}
 # hosts that are ours or not data sources
 SKIP_HOSTS = ("github.com", "githubusercontent.com", "pypi.org", "files.pythonhosted.org", "huggingface.co",
               "hf.co", "cdn-lfs.huggingface.co")
@@ -178,12 +181,19 @@ def finish(job, problems=(), failures=(), log=None, extra=None):
         _save(JOB_KEY.format(job), j)
         # watchdog: any job that has gone quiet for much longer than usual
         wd = []
+        wj = _load(JOB_KEY.format("watchdog"))
+        since = wj.get("since") or now.isoformat(timespec="seconds")     # when the watchdog first ran
         for name, hours in EXPECT_HOURS.items():
-            at = (_load(JOB_KEY.format(name)) or {}).get("at") if name != job else None
-            if at and name != job and (now - dt.datetime.fromisoformat(at)).total_seconds() > hours * 3600:
+            if name == job:
+                continue
+            at = (_load(JOB_KEY.format(name)) or {}).get("at")
+            if at and (now - dt.datetime.fromisoformat(at)).total_seconds() > hours * 3600:
                 wd.append(f"{JOB_NAMES.get(name, name)} hasn't reported in {(now - dt.datetime.fromisoformat(at)).total_seconds() / 3600:.0f} hours "
                           f"(normally every {hours} or less); it may be stuck or failing to start")
-        wj = _load(JOB_KEY.format("watchdog"))
+            elif not at and (now - dt.datetime.fromisoformat(since)).total_seconds() > hours * 3600:
+                # never reported at all (Oct 21: the daily posts update timed out every run and so never reported)
+                wd.append(f"{JOB_NAMES.get(name, name)} hasn't reported in {(now - dt.datetime.fromisoformat(since)).total_seconds() / 3600:.0f} hours "
+                          f"(normally every {hours} or less); it may be stuck, timing out, or missing its Cloudflare settings")
         wold = {x["k"]: x for x in wj.get("open") or []}
         wopen = []
         for text in wd:
@@ -195,7 +205,7 @@ def finish(job, problems=(), failures=(), log=None, extra=None):
             wopen.append(rec)
         wfix = [{"k": k, "job": "watchdog", "text": r["text"], "at": now.isoformat(timespec="seconds")}
                 for k, r in wold.items() if k not in {x["k"] for x in wopen}]
-        _save(JOB_KEY.format("watchdog"), {"job": "watchdog", "at": now.isoformat(timespec="seconds"), "open": wopen,
+        _save(JOB_KEY.format("watchdog"), {"job": "watchdog", "at": now.isoformat(timespec="seconds"), "since": since, "open": wopen,
                                            "fixed": ((wj.get("fixed") or []) + wfix)[-50:]})
         if new:
             _alert(job, new, log)
