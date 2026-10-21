@@ -1510,12 +1510,15 @@ def _yf_close(tickers, start, tries=3):
                 pass
             return c.dropna(how="all", axis=1)
         except Exception as e:
-            log(f"Prices: Yahoo attempt {a+1} failed ({e}); retrying")
-            time.sleep(5 * (a + 1))
+            if a < tries - 1:      # a retry that then works is not a failure; only the last try is reported as one
+                log(f"Prices: Yahoo try {a+1} came back with nothing ({type(e).__name__}); trying again")
+                time.sleep(5 * (a + 1))
+            else:
+                log(f"Prices: Yahoo download failed after {tries} tries for {len(tickers)} stock(s) ({e})")
     return pd.DataFrame()
 
 
-def _alpaca_close(tickers, start):
+def _alpaca_close(tickers, start, side_effects=True):
     """Recent daily closes (and opens) from Alpaca's market data (all US exchanges, adjusted for splits and
     dividends; the free plan allows data up to 15 minutes old). Checked against Yahoo on 400 stocks over two weeks:
     closes within 0.1% for 99.9% of days, opens 99.2%. Far faster and steadier than Yahoo: one request per 200
@@ -1561,6 +1564,8 @@ def _alpaca_close(tickers, start):
     if not closes:
         return pd.DataFrame()
     c = pd.DataFrame(closes).sort_index()
+    if not side_effects:          # a read-only check (confirm_bad_prices): nothing saved, no refresh marks
+        return c
     _OPEN_BUF.append(pd.DataFrame(opens).sort_index())
     try:
         _alpaca_actions(list(c.columns), start, h)
@@ -4482,18 +4487,69 @@ member (like how fast they file) can end up standing in for one successful membe
 # ============================================================================
 # Watchlist (buy / short / avoid) with live context
 # ============================================================================
+_GD_LAST = [0.0]
+
+
+def _gnews(query, days):
+    """Google News search feed: [(seen date, url, title)], or None when it didn't answer. The main news source since
+    Oct 21: GDELT answers GitHub's servers with "limit requests to one every 5 seconds" even 6 seconds apart."""
+    import xml.etree.ElementTree as ET
+    for a in range(3):
+        try:
+            r = requests.get("https://news.google.com/rss/search", timeout=30,
+                             headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"},
+                             params={"q": f"{query} when:{days}d", "hl": "en-US", "gl": "US", "ceid": "US:en"})
+            if r.status_code == 200:
+                out = []
+                for it in ET.fromstring(r.content).iter("item"):
+                    d = pd.to_datetime(it.findtext("pubDate"), errors="coerce", utc=True)
+                    out.append((d.tz_convert(None) if pd.notna(d) else pd.NaT, it.findtext("link") or "",
+                                (it.findtext("title") or "").strip()))
+                return out
+            if r.status_code not in (429,) and r.status_code < 500:
+                return None
+        except Exception:
+            pass
+        time.sleep(4 * (a + 1))
+    return None
+
+
+def _gdelt(query, days, maxrecords):
+    """Backup news source: GDELT, one request every 6+ seconds, with a longer wait after a "too many requests"."""
+    for a in range(2):
+        wait = _GD_LAST[0] + 6 - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            _GD_LAST[0] = time.time()
+            r = requests.get("https://api.gdeltproject.org/api/v2/doc/doc", timeout=30,
+                             params={"query": query, "mode": "artlist", "maxrecords": maxrecords, "sort": "datedesc",
+                                     "timespan": f"{days}d", "format": "json"})
+            if r.status_code == 200:
+                arts = r.json().get("articles", [])
+                return [(pd.to_datetime(a_.get("seendate"), format="%Y%m%dT%H%M%SZ", errors="coerce"), a_.get("url") or "",
+                         a_.get("title") or "") for a_ in arts]
+        except Exception:
+            pass
+        time.sleep(15)
+    return None
+
+
+def _news_items(query, days, maxrecords=100):
+    got = _gnews(query, days)
+    if got is None:
+        got = _gdelt(query, days, maxrecords)
+    return got[:maxrecords] if got is not None else None
+
+
 def _news(name, days=30):
-    try:
-        q = f'"{name}"'
-        r = requests.get("https://api.gdeltproject.org/api/v2/doc/doc", timeout=30,
-                         params={"query": q, "mode": "artlist", "maxrecords": 100, "sort": "datedesc",
-                                 "timespan": f"{days}d", "format": "json"})
-        arts = r.json().get("articles", [])
-    except Exception:
+    arts = _news_items(f'"{name}"', days)
+    if arts is None:
         return None
-    dates = pd.to_datetime([a.get("seendate") for a in arts], format="%Y%m%dT%H%M%SZ", errors="coerce")
+    arts = sorted(arts, key=lambda a: a[0] if pd.notna(a[0]) else pd.Timestamp.min, reverse=True)
+    dates = pd.DatetimeIndex([a[0] for a in arts])
     wk = int((dates >= pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=7)).sum())
-    heads = [f"<a href='{a.get('url')}' target='_blank'>{(a.get('title') or '')[:90]}</a>" for a in arts[:2]]
+    heads = [f"<a href='{u}' target='_blank'>{(t or '')[:90]}</a>" for _, u, t in arts[:2]]
     return {"news_7d": wk, "news_30d": len(arts), "headlines": "<br>".join(heads)}
 
 
@@ -4582,9 +4638,9 @@ def build_watchlist(scored, px, cfg, enrich_top=20):
     for df in (buys, sells):
         if len(df):
             firsts.update({t: (m.split(",")[0].split(" ")[-1] if m else "") for t, m in zip(df["ticker"], df["members"])})
-    # analyst/earnings lookups run side by side; the news site (GDELT) allows one request every few seconds, so
-    # its lookups go one at a time on their own thread at the same time
-    news = {}
+    # analyst/earnings lookups run side by side; news lookups (Google News, GDELT as backup) go one at a time on
+    # their own thread at the same time
+    news, news_fail = {}, []
 
     def _news_all():
         for t in top:
@@ -4593,11 +4649,13 @@ def build_watchlist(scored, px, cfg, enrich_top=20):
             try:
                 if firsts.get(t):
                     news.setdefault(t, {})["news_with_member"] = news_together(firsts[t], company_key(names[t]) or t)
-                    time.sleep(3)
+                    time.sleep(1)
                 n = _news(company_key(names[t]) or t)
                 if n:
                     news.setdefault(t, {}).update(n)
-                time.sleep(3)
+                else:
+                    news_fail.append(t)
+                time.sleep(1)
             except Exception as e:
                 log(f"Watchlist: news lookup failed for {t} ({type(e).__name__})")
     import threading
@@ -4615,7 +4673,9 @@ def build_watchlist(scored, px, cfg, enrich_top=20):
         if not got_mk:
             log("Watchlist: analyst/earnings lookups failed for every ticker (Yahoo didn't answer)")
         if cfg.get("USE_NEWS") and not news:
-            log("Watchlist: news lookups failed for every ticker (GDELT didn't answer)")
+            log("Watchlist: news lookups failed for every ticker (Google News and GDELT didn't answer)")
+        elif cfg.get("USE_NEWS") and len(news_fail) >= 3:
+            log(f"Watchlist: news lookups failed for {len(news_fail)} of {len(top)} tickers (e.g. {', '.join(news_fail[:5])})")
     for df in (buys, sells):
         if len(df):
             for k in ("analysts", "target_upside_%", "fwd_PE", "next_earnings", "news_7d", "news_30d", "headlines",
@@ -4892,6 +4952,44 @@ def bad_price_tickers(px, meta):
     return bad
 
 
+def confirm_bad_prices(bad, px, meta):
+    """Second opinion from Alpaca (independent market data, from 2016) on the stocks bad_price_tickers set aside.
+    A stock is kept when Alpaca's prices match Yahoo's on every shared day (so the big move is real, e.g. a large
+    company that truly rose 10x) and the part before Alpaca's data starts isn't flagged on its own. Returns
+    (still set aside, confirmed real)."""
+    if not bad:
+        return bad, []
+    try:
+        al = _alpaca_close(sorted(bad), "2016-01-01", side_effects=False)
+    except Exception as e:
+        log(f"Prices: Alpaca second opinion on set-aside stocks failed ({type(e).__name__})")
+        return bad, []
+    if al is None or al.empty:
+        return bad, []
+    keep, real = dict(bad), []
+    for t in sorted(bad):
+        if t not in al.columns or t not in px.columns:
+            continue
+        a, y = al[t].dropna(), px[t].dropna()
+        a, y = a[a > 0], y[y > 0]
+        common = y.index.intersection(a.index)
+        if len(common) < 60 or len(common) < 0.9 * len(y[y.index >= a.index.min()]):
+            continue
+        r = y[common] / a[common]
+        if r.max() / r.min() > 1.15:          # Yahoo and Alpaca disagree somewhere: Yahoo's data error stays out
+            continue
+        pre = y[y.index < a.index.min()]
+        if len(pre) >= 30 and t in bad_price_tickers(pre.to_frame(t), {}):
+            continue
+        if bad[t] == "large company up 10x+ within a year" and len(pre) >= 30:
+            lr = np.log(pre.values)
+            if len(lr) > 250 and (lr[250:] - lr[:-250]).max() > np.log(10):
+                continue
+        keep.pop(t)
+        real.append(t)
+    return keep, real
+
+
 _TX_ALL = None
 
 
@@ -4933,6 +5031,10 @@ def prepare(cfg):
         raise RuntimeError("No trades have price data yet (price download was cut short); the next run continues.")
     meta = load_meta(cfg, tx["ticker"].unique())
     bad = bad_price_tickers(px, meta)
+    bad, real = confirm_bad_prices(bad, px, meta)
+    if real:
+        log(f"Prices: kept {len(real)} stock(s) with big moves that Alpaca's prices confirm are real "
+            f"(e.g. {', '.join(real[:6])})")
     if bad:
         json.dump(bad, open(_p(cfg, "state", "bad_prices.json"), "w"), indent=1)
         px = px.drop(columns=list(bad))
@@ -6525,13 +6627,8 @@ def collect_events(cfg, meta, tickers, deep=False):
 # 17. Member and company in the news together (GDELT) - watchlist context only
 # ----------------------------------------------------------------------------
 def news_together(member_last, company, days=180):
-    try:
-        r = requests.get("https://api.gdeltproject.org/api/v2/doc/doc", timeout=30,
-                         params={"query": f'"{member_last}" "{company}"', "mode": "artlist", "maxrecords": 50,
-                                 "timespan": f"{days}d", "format": "json"})
-        return len(r.json().get("articles", []))
-    except Exception:
-        return None
+    arts = _news_items(f'"{member_last}" "{company}"', days, maxrecords=50)
+    return None if arts is None else len(arts)
 
 
 # ----------------------------------------------------------------------------
