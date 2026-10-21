@@ -631,9 +631,24 @@ function avatar(p, small) {
   const ini = ((parts[0] || "?")[0] + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
   return `<span class="${cls}" aria-hidden="true">${esc(ini)}</span>`;
 }
+// each member's own track under their name (owner, Oct 21: with 2+ members, who has which record)
+function trackText(p, side) {
+  if (p.tr == null) return "";
+  return side === "sell" ? `Sales lag ${Number(p.tr).toFixed(1)}% (${p.tn})` : `Track ${p.tr > 0 ? "+" : ""}${Number(p.tr).toFixed(1)}% (${p.tn})`;
+}
 function peopleRow(r, side) {
   const ps = peopleOf(r);
-  return `<div class="ppl"><span class="lbl">${side === "sell" ? "Sold by" : "Bought by"}</span>${ps.map(p => `<span class="person">${avatar(p)}<span><span class="pn">${mlink(p.n, p.b)}${tagHtml(p)}</span>${p.r ? `<span class="pr">${esc(p.r)}</span>` : ""}</span></span>`).join("")}</div>`;
+  return `<div class="ppl"><span class="lbl">${side === "sell" ? "Sold by" : "Bought by"}</span>${ps.map(p => {
+    const sub = [p.r, ps.length > 1 ? trackText(p, side) : ""].filter(Boolean).join(" · ");
+    return `<span class="person">${avatar(p)}<span><span class="pn">${mlink(p.n, p.b)}${tagHtml(p)}</span>${sub ? `<span class="pr">${esc(sub)}</span>` : ""}</span></span>`;
+  }).join("")}</div>`;
+}
+// with 2+ members the track is shown under each name, so the card's single Track tag (the top member's) is dropped
+function whyFor(r) {
+  const ps = peopleOf(r);
+  if (ps.length < 2 || !ps.some(p => p.tr != null)) return r.why;
+  const rs = (Array.isArray(r.why) ? r.why : String(r.why || "").split(/;\s*/));
+  return rs.filter(x => !/past buys [+\-]?[\d.]+% vs SPY avg|stocks this member sold lagged SPY/i.test(x));
 }
 function peopleCell(r) {
   return `<div class="who-cell">${peopleOf(r).map(p => `<span class="nm">${avatar(p, true)}${mlink(p.n, p.b)}${tagHtml(p)}</span>`).join("")}</div>`;
@@ -797,7 +812,7 @@ function pickRow(r, side) {
       <div class="co">${esc(r.co || r.t)}${r.sec ? ` <span class="who">· ${esc(r.sec)}</span>` : ""}</div>
       <div class="who">${tradeLine(r)}</div>
       ${peopleRow(r, side)}
-      ${tagsHtml(r.why, 6, `Why ${r.t} is on the list`)}
+      ${tagsHtml(whyFor(r), 6, `Why ${r.t} is on the list`)}
       ${ctx.length ? `<div class="tags">${ctx.join("")}</div>` : ""}
     </div>
     <div class="side">
@@ -943,7 +958,7 @@ function worthSection(d) {
     <div class="picks">${u.map(r => `<article class="pick" data-hl="worth:${esc(r.t)}">
       <div class="tk"><b>${tkBtn(r.t)}</b>${picks.has(r.t) ? `<span class="chip new">On the list</span>` : ""}</div>
       <div><div class="co">${esc(r.co || infoFor(r.t).co || r.t)}</div>
-        <div class="ppl">${(r.who || []).map(w => `<span class="person">${avatar({ n: w.n, b: w.b })}<span><span class="pn">${mlink(w.n, w.b)}${tagHtml({ n: w.n, b: w.b })}</span><span class="pr"><span class="bs ${w.ty}">${w.ty === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(w.td))} · disclosed ${esc(fmtDate(w.d))}</span></span></span>`).join("")}</div>
+        <div class="ppl">${(r.who || []).map(w => `<span class="person">${avatar({ n: w.n, b: w.b })}<span><span class="pn">${mlink(w.n, w.b)}${tagHtml({ n: w.n, b: w.b })}</span><span class="pr"><span class="bs ${w.ty}">${w.ty === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(w.td))} · disclosed ${esc(fmtDate(w.d))}${w.tr != null ? " · " + esc(trackText(w, w.ty)) : ""}</span></span></span>`).join("")}</div>
         ${tagsHtml(r.why, 5, `Why ${r.t} is flagged`)}
         ${(r.posts || []).length ? `<div class="tags">${r.posts.map(q => `<a class="tag go" href="${esc(q.u)}" target="_blank" rel="noopener">Go to post</a>${tipBtn(reasonTag(q.why).label + " · " + fmtShort(q.d), "The post", `<p><b>${esc(q.who || "")}</b> ${esc(q.why)}</p><p class="foot">${esc(fmtDate(q.d))} · ${esc(q.src || "")}</p><p>“${esc(String(q.x || ""))}”</p><p><a href="${esc(q.u)}" target="_blank" rel="noopener">Go to post</a></p>`, "post")}`).join("")}</div>` : ""}</div>
       <div class="side">${side(r)}</div>
