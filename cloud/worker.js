@@ -12,7 +12,7 @@ import { vapid, saveSub, sendAll, getSubs } from "./push.js";
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
-    if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(req);
+    if (!url.pathname.startsWith("/api/")) return page(req, env, url);
     try {
       return await api(req, env, url);
     } catch (e) {
@@ -32,6 +32,62 @@ export default {
     if (min === 7) await step("posts", "Starting the hourly posts job", () => dispatch(env, "posts.yml", {}));
   },
 };
+
+// ---------- the app itself: only the icon, manifest and alert worker are public ----------
+// Everything else (the app page, its code, the profile photo) needs the login cookie.
+// Without it, a page visit gets a small login page that holds nothing about the app.
+const PUBLIC_FILES = new Set(["/manifest.webmanifest", "/icon-180.png", "/icon-192.png", "/icon-512.png", "/icon.svg", "/sw.js", "/favicon.ico"]);
+async function page(req, env, url) {
+  if (PUBLIC_FILES.has(url.pathname)) return env.ASSETS.fetch(req);
+  if (await validSession(req, env)) {
+    const r = await env.ASSETS.fetch(req);
+    const h = new Headers(r.headers);
+    h.set("Cache-Control", "private, no-store");   // never left in a shared or offline cache
+    return new Response(r.body, { status: r.status, statusText: r.statusText, headers: h });
+  }
+  const html = req.method === "GET" && (req.headers.get("Accept") || "").includes("text/html");
+  if (!html) return new Response("Log in first", { status: 401, headers: { "Cache-Control": "no-store" } });
+  return new Response(LOGIN_PAGE, { status: 200, headers: {
+    "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
+    "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer" } });
+}
+const LOGIN_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow"><meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Capitol Capital">
+<link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icon-180.png">
+<title>Capitol Capital</title><style>
+:root{--ground:#F3F5F8;--surface:#FFF;--ink:#152033;--ink2:#46536A;--rule:#DCE1E8;--accent:#1D4F91;--on:#fff}
+@media (prefers-color-scheme:dark){:root{--ground:#0E131A;--surface:#151C26;--ink:#E6EBF2;--ink2:#B4BECC;--rule:#27303D;--accent:#7FAEEA;--on:#0E131A}}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--ground);color:var(--ink);font:16px system-ui,-apple-system,"Segoe UI",sans-serif}
+main{min-height:100%;display:grid;place-items:center;padding:24px 16px}
+form{width:100%;max-width:340px;display:grid;gap:14px;text-align:center}
+img{width:84px;height:84px;border-radius:20px;justify-self:center;box-shadow:0 6px 20px rgba(0,0,0,.15)}
+h1{margin:0;font-weight:600;font-size:26px}p{margin:0;color:var(--ink2);font-size:14px}
+input{font:500 18px ui-monospace,Menlo,monospace;padding:12px 14px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);color:var(--ink);text-align:center;width:100%}
+button{font:600 16px inherit;padding:12px;border-radius:10px;border:0;background:var(--accent);color:var(--on);cursor:pointer}
+button:disabled{opacity:.6}.msg{min-height:1.2em;font-size:14px;color:#C0392B}
+</style></head><body><main><form id="f" autocomplete="on">
+<img src="/icon-180.png" alt=""><h1>Capitol Capital</h1>
+<p>Enter your passcode. This phone stays logged in for 6 months.</p>
+<input type="text" name="username" value="Capitol Capital" autocomplete="username" hidden>
+<input type="password" id="pc" name="password" autocomplete="current-password" placeholder="Passcode" required aria-label="Passcode" autofocus>
+<button type="submit" id="go">Log in</button><div class="msg" id="msg" role="alert"></div>
+</form></main><script>
+document.getElementById("f").addEventListener("submit", async e => {
+  e.preventDefault(); const go = document.getElementById("go"), msg = document.getElementById("msg");
+  go.disabled = true; msg.textContent = "";
+  try {
+    const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
+      body: JSON.stringify({ passcode: document.getElementById("pc").value }) });
+    if (r.ok) { location.reload(); return; }
+    let j = {}; try { j = await r.json(); } catch (x) {}
+    msg.textContent = j.message || "Couldn't log in. Try again.";
+  } catch (x) { msg.textContent = "No connection. Try again."; }
+  go.disabled = false;
+});
+</script></body></html>`;
 
 async function api(req, env, url) {
   const p = url.pathname;
