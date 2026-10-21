@@ -318,9 +318,14 @@ async function wProblem(env, src, text) {
     const st = await r2json(env, WHEALTH, {}), now = new Date().toISOString();
     const cur = st[src], isNew = !cur || !cur.open;
     const recentFix = cur && cur.fixed && (Date.now() - Date.parse(cur.fixed)) < 24 * 3600e3;
-    st[src] = { text, open: true, first: isNew ? now : cur.first, last: now, n: ((cur && cur.open && cur.n) || 0) + 1, fixed: null };
+    // owner, Oct 21: push only when it fails twice in a row (a one-off blip still shows on Data health);
+    // records from before carry no `alerted` and were already alerted when they opened
+    const n = ((cur && cur.open && cur.n) || 0) + 1;
+    const alerted = isNew ? !!recentFix : (cur.alerted !== undefined ? cur.alerted : true);
+    const push = !alerted && n >= 2;
+    st[src] = { text, open: true, first: isNew ? now : cur.first, last: now, n, fixed: null, alerted: alerted || push };
     await env.DATA.put(WHEALTH, JSON.stringify(st));
-    if (isNew && !recentFix) {
+    if (push) {
       const key = `push/outbox/${Date.now()}-${Math.floor(Math.random() * 1e5)}.json`;
       await env.DATA.put(key, JSON.stringify({ title: ("Data problem: " + text).slice(0, 120), body: text.slice(0, 600), tag: "health", url: "/#health" }));
     }

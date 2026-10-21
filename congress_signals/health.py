@@ -30,6 +30,8 @@ JOB_NAMES = {"daily": "Daily update", "live": "Hourly posts", "social": "Posts (
 SKIP_HOSTS = ("github.com", "githubusercontent.com", "pypi.org", "files.pythonhosted.org", "huggingface.co",
               "hf.co", "cdn-lfs.huggingface.co")
 REPUSH_AFTER_H = 24        # a problem fixed and back within this many hours doesn't alert again
+ALERT_AFTER_RUNS = 2       # owner, Oct 21: push only for problems that last this many runs in a row...
+ALERT_AT_ONCE = ("critical", "crash")      # ...except these (and the watchdog), which push right away
 
 
 def _now():
@@ -160,14 +162,20 @@ def finish(job, problems=(), failures=(), log=None, extra=None):
             if any(x["k"] == k for x in open_):
                 continue
             if k in old:
-                rec = {**old[k], "text": text, "last": now.isoformat(timespec="seconds"), "runs": old[k].get("runs", 1) + 1}
+                # records from before Oct 21 were alerted (or quieted) when they first appeared
+                rec = {**old[k], "text": text, "last": now.isoformat(timespec="seconds"), "runs": old[k].get("runs", 1) + 1,
+                       "alerted": old[k].get("alerted", True)}
             else:
                 rec = {"k": k, "kind": kind, "text": text, "first": now.isoformat(timespec="seconds"),
-                       "last": now.isoformat(timespec="seconds"), "runs": 1}
+                       "last": now.isoformat(timespec="seconds"), "runs": 1, "alerted": False}
                 f = recent_fix.get(k)
-                quiet = f and (now - dt.datetime.fromisoformat(f["at"])).total_seconds() < REPUSH_AFTER_H * 3600
-                if not quiet:
-                    new.append(rec)
+                if f and (now - dt.datetime.fromisoformat(f["at"])).total_seconds() < REPUSH_AFTER_H * 3600:
+                    rec["alerted"] = True          # came back within a day of being fixed: no second alert
+            # owner, Oct 21: alert only when a problem lasts (2 runs in a row); picks paused or a crash alert at once.
+            # A one-run hiccup still shows on the Data health page.
+            if not rec["alerted"] and (rec["runs"] >= ALERT_AFTER_RUNS or kind in ALERT_AT_ONCE):
+                rec["alerted"] = True
+                new.append(rec)
             open_.append(rec)
         for k, rec in old.items():
             if k not in {x["k"] for x in open_}:
