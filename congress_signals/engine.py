@@ -1771,9 +1771,13 @@ def worth_a_look(scored, cfg, days=None):
                 o["posts"].append({"d": p_["d"], "u": p_["u"], "x": p_.get("x"), "src": p_.get("src"),
                                    "who": str(x["member"]), "why": p_["why"]})
         if not any(w["n"] == x["member"] and w["ty"] == x["tx_type"] for w in o["who"]):
-            o["who"].append({"n": str(x["member"]), "b": x.get("bioguide") if isinstance(x.get("bioguide"), str) else None,
-                             "ty": x["tx_type"], "td": pd.Timestamp(x["trade_date"]).strftime("%Y-%m-%d"),
-                             "d": pd.Timestamp(x["filed_date"]).strftime("%Y-%m-%d")})
+            w_ = {"n": str(x["member"]), "b": x.get("bioguide") if isinstance(x.get("bioguide"), str) else None,
+                  "ty": x["tx_type"], "td": pd.Timestamp(x["trade_date"]).strftime("%Y-%m-%d"),
+                  "d": pd.Timestamp(x["filed_date"]).strftime("%Y-%m-%d")}
+            te, tn = (x.get("sell_track_excess"), x.get("sell_track_n")) if x["tx_type"] == "sell" else (x.get("track_excess"), x.get("track_n"))
+            if tn is not None and pd.notna(tn) and tn >= 3 and te is not None and pd.notna(te):
+                w_["tr"], w_["tn"] = round(float(te) * 100, 1), int(tn)
+            o["who"].append(w_)
         for w in why:
             if w not in o["why"]:
                 o["why"].append(w)
@@ -3831,13 +3835,21 @@ def ticker_level(rows, score_col="score", short=False):
     best["members"] = best["ticker"].map(mem)
     # one entry per member for the dashboard cards: name, faith label and congress ID (for the official photo)
     ppl = {}
-    for t, m, r, b in zip(rows["ticker"], rows["member"],
-                          rows["religion"] if "religion" in rows else [None] * len(rows),
-                          rows["bioguide"] if "bioguide" in rows else [None] * len(rows)):
+    # each member's own track (owner, Oct 21: with 2+ members on a pick, show who has which record). Buys: how their
+    # past buys did vs SPY; sells: how the stocks they sold did after (the same numbers as the "why" text)
+    tcol, ncol = ("sell_track_excess", "sell_track_n") if short else ("track_excess", "track_n")
+    trk = rows[tcol] if tcol in rows else pd.Series(np.nan, index=rows.index)
+    trn = rows[ncol] if ncol in rows else pd.Series(0, index=rows.index)
+    for t, m, r, b, te, tn in zip(rows["ticker"], rows["member"],
+                                  rows["religion"] if "religion" in rows else [None] * len(rows),
+                                  rows["bioguide"] if "bioguide" in rows else [None] * len(rows), trk, trn):
         lst = ppl.setdefault(t, [])
         if all(p["n"] != m for p in lst):
-            lst.append({"n": str(m), "r": r if isinstance(r, str) and r else None,
-                        "b": b if isinstance(b, str) and b else None})
+            e = {"n": str(m), "r": r if isinstance(r, str) and r else None,
+                 "b": b if isinstance(b, str) and b else None}
+            if pd.notna(tn) and tn >= 3 and pd.notna(te):
+                e["tr"], e["tn"] = round(float(te) * 100, 1), int(tn)
+            lst.append(e)
     best["people"] = best["ticker"].map(lambda t: ppl.get(t, [])[:6])
     best["why"] = best.apply(_why_short if short else _why_buy, axis=1)
     return best.reset_index(drop=True)
