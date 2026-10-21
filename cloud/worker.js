@@ -60,6 +60,8 @@ async function api(req, env, url) {
   if (p === "/api/notifications/clear" && req.method === "POST") return clearAlerts(req, env);
   if (p === "/api/search" && req.method === "GET") return tickerSearch(env, url);
   if (p === "/api/chart" && req.method === "GET") return oneChart(env, url);
+  if (p === "/api/tax" && req.method === "GET") return taxIndex(env);
+  if (p === "/api/tax/file" && req.method === "GET") return taxFile(env, url);
   if (p === "/api/tie-reviews" && req.method === "GET") return json(await tieReviews(env));
   if (p === "/api/context" && req.method === "GET") return tradeContext(env, url);
   if (p === "/api/health" && req.method === "GET") return health(env);
@@ -512,6 +514,24 @@ async function oneChart(env, url) {
   let co = ((idx.list || []).find(x => x[0] === t) || [])[1] || "";
   if (!co) co = ((await secNames(env)).find(x => x[0] === t) || [])[1] || "";
   return json({ dates, px: { [t]: px }, trades: { [t]: rows }, photos: {}, co });
+}
+
+// ---------- Taxes (More tab): written by tax_report.py after each market close ----------
+const taxMode = env => (env.TRADING_MODE || "paper").toLowerCase() === "live" ? "live" : "paper";
+async function taxIndex(env) {
+  const idx = await r2json(env, `tax/${taxMode(env)}/index.json`, null);
+  return idx ? json(idx) : json({ error: "no-file" }, 404);
+}
+const TAX_FILES = { "statement.pdf": "application/pdf", "form8949.csv": "text/csv", "sales.json": "application/json" };
+async function taxFile(env, url) {
+  const y = String(url.searchParams.get("y") || ""), f = String(url.searchParams.get("f") || "");
+  if (!/^20\d\d$/.test(y) || !TAX_FILES[f]) return json({ error: "bad-request" }, 400);
+  const mode = taxMode(env);
+  const o = await env.DATA.get(`tax/${mode}/${y}/${f}`);
+  if (!o) return json({ error: "no-file" }, 404);
+  const name = f === "sales.json" ? f : `capitol-capital-${mode}-${y}-${f.replace(".", "-").replace("-pdf", ".pdf").replace("-csv", ".csv")}`;
+  return new Response(o.body, { headers: { "Content-Type": TAX_FILES[f], "Cache-Control": "private, no-store",
+    ...(f === "sales.json" ? {} : { "Content-Disposition": `attachment; filename="${name}"` }) } });
 }
 
 async function deliver(env, msg) {
