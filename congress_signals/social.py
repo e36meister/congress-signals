@@ -1019,7 +1019,7 @@ def collect_people(cfg, st, deadline, per_run=6):
 # ---------------------------------------------------------------------------
 # index for the member pages and the post signals
 # ---------------------------------------------------------------------------
-def build_index(cfg, tg=None, sort_until=None):
+def build_index(cfg, tg=None, sort_until=None, hard_until=None):
     """social/index.pkl: per member, posts for the member page (every post naming a company or person, plus the
     latest 120 others) and, for the signals, dated company mentions with tone and dated industry mentions.
     Posts not yet sorted (post_sort: type, who it's about, tone toward each, insider hints, meetings) are sorted
@@ -1063,7 +1063,10 @@ def build_index(cfg, tg=None, sort_until=None):
                     redone = True
                 srt = r[11] if len(r) > 11 and isinstance(r[11], dict) and r[11].get("v") == SORT_VERSION else None
                 # the last ~15 months are always sorted (trade-post links, alerts); older ones while time allows
-                if srt is None and (sort_until is None or time.time() < sort_until or str(r[0])[:10] >= recent_from):
+                # hard_until: even recent ones stop there, so the run finishes and saves (the rest wait for the next run;
+                # Oct 21: a 4-day backlog of unsorted posts kept the daily posts update past its 30-minute limit)
+                if srt is None and (sort_until is None or time.time() < sort_until
+                                    or (str(r[0])[:10] >= recent_from and (hard_until is None or time.time() < hard_until))):
                     srt = sort_record(r, names)
                     if cands_now:
                         srt["cand"] = cands_now[:4]
@@ -1336,7 +1339,10 @@ def update_all(cfg, minutes, history=True):
             _log(f"Latest press releases: failed ({type(e).__name__}: {e})")
     _save_state(cfg, st)
     # sorting every stored post the first time takes a few long runs; a daily run sorts for at least 5 minutes
-    idx = build_index(cfg, tg, sort_until=(deadline - 120) if history else max(deadline, time.time() + 300))
+    idx = build_index(cfg, tg, sort_until=(deadline - 120) if history else max(deadline, time.time() + 300),
+                      hard_until=None if history else max(deadline, time.time() + 300) + 8 * 60)
+    if idx.get("unsorted") and not history:
+        _log(f"Social: {idx['unsorted']:,} posts not sorted yet (time limit); the next runs continue")
     if idx.get("unsorted"):
         ok = False
     if history and ok:

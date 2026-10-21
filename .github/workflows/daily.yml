@@ -286,7 +286,7 @@ jobs:
     env:
       TZ: America/New_York
       HF_HOME: ${{ github.workspace }}/.hf
-    timeout-minutes: 40
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
 
@@ -331,7 +331,7 @@ jobs:
         id: social
         if: hashFiles('social/complete') != ''
         continue-on-error: true
-        timeout-minutes: 30
+        timeout-minutes: 40   # the script stops itself by ~27 min; this is the backstop
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
@@ -345,7 +345,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          python -c "from congress_signals import health as H; H.finish('social', ['Daily posts update stopped before finishing (30-minute limit or an error), so today\'s new posts were not saved'])"
+          python -c "from congress_signals import health as H; H.finish('social', ['Daily posts update stopped before finishing (40-minute limit or an error), so today\'s new posts were not saved'])"
 
       - name: Save members' posts
         if: always() && steps.social.outcome == 'success' && hashFiles('social/.changed') != ''
