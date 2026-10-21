@@ -56,6 +56,8 @@ jobs:
       - name: Collect this shard's members
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: python backfill_archive.py ${{ matrix.shard }} $SHARDS ${{ github.event.inputs.minutes || '300' }}
       - uses: actions/upload-artifact@v4
         if: always()
