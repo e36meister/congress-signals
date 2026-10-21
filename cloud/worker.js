@@ -56,7 +56,10 @@ async function api(req, env, url) {
     if (!/^([A-Z]\d{6}|n-[a-z0-9-]{1,40})$/.test(k)) return json({ error: "bad-member" }, 400);
     return fromR2(req, env, `members/${k}.json`);
   }
-  if (p === "/api/notifications" && req.method === "GET") return json({ items: await alertLog(env) });
+  if (p === "/api/notifications" && req.method === "GET") return json({ items: await visibleAlerts(env) });
+  if (p === "/api/notifications/clear" && req.method === "POST") return clearAlerts(req, env);
+  if (p === "/api/search" && req.method === "GET") return tickerSearch(env, url);
+  if (p === "/api/chart" && req.method === "GET") return oneChart(env, url);
   if (p === "/api/tie-reviews" && req.method === "GET") return json(await tieReviews(env));
   if (p === "/api/context" && req.method === "GET") return tradeContext(env, url);
   if (p === "/api/health" && req.method === "GET") return health(env);
@@ -413,6 +416,104 @@ const LOG_KEY = "push/log.json";
 async function alertLog(env) {
   try { const o = await env.DATA.get(LOG_KEY); const js = o ? await o.json() : []; return Array.isArray(js) ? js : []; } catch (e) { return []; }
 }
+// Clearing an alert in the app (swipe left, or Clear all) only hides it from the list; the log itself is kept.
+const CLEARED = "push/cleared.json";
+async function visibleAlerts(env) {
+  const [log, c] = await Promise.all([alertLog(env), r2json(env, CLEARED, { ids: [], before: null })]);
+  const ids = new Set(c.ids || []), before = c.before ? Date.parse(c.before) : 0;
+  return log.filter(a => !ids.has(a.id) && !(Date.parse(a.at) <= before));
+}
+async function clearAlerts(req, env) {
+  let b = {};
+  try { b = await req.json(); } catch (e) {}
+  const c = await r2json(env, CLEARED, { ids: [], before: null });
+  if (b.all === true) { c.before = new Date().toISOString(); c.ids = []; }
+  else if (typeof b.id === "string" && /^[a-z0-9]{4,24}$/.test(b.id)) {
+    const ids = (c.ids || []).filter(x => x !== b.id); ids.push(b.id); c.ids = ids.slice(-500);
+  } else return json({ ok: false, why: "bad-id" }, 400);
+  await env.DATA.put(CLEARED, JSON.stringify(c), { httpMetadata: { contentType: "application/json" } });
+  return json({ ok: true });
+}
+
+// ---------- Company search (More tab): any ticker or company name, then the same chart popup ----------
+// charts/search_index.json (daily update): [[ticker, company, member trades]] for every stock members traded;
+// the SEC's list adds every other listed company.
+async function secNames(env) {
+  let m = await r2json(env, "cache/sec_names.json", null);
+  if (!m || !m.at || Date.now() - Date.parse(m.at) > 7 * 864e5) {
+    const r = await secFetch(env, "https://www.sec.gov/files/company_tickers.json");
+    if (r.ok) {
+      const js = await r.json(), list = [];
+      for (const v of Object.values(js)) list.push([String(v.ticker).toUpperCase().replace(/\./g, "-"), String(v.title || "")]);
+      m = { at: new Date().toISOString(), list };
+      await env.DATA.put("cache/sec_names.json", JSON.stringify(m));
+      await wOk(env, "sec-names");
+    } else await wProblem(env, "sec-names", `SEC company list didn't load for Company search (HTTP ${r.status})`);
+  }
+  return (m && m.list) || [];
+}
+async function tickerSearch(env, url) {
+  const q = String(url.searchParams.get("q") || "").trim().toUpperCase().slice(0, 40);
+  if (!q) return json({ items: [] });
+  const [idx, sec] = await Promise.all([r2json(env, "charts/search_index.json", { list: [] }), secNames(env)]);
+  const seen = new Map();
+  for (const [t, co, n] of idx.list || []) seen.set(t, { t, co, n });
+  for (const [t, co] of sec) if (!seen.has(t)) seen.set(t, { t, co, n: 0 });
+  const score = x => {
+    const co = String(x.co || "").toUpperCase();
+    if (x.t === q) return 0;
+    if (x.t.startsWith(q)) return 1;
+    if (co.startsWith(q)) return 2;
+    if (co.includes(" " + q) || co.includes(q)) return 3;
+    return 9;
+  };
+  const hits = [...seen.values()].map(x => [score(x), x]).filter(([s]) => s < 9)
+    .sort((a, b) => a[0] - b[0] || b[1].n - a[1].n || a[1].t.length - b[1].t.length).slice(0, 15).map(([, x]) => x);
+  return json({ items: hits });
+}
+// One stock's chart in the same shape as ticker_charts.json: from that file when the stock is in it, otherwise
+// 5 years of daily closes from Alpaca (adjusted for splits and dividends) plus members' trades of it.
+async function oneChart(env, url) {
+  const t = String(url.searchParams.get("t") || "").toUpperCase().trim();
+  if (!/^[A-Z][A-Z0-9-]{0,9}$/.test(t)) return json({ error: "bad-ticker" }, 400);
+  const tc = await r2json(env, "ticker_charts.json", null);
+  if (tc && tc.px && tc.px[t]) {
+    return json({ dates: tc.dates, px: { [t]: tc.px[t] }, trades: { [t]: (tc.trades || {})[t] || [] }, photos: tc.photos || {}, co: "" });
+  }
+  const a = alpaca(env);
+  if (!a.ready) return json({ error: "no-keys" }, 503);
+  const start = new Date(Date.now() - 5 * 365.25 * 864e5).toISOString().slice(0, 10);
+  const end = new Date(Date.now() - 16 * 60e3).toISOString();
+  const sym = t.replace(/-/g, ".");
+  const bars = [];
+  let tok = null, pages = 0;
+  do {
+    const u = `https://data.alpaca.markets/v2/stocks/bars?symbols=${encodeURIComponent(sym)}&timeframe=1Day&start=${start}&end=${encodeURIComponent(end)}&adjustment=all&feed=sip&limit=10000${tok ? "&page_token=" + encodeURIComponent(tok) : ""}`;
+    const r = await a.get(u);
+    if (r.status === 400 || r.status === 404 || r.status === 422) return json({ error: "no-prices" }, 404);    // not a ticker Alpaca knows
+    if (!r.ok) { await wProblem(env, "chart", `Company search chart for ${t} didn't load from Alpaca (HTTP ${r.status})`); return json({ error: "prices", status: r.status }, 502); }
+    for (const b of ((r.data && r.data.bars) || {})[sym] || []) bars.push(b);
+    tok = r.data && r.data.next_page_token; pages++;
+  } while (tok && pages < 5);
+  await wOk(env, "chart");
+  if (bars.length < 2) return json({ error: "no-prices" }, 404);
+  const dates = bars.map(b => new Date(b.t).toLocaleDateString("en-CA", { timeZone: "America/New_York" }));
+  const px = bars.map(b => Math.round(b.c * 1e4) / 1e4);
+  const all = await r2json(env, "charts/trades_by_ticker.json", { trades: {} });
+  const cols = all.cols || ["n", "b", "ty", "td", "d", "lo", "hi", "own"];
+  const rows = ((all.trades || {})[t] || []).map(r => Object.fromEntries(cols.map((c, i) => [c, r[i]])));
+  // the trade's price: that day's close (or the last one before it)
+  for (const tr of rows) {
+    let lo = 0, hi = dates.length - 1, k = -1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (dates[m] <= tr.td) { k = m; lo = m + 1; } else hi = m - 1; }
+    tr.p = k >= 0 ? px[k] : null;
+  }
+  const idx = await r2json(env, "charts/search_index.json", { list: [] });
+  let co = ((idx.list || []).find(x => x[0] === t) || [])[1] || "";
+  if (!co) co = ((await secNames(env)).find(x => x[0] === t) || [])[1] || "";
+  return json({ dates, px: { [t]: px }, trades: { [t]: rows }, photos: {}, co });
+}
+
 async function deliver(env, msg) {
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const items = (Array.isArray(msg.items) ? msg.items : []).slice(0, 20)

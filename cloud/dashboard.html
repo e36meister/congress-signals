@@ -150,6 +150,19 @@ header.top .brand{padding-right:96px}
 .bell .nb{position:absolute;top:-4px;right:-4px;margin:0}
 .nb{display:inline-block;min-width:18px;height:18px;padding:0 5px;margin-left:6px;border-radius:9px;background:var(--bad);color:#fff;font:700 11px/18px var(--body);text-align:center;vertical-align:1px}
 .alist{display:grid;gap:8px}
+.alw{position:relative;border-radius:10px;overflow:hidden;touch-action:pan-y}
+.alw .alx{position:absolute;inset:0;background:var(--bad);color:#fff;display:flex;align-items:center;justify-content:flex-end;padding-right:18px;font:600 14px var(--body);border-radius:10px}
+.alw .al{position:relative;transition:transform .2s ease}
+.alw.drag .al{transition:none}
+.alw.gone{transition:max-height .25s ease .15s,opacity .25s ease;max-height:0!important;opacity:0}
+.csbox{display:flex;gap:8px;margin:4px 0 12px}
+.csbox input{flex:1;min-width:0;font:inherit;font-size:16px;padding:10px 12px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);color:var(--ink)}
+.cslist{display:grid;gap:0}
+.csrow{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;padding:11px 4px;border-top:1px solid var(--rule);background:none;border-left:0;border-right:0;border-bottom:0;font:inherit;color:inherit;text-align:left;cursor:pointer;width:100%}
+.csrow:first-child{border-top:0}
+.csrow .ct{font:600 15px var(--mono);min-width:56px}
+.csrow .cc{color:var(--ink2);font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.csrow .cn{font-size:12px;color:var(--muted);white-space:nowrap}
 .al{background:var(--surface);border:1px solid var(--rule);border-radius:10px;padding:10px 12px;display:grid;gap:4px;cursor:pointer;text-align:left;font:inherit;color:inherit;width:100%}
 .al.unread{border-left:4px solid var(--accent)}
 .al .at{font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center}
@@ -412,6 +425,7 @@ document.querySelectorAll("nav.tabs button").forEach(b => b.addEventListener("cl
 
 // pages behind the ☰ More button, in menu order
 const MORE_TABS = [
+  { k: "search", l: "Company search", d: "Any ticker or company: its chart with every member's trades" },
   { k: "small", l: "Small caps", d: "The small-company portfolio and its picks" },
   { k: "defense", l: "Defense", d: "Defense stocks members bought or sold" },
   { k: "record", l: "Track record", d: "How past picks did against the S&P 500" },
@@ -503,6 +517,41 @@ document.addEventListener("click", ev => {
   if (o && !ev.target.closest("[data-chart]")) { ME.open = ME.open === o.dataset.meopen ? null : o.dataset.meopen; const y = scrollY; render(); scrollTo(0, y); }
 });
 
+// ---------- Company search: type a ticker or company name, tap a result (or press Go) for its chart popup ----------
+const SEARCH = { q: "", items: null, err: null, n: 0 };
+function searchRows() {
+  if (SEARCH.err) return `<div class="note warn">${SEARCH.err.code === "app_only" ? "Company search is in the phone app." : esc(errorText(SEARCH.err))}</div>`;
+  if (!SEARCH.q) return `<div class="foot">Type a ticker (like NVDA) or part of a company's name. Stocks members traded come first.</div>`;
+  if (SEARCH.items === null) return `<div class="empty">Searching…</div>`;
+  if (!SEARCH.items.length) return `<div class="foot">No company found. Press Go to look up ${esc(SEARCH.q.toUpperCase())} as a ticker anyway.</div>`;
+  return `<div class="cslist">${SEARCH.items.map(x => `<button type="button" class="csrow" data-chart="${esc(x.t)}"><span class="ct">${esc(x.t)}</span><span class="cc">${esc(x.co || "")}</span><span class="cn">${x.n ? `${x.n.toLocaleString()} member trade${x.n === 1 ? "" : "s"}` : ""}</span></button>`).join("")}</div>`;
+}
+function renderSearch() {
+  return `<section class="panel"><div class="ph"><h2>Company search</h2><span class="sub">Same chart as everywhere else: prices with every member's buys and sells.</span></div>
+    <form class="csbox" id="csform" autocomplete="off"><input id="csq" type="search" inputmode="search" placeholder="Ticker or company" value="${esc(SEARCH.q)}" aria-label="Ticker or company" enterkeyhint="go"><button type="submit" class="btn">Go</button></form>
+    <div id="csres">${searchRows()}</div></section>`;
+}
+let csTimer = null;
+document.addEventListener("input", ev => {
+  if (ev.target.id !== "csq") return;
+  SEARCH.q = ev.target.value.trim(); SEARCH.items = null; SEARCH.err = null;
+  const n = ++SEARCH.n, box = document.getElementById("csres");
+  clearTimeout(csTimer);
+  if (!SEARCH.q) { if (box) box.innerHTML = searchRows(); return; }
+  csTimer = setTimeout(() => searchTickers(SEARCH.q).then(js => { if (n === SEARCH.n) SEARCH.items = (js && js.items) || []; },
+    e => { if (n === SEARCH.n) SEARCH.err = e; }).finally(() => { const b = document.getElementById("csres"); if (n === SEARCH.n && b) b.innerHTML = searchRows(); }), 250);
+  if (box) box.innerHTML = searchRows();
+});
+document.addEventListener("submit", ev => {
+  if (ev.target.id !== "csform") return;
+  ev.preventDefault();
+  const q = (document.getElementById("csq")?.value || "").trim().toUpperCase();
+  if (!q) return;
+  const exact = (SEARCH.items || []).find(x => x.t === q);
+  const t = exact ? exact.t : /^[A-Z][A-Z0-9.-]{0,9}$/.test(q) ? q.replace(/\./g, "-") : (SEARCH.items || [])[0]?.t;
+  if (t) { document.getElementById("csq")?.blur(); openChart(t); }
+});
+
 function renderMore() {
   return `<section class="panel"><div class="morelist">
   ${MORE_TABS.map(m => `<button type="button" class="moreitem" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}
@@ -550,6 +599,7 @@ function render() {
   if (state.tab === "port") html += renderPortfolio(d);
   if (state.tab === "members") html += renderMembers(d);
   if (state.tab === "alerts") html += renderAlerts();
+  if (state.tab === "search") html += renderSearch();
   main.innerHTML = html;
   bind();
   setTimeout(focusTarget, 0);
@@ -1593,7 +1643,19 @@ new MutationObserver(() => redraw()).observe(document.documentElement, { attribu
 // ---------- ticker popup: price chart with member trades ----------
 const CHART_FILE = "ticker_charts.json";
 const SPANS = [["1M", 1], ["3M", 3], ["6M", 6], ["1Y", 12], ["5Y", 60]];
-const pop = { t: null, span: "3M", sel: null, charts: null, loading: null, err: null };
+const pop = { t: null, span: "3M", sel: null, charts: null, loading: null, err: null, one: {} };
+// the chart data for `t`: the daily charts file when it has the stock, otherwise one fetched on demand (Company search)
+function chartsFor(t) {
+  if (pop.charts && pop.charts.px && pop.charts.px[t]) return pop.charts;
+  const o = pop.one[t];
+  return o && o.px && o.px[t] ? o : null;
+}
+function ensureOne(t) {
+  if (chartsFor(t) || t in pop.one) return;
+  pop.one[t] = null;
+  loadOneChart(t).then(js => { pop.one[t] = js || { err: { code: "no_file" } }; }, e => { pop.one[t] = { err: e }; })
+    .finally(() => { if (pop.t === t) drawPopup(); });
+}
 function tkBtn(t) { return `<button type="button" class="tkl" data-chart="${esc(t)}" title="Show ${esc(t)} chart">${esc(t)}</button>`; }
 function infoFor(t) {
   const d = state.data || {}, w = d.watchlist || {};
@@ -1624,7 +1686,8 @@ function openChart(t) {
   }
   bg.hidden = false; document.body.style.overflow = "hidden";
   drawPopup();
-  if (!pop.charts) loadCharts().then(drawPopup, e => { pop.err = e; drawPopup(); });
+  if (!pop.charts) loadCharts().then(() => { ensureOne(t); drawPopup(); }, e => { pop.err = e; ensureOne(t); drawPopup(); });
+  else ensureOne(t);
 }
 function closeChart() { const bg = document.getElementById("mbg"); if (bg) { bg.hidden = true; bg.innerHTML = ""; } document.body.style.overflow = ""; pop.t = null; }
 addEventListener("keydown", ev => { if (ev.key === "Escape" && pop.t) closeChart(); });
@@ -1650,7 +1713,7 @@ function priceCell(tr) {
   return money2(tr.p);
 }
 const OWN = { SP: "spouse's own account", JT: "joint account with spouse", DC: "dependent child's account", Spouse: "spouse's own account", Joint: "joint account with spouse", Child: "dependent child's account" };
-function photoFor(tr) { return (tr.b && ((pop.charts?.photos || {})[tr.b] || (state.data?.photos || {})[tr.b])) || null; }
+function photoFor(tr) { return (tr.b && ((pop.charts?.photos || {})[tr.b] || (state.data?.photos || {})[tr.b] || (pop.one[pop.t]?.photos || {})[tr.b])) || null; }
 function initials(n) { const p = String(n || "?").replace(/\b(Mr|Mrs|Ms|Dr|Hon|Jr|Sr|II|III)\b\.?/g, "").trim().split(/\s+/); return ((p[0] || "?")[0] + (p.length > 1 ? p[p.length - 1][0] : "")).toUpperCase(); }
 function headshot(tr, cls, size) {
   const src = photoFor(tr);
@@ -1666,15 +1729,17 @@ function tradeLineText(tr) {
 }
 function drawPopup() {
   const bg = document.getElementById("mbg"); if (!bg || !pop.t) return;
-  const t = pop.t, info = infoFor(t), C = pop.charts;
+  const t = pop.t, C = chartsFor(t), one = pop.one[t];
+  const info = { ...infoFor(t) }; if (!info.co && one && one.co) info.co = one.co;
   const head = `<div class="mh"><div><div class="t">${esc(t)}</div><div class="co">${esc(info.co || "")}${info.sec ? " · " + esc(info.sec) : ""}</div></div>
     <div style="display:flex;gap:10px;align-items:flex-start"><div class="px" id="mpx"></div><button type="button" class="mx" aria-label="Close">×</button></div></div>`;
   let body;
   if (!C) {
-    const e = pop.err;
-    body = `<div class="empty">${e ? (e.code === "no_file" ? "Charts appear after the next full update." : esc(errorText(e))) : "Loading chart…"}</div>`;
-  } else if (!C.px || !C.px[t]) {
-    body = `<div class="empty">No chart for ${esc(t)} yet. It's added on the next full update.</div>`;
+    const e = one && one.err;
+    body = `<div class="empty">${one === undefined || one === null ? "Loading chart…"
+      : e ? (e.code === "app_only" ? `No chart for ${esc(t)} here; Company search charts are in the phone app.`
+        : e.code === "no_file" || e.code === "no-prices" || e.code === "bad-ticker" ? `No price history found for ${esc(t)}. Check the ticker.` : esc(errorText(e)))
+      : `No price history found for ${esc(t)}. Check the ticker.`}</div>`;
   } else {
     body = `<div class="spans" role="group" aria-label="Timespan">${SPANS.map(([k]) => `<button type="button" data-span="${k}" aria-pressed="${pop.span === k}">${k}</button>`).join("")}
       <span class="lg"><span><i style="border-color:var(--good)"></i>Bought</span><span><i style="border-color:var(--bad)"></i>Sold</span><span><b style="font:600 10px var(--mono)">disc.</b> disclosed</span><span style="display:inline-flex;align-items:center;gap:4px"><img src="/me.jpg" alt="" style="width:14px;height:14px;border-radius:50%;object-fit:cover" onerror="this.outerHTML='▲▼'">you</span></span></div>
@@ -1686,7 +1751,8 @@ function drawPopup() {
   if (C && C.px && C.px[t]) drawTickerChart();
 }
 function drawTickerChart() {
-  const C = pop.charts, t = pop.t, host = document.getElementById("tc");
+  const t = pop.t, C = chartsFor(t), host = document.getElementById("tc");
+  if (!C || !host) return;
   const css = getComputedStyle(document.documentElement), cv = k => css.getPropertyValue(k).trim();
   const dates = C.dates, all = C.px[t];
   const months = (SPANS.find(s => s[0] === pop.span) || SPANS[1])[1];
@@ -1800,7 +1866,7 @@ function drawTickerChart() {
   hit.addEventListener("click", () => select(null));
   if (pop.sel) select(pop.sel.k);
 }
-addEventListener("resize", () => { if (pop.t && pop.charts) { clearTimeout(pop.rt); pop.rt = setTimeout(drawTickerChart, 150); } });
+addEventListener("resize", () => { if (pop.t && chartsFor(pop.t)) { clearTimeout(pop.rt); pop.rt = setTimeout(drawTickerChart, 150); } });
 
 // ---------- Members tab: each member's trades, results, and what happened around each trade ----------
 const MEM = { index: null, docs: {}, loading: {}, err: null, key: null, q: "", sort: "recent", show: 60,
@@ -2104,15 +2170,15 @@ function renderAlerts() {
   setTimeout(markSeen, 1500);           // seen once the tab has been open a moment
   const row = a => {
     const isOpen = ALERTS.open === a.id, many = (a.items || []).length > 1;
-    return `<div class="al ${Date.parse(a.at) > before ? "unread" : ""} ${isOpen ? "open" : ""}" data-hl="alert:${esc(a.id)}" data-alert="${esc(a.id)}" role="button" tabindex="0">
+    return `<div class="alw" data-alw="${esc(a.id)}"><div class="alx" aria-hidden="true">Clear</div><div class="al ${Date.parse(a.at) > before ? "unread" : ""} ${isOpen ? "open" : ""}" data-hl="alert:${esc(a.id)}" data-alert="${esc(a.id)}" role="button" tabindex="0">
       <div class="at"><span class="chip watch">${esc(ALERT_KIND[a.kind] || ALERT_KIND[String(a.kind).split("-")[0]] || "Alert")}</span>${esc(ago(a.at))} · ${esc(fmtET(a.at))}</div>
       <div class="tt">${esc(a.title)}</div>${a.body ? `<div class="bd">${esc(a.body)}</div>` : ""}
       ${many && isOpen ? `<ul>${a.items.map(x => `<li>${x.u ? `<button type="button" data-go="${esc(x.u)}">${esc(x.l)}</button>` : esc(x.l)}${x.x ? ` · <a href="${esc(x.x)}" target="_blank" rel="noopener">Go to post</a>` : ""}</li>`).join("")}</ul>` :
         many ? `<div class="foot">${a.items.length} items · tap to see them</div>` : ""}
-    </div>`;
+    </div></div>`;
   };
-  return `<section class="panel"><div class="ph"><h2>Alerts</h2><span class="sub">Every alert sent to your phone, newest first. Tap one to go to it.</span>
-    <button type="button" class="link" data-arefresh="1">Refresh</button></div>
+  return `<section class="panel"><div class="ph"><h2>Alerts</h2><span class="sub">Every alert sent to your phone, newest first. Tap one to go to it; swipe left to clear it.</span>
+    <button type="button" class="link" data-arefresh="1">Refresh</button>${list.length ? ` <button type="button" class="link" data-aclear="1">Clear all</button>` : ""}</div>
     ${ALERTS.loading && !ALERTS.items ? `<div class="empty">Loading…</div>` : ALERTS.err ? `<div class="note warn">${esc(errorText(ALERTS.err))}</div>` :
       list.length ? `<div class="alist">${list.map(row).join("")}</div>` : `<div class="empty">No alerts yet. New ones show up here as they're sent.</div>`}
   </section>`;
@@ -2122,12 +2188,51 @@ document.getElementById("main").addEventListener("click", ev => {
   if (g) { ev.stopPropagation(); go(g.dataset.go); return; }
   if (ev.target.closest("a")) return;
   if (ev.target.closest("[data-arefresh]")) { ALERTS.items = null; refreshAlerts(); render(); return; }
+  if (ev.target.closest("[data-aclear]")) {
+    if (!confirm("Clear all alerts from this list?")) return;
+    const keep = ALERTS.items; ALERTS.items = []; render();
+    clearAllAlerts().catch(e => { ALERTS.items = keep; ALERTS.err = e; render(); });
+    return;
+  }
+  if (ALERT_SWIPED) { ALERT_SWIPED = false; return; }      // the tap that ended a swipe doesn't open the alert
   const a = ev.target.closest("[data-alert]");
   if (!a) return;
   const it = (ALERTS.items || []).find(x => x.id === a.dataset.alert);
   if (!it) return;
   if ((it.items || []).length > 1 || !it.url || /#alerts/.test(it.url)) { ALERTS.open = ALERTS.open === it.id ? null : it.id; render(); }
   else go(it.url);
+});
+
+// swipe an alert left to clear it (it's only hidden from this list; the alert log is kept)
+let ALERT_SWIPED = false, SW = null;
+function dismissAlert(w) {
+  const id = w.dataset.alw;
+  w.style.maxHeight = w.offsetHeight + "px"; w.querySelector(".al").style.transform = "translateX(-110%)";
+  requestAnimationFrame(() => w.classList.add("gone"));
+  setTimeout(() => {
+    const keep = ALERTS.items;
+    ALERTS.items = (ALERTS.items || []).filter(x => x.id !== id); alertsBadge(); render();
+    clearAlert(id).catch(e => { ALERTS.items = keep; ALERTS.err = e; render(); });
+  }, 420);
+}
+document.addEventListener("touchstart", ev => {
+  const w = ev.target.closest(".alw"); if (!w || ev.touches.length !== 1) { SW = null; return; }
+  SW = { w, x: ev.touches[0].clientX, y: ev.touches[0].clientY, dx: 0, on: false };
+}, { passive: true });
+document.addEventListener("touchmove", ev => {
+  if (!SW) return;
+  const dx = ev.touches[0].clientX - SW.x, dy = ev.touches[0].clientY - SW.y;
+  if (!SW.on) { if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { SW = null; return; } if (dx < -10) { SW.on = true; SW.w.classList.add("drag"); } else return; }
+  SW.dx = Math.min(0, dx); SW.w.querySelector(".al").style.transform = `translateX(${SW.dx}px)`;
+}, { passive: true });
+document.addEventListener("touchend", () => {
+  if (!SW) return;
+  const s_ = SW; SW = null;
+  if (!s_.on) return;
+  ALERT_SWIPED = true; setTimeout(() => { ALERT_SWIPED = false; }, 400);
+  s_.w.classList.remove("drag");
+  if (s_.dx < -Math.min(120, s_.w.offsetWidth * 0.35)) dismissAlert(s_.w);
+  else s_.w.querySelector(".al").style.transform = "";
 });
 
 // ---------- deep links: "#post/<id>", "#worth/NVDA", "#port/NVDA", "#t/NVDA", "#alerts/<id>", "#members/<id>", "#works/rare" ----------
@@ -2188,6 +2293,10 @@ function loadTieReviews() { return Promise.reject({ code: "app_only" }); }
 function loadPosts() { return Promise.reject({ code: "app_only" }); }
 function loadAlerts() { return Promise.reject({ code: "app_only" }); }
 function loadHealth() { return Promise.reject({ code: "app_only" }); }
+function loadOneChart() { return Promise.reject({ code: "app_only" }); }
+function searchTickers() { return Promise.reject({ code: "app_only" }); }
+function clearAlert() { return Promise.reject({ code: "app_only" }); }
+function clearAllAlerts() { return Promise.reject({ code: "app_only" }); }
 function loadPeopleReview() { return Promise.reject({ code: "app_only" }); }
 function loadContext() { return Promise.reject({ code: "app_only" }); }
 function savePeopleReview() { return Promise.reject({ code: "app_only" }); }

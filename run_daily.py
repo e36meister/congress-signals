@@ -608,6 +608,12 @@ def main():
         cloud_store.put("ticker_charts.json", charts_path, E.log)
     except Exception as e:
         E.log(f"Ticker charts: skipped ({type(e).__name__}: {e})")
+    try:      # Company search in the app: members' trades of every stock, and the list of stocks to search
+        p1, p2 = E.export_trade_index(cfg, scored)
+        cloud_store.put("charts/trades_by_ticker.json", p1, E.log)      # logs its own failure (Data health)
+        cloud_store.put("charts/search_index.json", p2, E.log)
+    except Exception as e:
+        E.log(f"Company search: index failed ({type(e).__name__}: {e})")
     E.log(f"Finished. {len(new)} new signal(s).")
 
 

@@ -5530,6 +5530,35 @@ def export_ticker_charts(cfg, scored, px, tickers, years=5):
     return path
 
 
+def export_trade_index(cfg, scored, years=5):
+    """For the app's Company search: every member buy/sell of the last `years` by ticker
+    (charts/trades_by_ticker.json) and [ticker, company, trades] for every stock members traded
+    (charts/search_index.json). Returns the two local paths."""
+    cut = pd.Timestamp.today().normalize() - pd.DateOffset(years=years)
+    tr = scored[scored["tx_type"].isin(["buy", "sell"])]
+    tr = tr[tr["trade_date"] >= cut].drop_duplicates(["ticker", "member", "tx_type", "trade_date", "amt_lo"])
+    num = lambda v: float(v) if v is not None and pd.notna(v) else None
+    by = {}
+    for r in tr.sort_values("trade_date").itertuples(index=False):
+        r = r._asdict()
+        b = r.get("bioguide") if isinstance(r.get("bioguide"), str) and r.get("bioguide") else None
+        by.setdefault(r["ticker"], []).append([
+            str(r["member"]), b, r["tx_type"], pd.Timestamp(r["trade_date"]).strftime("%Y-%m-%d"),
+            pd.Timestamp(r["filed_date"]).strftime("%Y-%m-%d") if pd.notna(r.get("filed_date")) else None,
+            num(r.get("amt_lo")), num(r.get("amt_hi")),
+            str(r["owner"]) if isinstance(r.get("owner"), str) and r.get("owner") else None])
+    meta = (LAST_DATA or {}).get("meta") or {}
+    cnt = scored[scored["tx_type"].isin(["buy", "sell"])]["ticker"].value_counts()
+    idx = [[t, str((meta.get(t) or {}).get("name") or ""), int(n)] for t, n in cnt.items() if isinstance(t, str)]
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    p1, p2 = _p(cfg, "charts", "trades_by_ticker.json"), _p(cfg, "charts", "search_index.json")
+    json.dump({"updated": now, "cols": ["n", "b", "ty", "td", "d", "lo", "hi", "own"], "trades": by}, open(p1, "w"),
+              separators=(",", ":"))
+    json.dump({"updated": now, "list": idx}, open(p2, "w"), separators=(",", ":"))
+    log(f"Company search: {len(idx):,} traded stocks, {sum(len(v) for v in by.values()):,} member trades since {cut.year}")
+    return p1, p2
+
+
 PHOTO_URL = "https://unitedstates.github.io/images/congress/225x275/{}.jpg"   # official photos, public domain
 
 
