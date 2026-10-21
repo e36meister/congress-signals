@@ -1887,7 +1887,7 @@ function memLoadIndex() {
   if (MEM.index || MEM.loading.index) return;
   MEM.loading.index = true;
   loadMembersIndex().then(js => { MEM.index = js; MEM.err = null;
-    if (PENDING_MEM) { const k = memKeyFor(PENDING_MEM.n, PENDING_MEM.b); if (k) { MEM.key = k; MEM.missing = null; try { history.replaceState({}, "", "#members/" + k); } catch (e) {} } else MEM.missing = PENDING_MEM.n; PENDING_MEM = null; } }).catch(e => { MEM.err = e; })
+    if (PENDING_MEM) { const k = memKeyFor(PENDING_MEM.n, PENDING_MEM.b); if (k) { MEM.key = k; MEM.missing = null; MEM.from = PENDING_MEM.from || null; try { history.replaceState({}, "", "#members/" + k); } catch (e) {} } else MEM.missing = PENDING_MEM.n; PENDING_MEM = null; } }).catch(e => { MEM.err = e; })
     .finally(() => { MEM.loading.index = false; if (state.tab === "members") render(); });
 }
 function memLoad(k) {
@@ -2045,7 +2045,7 @@ function postProfile(doc) {
 function renderMember(k) {
   memLoad(k);
   const doc = MEM.docs[k];
-  const back = `<button type="button" class="link mback" data-mback="1">← All members</button>`;
+  const back = `<button type="button" class="link mback" data-mback="1">← ${esc(MEM.from ? memBackLabel(MEM.from) : "All members")}</button>`;
   if (!doc) return `<section class="panel">${back}${MEM.err && !MEM.loading[k] ? `<div class="note err">${errorText(MEM.err)}</div>` : `<div class="empty">Loading…</div>`}</section>`;
   const S = doc.stats, T = memTrades(doc), h = MEM.best.h;
   const best = T.filter(t => t.ty === MEM.best.side && edge(t, h) != null).sort((a, b) => edge(b, h) - edge(a, h)).slice(0, 8);
@@ -2092,8 +2092,8 @@ document.getElementById("main").addEventListener("click", ev => {
   const t = ev.target.closest("[data-mem],[data-mback],[data-msort],[data-mmore],[data-mtr],[data-mbs],[data-mbh],[data-tmore],[data-mpo]");
   if (!t) return;
   const D = t.dataset;
-  if (D.mem) { MEM.missing = null; MEM.key = D.mem; MEM.open = null; MEM.tq = ""; MEM.tshow = 40; MEM.err = null; try { history.pushState({ mem: D.mem }, "", "#members/" + D.mem); } catch (e) {} render(); scrollTo(0, 0); }
-  else if (D.mback) { MEM.key = null; try { history.pushState({}, "", "#members"); } catch (e) {} render(); }
+  if (D.mem) { MEM.from = null; MEM.missing = null; MEM.key = D.mem; MEM.open = null; MEM.tq = ""; MEM.tshow = 40; MEM.err = null; try { history.pushState({ mem: D.mem }, "", "#members/" + D.mem); } catch (e) {} render(); scrollTo(0, 0); }
+  else if (D.mback) { if (memBack()) return; MEM.key = null; try { history.pushState({}, "", "#members"); } catch (e) {} render(); }
   else if (D.msort) { MEM.sort = D.msort; render(); }
   else if (D.mmore) { MEM.show += 60; render(); }
   else if (D.mtr) { MEM.open = MEM.open === D.mtr ? null : D.mtr; render(); }
@@ -2128,13 +2128,40 @@ function memKeyFor(n, b) {
   return m ? m.k : null;
 }
 let PENDING_MEM = null;
+// where a member's name was tapped (a card, a chart, another member...): the profile's back link returns there.
+// Only a profile opened from the Members list goes back to the list (owner, Oct 21).
+function memFrom() {
+  return { tab: state.tab, chart: pop.t || null, y: scrollY, mem: state.tab === "members" ? MEM.key : null, hash: location.hash };
+}
+const BACK_LABEL = { today: "Today", port: "Account", alerts: "Alerts", me: "your profile", more: "More" };
+function memBackLabel(f) {
+  if (f.chart) return "Back to " + f.chart;
+  if (f.tab === "members" && f.mem) { const m = (MEM.index?.members || []).find(x => x.k === f.mem); return "Back to " + (m?.n || "the member"); }
+  const mt = MORE_TABS.find(x => x.k === f.tab);
+  return "Back to " + (mt ? mt.l : BACK_LABEL[f.tab] || "where you were");
+}
+function memBack(fromPop) {
+  const f = MEM.from; MEM.from = null;
+  if (!f) return false;
+  if (f.tab === "members" && f.mem) {
+    MEM.key = f.mem; MEM.open = null; try { if (!fromPop) history.pushState({}, "", "#members/" + f.mem); } catch (e) {}
+    render(); scrollTo(0, f.y || 0); if (f.chart) openChart(f.chart); return true;
+  }
+  MEM.key = null; state.tab = f.tab;
+  try { localStorage.setItem("ctd-tab", f.tab); if (!fromPop) history.pushState({}, "", f.hash && !/^#members/.test(f.hash) ? f.hash : "#"); } catch (e) {}
+  render(); scrollTo(0, f.y || 0);
+  if (f.chart) openChart(f.chart);
+  return true;
+}
 function openMember(n, b) {
   const k = memKeyFor(n, b);
+  const from = memFrom();
   if (pop.t) closeChart();
+  if (k) MEM.from = from;
   const tb = document.getElementById("tipbg"); if (tb && !tb.hidden) { tb.hidden = true; tb.innerHTML = ""; }
   if (k) { go("#members/" + k); MEM.missing = null; return; }
   if (MEM.index) { MEM.missing = n; MEM.q = ""; go("#members"); return; }    // no disclosed trades: no profile
-  PENDING_MEM = { n, b };          // the member list isn't loaded yet: open the profile as soon as it is
+  PENDING_MEM = { n, b, from };          // the member list isn't loaded yet: open the profile as soon as it is
   memLoadIndex(); go("#members");
 }
 document.addEventListener("click", ev => {
@@ -2283,6 +2310,9 @@ function focusTarget() {
   el.classList.remove("hl"); void el.offsetWidth; el.classList.add("hl");
 }
 addEventListener("hashchange", () => route(location.hash));
+addEventListener("popstate", () => {
+  if (MEM.from && state.tab === "members" && MEM.key && !/^#members\/./.test(location.hash)) memBack(true);
+});
 // a tapped phone alert, when the app is already open: the service worker says where to go
 try { navigator.serviceWorker && navigator.serviceWorker.addEventListener("message", ev => { if (ev.data && ev.data.type === "open") { go(ev.data.url); refreshAlerts(); } }); } catch (e) {}
 // opened from an alert: "?n=<id>" marks it read; then go to what it's about
