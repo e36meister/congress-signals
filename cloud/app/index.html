@@ -1852,7 +1852,7 @@ function drawPopup() {
       : `No price history found for ${esc(t)}. Check the ticker.`}</div>`;
   } else {
     body = `<div class="spans" role="group" aria-label="Timespan">${SPANS.map(([k]) => `<button type="button" data-span="${k}" aria-pressed="${pop.span === k}">${k}</button>`).join("")}
-      <span class="lg"><span><i style="border-color:var(--good)"></i>Bought</span><span><i style="border-color:var(--bad)"></i>Sold</span><span><b style="font:600 10px var(--mono)">disc.</b> disclosed</span><span style="display:inline-flex;align-items:center;gap:4px"><img src="/me.jpg" alt="" style="width:14px;height:14px;border-radius:50%;object-fit:cover" onerror="this.outerHTML='▲▼'">you</span></span></div>
+</div>
       <div class="tc" id="tc"></div><div id="tdet"></div><div id="tlist"></div>
 `;
       // (owner, Oct 21: the chart note is kept in the project doc instead of under every chart) The line shows daily
