@@ -4952,6 +4952,94 @@ def bad_price_tickers(px, meta):
     return bad
 
 
+REFEREE_PER_MONTH = 60     # Tiingo free plan: ~500 different stocks a month, shared with the delisted fill-in
+
+
+def tiingo_referee(cfg, bad, px):
+    """Tiingo settles the stocks Yahoo's prices were set aside for and Alpaca couldn't confirm (study Oct 21: Tiingo
+    was outvoted on 26 of 83k stock-days, Alpaca 1,054, Yahoo 166; Yahoo's misses are fake spikes on foreign OTC and
+    reused tickers, Alpaca's are split adjustments). For each one:
+      - Tiingo matches Yahoo on every shared day          -> the move is real: keep Yahoo's prices
+      - Tiingo is clean and matches Yahoo apart from the bad stretch -> use Tiingo's prices instead
+      - otherwise it stays set aside
+    Verdicts and Tiingo's series are saved (cache/tiingo_referee.*) and re-checked every 30 days; lookups count
+    toward the same monthly Tiingo budget as the delisted fill-in (tiingo_tried.json).
+    Returns (still set aside, {ticker: "real"|"repaired"}, {ticker: Tiingo series})."""
+    key = (cfg.get("TIINGO_API_KEY") or "").strip()
+    if not bad:
+        return bad, {}, {}
+    vpath = _p(cfg, "cache", "tiingo_referee.json")
+    spath = _p(cfg, "cache", "tiingo_referee.pkl")
+    verdicts = json.load(open(vpath)) if os.path.exists(vpath) else {}
+    try:
+        saved = pd.read_pickle(spath) if os.path.exists(spath) else pd.DataFrame()
+    except Exception:
+        saved = pd.DataFrame()
+    tried, tpath = _cache_json(cfg, "tiingo_tried.json", {})
+    month = dt.date.today().strftime("%Y-%m")
+    used = sum(1 for d in tried.values() if str(d).startswith(month) and not str(d).endswith("x"))
+    ref_used = sum(1 for v in verdicts.values() if str(v.get("at", "")).startswith(month))
+    room = max(0, min(REFEREE_PER_MONTH - ref_used, 495 - used, 40))
+    todo = [t for t in sorted(bad) if t in px.columns and _days_since(str(verdicts.get(t, {}).get("at", "2000-01-01"))[:10]) >= 30]
+    fails, asked = [], 0
+    for t in todo:
+        if not key or asked >= room:
+            break
+        y = px[t].dropna()
+        y = y[y > 0]
+        if len(y) < 30:
+            continue
+        try:
+            asked += 1
+            r = requests.get(f"https://api.tiingo.com/tiingo/daily/{t.replace('-', '.')}/prices", timeout=60,
+                             params={"startDate": str(y.index.min().date()), "token": key})
+            if r.status_code == 429:
+                log("Prices: Tiingo hourly limit reached while settling set-aside stocks; the next run continues")
+                break
+            js = r.json() if r.status_code == 200 else []
+        except Exception as e:
+            fails.append(f"{t} ({type(e).__name__})")
+            continue
+        tried[t] = dt.date.today().isoformat()
+        ts = pd.Series({pd.Timestamp(x["date"][:10]): x.get("adjClose") for x in js}, dtype=float).dropna() \
+            if isinstance(js, list) else pd.Series(dtype=float)
+        ts = ts[ts > 0]
+        v = {"at": dt.date.today().isoformat(), "why": bad[t]}
+        common = y.index.intersection(ts.index)
+        if len(ts) < 30 or len(common) < 0.9 * len(y):
+            v["verdict"] = "no Tiingo match"            # Tiingo doesn't have this stock (or this company) for the span
+        else:
+            lr = np.log(y[common] / ts[common])
+            dev = (lr - lr.median()).abs()
+            if dev.max() <= np.log(1.15):
+                v["verdict"] = "real"
+            elif (dev <= 0.1).mean() >= 0.9 and t not in bad_price_tickers(ts.to_frame(t), {}):
+                v["verdict"] = "repaired"
+                saved = saved.drop(columns=[t], errors="ignore").join(ts.rename(t).to_frame(), how="outer")
+            else:
+                v["verdict"] = "Tiingo also odd"
+        verdicts[t] = v
+        time.sleep(1)
+    if asked:
+        json.dump(verdicts, open(vpath, "w"), indent=1)
+        json.dump(tried, open(tpath, "w"))
+        saved.to_pickle(spath)
+        n = pd.Series([verdicts[t]["verdict"] for t in todo if t in verdicts and verdicts[t]["at"] == dt.date.today().isoformat()]).value_counts().to_dict()
+        log(f"Prices: Tiingo checked {asked} set-aside stock(s): " + ", ".join(f"{v} {k}" for k, v in n.items()))
+    if fails and len(fails) >= 3:
+        log(f"Prices: Tiingo lookups failed for {len(fails)} set-aside stocks (e.g. {', '.join(fails[:5])})")
+    if not key and todo:
+        log(f"Prices: {len(todo)} set-aside stock(s) can't be settled: no TIINGO_API_KEY secret set")
+    keep, out, series = dict(bad), {}, {}
+    for t in bad:
+        vd = (verdicts.get(t) or {}).get("verdict")
+        if vd == "real":
+            keep.pop(t); out[t] = "real"
+        elif vd == "repaired" and t in saved.columns:
+            keep.pop(t); out[t] = "repaired"; series[t] = saved[t].dropna()
+    return keep, out, series
+
+
 def confirm_bad_prices(bad, px, meta):
     """Second opinion from Alpaca (independent market data, from 2016) on the stocks bad_price_tickers set aside.
     A stock is kept when Alpaca's prices match Yahoo's on every shared day (so the big move is real, e.g. a large
@@ -5035,12 +5123,28 @@ def prepare(cfg):
     if real:
         log(f"Prices: kept {len(real)} stock(s) with big moves that Alpaca's prices confirm are real "
             f"(e.g. {', '.join(real[:6])})")
+    repaired = []
+    try:
+        bad, settled, tseries = tiingo_referee(cfg, bad, px)
+        for t, s_ in tseries.items():           # Tiingo's closes replace Yahoo's for these (opens dropped below)
+            px[t] = s_.reindex(px.index)
+        repaired = sorted(tseries)
+        tr = sorted(t for t, v in settled.items() if v == "real")
+        if tr or repaired:
+            log(f"Prices: Tiingo settled {len(settled)} set-aside stock(s): {len(tr)} real moves kept"
+                + (f" ({', '.join(tr[:6])})" if tr else "") + f", {len(repaired)} use Tiingo's prices"
+                + (f" ({', '.join(repaired[:6])})" if repaired else ""))
+    except Exception as e:
+        log(f"Prices: Tiingo check of set-aside stocks failed ({type(e).__name__}: {e})")
+    json.dump(bad, open(_p(cfg, "state", "bad_prices.json"), "w"), indent=1)    # also when none are left
     if bad:
-        json.dump(bad, open(_p(cfg, "state", "bad_prices.json"), "w"), indent=1)
         px = px.drop(columns=list(bad))
         tx = tx[~tx["ticker"].isin(bad)].reset_index(drop=True)
         log(f"Prices: set aside {len(bad)} stock(s) whose price history has clear data errors")
     register_opens(cfg, px)
+    if repaired and _OPEN_REG.get("O") is not None:      # Yahoo's opens for a repaired stock aren't trusted: use closes
+        cols = [px.columns.get_loc(t) for t in repaired if t in px.columns]
+        _OPEN_REG["O"][:, cols] = np.nan
     committees = load_committees(cfg)
     history = load_committee_history(cfg, committees)
     data = {"meta": meta, "committees": committees, "committee_history": history, "religion": load_religion(cfg)}
