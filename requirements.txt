@@ -16,3 +16,4 @@ wordfreq
 trafilatura
 python-statement @ git+https://github.com/dwillis/python-statement.git
 vaderSentiment
+fpdf2

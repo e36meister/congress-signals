@@ -150,8 +150,12 @@ def dividend_estimate(api):
     except Exception:
         pass
     items.sort(key=lambda x: x["ex"], reverse=True)
+    by_year = {}
+    for x in items:          # by the year it's paid (that's the tax year), for the Taxes page
+        y = str(x.get("pay") or x["ex"])[:4]
+        by_year[y] = round(by_year.get(y, 0) + x["amt"], 2)
     return {"since": first, "total": round(sum(x["amt"] for x in items), 2), "n": len(items),
-            "received": round(received, 2), "items": items[:30]}
+            "received": round(received, 2), "items": items[:30], "by_year": by_year}
 
 
 AHEAD_RULES = ("ahead", "ahead_daily")

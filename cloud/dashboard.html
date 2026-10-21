@@ -431,11 +431,13 @@ const MORE_TABS = [
   { k: "record", l: "Track record", d: "How past picks did against the S&P 500" },
   { k: "works", l: "What works", d: "Which signals hold up, and the weekly automatic adjustments" },
   { k: "real", l: "Reality check", d: "Walk-forward test: the strategy on years it never saw" },
+  { k: "tax", l: "Taxes", d: "Each sale's gain or loss, the Form 8949 statement and what to file" },
   { k: "health", l: "Data health", d: "Every data source: what's broken right now and what was fixed" },
 ];
 function goTab(t) {
   state.tab = t;
   if (t === "health") { HEALTH.js = null; HEALTH.err = null; }
+  if (t === "tax") { TAX.js = null; TAX.err = null; TAX.sales = {}; }
   if (typeof MEM !== "undefined") MEM.missing = null;
   try { localStorage.setItem("ctd-tab", t); } catch (e) {}
   render(); window.scrollTo(0, 0);
@@ -515,6 +517,55 @@ document.addEventListener("click", ev => {
   if (w) { ME.who = w.dataset.mewho; ME.open = null; render(); return; }
   const o = ev.target.closest("[data-meopen]");
   if (o && !ev.target.closest("[data-chart]")) { ME.open = ME.open === o.dataset.meopen ? null : o.dataset.meopen; const y = scrollY; render(); scrollTo(0, y); }
+});
+
+// ---------- Taxes: written by tax_report.py after each market close (paper now; the live account once it's on) ----------
+const TAX = { js: null, err: null, loading: false, year: null, sales: {}, show: 50 };
+function renderTax() {
+  if (!TAX.js && !TAX.loading && !TAX.err) {
+    TAX.loading = true;
+    loadTax().then(js => { TAX.js = js; }).catch(e => { TAX.err = e; }).finally(() => { TAX.loading = false; if (state.tab === "tax") render(); });
+  }
+  if (TAX.err) return `<div class="note ${TAX.err.code === "no_file" ? "warn" : "err"}">${TAX.err.code === "app_only" ? "Taxes are in the phone app." : TAX.err.code === "no_file" ? "The Taxes page is built after the next market close (about 4:15 PM ET on a trading day)." : esc(errorText(TAX.err))}</div>`;
+  if (!TAX.js) return `<div class="empty">Loading…</div>`;
+  const J = TAX.js, years = Object.keys(J.years || {}).sort().reverse();
+  const y = TAX.year && J.years[TAX.year] ? TAX.year : years[0];
+  const S = J.years[y] || {};
+  if (y && !(y in TAX.sales)) {
+    TAX.sales[y] = null;
+    loadTaxSales(y).then(js => { TAX.sales[y] = (js && js.rows) || []; }, e => { TAX.sales[y] = { err: e }; }).finally(() => { if (state.tab === "tax") render(); });
+  }
+  const paper = J.mode !== "live", m2 = v => money(v, 2);
+  const rows = Array.isArray(TAX.sales[y]) ? TAX.sales[y] : null;
+  const file = (f, label) => (S.files || []).includes(f) ? `<a class="btn" href="/api/tax/file?y=${esc(y)}&f=${esc(f)}" target="_blank" rel="noopener">${label}</a>` : "";
+  const thisYear = String(new Date().getFullYear()) === y;
+  return `${paper ? `<div class="note warn"><b>Paper account (practice).</b> This is what the tax forms would say if these trades were real money. Paper trades aren't taxed. It switches to your live account when you go live.</div>` : ""}
+  <section class="panel"><div class="ph"><h2>Taxes ${esc(y || "")}</h2><span class="sub">${thisYear ? "So far this year · " : ""}updated ${esc(ago(J.updated))}</span></div>
+    ${years.length > 1 ? `<div class="daypick">${years.map(k => `<button type="button" data-taxy="${esc(k)}" aria-pressed="${k === y}">${esc(k)}</button>`).join("")}</div>` : ""}
+    <div class="tiles">
+      <div class="tile"><span class="v ${cls(S.net)}">${m2(S.net)}</span><span class="l">Net gain or loss</span><span class="c">${(S.short?.n || 0) + (S.long?.n || 0)} sale${(S.short?.n || 0) + (S.long?.n || 0) === 1 ? "" : "s"}</span></div>
+      <div class="tile"><span class="v ${cls(S.short?.gain)}">${m2(S.short?.gain)}</span><span class="l">Short term (held 1 year or less)</span><span class="c">Taxed like your regular income</span></div>
+      <div class="tile"><span class="v ${cls(S.long?.gain)}">${m2(S.long?.gain)}</span><span class="l">Long term (held over 1 year)</span><span class="c">Lower tax rates</span></div>
+      <div class="tile"><span class="v">${m2(S.wash?.disallowed || 0)}</span><span class="l">Wash-sale losses not allowed</span><span class="c">${S.wash?.n || 0} sale${S.wash?.n === 1 ? "" : "s"}; added to the cost of the shares bought back</span></div>
+      <div class="tile"><span class="v">${m2(paper && S.dividends_estimate != null ? S.dividends_estimate : S.dividends)}</span><span class="l">Dividends${paper ? " (estimate: paper isn't paid any)" : ""}</span><span class="c">Interest ${m2(S.interest || 0)} · fees ${m2(S.fees || 0)}</span></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">${file("statement.pdf", "Form 8949 statement (PDF)")}${file("form8949.csv", "Every sale (CSV)")}</div>
+  </section>
+  <section class="panel"><div class="ph"><h2>What to file</h2><span class="sub">Federal only: Florida has no state income tax</span></div>
+    <ul style="margin:0;padding-left:18px;display:grid;gap:6px">${(S.todo || []).map(x => `<li><b>${esc(x.form)}</b>: ${esc(x.why)}</li>`).join("")}</ul>
+    <p class="foot">Key dates: Alpaca sends your Form 1099 (sales, dividends, interest) by mid-February; compare it with these numbers, since the 1099 is the official record. Returns are due April 15. This is a record-keeping aid, not tax advice; a tax preparer can file it from the PDF and the 1099.</p>
+  </section>
+  <section class="panel"><div class="ph"><h2>Every sale</h2><span class="sub">Matched first in, first out, like Alpaca's 1099</span></div>
+    ${TAX.sales[y]?.err ? `<div class="note err">${esc(errorText(TAX.sales[y].err))}</div>` : !rows ? `<div class="empty">Loading…</div>` : !rows.length ? `<div class="empty">No sales in ${esc(y)} yet.</div>` :
+      `<div class="tbl scroll"><table><thead><tr><th>Sold</th><th>Stock</th><th>Bought</th><th class="n">Proceeds</th><th class="n">Cost</th><th class="n">Gain or loss</th><th></th></tr></thead><tbody>
+      ${rows.slice().reverse().slice(0, TAX.show).map(r => `<tr><td class="nw">${esc(fmtDate(r.sold))}</td><td>${esc(r.desc)}</td><td class="nw">${esc(fmtDate(r.acq))}</td><td class="n">${m2(r.proceeds)}</td><td class="n">${m2(r.cost)}</td><td class="n ${cls(r.gain)}">${m2(r.gain)}${r.adj ? `<div class="foot">${m2(r.adj)} loss not allowed</div>` : ""}</td><td>${r.term === "long" ? "Long" : "Short"}${r.code ? " · wash" : ""}</td></tr>`).join("")}
+      </tbody></table></div>${rows.length > TAX.show ? `<button type="button" class="link" data-taxmore="1">Show more (${rows.length - TAX.show} left)</button>` : ""}`}
+  </section>`;
+}
+document.addEventListener("click", ev => {
+  const b = ev.target.closest("[data-taxy],[data-taxmore]"); if (!b) return;
+  if (b.dataset.taxy) { TAX.year = b.dataset.taxy; TAX.show = 50; } else TAX.show += 100;
+  render();
 });
 
 // ---------- Company search: type a ticker or company name, tap a result (or press Go) for its chart popup ----------
@@ -600,6 +651,7 @@ function render() {
   if (state.tab === "members") html += renderMembers(d);
   if (state.tab === "alerts") html += renderAlerts();
   if (state.tab === "search") html += renderSearch();
+  if (state.tab === "tax") html += renderTax();
   main.innerHTML = html;
   bind();
   setTimeout(focusTarget, 0);
@@ -2343,6 +2395,8 @@ function loadPosts() { return Promise.reject({ code: "app_only" }); }
 function loadAlerts() { return Promise.reject({ code: "app_only" }); }
 function loadHealth() { return Promise.reject({ code: "app_only" }); }
 function loadOneChart() { return Promise.reject({ code: "app_only" }); }
+function loadTax() { return Promise.reject({ code: "app_only" }); }
+function loadTaxSales() { return Promise.reject({ code: "app_only" }); }
 function searchTickers() { return Promise.reject({ code: "app_only" }); }
 function clearAlert() { return Promise.reject({ code: "app_only" }); }
 function clearAllAlerts() { return Promise.reject({ code: "app_only" }); }

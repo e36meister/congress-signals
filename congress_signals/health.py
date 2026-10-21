@@ -21,11 +21,11 @@ _HTTP = {}                 # host -> {"n", "ok", "nf" (404/410), "bad" (other 4x
 _JOB = {"name": None, "finished": False, "crash": None, "t0": time.time()}
 # how often each job normally reports (hours); a job silent for longer is flagged
 EXPECT_HOURS = {"daily": 30, "live": 3, "social": 30, "close": 80, "quick": 6, "institutions": 30,
-                "scan_senate": 30, "scan_house": 30, "backfill_enrich": 30}
+                "scan_senate": 30, "scan_house": 30, "backfill_enrich": 30, "tax": 80}
 JOB_NAMES = {"daily": "Daily update", "live": "Hourly posts", "social": "Posts (twice daily)", "close": "Market-close report",
              "quick": "Filings and orders check", "institutions": "Institutions", "watchdog": "Job watchdog",
              "scan_senate": "Scanned Senate reports", "scan_house": "Scanned House reports",
-             "backfill_enrich": "Older years and less-traded companies"}
+             "backfill_enrich": "Older years and less-traded companies", "tax": "Taxes page"}
 # hosts that are ours or not data sources
 SKIP_HOSTS = ("github.com", "githubusercontent.com", "pypi.org", "files.pythonhosted.org", "huggingface.co",
               "hf.co", "cdn-lfs.huggingface.co")
@@ -48,7 +48,7 @@ def _log(msg, log=None):
 # ---------------------------------------------------------------------------------------------- web requests
 SCRIPT_JOBS = {"run_daily": "daily", "posts_live": "live", "close_report": "close", "quick_check": "quick",
                "update_social": "social", "update_institutions": "institutions", "scan_house": "scan_house",
-               "scan_senate": "scan_senate", "backfill_enrich": "backfill_enrich", "backfill_archive": "archive"}
+               "scan_senate": "scan_senate", "backfill_enrich": "backfill_enrich", "backfill_archive": "archive", "tax_report": "tax"}
 _CRIT = []                 # critical() results this run (picks paused), reported with the job's problems
 
 
