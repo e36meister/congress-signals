@@ -28,6 +28,7 @@ export default {
     if (min % 2 === 0) await step("fills", "Checking for new fills", () => checkFills(env));
     await step("quick", "Starting the filings check", () => startQuickCheck(env, min));
     await step("daily", "Starting the daily update", () => startDailyOnTime(env, new Date(ev.scheduledTime)));
+    if (min === 5) await step("substack", "Reading members' Substack feeds", () => mirrorSubstack(env));
     if (min === 7) await step("posts", "Starting the hourly posts job", () => dispatch(env, "posts.yml", {}));
   },
 };
@@ -346,6 +347,23 @@ async function wOk(env, src) {
 
 // ---------- possible company people in posts (a first or last name alone): the owner says "it's them" or not ----------
 const PEOPLE_FILE = "inputs/people_reviews.json", PEOPLE_QUEUE = "posts/review.json";
+// Substack shows GitHub's servers a "Just a moment..." challenge (HTTP 403, since Oct 20), so the posts jobs can't read
+// members' newsletters directly. Hourly, the Worker reads each feed (the list is saved by the posts jobs) and keeps a
+// copy in R2 (feeds/substack/<name>.json), which the jobs read when the direct read is refused.
+async function mirrorSubstack(env) {
+  const subs = (await r2json(env, "feeds/substack/list.json", [])).filter(s => /^[a-z0-9-]{1,63}$/.test(s)).slice(0, 60);
+  const bad = [];
+  for (const s of subs) {
+    try {
+      const r = await fetch(`https://${s}.substack.com/feed`, { headers: { "User-Agent": "Mozilla/5.0 (compatible; CapitolCapital/1.0)", Accept: "application/rss+xml, application/xml" } });
+      const t = r.ok ? await r.text() : "";
+      if (!r.ok || !t.includes("<rss")) { bad.push(`${s} (HTTP ${r.status})`); continue; }
+      await env.DATA.put(`feeds/substack/${s}.json`, JSON.stringify({ at: new Date().toISOString(), xml: t }), { httpMetadata: { contentType: "application/json" } });
+    } catch (e) { bad.push(`${s} (${String(e && e.message || e).slice(0, 40)})`); }
+  }
+  if (bad.length) throw new Error(`${bad.length} of ${subs.length} feeds didn't load: ${bad.slice(0, 6).join(", ")}`);
+}
+
 async function r2json(env, key, dflt) { try { const o = await env.DATA.get(key); if (o) return await o.json(); } catch (e) {} return dflt; }
 async function peopleReviewList(env) {
   return json({ items: await r2json(env, PEOPLE_QUEUE, []), verdicts: await r2json(env, PEOPLE_FILE, {}) });
