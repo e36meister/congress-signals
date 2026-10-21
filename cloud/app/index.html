@@ -66,6 +66,7 @@ section.panel{display:grid;gap:12px;align-content:start}
 .ph h2{font-size:19px;font-weight:600}
 .ph .sub{font-size:13px;color:var(--muted)}
 .morelist{display:grid}
+.tag.plain{cursor:default;border:0;background:none;padding:4px 2px;color:var(--ink2);font-weight:500}
 .hlist{display:grid;gap:10px}
 .hrow{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;font-size:14px;border-top:1px solid var(--rule);padding-top:10px}
 .hrow:first-child{border-top:0;padding-top:0}
@@ -728,7 +729,7 @@ function confirmBox(r) {
 
 // ---------- shorthand tags: a short word on the card, the full reason in a popup ----------
 const TAG_RULES = [
-  [/past buys ([+\-]?[\d.]+%) vs SPY avg \((\d+)\)/i, m => `Track ${m[1]}`, "Their earlier purchases vs the S&P 500, on average (number of trades in brackets)."],
+  [/past buys ([+\-]?[\d.]+%) vs SPY avg \((\d+)\)/i, m => `Track ${m[1]} (${m[2]})`, "", "", "plain"],
   [/past buys beat the market consistently/i, () => "Proven buyer", "This member's purchases have beaten the market consistently over many trades."],
   [/stocks this member sold lagged SPY by ([\d.]+%)/i, m => `Sales lag ${m[1]}`, "Stocks this member sold went on to lag the S&P 500 by this much on average."],
   [/(\d+) members? (bought|sold) within 30d/i, m => `${m[1]} ${m[2]}`, "Several members made the same trade within 30 days."],
@@ -784,9 +785,9 @@ const TAG_RULES = [
 let TIPS = [];
 function reasonTag(text) {
   const t = String(text || "").trim();
-  for (const [rx, lab, about, tone] of TAG_RULES) {
+  for (const [rx, lab, about, tone, plain] of TAG_RULES) {
     const m = t.match(rx);
-    if (m) return { label: lab(m), about, tone: tone || (/^but\b/i.test(t) ? "neg" : ""), full: t };
+    if (m) return { label: lab(m), about, tone: tone || (/^but\b/i.test(t) ? "neg" : ""), full: t, plain: !!plain };
   }
   const words = t.replace(/^but\s+/i, "").split(/\s+/);
   return { label: words.slice(0, 3).join(" ") + (words.length > 3 ? "…" : ""), about: "", tone: /^but\b/i.test(t) ? "neg" : "", full: t };
@@ -801,7 +802,7 @@ function tagsHtml(reasons, max = 6, title = "Why it's flagged") {
   const tags = rs.map(reasonTag);
   const seen = new Set(), uniq = tags.filter(g => !seen.has(g.label) && seen.add(g.label));
   const all = `<ul class="tipl">${rs.map(x => `<li>${esc(x)}</li>`).join("")}</ul>`;
-  const shown = uniq.slice(0, max).map(g => tipBtn(g.label, g.label, `<p>${esc(g.full)}</p>${g.about ? `<p class="foot">${esc(g.about)}</p>` : ""}`, g.tone));
+  const shown = uniq.slice(0, max).map(g => g.plain ? `<span class="tag plain">${esc(g.label)}</span>` : tipBtn(g.label, g.label, `<p>${esc(g.full)}</p>${g.about ? `<p class="foot">${esc(g.about)}</p>` : ""}`, g.tone));
   if (uniq.length > max) shown.push(tipBtn(`+${uniq.length - max} more`, title, all, "more"));
   else if (rs.length > 1) shown.push(tipBtn("All", title, all, "more"));
   return `<div class="tags">${shown.join("")}</div>`;
