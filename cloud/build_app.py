@@ -40,7 +40,7 @@ css = """
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .login button{color:#0E131A}}
 .login button:disabled{opacity:.6}
 .login .msg{min-height:20px;font-size:13.5px;color:var(--bad)}
-@media (display-mode: standalone){ .bell{top:calc(max(16px,env(safe-area-inset-top,0px)) - 4px)} }
+@media (display-mode: standalone){ .bell,.mebtn{top:calc(max(16px,env(safe-area-inset-top,0px)) - 4px)} }
 @media (display-mode: standalone){ header.top{padding-top:max(16px,env(safe-area-inset-top,0px))} }
 </style>"""
 src = sub("</style>\n\n<div class=\"wrap\">", css + "\n\n<div class=\"wrap\">", src)
@@ -101,6 +101,7 @@ phonecss = """
 @media (max-width: 760px){
   header.top{padding-block:10px 0}
   .bell{top:6px;width:36px;height:36px}
+  .mebtn{top:6px;width:36px;height:36px;right:44px}
   .brand{align-items:center;gap:2px 12px;padding-bottom:8px}
   .brand .seal{display:none}
   .brand h1{font-size:19px;line-height:1.2}

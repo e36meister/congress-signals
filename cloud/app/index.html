@@ -140,7 +140,20 @@ nav.jump .jn{font:600 11px var(--mono);color:var(--accent);margin-left:2px}
 .mlink{color:inherit;font:inherit;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px;text-decoration-color:color-mix(in srgb,currentColor 40%,transparent);cursor:pointer}
 .mlink:hover{text-decoration-color:currentColor}
 /* alerts tab + jump-to highlight */
-header.top .brand{padding-right:48px}
+header.top .brand{padding-right:96px}
+.mebtn{position:absolute;right:50px;top:12px;width:40px;height:40px;border-radius:50%;border:2px solid var(--rule);background:var(--surface);padding:0;cursor:pointer;overflow:hidden;z-index:2}
+.mebtn img{width:100%;height:100%;object-fit:cover;display:block}
+.mebtn[aria-pressed="true"]{border-color:var(--accent)}
+.mef{position:absolute;transform:translate(-50%,-50%);width:24px;height:24px;border-radius:50%;padding:0;border:2.5px solid;overflow:hidden;cursor:pointer;background:var(--sunken);z-index:3;box-shadow:0 1px 4px rgba(0,0,0,.25)}
+.mef img{width:100%;height:100%;object-fit:cover;display:block}
+.mef.buy{border-color:var(--good)} .mef.sell{border-color:var(--bad)}
+.mef.on{transform:translate(-50%,-50%) scale(1.25)}
+.mehead{display:flex;align-items:center;gap:14px}
+.mehead img{width:72px;height:72px;border-radius:50%;object-fit:cover;border:2px solid var(--rule)}
+.mehead h2{margin:0;font:600 22px var(--head)}
+.metr{border-top:1px solid var(--rule);padding:10px 0;display:grid;gap:4px}
+.metr:first-child{border-top:0}
+.metr .top{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;font-size:14px}
 .bell{position:absolute;right:0;top:12px;width:40px;height:40px;border-radius:50%;border:1px solid var(--rule);background:var(--surface);color:var(--ink2);display:grid;place-items:center;cursor:pointer;padding:0;z-index:2}
 .bell[aria-pressed="true"]{color:var(--accent);border-color:var(--accent)}
 .bell .nb{position:absolute;top:-4px;right:-4px;margin:0}
@@ -347,12 +360,13 @@ ol.posts li{background:var(--surface);border:1px solid var(--rule);border-radius
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .login button{color:#0E131A}}
 .login button:disabled{opacity:.6}
 .login .msg{min-height:20px;font-size:13.5px;color:var(--bad)}
-@media (display-mode: standalone){ .bell{top:calc(max(16px,env(safe-area-inset-top,0px)) - 4px)} }
+@media (display-mode: standalone){ .bell,.mebtn{top:calc(max(16px,env(safe-area-inset-top,0px)) - 4px)} }
 @media (display-mode: standalone){ header.top{padding-top:max(16px,env(safe-area-inset-top,0px))} }
 
 @media (max-width: 760px){
   header.top{padding-block:10px 0}
   .bell{top:6px;width:36px;height:36px}
+  .mebtn{top:6px;width:36px;height:36px;right:44px}
   .brand{align-items:center;gap:2px 12px;padding-bottom:8px}
   .brand .seal{display:none}
   .brand h1{font-size:19px;line-height:1.2}
@@ -428,6 +442,7 @@ nav.tabs button{overflow:hidden}
 </form></div>
 <div class="wrap">
   <header class="top">
+    <button type="button" class="mebtn" id="mebtn" aria-label="Your profile" title="Your profile"><img src="/me.jpg" alt="" onerror="this.style.display='none'"></button>
     <button type="button" class="bell" id="bell" aria-label="Alerts" title="Alerts"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2H4.5z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg><span class="nb" id="alertsN" hidden></span></button>
     <div class="brand">
       <div>
@@ -548,12 +563,55 @@ function renderHealth() {
   ${fixed.length ? `<section class="panel"><div class="ph"><h2>Fixed in the last 2 weeks</h2></div><div class="hlist">${fixed.map(x => `<div class="hrow"><span class="chip BUY">Fixed</span><div><div>${esc(x.text)}</div><div class="foot">${esc(x.where)} · ${esc(fmtET(x.at))}</div></div></div>`).join("")}</div></section>` : ""}`;
 }
 
+// ---------- your profile: laid out like a member's page, from your Alpaca account ----------
+const ME = { who: "all", open: null };
+function renderMe(d) {
+  const P = d.portfolio || {}, c = d.close_report || {};
+  const fills = [];
+  for (const [t, fs] of Object.entries(P.fills || {})) for (const f of fs || []) if (f && f[0]) fills.push({ t, td: String(f[0]).slice(0, 10), side: f[1], qty: f[2], px: f[3], by: f[4], own: true });
+  fills.sort((a, b) => b.td.localeCompare(a.td) || a.t.localeCompare(b.t));
+  const BY = { you: "You", tap: "Buy button", tool: "The tool" };
+  const shown = fills.filter(f => ME.who === "all" || (ME.who === "you" ? f.by !== "tool" : f.by === "tool"));
+  const pos = Object.fromEntries((P.positions || []).map(x => [x.t, x]));
+  const v = liveVsSpy(d);
+  const sinceBuy = f => { const x = pos[f.t]; return f.side === "buy" && x && x.px && f.px ? x.px / f.px - 1 : null; };
+  const nb = fills.filter(f => f.side === "buy").length, ns = fills.length - nb;
+  return `<section class="panel"><div class="mehead"><img src="/me.jpg" alt="" onerror="this.style.display='none'"><div><h2>Your profile</h2>
+      <div class="foot">${P.mode === "live" ? "Real money" : "Paper account"}${c.start ? ` · since ${esc(fmtDate(c.start))}` : ""} · ${nb} buy${nb === 1 ? "" : "s"}, ${ns} sale${ns === 1 ? "" : "s"}</div></div></div></section>
+  <div class="tiles">
+    <div class="tile"><span class="v">${money(P.equity)}</span><span class="l">Account value</span></div>
+    ${v ? `<div class="tile"><span class="v ${cls(v.acct)}">${pnum(v.acct, 2)}</span><span class="l">Your results since start</span><span class="c">S&amp;P ${pnum(v.spy, 2)}</span></div>
+    <div class="tile"><span class="v ${cls(v.gap)}">${pnum(v.gap, 2)}</span><span class="l">${v.gap >= 0 ? "Ahead of" : "Behind"} the S&amp;P</span></div>` : ""}
+    <div class="tile"><span class="v">${(P.positions || []).length}</span><span class="l">Open positions</span></div>
+  </div>
+  ${c.series?.dates?.length ? `<section class="panel"><div class="ph"><h2>You vs the S&amp;P</h2></div><div class="chart" id="mechart"></div></section>` : ""}
+  <section class="panel"><div class="ph"><h2>Your trades</h2><span class="sub">Tap one for its context</span></div>
+    <div class="daypick">${[["all", "All"], ["you", "Yours + Buy button"], ["tool", "The tool's"]].map(([k, l]) => `<button type="button" data-mewho="${k}" aria-pressed="${ME.who === k}">${l}</button>`).join("")}</div>
+    ${shown.length ? shown.slice(0, 200).map((f, i) => {
+      const k = f.t + "|" + f.td + "|" + f.side + "|" + i, g = sinceBuy(f);
+      return `<div class="metr"><div class="top" data-meopen="${esc(k)}" style="cursor:pointer">${tkBtn(f.t)}<span class="bs ${f.side}">${f.side === "buy" ? "Bought" : "Sold"}</span>
+        <span>${esc(fmtDate(f.td))}</span><span class="mono">${Number(f.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at ${money2(f.px)}</span>
+        ${g != null ? `<span class="${cls(g)}">${pct(g)} since</span>` : ""}<span class="foot">${esc(BY[f.by] || f.by || "")}</span></div>
+        ${ME.open === k ? ctxBlock(f) : ""}</div>`;
+    }).join("") : `<div class="empty">No trades in your account yet.</div>`}
+  </section>`;
+}
+document.addEventListener("click", ev => {
+  const w = ev.target.closest("[data-mewho]");
+  if (w) { ME.who = w.dataset.mewho; ME.open = null; render(); return; }
+  const o = ev.target.closest("[data-meopen]");
+  if (o && !ev.target.closest("[data-chart]")) { ME.open = ME.open === o.dataset.meopen ? null : o.dataset.meopen; const y = scrollY; render(); scrollTo(0, y); }
+});
+
 function renderMore() {
   return `<section class="panel"><div class="morelist">
   ${MORE_TABS.map(m => `<button type="button" class="moreitem" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}
   </div></section>`;
 }
 document.addEventListener("click", ev => { const b = ev.target.closest("[data-more]"); if (b) { ev.preventDefault(); goTab(b.dataset.more); } });
+
+// your profile (the cat at the top right, next to the bell)
+document.getElementById("mebtn")?.addEventListener("click", () => goTab(state.tab === "me" ? "today" : "me"));
 
 // the bell at the top right opens the alerts list (tap again to go back to Today)
 document.getElementById("bell").addEventListener("click", () => {
@@ -569,6 +627,7 @@ function render() {
   const navTab = MORE_TABS.some(m => m.k === state.tab) ? "more" : state.tab;
   document.querySelectorAll("nav.tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === navTab)));
   $("#bell")?.setAttribute("aria-pressed", String(state.tab === "alerts"));
+  $("#mebtn")?.setAttribute("aria-pressed", String(state.tab === "me"));
   const main = $("#main");
   const d = state.data;
   if (!d) {
@@ -580,6 +639,7 @@ function render() {
   if (MORE_TABS.some(m => m.k === state.tab)) html += `<button type="button" class="moreback" data-more="more">‹ More</button>`;
   if (state.tab === "more") html += renderMore();
   if (state.tab === "health") html += renderHealth();
+  if (state.tab === "me") html += renderMe(d);
   if (d.data_warning && (d.data_warning.problems || []).length && ["today", "port"].includes(state.tab)) html += dataWarning(d.data_warning);
   if (state.tab === "today") html += renderToday(d);
   if (state.tab === "record") html += renderRecord(d);
@@ -1618,6 +1678,7 @@ function bind() {
   if (state.tab === "small" && state.data?.small) drawChart(state.data.small, "#schart");
   if (state.tab === "real" && state.data?.walk_forward) drawChart(state.data.walk_forward, "#wchart");
   if (state.tab === "port" && state.data?.close_report?.series?.dates?.length) drawChart(portCurve(), "#pchart");
+  if (state.tab === "me" && state.data?.close_report?.series?.dates?.length) drawChart(portCurve(), "#mechart");
   if (state.tab === "record") {
     drawChart();
     document.querySelectorAll("[data-side]").forEach(b => b.addEventListener("click", () => { state.tradeSide = b.dataset.side; render(); }));
@@ -1627,7 +1688,7 @@ function bind() {
 }
 const LUCK_TE = 0.15; // how far the account typically drifts from the S&P in a year by chance alone (from the backtest)
 function portCurve() { const c = state.data.close_report.series; return { curve: { dates: c.dates, series: { "Paper account": c.account, "S&P 500 (SPY)": c.spy } }, band: { around: "S&P 500 (SPY)", te: state.data.close_report.luck_te ?? LUCK_TE, z: 1.96 } }; }
-function redraw() { if (state.tab === "port" && state.data?.close_report?.series?.dates?.length) drawChart(portCurve(), "#pchart"); if (state.tab === "record") drawChart(); if (state.tab === "defense" && state.data?.defense) drawChart(state.data.defense, "#dchart"); if (state.tab === "small" && state.data?.small) drawChart(state.data.small, "#schart"); if (state.tab === "real" && state.data?.walk_forward) drawChart(state.data.walk_forward, "#wchart"); }
+function redraw() { if (state.tab === "me" && state.data?.close_report?.series?.dates?.length) drawChart(portCurve(), "#mechart"); if (state.tab === "port" && state.data?.close_report?.series?.dates?.length) drawChart(portCurve(), "#pchart"); if (state.tab === "record") drawChart(); if (state.tab === "defense" && state.data?.defense) drawChart(state.data.defense, "#dchart"); if (state.tab === "small" && state.data?.small) drawChart(state.data.small, "#schart"); if (state.tab === "real" && state.data?.walk_forward) drawChart(state.data.walk_forward, "#wchart"); }
 let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => redraw(), 150); });
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => redraw());
 new MutationObserver(() => redraw()).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
@@ -1710,7 +1771,7 @@ function drawPopup() {
     body = `<div class="empty">No chart for ${esc(t)} yet. It's added on the next full update.</div>`;
   } else {
     body = `<div class="spans" role="group" aria-label="Timespan">${SPANS.map(([k]) => `<button type="button" data-span="${k}" aria-pressed="${pop.span === k}">${k}</button>`).join("")}
-      <span class="lg"><span><i style="border-color:var(--good)"></i>Bought</span><span><i style="border-color:var(--bad)"></i>Sold</span><span><b style="font:600 10px var(--mono)">disc.</b> disclosed</span><span style="color:var(--accent)">▲▼ you</span></span></div>
+      <span class="lg"><span><i style="border-color:var(--good)"></i>Bought</span><span><i style="border-color:var(--bad)"></i>Sold</span><span><b style="font:600 10px var(--mono)">disc.</b> disclosed</span><span style="display:inline-flex;align-items:center;gap:4px"><img src="/me.jpg" alt="" style="width:14px;height:14px;border-radius:50%;object-fit:cover" onerror="this.outerHTML='▲▼'">you</span></span></div>
       <div class="tc" id="tc"></div><div id="tdet"></div><div id="tlist"></div>
       <p class="foot" style="margin:0">The line shows daily closes; all prices are adjusted for splits and dividends, so a note's price can differ after a split. The forms give the trade date and a dollar range, not the time, price or share count. So the price shown is that day's low-to-high range and the share count is estimated from it, unless the member wrote the shares or price in the filing.</p>`;
   }
@@ -1765,22 +1826,22 @@ function drawTickerChart() {
   const BY = { you: "you", tap: "Buy button", tool: "the tool" };
   const mine = myF.map(f => {
     const x = xOfD(f[0]); if (x == null) return "";
-    const yy = y(all[dayIndex(f[0])] ?? f[3]), up = f[1] === "buy", s_ = 7;
-    const pts = up ? `${x},${yy - s_} ${x - s_},${yy + s_ * 0.6} ${x + s_},${yy + s_ * 0.6}` : `${x},${yy + s_} ${x - s_},${yy - s_ * 0.6} ${x + s_},${yy - s_ * 0.6}`;
-    return `<polygon points="${pts}" fill="${cv("--accent")}" stroke="${cv("--surface")}" stroke-width="1.5"><title>You ${up ? "bought" : "sold"} ${f[2]} sh at ${money2(f[3])} on ${fmtDate(f[0])} (${BY[f[4]] || f[4]})</title></polygon>`;
-  }).join("");
+    const yy = y(all[dayIndex(f[0])] ?? f[3]);
+    return { x, y: yy, f, i: myF.indexOf(f) };
+  }).filter(Boolean);
   const costY = held && held.avg && held.avg >= lo && held.avg <= hi ? y(held.avg) : null;
-  const costLine = costY == null ? "" : `<line x1="${m.l}" x2="${W - m.r}" y1="${costY}" y2="${costY}" stroke="${cv("--accent")}" stroke-dasharray="6 4" opacity=".8"/><text x="${W - m.r - 4}" y="${costY - 5}" text-anchor="end" style="fill:${cv("--accent")}">Your cost ${money2(held.avg)}</text>`;
+  const costLine = costY == null ? "" : `<line x1="${m.l}" x2="${W - m.r}" y1="${costY}" y2="${costY}" stroke="${cv("--accent")}" stroke-dasharray="6 4" opacity=".8"/><text x="${W - m.r - 4}" y="${costY - 5}" text-anchor="end" style="fill:${cv("--accent")};font-size:10.5px">Your cost ${money2(held.avg)}</text>`;
   pop.mine = { fills: myF, held, BY };
   const stems = mk.filter(o => o.y !== o.base).map(o => `<line x1="${o.x}" x2="${o.x}" y1="${o.base}" y2="${o.y}" stroke="${cv(o.tr.ty === "buy" ? "--good" : "--bad")}" stroke-width="1" opacity=".6"/>`).join("");
   host.innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(t)} price, ${pop.span}">${g}
-    <path d="${line}" fill="none" stroke="${cv("--s1")}" stroke-width="2" stroke-linejoin="round"/>${costLine}${stems}${mine}
+    <path d="${line}" fill="none" stroke="${cv("--s1")}" stroke-width="2" stroke-linejoin="round"/>${costLine}${stems}
     ${mk.map(o => `<circle cx="${o.x}" cy="${o.base}" r="3" fill="${cv(o.tr.ty === "buy" ? "--good" : "--bad")}"/>`).join("")}
     <line id="tln" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" stroke="${cv("--accent")}" stroke-dasharray="3 3" visibility="hidden"/>
     <line id="txh" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" stroke="${cv("--muted")}" visibility="hidden"/>
     <rect id="thit" x="${m.l}" y="${m.t}" width="${W - m.l - m.r}" height="${H - m.t - m.b}" fill="transparent"/></svg>
     ${mk.map(o => `<button type="button" class="mk ${many ? "dot" : ""}" data-k="${o.tr.k}" style="left:${o.x}px;top:${o.y}px;width:${many ? 10 : size}px;height:${many ? 10 : size}px;border-color:var(--${o.tr.ty === "buy" ? "good" : "bad"});${many ? `background:var(--${o.tr.ty === "buy" ? "good" : "bad"})` : ""}" title="${esc(o.tr.n)}: ${o.tr.ty === "buy" ? "bought" : "sold"} ${esc(fmtDate(o.tr.td))}">${many ? "" : headshot(o.tr, "", 0)}</button>`).join("")}
     ${many && !pop.sel ? "" : dz.filter(o => !many || (pop.sel && pop.sel.k === o.tr.k)).map(o => `<span class="dz" data-k="${o.tr.k}" style="left:${o.x}px;top:${H - m.b + 22 + o.row * 0}px;color:var(--${o.tr.ty === "buy" ? "good" : "bad"})" title="${esc(o.tr.n)} disclosed ${esc(fmtDate(o.tr.d))}">disc.</span>`).join("")}
+    ${mine.map(o => `<button type="button" class="mef ${o.f[1] === "sell" ? "sell" : "buy"}" data-mf="${o.i}" style="left:${o.x}px;top:${o.y}px" aria-label="You ${o.f[1] === "sell" ? "sold" : "bought"} on ${esc(fmtDate(o.f[0]))}"><img src="/me.jpg" alt="" onerror="this.style.display='none'"></button>`).join("")}
     <div class="tcip" id="tcip" hidden></div>`;
   // the disclosure marks share one row; overlapping ones are thinned out so labels stay readable
   if (!many) { const seen = []; host.querySelectorAll(".dz").forEach(el => { const x = parseFloat(el.style.left); if (seen.some(v => Math.abs(v - x) < 26)) el.style.visibility = "hidden"; else seen.push(x); }); }
@@ -1797,6 +1858,17 @@ function drawTickerChart() {
     det.innerHTML = pop.sel ? `<div class="tdet">${headshot(pop.sel, "av", 0)}<div>${tradeLineText(pop.sel)}</div></div>` : "";
   };
   host.querySelectorAll(".mk,.dz").forEach(el => el.addEventListener("click", ev => { ev.stopPropagation(); const k = +el.dataset.k; select(pop.sel && pop.sel.k === k ? null : k); }));
+  // your own trades: tap a cat to see that trade
+  host.querySelectorAll(".mef").forEach(el => el.addEventListener("click", ev => {
+    ev.stopPropagation();
+    const was = el.classList.contains("on");
+    select(null); host.querySelectorAll(".mef").forEach(e => e.classList.remove("on"));
+    if (was) return;
+    el.classList.add("on");
+    const f = myF[+el.dataset.mf];
+    det.innerHTML = `<div class="tdet"><img src="/me.jpg" alt="" style="width:34px;height:34px;border-radius:50%;object-fit:cover;border:2px solid var(--${f[1] === "sell" ? "bad" : "good"})" onerror="this.style.display='none'">
+      <div><b>You ${f[1] === "sell" ? "sold" : "bought"}</b> ${Number(f[2]).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at <b>${money2(f[3])}</b> on ${esc(fmtDate(f[0]))}<div class="foot">${esc({ you: "Placed by you", tap: "Buy button", tool: "Placed by the tool" }[f[4]] || "")}</div></div></div>`;
+  }));
   // your own trades of this stock in this span
   const myRows = myF.slice().sort((a, b) => b[0].localeCompare(a[0]));
   const myHtml = myRows.length || held ? `<div class="tdet" style="display:block"><b>Your trades</b>${held ? ` · holding ${Number(held.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh, cost ${money2(held.avg)}, ${pct(held.plpc)}` : ""}
@@ -1932,7 +2004,7 @@ function tradeCard(doc, tr, h, sec) {
 const CTX = {};
 function ctxBlock(tr) {
   const k = tr.t + "|" + tr.td, c = CTX[k];
-  const flags = (tr.sg || []).length ? `<div class="foot" style="color:var(--ink2)"><b>Flagged:</b> ${tr.sg.map(esc).join(" · ")}</div>` : `<div class="foot">Nothing unusual flagged on this trade.</div>`;
+  const flags = tr.own ? "" : (tr.sg || []).length ? `<div class="foot" style="color:var(--ink2)"><b>Flagged:</b> ${tr.sg.map(esc).join(" · ")}</div>` : `<div class="foot">Nothing unusual flagged on this trade.</div>`;
   const before = tr.p30 != null ? `<div class="foot" style="color:var(--ink2)"><b>Stock in the 30 days before:</b> <span class="${cls(tr.p30)}">${pct(tr.p30)}</span></div>` : "";
   let sec;
   if (!c) sec = `<button type="button" class="link" data-ctx="${esc(k)}">Show the company's SEC filings around this trade</button>`;
@@ -2181,6 +2253,7 @@ function route(hash) {
   else if (/^today-/.test(a)) { tab("today"); aim("#" + a); }
   else if (a === "members") { tab("members"); MEM.key = b || null; MEM.open = null; MEM.tq = ""; MEM.tshow = 40; }
   else if (a === "health") { tab("health"); HEALTH.js = null; }
+  else if (a === "me") { tab("me"); }
   else if (["today", "record", "defense", "small", "works", "real", "port", "alerts"].includes(a)) tab(a);
   else return;
   render(); scrollTo(0, 0);
