@@ -885,6 +885,99 @@ def _substack_mirror(sub, max_hours=30):
         return None
 
 
+META_GRAPH = "https://graph.facebook.com/" + (os.environ.get("META_GRAPH_VERSION") or "v23.0")
+
+
+def _meta_ig_user(token):
+    """The owner's Instagram professional account ID (Business Discovery asks through it): META_IG_USER_ID, or the
+    first Instagram account linked to a Facebook Page the token can see."""
+    if os.environ.get("META_IG_USER_ID"):
+        return os.environ["META_IG_USER_ID"].strip()
+    r = requests.get(META_GRAPH + "/me/accounts", params={"fields": "instagram_business_account", "access_token": token}, timeout=30)
+    for pg in (r.json().get("data") or []) if r.status_code == 200 else []:
+        if (pg.get("instagram_business_account") or {}).get("id"):
+            return pg["instagram_business_account"]["id"]
+    return None
+
+
+def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
+    """Members' public Instagram posts through Meta's Instagram Business Discovery (free; owner's Meta app + token,
+    Oct 21). Works for members whose accounts are Business or Creator accounts (most official ones are). Meta allows
+    about 200 calls an hour, so each run reads `per_run` accounts, the least recently read first."""
+    token = (os.environ.get("META_ACCESS_TOKEN") or "").strip()
+    if not token:
+        _log("Instagram: waiting for the Meta setup (META_ACCESS_TOKEN not added yet)")
+        return
+    handles = {}
+    for b, m in leg.items():
+        v = (m.get("social") or {}).get("instagram")
+        if m.get("current") and isinstance(v, str) and v:
+            handles[v.strip("@").lower()] = b
+    for b, a in acc.items():
+        for v in a.get("instagram") or []:
+            handles.setdefault(v.strip("@").lower(), b)
+    ig = _meta_ig_user(token)
+    if not ig:
+        _log("Instagram: the Meta token can't see an Instagram professional account linked to a Facebook Page; set META_IG_USER_ID")
+        return
+    seen_at = st.setdefault("ig_read", {})
+    skip = st.setdefault("ig_skip", {})          # not a Business/Creator account (or gone): look again in 30 days
+    ok_h = sorted(h for h in handles if time.time() - skip.get(h, 0) > 30 * 86400)
+    if rotate is not None and ok_h:       # the hourly job doesn't keep its state: take the next slice each hour
+        k = (rotate * per_run) % len(ok_h)
+        todo = (ok_h[k:] + ok_h[:k])[:per_run]
+    else:
+        todo = sorted(ok_h, key=lambda h: seen_at.get(h, 0))[:per_run]
+    out_dir = _dir(cfg, "posts", "ig")
+    added, n, failed = 0, 0, []
+    for h in todo:
+        if time.time() > deadline:
+            break
+        fields = f"business_discovery.username({h}){{media.limit(25){{caption,timestamp,permalink,media_type}}}}"
+        try:
+            r = requests.get(f"{META_GRAPH}/{ig}", params={"fields": fields, "access_token": token}, timeout=30)
+            js = r.json()
+        except Exception as e:
+            failed.append(f"{h} ({type(e).__name__})")
+            continue
+        err = js.get("error") or {}
+        if err:
+            code = err.get("code")
+            if code in (190, 102) or err.get("type") == "OAuthException" and code in (10, 200):
+                _log(f"Instagram: the Meta access token was refused ({str(err.get('message'))[:120]}); it may have expired")
+                return
+            if code in (4, 17, 32, 613):
+                _log("Instagram: Meta's hourly limit reached; the next run continues")
+                break
+            if code == 110 or err.get("error_subcode") in (2207013,) or "business" in str(err.get("message", "")).lower() or code == 100:
+                skip[h] = time.time()           # a personal account or no such account: Business Discovery can't read it
+                continue
+            failed.append(f"{h} ({code})")
+            continue
+        n += 1
+        seen_at[h] = time.time()
+        media = ((js.get("business_discovery") or {}).get("media") or {}).get("data") or []
+        path = os.path.join(out_dir, re.sub(r"[^a-z0-9._-]", "_", h) + ".jsonl.gz")
+        old = read_jsonl(path) if os.path.exists(path) else []
+        have = {x[4] for x in old}
+        rows = []
+        for mm in media:
+            url = mm.get("permalink") or ""
+            d = pd.to_datetime(mm.get("timestamp"), errors="coerce", utc=True)
+            if not url or url in have or pd.isna(d):
+                continue
+            cap = re.sub(r"\s+", " ", mm.get("caption") or "").strip()
+            if not cap:
+                continue
+            rows.append(rec(d.strftime("%Y-%m-%d"), handles[h], "Instagram", cap, url, tg))
+        if rows or not os.path.exists(path):
+            write_jsonl(path, sorted(old + rows, key=lambda x: x[0]))
+        added += len(rows)
+    _log(f"Instagram: {n} of {len(handles)} member accounts read this run, +{added:,} posts"
+         + (f"; {sum(1 for h in handles if h in skip)} aren't Business/Creator accounts (Meta can't read those)" if skip else "")
+         + (f"; failed for {len(failed)}: {', '.join(failed[:6])}" if failed else ""))
+
+
 def collect_youtube(cfg, st, tg, leg, acc, deadline):
     key = os.environ.get("YOUTUBE_API_KEY") or cfg.get("YOUTUBE_API_KEY")
     if not key:
@@ -1311,7 +1404,8 @@ def update_all(cfg, minutes, history=True):
                      ("Bluesky", lambda: collect_bluesky(cfg, st, tg, hmap, deadline)),
                      ("Mastodon", lambda: collect_mastodon(cfg, st, tg, leg, acc, deadline)),
                      ("Substack", lambda: collect_substack(cfg, st, tg, acc, deadline)),
-                     ("YouTube", lambda: collect_youtube(cfg, st, tg, leg, acc, deadline))):
+                     ("YouTube", lambda: collect_youtube(cfg, st, tg, leg, acc, deadline)),
+                     ("Instagram", lambda: collect_instagram(cfg, st, tg, leg, acc, deadline))):
         if time.time() > deadline:
             _log(f"Social: {name} skipped: the {minutes:g}-minute time limit ran out before it")
             continue

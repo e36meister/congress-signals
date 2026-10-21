@@ -73,7 +73,8 @@ cap = lambda m: min(deadline, time.time() + m * 60)
 REST = (("Bluesky", lambda: S.collect_bluesky(cfg, st, tg, hmap, cap(5), ocr_days=3, max_ocr=40)),
         ("Mastodon", lambda: S.collect_mastodon(cfg, st, tg, leg, acc, cap(2))),
         ("Substack", lambda: S.collect_substack(cfg, st, tg, acc, cap(1.5))),
-        ("YouTube", lambda: S.collect_youtube(cfg, st, tg, leg, acc, cap(1.5)) if dt.datetime.utcnow().hour % 3 == 0 else None))
+        ("YouTube", lambda: S.collect_youtube(cfg, st, tg, leg, acc, cap(1.5)) if dt.datetime.utcnow().hour % 3 == 0 else None),
+        ("Instagram", lambda: S.collect_instagram(cfg, st, tg, leg, acc, cap(2), per_run=40, rotate=int(time.time() // 3600))))
 # The Congress press-release index is left to the twice-daily posts job: hourly it ignored its time cap (21 minutes
 # on one month's index) and never found anything the members' own sites hadn't already.
 def run_one(name, fn):
