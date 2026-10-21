@@ -4955,7 +4955,7 @@ def bad_price_tickers(px, meta):
 REFEREE_PER_MONTH = 60     # Tiingo free plan: ~500 different stocks a month, shared with the delisted fill-in
 
 
-def tiingo_referee(cfg, bad, px):
+def tiingo_referee(cfg, bad, px, priority=None):
     """Tiingo settles the stocks Yahoo's prices were set aside for and Alpaca couldn't confirm (study Oct 21: Tiingo
     was outvoted on 26 of 83k stock-days, Alpaca 1,054, Yahoo 166; Yahoo's misses are fake spikes on foreign OTC and
     reused tickers, Alpaca's are split adjustments). For each one:
@@ -4980,7 +4980,9 @@ def tiingo_referee(cfg, bad, px):
     used = sum(1 for d in tried.values() if str(d).startswith(month) and not str(d).endswith("x"))
     ref_used = sum(1 for v in verdicts.values() if str(v.get("at", "")).startswith(month))
     room = max(0, min(REFEREE_PER_MONTH - ref_used, 495 - used, 40))
-    todo = [t for t in sorted(bad) if t in px.columns and _days_since(str(verdicts.get(t, {}).get("at", "2000-01-01"))[:10]) >= 30]
+    pr = priority or {}         # most-traded first, so the stocks that matter are settled in the first run
+    todo = [t for t in sorted(bad, key=lambda t: (-pr.get(t, 0), t))
+            if t in px.columns and _days_since(str(verdicts.get(t, {}).get("at", "2000-01-01"))[:10]) >= 30]
     fails, asked = [], 0
     for t in todo:
         if not key or asked >= room:
@@ -5125,7 +5127,7 @@ def prepare(cfg):
             f"(e.g. {', '.join(real[:6])})")
     repaired = []
     try:
-        bad, settled, tseries = tiingo_referee(cfg, bad, px)
+        bad, settled, tseries = tiingo_referee(cfg, bad, px, priority=tx["ticker"].value_counts().to_dict())
         for t, s_ in tseries.items():           # Tiingo's closes replace Yahoo's for these (opens dropped below)
             px[t] = s_.reindex(px.index)
         repaired = sorted(tseries)
