@@ -246,6 +246,16 @@ for x in old_items:      # ranked before Oct 19: industry tone and passing menti
                     r"Financial Services|Communication Services|Consumer Cyclical|Consumer Defensive|Industrials|Basic Materials|Utilities)", w)]
         x["lvl"] = 0 if not x["why"] else min(int(x.get("lvl") or 0), 2)
         x["sv"] = 4
+for x in old_items:      # tone read before Oct 22 missed "we need oversight over <name>"-style wording
+    if (x.get("tv") or 0) < 1:
+        sents = PS._sentences(x.get("text") or "")
+        for g in x.get("tg") or []:
+            if len(g) >= 3 and g[1] in ("person", "lobbyist", "co") and g[0]:
+                w = str(g[0]).split()[-1] if g[1] != "co" else str(g[0])
+                g[2] = PS.cue_tone([s for s in sents if w.lower() in s.lower()], g[2])
+        x["tv"] = 1
+for x in items:
+    x["tv"] = 1
 allx = items + old_items
 keep = [x for x in allx if x.get("lvl", 0) >= 1][:600] + [x for x in allx if x.get("lvl", 0) < 1][:200]
 keep.sort(key=lambda x: (x.get("d", ""), x.get("at", "")), reverse=True)

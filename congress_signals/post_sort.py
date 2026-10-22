@@ -115,17 +115,46 @@ def model_name():
     return "vader" if _vader else "words"
 
 
+# Sentiment models read "We need serious oversight over Elon Musk." as neutral (no angry words), but calling for
+# oversight of, investigating, or holding someone accountable is plainly against them (owner, Oct 22: Jayapal's post).
+# When a sentence that names the target has this wording, the tone toward the target is at least that negative.
+AGAINST_RX = re.compile(
+    r"\b(oversight (?:over|of|on|into)|(?:need|needs|demand\w*|call(?:s|ing)? for|must have) (?:\w+ ){0,3}(?:oversight|accountability|answers|investigation)|"
+    r"hold\w* .{0,40}accountable|(?:no|without|lack of|zero) (?:\w+ ){0,2}(?:accountability|oversight)|investigat\w+|probe|subpoena\w*|conflicts? of interest|rein (?:in|him|her|them)|"
+    r"crack(?:ing)? down|must (?:stop|end)|out of control|unchecked|unaccountable|self-dealing|profiteer\w*|"
+    r"price[- ]goug\w*|ripping off|rip-?off|corrupt\w*|disgrace\w*|shameful|unacceptable|predatory|reckless|greed\w*|"
+    r"scam\w*|lied|lying|dangerous|threat to|attack(?:s|ing)? on|gutting|slash(?:es|ed|ing)? |illegal\w*|break(?:s|ing) the law|"
+    r"stop .{0,30}from|block\w* .{0,30}(?:merger|deal)|fire[ds]? (?:\w+ ){0,2}workers|lay(?:ing)? off)\b", re.I)
+FOR_RX = re.compile(r"\b(proud to (?:partner|work|support|welcome)|thank(?:s| you)? to|grateful (?:to|for)|congratulat\w+|"
+                    r"applaud\w*|great (?:news|partner|work) (?:from|by)|welcome[ds]? .{0,30} investment|"
+                    r"creat(?:e|es|ed|ing) .{0,20}jobs|investing in)\b", re.I)
+
+
+def cue_tone(sents, s):
+    """Adjust a tone toward a target from the wording of the sentences that name it."""
+    if not sents:
+        return s
+    neg = any(AGAINST_RX.search(x) for x in sents)
+    pos = any(FOR_RX.search(x) for x in sents)
+    if neg and not pos:
+        return round(min(s if s is not None else 0.0, -0.5), 2)
+    if pos and not neg and (s is None or s > -0.3):
+        return round(max(s if s is not None else 0.0, 0.4), 2)
+    return s
+
+
 def _target_tone(text, words, fallback):
     """Tone of the sentences that name the target (or the whole post when none do)."""
     sents = _sentences(text)
-    hit = [s for s in sents if any(w and w.lower() in s.lower() for w in words)] or sents[:3]
+    named = [s for s in sents if any(w and w.lower() in s.lower() for w in words)]
+    hit = named or sents[:3]
     if not hit:
         return fallback
     m = _tone_model(hit[:4])
     if m:
-        return round(sum(m) / len(m), 2)
+        return cue_tone(named, round(sum(m) / len(m), 2))
     v = [x for x in (_tone_vader(s) for s in hit[:4]) if x is not None]
-    return round(sum(v) / len(v), 2) if v else fallback
+    return cue_tone(named, round(sum(v) / len(v), 2) if v else fallback)
 
 
 def sort_record(r, names=None):
