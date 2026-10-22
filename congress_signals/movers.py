@@ -41,7 +41,7 @@ UP_W = re.compile(r"\b(jumps?|jumped|rises?|rose|surges?|soars?|rall(?:y|ies|yin
 JUNK = re.compile(r"((?:buys|sells|acquires|purchases|sold|bought) [\d,]+ shares of|shares of .{0,60}(?:sold|bought|acquired|purchased) by|(?:increases|raises|boosts|lifts|trims|cuts|reduces|lowers|sells|grows) (?:its )?(?:holdings|stake|position)|"
                   r"holdings (?:in|raised|lifted|trimmed|lowered|cut|boosted)|(?:new|takes) (?:stake|position) in|"
                   r"shares (?:sold|bought|acquired|purchased) by|acquires new|"
-                  r"interactive stock chart|stock forecasts?|form 4|conference call date|announce\w* .*earnings on|"
+                  r"interactive stock chart|stock price, news, quote|quote & history|stock forecasts?|form 4|conference call date|announce\w* .*earnings on|"
                   r"to announce|price target consensus|stock price & overview|historical data|"
                   r"\$[A-Z]+ (?:shares|stock)\b.*(?:llc|inc\.?|management|advisors?|capital))", re.I)
 
@@ -176,7 +176,7 @@ def news(api_h, t, co, log, days=3, direction=0):
             same, other = (DOWN_W, UP_W) if direction < 0 else (UP_W, DOWN_W)
             x += (2 if same.search(n["h"]) else 0) - (3 if other.search(n["h"]) and not same.search(n["h"]) else 0)
         return x + (1 if (n["at"] or "") >= recent else 0)
-    out = [n for n in out if not JUNK.search(n["h"])] or out
+    out = [n for n in out if not JUNK.search(n["h"])]      # only junk: better no headline than a misleading one
     out.sort(key=score, reverse=True)       # stable: newest first within the same score
     return [{k: v for k, v in n.items() if k != "n_sym"} for n in out[:4]]
 
