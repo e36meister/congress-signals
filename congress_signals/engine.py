@@ -3,7 +3,7 @@
 #  Collects US politicians' disclosed stock trades from public sources, scores
 #  each purchase, backtests the picks, and builds a ranked watchlist.
 # =============================================================================
-import os, re, io, json, time, math, zipfile, base64, datetime as dt, unicodedata, smtplib
+import os, re, io, json, time, math, zipfile, base64, datetime as dt, unicodedata, smtplib, threading
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1487,7 +1487,8 @@ _OPEN_BUF = []           # opening prices from every Yahoo download this run (sa
 _ACT_BUF = []            # dividends and splits from the same downloads (for company size at the time)
 
 
-def _yf_close(tickers, start, tries=3):
+def _yf_close(tickers, start, tries=3, quiet=False):
+    """quiet: the caller retries a failure another way, so the last try isn't reported as a failure here."""
     import yfinance as yf
     logging.getLogger("yfinance").setLevel(logging.CRITICAL)
     for a in range(tries):
@@ -1513,6 +1514,8 @@ def _yf_close(tickers, start, tries=3):
             if a < tries - 1:      # a retry that then works is not a failure; only the last try is reported as one
                 log(f"Prices: Yahoo try {a+1} came back with nothing ({type(e).__name__}); trying again")
                 time.sleep(5 * (a + 1))
+            elif quiet:
+                log(f"Prices: Yahoo came back with nothing for a batch of {len(tickers)}; trying again in smaller pieces")
             else:
                 log(f"Prices: Yahoo download failed after {tries} tries for {len(tickers)} stock(s) ({e})")
     return pd.DataFrame()
@@ -1980,7 +1983,19 @@ def load_prices(cfg, tickers, max_age_hours=12, priority=None):
         for i in range(0, len(rest), 200):
             if out_of_time(cfg, 45):
                 break
-            upd.append(_yf_close(rest[i:i + 200], since, tries=2))
+            part = rest[i:i + 200]
+            got = _yf_close(part, since, tries=2, quiet=True)
+            if not len(got) and len(part) > 25:
+                # Oct 22: a whole batch of 58 came back empty from Yahoo (a blip, or one bad symbol spoiling the
+                # batch). Try again in smaller pieces after a pause before calling it a failure.
+                time.sleep(20)
+                for j in range(0, len(part), 25):
+                    upd.append(_yf_close(part[j:j + 25], since, tries=2))
+                    time.sleep(2)
+            elif not len(got):
+                upd.append(_yf_close(part, since, tries=1))
+            else:
+                upd.append(got)
             time.sleep(1)
         upd = pd.concat(upd, axis=1) if upd else pd.DataFrame()
         if len(upd):
@@ -2750,8 +2765,7 @@ def collect_contracts(cfg, meta, tickers, deep=False):
                                "Primary Place of Performance"],
                     "sort": "Transaction Amount", "order": "desc", "limit": 100, "page": page}
             try:
-                r = requests.post("https://api.usaspending.gov/api/v2/search/spending_by_transaction/",
-                                  json=body, timeout=60)
+                r = _usas_post(body)
                 res = r.json().get("results", [])
             except Exception:
                 return t, None
@@ -6727,6 +6741,29 @@ def collect_bluesky(cfg):
 # 18. Company events: earnings dates (Yahoo) and FDA approvals (openFDA)
 # ----------------------------------------------------------------------------
 _EV_FAILS = []
+_FDA_N = [0, 0]           # healthcare companies looked up on openFDA, and how many had any application
+
+
+def _fda_apps(key, pages=5):
+    """Drug applications (openFDA drugsfda) whose sponsor is this company.
+    Oct 22: openFDA now matches sponsor_name only as the whole, upper-case name ("PFIZER INC"), so the old phrase
+    search ('sponsor_name:"pfizer"') found nothing for any company (24 of 24 'not found'). Now: the first word in
+    upper case with a wildcard (PFIZER*, ELI*), then keep the sponsors whose cleaned name matches the company."""
+    words = (key or "").split()
+    if not words:
+        return []
+    out = []
+    for page in range(pages):
+        js = _get_json("https://api.fda.gov/drug/drugsfda.json",
+                       params={"search": f"sponsor_name:{words[0].upper()}*", "limit": 100, "skip": page * 100})
+        res = (js or {}).get("results", [])
+        for app in res:
+            sk = company_key(app.get("sponsor_name"))
+            if sk == key or sk.startswith(key + " "):
+                out.append(app)
+        if len(res) < 100:
+            break
+    return out
 
 
 def collect_events(cfg, meta, tickers, deep=False):
@@ -6749,9 +6786,10 @@ def collect_events(cfg, meta, tickers, deep=False):
         except Exception as e:
             _EV_FAILS.append(f"{t}: {type(e).__name__}")
         if (meta.get(t) or {}).get("sector") == "Healthcare" and company_key(meta[t].get("name")):
-            js = _get_json("https://api.fda.gov/drug/drugsfda.json",
-                           params={"search": f'sponsor_name:"{company_key(meta[t]["name"])}"', "limit": 100})
-            for app in (js or {}).get("results", []):
+            apps = _fda_apps(company_key(meta[t]["name"]))
+            _FDA_N[0] += 1
+            _FDA_N[1] += bool(apps)
+            for app in apps:
                 for sub in app.get("submissions", []):
                     d = sub.get("submission_status_date")
                     if sub.get("submission_status") == "AP" and d:
@@ -6764,6 +6802,11 @@ def collect_events(cfg, meta, tickers, deep=False):
             json.dump(cache, open(path, "w"))
             log(f"Company events: {i}/{len(todo)}")
     json.dump(cache, open(path, "w"))
+    # nothing found for any company: check the search itself on a sponsor that certainly has applications
+    if _FDA_N[0] >= 5 and _FDA_N[1] == 0 and not _fda_apps("pfizer", pages=1):
+        log(f"Company events: openFDA search failed: no drug applications found even for Pfizer "
+            f"({_FDA_N[0]} healthcare companies looked up); check the sponsor_name query")
+    _FDA_N[:] = [0, 0]
     if len(_EV_FAILS) >= 3 and len(_EV_FAILS) >= 0.1 * max(1, len(todo)):
         log(f"Company events: earnings dates failed for {len(_EV_FAILS)} of {len(todo)} companies (e.g. {', '.join(_EV_FAILS[:5])})")
     _EV_FAILS.clear()
@@ -7639,6 +7682,38 @@ def religion_for(idx, chamber, last_key, first, state):
 ASSIST_GROUPS = {"grant": ["02", "03", "04", "05"], "loan": ["07", "08"], "payment": ["06", "10"]}
 
 
+_USAS_LOCK = threading.Lock()
+_USAS = {"until": 0.0, "streak": 0}
+
+
+def _usas_post(body, tries=4):
+    """USAspending search with retries. Oct 22: about 3 in 4 calls failed with ConnectionError (their server drops
+    connections when 4 workers ask at once) and each failure lost that company for the run. Now a refused or
+    dropped call waits and tries again (all workers pause together, 5 s doubling up to 2 min); 429/5xx likewise.
+    Raises the last error if every try fails, so callers still see the failure."""
+    last = None
+    for a in range(tries):
+        while True:
+            with _USAS_LOCK:
+                w = _USAS["until"] - time.time()
+            if w <= 0:
+                break
+            time.sleep(min(w, 15))
+        try:
+            r = requests.post("https://api.usaspending.gov/api/v2/search/spending_by_transaction/", json=body, timeout=90)
+            if r.status_code == 429 or r.status_code >= 500:
+                raise requests.HTTPError(f"HTTP {r.status_code}")
+            with _USAS_LOCK:
+                _USAS["streak"] = 0
+            return r
+        except Exception as e:
+            last = e
+            with _USAS_LOCK:
+                _USAS["streak"] += 1
+                _USAS["until"] = max(_USAS["until"], time.time() + min(120, 5 * 2 ** min(_USAS["streak"] - 1, 5)))
+    raise last
+
+
 def collect_assistance(cfg, meta, tickers, deep=False):
     """Federal grants, loans and direct payments to each company (CHIPS grants, energy loans, subsidies...).
     deep=True: every page since START_DATE (the history fill); otherwise the newest 100 per kind, added to the file."""
@@ -7663,8 +7738,7 @@ def collect_assistance(cfg, meta, tickers, deep=False):
                         "fields": ["Action Date", "Transaction Amount", "Recipient Name", "Awarding Agency"],
                         "sort": "Action Date", "order": "desc", "limit": 100, "page": page}
                 try:
-                    r = requests.post("https://api.usaspending.gov/api/v2/search/spending_by_transaction/",
-                                      json=body, timeout=60)
+                    r = _usas_post(body)
                     if r.status_code != 200:
                         break
                     res = r.json().get("results", [])
