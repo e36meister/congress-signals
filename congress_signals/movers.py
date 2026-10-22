@@ -29,6 +29,17 @@ ITEMS = {"1.01": "material agreement", "1.02": "agreement ended", "1.03": "bankr
          "7.01": "investor disclosure", "8.01": "other event"}
 PARK = {"SPY", "VOO", "IVV", "SGOV", "BIL", "SHV"}
 UA_WEB = {"User-Agent": "Mozilla/5.0 (compatible; CapitolCapital research)"}
+# headlines that explain a move rank first; ownership notices, charts and boilerplate rank last
+WHY_WORDS = re.compile(r"\b(why|falls?|fell|drops?|dropped|slides?|slid|sinks?|sank|slumps?|plunges?|tumbles?|tanks?|"
+                       r"jumps?|jumped|rises?|rose|surges?|soars?|rall(?:y|ies)|climbs?|gains?|sell-?off|selloff|"
+                       r"down|up \d|lower|higher|beats?|miss(?:es)?|guidance|outlook|forecast|upgrades?|downgrades?|"
+                       r"cuts?|raises?|lawsuit|probe|investigation|recall|deal|acquir\w*|merger)\b", re.I)
+JUNK = re.compile(r"((?:increases|raises|boosts|lifts|trims|cuts|reduces|lowers|sells|grows) (?:its )?(?:holdings|stake|position)|"
+                  r"holdings (?:in|raised|lifted|trimmed|lowered|cut|boosted)|(?:new|takes) (?:stake|position) in|"
+                  r"shares (?:sold|bought|acquired|purchased) by|acquires new|"
+                  r"interactive stock chart|stock forecasts?|form 4|conference call date|announce\w* .*earnings on|"
+                  r"to announce|price target consensus|stock price & overview|historical data|"
+                  r"\$[A-Z]+ (?:shares|stock)\b.*(?:llc|inc\.?|management|advisors?|capital))", re.I)
 
 
 def _et_now():
@@ -116,8 +127,9 @@ def news(api_h, t, co, log, days=3):
                           "at": n.get("created_at") or "", "n_sym": len(syms)})
     except Exception as e:
         log(f"Why it moved: Alpaca news failed for {t} ({type(e).__name__}); using Google News")
-    if len(items) < 2:
-        q = quote(f'"{co}" stock' if co else f"{t} stock")
+    if True:     # Google News also finds the market stories that explain sector-wide moves
+        name = re.sub(r",? (inc|corp|corporation|plc|ltd|co|company|holdings?|group)\.?$", "", (co or "").strip(), flags=re.I)
+        q = quote(f'("{name}" OR {t}) stock' if name else f"{t} stock")
         try:
             r = requests.get(f"https://news.google.com/rss/search?q={q}+when:{days}d&hl=en-US&gl=US&ceid=US:en",
                              headers=UA_WEB, timeout=30)
@@ -138,6 +150,8 @@ def news(api_h, t, co, log, days=3):
                 items.append({"h": title.strip(), "src": src, "u": link.strip(), "at": pub, "n_sym": 1})
         except Exception as e:
             log(f"Why it moved: Google News failed for {t} ({type(e).__name__})")
+    if not items:
+        log(f"Why it moved: no headlines found for {t} from either news source")
     # company-specific stories first (fewer tickers tagged), then newest
     seen, out = set(), []
     for n in sorted(items, key=lambda x: x["at"], reverse=True):
@@ -145,7 +159,9 @@ def news(api_h, t, co, log, days=3):
         if n["h"] and k not in seen:
             seen.add(k)
             out.append(n)
-    out.sort(key=lambda x: (x["n_sym"] > 3, ""), reverse=False)
+    score = lambda n: (2 if WHY_WORDS.search(n["h"]) else 0) - (3 if JUNK.search(n["h"]) else 0) - (1 if n["n_sym"] > 3 else 0)
+    out = [n for n in out if not JUNK.search(n["h"])] or out
+    out.sort(key=score, reverse=True)       # stable: newest first within the same score
     return [{k: v for k, v in n.items() if k != "n_sym"} for n in out[:4]]
 
 
@@ -358,7 +374,7 @@ def run(api_h, holdings, candidates, info, member_trades, log, dry=False, force=
         for x in sorted(member_trades.get(t) or [], key=lambda x: x.get("fd") or x.get("td") or "", reverse=True):
             d = x.get("fd") or x.get("td") or ""
             if d >= cutoff:
-                mem.append(f"{x.get('n')} {'bought' if x.get('ty') == 'buy' else 'sold'} (traded {x.get('td')}, disclosed {x.get('fd') or '?'})")
+                mem.append(f"{x.get('n')} {'bought' if x.get('ty') == 'buy' else 'sold'} on {x.get('td')}" + (f", disclosed {x.get('fd')}" if x.get("fd") else ""))
         lines, rel = explain(t, m, spy, y, pm, etf_mv, mem, kind)
         key = f"{t}|{day_key}|{kind}"
         rec = {"t": t, "co": (info.get(t) or {}).get("co") or y.get("co"), "date": day_key, "kind": kind,
