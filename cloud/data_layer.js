@@ -15,6 +15,7 @@ async function loadPosts() { return (await api("/api/posts")).js; }
 async function loadAlerts() { return (await api("/api/notifications")).js; }
 async function loadHealth() { return (await api("/api/health")).js; }
 async function loadMovers() { return (await api("/api/movers")).js; }
+async function loadNews(t) { return (await api("/api/news?t=" + encodeURIComponent(t))).js; }
 async function loadTax() { return (await api("/api/tax")).js; }
 async function loadTaxSales(y) { return (await api(`/api/tax/file?y=${encodeURIComponent(y)}&f=sales.json`)).js; }
 async function loadOneChart(t) { return (await api("/api/chart?t=" + encodeURIComponent(t))).js; }
