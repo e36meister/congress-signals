@@ -153,6 +153,35 @@ def refresh_portfolio():
     cloud_store.put("dashboard_data.json", body.getvalue(), E.log)   # phone app
 
 
+def why_it_moved(force=(), dry=False):
+    """Explain big moves in what you hold and the BUY candidates (congress_signals/movers.py); every 30 min at most."""
+    import broker, cloud_store
+    from congress_signals import movers as M
+    if not force and not dry:
+        try:
+            st = json.loads(cloud_store.get(M.STATE_KEY, log=lambda m: None) or b"{}")
+        except Exception:
+            st = {}
+        if not M.due(st):
+            return None
+    s = broker.settings(60)
+    if not (s["key"] and s["secret"]):
+        E.log("Why it moved: no Alpaca keys; can't check prices")
+        return None
+    h = broker.Alpaca(s).h
+    data = json.loads(cloud_store.get("dashboard_data.json", E.log) or b"{}")
+    held = [p.get("t") for p in ((data.get("portfolio") or {}).get("positions") or []) if p.get("t")]
+    w = data.get("watchlist") or {}
+    cands = [r.get("t") for r in w.get("buys") or [] if r.get("action") == "BUY" and r.get("t")]
+    info = {r["t"]: {"co": r.get("co"), "sec": r.get("sec")} for r in (w.get("buys") or []) + (w.get("sells") or []) if r.get("t")}
+    try:
+        trades = (json.loads(cloud_store.get("ticker_charts.json", E.log) or b"{}").get("trades") or {})
+    except Exception as e:
+        E.log(f"Why it moved: member trades not loaded ({type(e).__name__})")
+        trades = {}
+    return M.run(h, held, cands, info, trades, E.log, dry=dry, force=tuple(force))
+
+
 def main():
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     seen = set(json.load(open(STATE))) if os.path.exists(STATE) else None
@@ -187,4 +216,8 @@ if __name__ == "__main__":
         try:
             refresh_portfolio()
         except Exception as e:
-            E.log(f"Quick check: portfolio refresh skipped ({type(e).__name__})")
+            E.log(f"Quick check: portfolio refresh failed ({type(e).__name__})")
+        try:
+            why_it_moved()
+        except Exception as e:
+            E.log(f"Why it moved: failed ({type(e).__name__}: {str(e)[:150]})")
