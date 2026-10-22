@@ -147,7 +147,13 @@ def news(api_h, t, co, log, days=3):
                     pub = parsedate_to_datetime(pub).astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                 except Exception:
                     pass
-                items.append({"h": title.strip(), "src": src, "u": link.strip(), "at": pub, "n_sym": 1})
+                # web results can be about another company with the same letters (MSB: Mesoblast on the ASX vs
+                # Mesabi Trust): keep only stories that name the company or its US listing
+                root = (name.split() or [""])[0] if name else ""
+                about = (root and len(root) >= 4 and re.search(rf"\b{re.escape(root)}", title, re.I)) or \
+                    re.search(rf"(?:\b(?:NYSE|NASDAQ|NYSEAMERICAN|NYSEARCA)\s*:\s*|\$){re.escape(t)}\b", title)
+                if about:
+                    items.append({"h": title.strip(), "src": src, "u": link.strip(), "at": pub, "n_sym": 1})
         except Exception as e:
             log(f"Why it moved: Google News failed for {t} ({type(e).__name__})")
     if not items:
@@ -345,6 +351,13 @@ def run(api_h, holdings, candidates, info, member_trades, log, dry=False, force=
         t, kind = tk
         y = yahoo(t, log)
         co = (info.get(t) or {}).get("co") or y.get("co")
+        if not co:      # Yahoo has no profile for some stocks: Alpaca's company name
+            try:
+                r = requests.get(f"https://paper-api.alpaca.markets/v2/assets/{t.replace('-', '.')}", headers=api_h, timeout=20)
+                co = (r.json() or {}).get("name") if r.ok else None
+                y["co"] = co
+            except Exception as e:
+                log(f"Why it moved: no company name for {t} ({type(e).__name__})")
         y["news"] = news(api_h, t, co, log)
         y["filings"] = filings(t, log)
         return t, kind, y
