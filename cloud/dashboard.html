@@ -56,6 +56,12 @@ section.panel{display:grid;gap:12px;align-content:start}
 .ph h2{font-size:19px;font-weight:600}
 .ph .sub{font-size:13px;color:var(--muted)}
 .morelist{display:grid}
+.why{display:inline-block;margin:4px 0 0;font:600 12px var(--body);padding:3px 9px;border-radius:999px;border:1px solid var(--rule);background:var(--sunken);cursor:pointer;white-space:nowrap}
+td .why{display:block;width:max-content}
+.why.neg{color:var(--bad) !important} .why.pos{color:var(--good) !important}
+.mover{padding:12px 14px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);margin-bottom:12px}
+.mover .mlines p{margin:0 0 6px;font-size:14px}
+.mnews{margin:4px 0 8px 18px;padding:0;font-size:13.5px} .mnews li{margin-bottom:4px}
 .tag.plain{cursor:default;border:0;background:none;padding:4px 2px;color:var(--ink2);font-weight:500}
 .hlist{display:grid;gap:10px}
 .hrow{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;font-size:14px;border-top:1px solid var(--rule);padding-top:10px}
@@ -432,6 +438,7 @@ const MORE_TABS = [
   { k: "works", l: "What works", d: "Which signals hold up, and the weekly automatic adjustments" },
   { k: "real", l: "Reality check", d: "Walk-forward test: the strategy on years it never saw" },
   { k: "tax", l: "Taxes", d: "Each sale's gain or loss, the Form 8949 statement and what to file" },
+  { k: "movers", l: "Why it moved", d: "Big moves in what you hold and the Buy candidates, explained" },
   { k: "health", l: "Data health", d: "Every data source: what's broken right now and what was fixed" },
 ];
 function goTab(t) {
@@ -603,6 +610,55 @@ document.addEventListener("submit", ev => {
   if (t) { document.getElementById("csq")?.blur(); openChart(t); }
 });
 
+// ---------- why it moved: 3%+ daily or 7%+ 5-day moves vs the S&P, explained (congress_signals/movers.py) ----------
+const MOVERS = { js: null, err: null, loading: false, focus: null, at: 0 };
+function moversLoad(force) {
+  if (MOVERS.loading || (!force && MOVERS.js && Date.now() - MOVERS.at < 5 * 60e3)) return;
+  MOVERS.loading = true;
+  loadMovers().then(js => { MOVERS.js = js || {}; MOVERS.err = null; MOVERS.at = Date.now(); })
+    .catch(e => { MOVERS.err = e; MOVERS.at = Date.now(); })
+    .finally(() => { MOVERS.loading = false; if (["movers", "port", "today", "me"].includes(state.tab)) render(); });
+}
+function moverFor(t) {
+  const m = (MOVERS.js?.items || {})[t];
+  if (!m) return null;
+  const age = (Date.now() - Date.parse(m.date + "T20:00:00Z")) / 864e5;
+  return age <= 3 ? m : null;
+}
+function moverChip(t) {
+  moversLoad();
+  const m = moverFor(t);
+  if (!m) return "";
+  const why = (m.lines || [])[1] || "";
+  const kind = /^Sector-wide/.test(why) ? "sector-wide" : /^Earnings/.test(why) ? "earnings" : /^Mostly this stock/.test(why) ? "this stock" : "";
+  return `<button type="button" class="why ${m.move < 0 ? "neg" : "pos"}" data-why="${esc(t)}">${m.move < 0 ? "▼" : "▲"} ${esc(pct(m.move / 100))} ${m.kind === "day" ? "today" : "5 days"}${kind ? ` · ${kind}` : ""} · why?</button>`;
+}
+function moverCard(m) {
+  const tm = x => { try { return fmtET(x); } catch (e) { return x; } };
+  return `<article class="panel mover" data-hl="mover:${esc(m.t)}"><div class="ph"><h2>${tkBtn(m.t)} <span class="${cls(m.move)}">${esc(pct(m.move / 100))}</span></h2>
+    <span class="sub">${esc(m.co || "")}${m.held ? " · you hold it" : ""}${m.cand ? " · Buy candidate" : ""} · ${esc(fmtDate(m.date))}</span></div>
+    <div class="mlines">${(m.lines || []).map(l => `<p>${esc(l)}</p>`).join("")}</div>
+    ${(m.news || []).length ? `<div class="foot"><b>Headlines</b></div><ul class="mnews">${m.news.map(n => `<li>${n.u ? `<a href="${esc(n.u)}" target="_blank" rel="noopener">${esc(n.h)}</a>` : esc(n.h)} <span class="foot">${esc(n.src || "")}${n.at ? " · " + esc(tm(n.at)) : ""}</span></li>`).join("")}</ul>` : ""}
+    ${(m.analysts || []).length > 2 ? `<div class="foot"><b>All analyst changes this week:</b> ${m.analysts.map(a => esc(a.d.slice(5) + " " + a.x)).join(" · ")}</div>` : ""}
+    ${(m.filings || []).length ? `<div class="foot"><b>Company filings:</b> ${m.filings.map(f => f.u ? `<a href="${esc(f.u)}" target="_blank" rel="noopener">${esc(f.d.slice(5) + " " + f.x)}</a>` : esc(f.d.slice(5) + " " + f.x)).join(" · ")}</div>` : ""}
+    ${(m.peers || []).length ? `<div class="foot"><b>Similar companies${m.industry ? ` (${esc(m.industry)})` : ""}:</b> ${m.peers.map(([p, v]) => `${esc(p)} <span class="${cls(v)}">${esc(pct(v / 100))}</span>`).join(" · ")}</div>` : ""}
+    <div class="foot">Checked ${esc(tm(m.at))}</div></article>`;
+}
+function renderMovers() {
+  moversLoad();
+  if (MOVERS.err) return `<div class="note err">Couldn't load "Why it moved"${MOVERS.err.code === "app_only" ? " (it's in the phone app)" : ""}.</div>`;
+  if (!MOVERS.js) return `<div class="empty">Loading…</div>`;
+  const items = Object.values(MOVERS.js.items || {}).sort((a, b) => b.date.localeCompare(a.date) || Math.abs(b.rel || 0) - Math.abs(a.rel || 0));
+  return `<div class="ph"><h2>Why it moved</h2><span class="sub">Stocks you hold and Buy candidates that moved 3%+ against the S&amp;P in a day, or 7%+ over 5 days. Checked every 30 minutes on market days.</span></div>
+    ${items.length ? items.map(moverCard).join("") : `<div class="empty">Nothing has moved that much in the last week.</div>`}`;
+}
+document.addEventListener("click", ev => {
+  const b = ev.target.closest("[data-why]"); if (!b) return;
+  ev.preventDefault(); ev.stopPropagation();
+  goTab("movers"); MOVERS.focus = b.dataset.why;
+  setTimeout(() => { const el = document.querySelector(`[data-hl="mover:${CSS.escape(b.dataset.why)}"]`); if (el) { el.scrollIntoView({ block: "start" }); el.classList.remove("hl"); void el.offsetWidth; el.classList.add("hl"); } }, 60);
+});
+
 function renderMore() {
   return `<section class="panel"><div class="morelist">
   ${MORE_TABS.map(m => `<button type="button" class="moreitem" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}
@@ -639,6 +695,7 @@ function render() {
   if (MORE_TABS.some(m => m.k === state.tab)) html += `<button type="button" class="moreback" data-more="more">‹ More</button>`;
   if (state.tab === "more") html += renderMore();
   if (state.tab === "health") html += renderHealth();
+  if (state.tab === "movers") html += renderMovers();
   if (state.tab === "me") html += renderMe(d);
   if (d.data_warning && (d.data_warning.problems || []).length && ["today", "port"].includes(state.tab)) html += dataWarning(d.data_warning);
   if (state.tab === "today") html += renderToday(d);
@@ -863,6 +920,7 @@ function pickRow(r, side) {
     <div>
       <div class="co">${esc(r.co || r.t)}${r.sec ? ` <span class="who">· ${esc(r.sec)}</span>` : ""}</div>
       <div class="who">${tradeLine(r)}</div>
+      ${moverChip(r.t)}
       ${peopleRow(r, side)}
       ${tagsHtml(whyFor(r), 6, `Why ${r.t} is on the list`)}
       ${ctx.length ? `<div class="tags">${ctx.join("")}</div>` : ""}
@@ -1316,7 +1374,7 @@ function renderPortfolio(d) {
   ${closeSection(d)}
   <section class="panel"><div class="ph"><h2>Positions</h2>${alpLink}</div>
     ${pos.length ? `<div class="tbl"><table><thead><tr><th>Ticker</th><th class="n">Shares</th><th class="n">Avg cost</th><th class="n">Price</th><th class="n">Value</th><th class="n">Gain</th><th>Held</th></tr></thead><tbody>
-    ${pos.map(x => `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${soldNote(x)}</td><td class="n">${Number(x.qty).toLocaleString()}</td><td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.px, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${heldCell(x, L)}</td></tr>`).join("")}
+    ${pos.map(x => `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${moverChip(x.t)}${soldNote(x)}</td><td class="n">${Number(x.qty).toLocaleString()}</td><td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.px, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${heldCell(x, L)}</td></tr>`).join("")}
     </tbody></table></div>
     <p class="foot">Suggested sell dates for your own positions use the current best holding period from the weekly check (What works → Automatic adjustments): ${(state.data.adaptive?.policy?.hold_other) ?? L.hold_days ?? 60} trading days for most stocks, ${(state.data.adaptive?.policy?.hold_small) ?? L.hold_small ?? L.hold_days ?? 60} for companies under $2B. They update if the check changes. The tool never sells your own positions.</p>` : `<div class="empty">No open positions yet. New BUY picks are bought at the next market open.</div>`}</section>
   ${stopSection(d)}
@@ -2390,6 +2448,7 @@ function route(hash) {
   else if (a === "members") { tab("members"); MEM.key = b || null; MEM.open = null; MEM.tq = ""; MEM.tshow = 40; }
   else if (a === "health") { tab("health"); HEALTH.js = null; }
   else if (a === "me") { tab("me"); }
+  else if (a === "movers") { tab("movers"); MOVERS.focus = b || null; MOVERS.js = null; if (b) aim(`[data-hl="mover:${CSS.escape(b)}"]`); }
   else if (["today", "record", "defense", "small", "works", "real", "port", "alerts"].includes(a)) tab(a);
   else return;
   render(); scrollTo(0, 0);
@@ -2421,6 +2480,7 @@ function loadTieReviews() { return Promise.reject({ code: "app_only" }); }
 function loadPosts() { return Promise.reject({ code: "app_only" }); }
 function loadAlerts() { return Promise.reject({ code: "app_only" }); }
 function loadHealth() { return Promise.reject({ code: "app_only" }); }
+function loadMovers() { return Promise.reject({ code: "app_only" }); }
 function loadOneChart() { return Promise.reject({ code: "app_only" }); }
 function loadTax() { return Promise.reject({ code: "app_only" }); }
 function loadTaxSales() { return Promise.reject({ code: "app_only" }); }
