@@ -70,6 +70,9 @@ section.panel{display:grid;gap:12px;align-content:start}
 td .why{display:block;width:max-content}
 .why.neg{color:var(--bad) !important} .why.pos{color:var(--good) !important}
 .mover{padding:12px 14px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);margin-bottom:12px}
+.tag.peer.on{border-color:var(--accent);color:var(--ink)}
+.tag.peer span{margin-left:5px}
+.peerbuy{display:grid;gap:8px;margin:6px 0 4px;padding:10px 12px;border:1px solid var(--rule);border-radius:10px;background:var(--sunken)}
 .mover .mlines p{margin:0 0 6px;font-size:14px}
 .mnews{margin:4px 0 8px 18px;padding:0;font-size:13.5px} .mnews li{margin-bottom:4px}
 .tag.plain{cursor:default;border:0;background:none;padding:4px 2px;color:var(--ink2);font-weight:500}
@@ -743,7 +746,10 @@ function moverCard(m) {
     ${(m.news || []).length ? `<div class="foot"><b>Headlines</b></div><ul class="mnews">${m.news.map(n => `<li>${n.u ? `<a href="${esc(n.u)}" target="_blank" rel="noopener">${esc(n.h)}</a>` : esc(n.h)} <span class="foot">${esc(n.src || "")}${n.at ? " · " + esc(tm(n.at)) : ""}</span></li>`).join("")}</ul>` : ""}
     ${(m.analysts || []).length > 2 ? `<div class="foot"><b>All analyst changes this week:</b> ${m.analysts.map(a => esc(a.d.slice(5) + " " + a.x)).join(" · ")}</div>` : ""}
     ${(m.filings || []).length ? `<div class="foot"><b>Company filings:</b> ${m.filings.map(f => f.u ? `<a href="${esc(f.u)}" target="_blank" rel="noopener">${esc(f.d.slice(5) + " " + f.x)}</a>` : esc(f.d.slice(5) + " " + f.x)).join(" · ")}</div>` : ""}
-    ${(m.peers || []).length ? `<div class="foot"><b>Similar companies${m.industry ? ` (${esc(m.industry)})` : ""}:</b> ${m.peers.map(([p, v]) => `${esc(p)} <span class="${cls(v)}">${esc(pct(v / 100))}</span>`).join(" · ")}</div>` : ""}
+    ${(m.peers || []).length ? `<div class="foot"><b>Similar companies${m.industry ? ` (${esc(m.industry)})` : ""}:</b> <span class="foot">tap one to buy it</span></div>
+      <div class="tags">${m.peers.map(([p, v]) => `<button type="button" class="tag peer${MOVERS.peer === m.t + "|" + p ? " on" : ""}" data-peer="${esc(m.t + "|" + p)}">${esc(p)} <span class="${cls(v)}">${esc(pct(v / 100))}</span></button>`).join("")}</div>
+      ${MOVERS.peer && MOVERS.peer.startsWith(m.t + "|") ? (() => { const p = MOVERS.peer.split("|")[1], v = (m.peers.find(x => x[0] === p) || [])[1];
+        return `<div class="peerbuy"><div><b>${esc(p)}</b> ${v != null ? `<span class="${cls(v)}">${esc(pct(v / 100))}</span> ${m.kind === "day" ? "today" : "over 5 days"}` : ""}</div>${buyArea({ t: p })}${confirmBox({ t: p })}</div>`; })() : ""}` : ""}
     <div class="foot">Checked ${esc(tm(m.at))}</div></article>`;
 }
 function renderMovers() {
@@ -759,6 +765,8 @@ function renderMovers() {
     ${items.length ? items.map(moverCard).join("") : `<div class="empty">Nothing has moved that much in the last week.</div>`}`;
 }
 document.addEventListener("click", ev => {
+  const pb = ev.target.closest("[data-peer]");
+  if (pb) { ev.preventDefault(); MOVERS.peer = MOVERS.peer === pb.dataset.peer ? null : pb.dataset.peer; const y = scrollY; render(); scrollTo(0, y); return; }
   const bk = ev.target.closest("[data-whyback]");
   if (bk) {                   // back to exactly where you were (tab and scroll position)
     ev.preventDefault();
