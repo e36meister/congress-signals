@@ -177,7 +177,7 @@ def main():
     except Exception as e:
         E.log(f"Close report: phone alert skipped ({type(e).__name__})")
     if pushed:                 # the phone alert replaces the email
-        E.log("Close report: email skipped (phone alerts are on)")
+        E.log("Close report: sent to your phone instead of email (phone alerts are on)")
     else:
         email(report, snap["mode"], snap, data)
 
