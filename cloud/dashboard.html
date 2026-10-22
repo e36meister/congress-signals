@@ -629,9 +629,9 @@ function moverChip(t) {
   moversLoad();
   const m = moverFor(t);
   if (!m) return "";
-  const why = (m.lines || [])[1] || "";
-  const kind = /^Sector-wide/.test(why) ? "sector-wide" : /^Earnings/.test(why) ? "earnings" : /^Mostly this stock/.test(why) ? "this stock" : "";
-  return `<button type="button" class="why ${m.move < 0 ? "neg" : "pos"}" data-why="${esc(t)}">${m.move < 0 ? "▼" : "▲"} ${esc(pct(m.move / 100))} ${m.kind === "day" ? "today" : "5 days"}${kind ? ` · ${kind}` : ""} · why?</button>`;
+  const ls = m.lines || [];
+  const kind = ls.some(l => /^Sector-wide/.test(l)) ? "sector" : ls.some(l => /^Mostly this stock/.test(l)) ? "just this stock" : "";
+  return `<button type="button" class="why ${m.move < 0 ? "neg" : "pos"}" data-why="${esc(t)}">${m.move < 0 ? "▼" : "▲"} ${esc(pct(Math.abs(m.move) / 100).replace(/^[+-]/, ""))} ${m.kind === "day" ? "today" : "5 days"}${kind ? ` · ${kind}` : ""}</button>`;
 }
 function moverCard(m) {
   const tm = x => { try { return fmtET(x); } catch (e) { return x; } };
