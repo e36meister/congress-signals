@@ -483,7 +483,7 @@ function renderHealth() {
   const kindTag = k => ({ critical: "Picks paused", crash: "Job crashed", watchdog: "Job silent", site: "Website", app: "App", problem: "Data", failure: "Error" })[k] || "Problem";
   const runs = jobs.filter(([j]) => j !== "watchdog").map(([j, v]) => `${esc(JOB_LABEL[j] || j)} ${esc(ago(v.at))}`).join(" · ");
   return `<section class="panel"><div class="ph"><h2>${open.length ? `${open.length} open problem${open.length === 1 ? "" : "s"}` : "Everything is working"}</h2>
-    <span class="sub">You get an alert when a new one appears. Claude checks this every morning and fixes what it can.</span></div>
+    </div>
   ${open.length ? `<div class="hlist">${open.map(x => `<div class="hrow"><span class="chip ${["critical", "crash"].includes(x.kind) ? "SHORT" : x.kind === "failure" ? "watch" : "avoid"}">${kindTag(x.kind)}</span>
       <div><div>${esc(x.text)}</div><div class="foot">${esc(x.where)} · since ${esc(fmtET(x.first))}${x.runs > 1 ? ` · ${x.runs} runs in a row` : ""}</div></div></div>`).join("")}</div>`
     : `<div class="empty">No source failed or came back empty in the latest runs.</div>`}
@@ -1055,7 +1055,7 @@ function postsSection() {
   const arrow = s => s == null ? "" : s >= 0.3 ? " ↑" : s <= -0.3 ? " ↓" : "";
   const item = x => {
     const who = String(x.who || "").split(",")[0].split(" ").slice(-1)[0];
-    const tg = (x.tg || []).filter(g => g[1] === "co" || g[1] === "person" || g[1] === "lobbyist").slice(0, 3);
+    const seenT = new Set(), tg = (x.tg || []).filter(g => (g[1] === "co" || g[1] === "person" || g[1] === "lobbyist") && !seenT.has(g[0]) && seenT.add(g[0])).slice(0, 3);
     const detail = `<p><b>${mlink(x.who, x.b)}</b> · ${esc(fmtDate(x.d))} · ${esc(x.src)}</p>${(x.why || []).length ? `<p><b>${esc(x.why.join("; "))}</b></p>` : ""}
       <p>“${esc(x.text)}”</p>${(x.tg || []).filter(g => g[2] != null).length ? `<p class="foot">Tone: ${x.tg.filter(g => g[2] != null).map(g => `${esc(g[0])} ${stanceTxt(g[2])}`).join(" · ")}</p>` : ""}
       ${x.url ? `<p><a href="${esc(x.url)}" target="_blank" rel="noopener">Go to post</a></p>` : ""}`;
