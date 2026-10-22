@@ -765,7 +765,7 @@ async function widget(req, env, url) {
       gap: cr.since_start != null && cr.spy_since_start != null ? cr.since_start - cr.spy_since_start : null };
     out.spark = { acct: s.account.slice(-60), spy: (s.spy || []).slice(-60) };
   }
-  const park = new Set(["SPY", "VOO", "IVV"]), seen = new Set();
+  const park = new Set(PARK_CHOICES), seen = new Set();
   out.buys = (port.orders || []).filter(x => x.side === "buy" && (x.by === "tool" || x.by === "tap") && x.status === "filled" && !park.has(x.t))
     .filter(x => !seen.has(x.t) && seen.add(x.t)).slice(0, 4).map(x => ({ t: x.t, at: x.at, by: x.by }));
   return json(out);
