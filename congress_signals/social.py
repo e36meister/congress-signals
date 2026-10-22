@@ -30,6 +30,11 @@ START_YEAR = 2013
 MONTHS_DAYS = set("jan january feb february mar march apr april may jun june jul july aug august sep sept september oct "
                   "october nov november dec december monday tuesday wednesday thursday friday saturday sunday".split())
 TAGGER_VERSION = 10       # 9: executives by last name or distinctive first name alone, scored
+# How Bluesky posts are read (text, quotes, alt text, image text). Only a change here needs every account read again;
+# a new TAGGER_VERSION doesn't: build_index re-tags every stored post. (Oct 22: the re-read was tied to TAGGER_VERSION,
+# so after tagger 9 and 10 every run restarted a full re-read it never finished, and no new Bluesky posts were saved
+# since; the files on hand were read under version 8.)
+BSKY_READ_VERSION = 8
 
 # 10: a member's own name is never a company person, nicknames included ("Chris Murphy" = Sen. Christopher Murphy)
 _NICK_GROUPS = ["christopher chris kit", "robert bob rob bobby", "william bill will billy", "james jim jimmy jamie",
@@ -719,19 +724,38 @@ def collect_bluesky(cfg, st, tg, hmap, deadline, ocr_days=120, max_ocr=300):
     since = f"{START_YEAR}-01-01"
     ocr_from = (dt.date.today() - dt.timedelta(days=ocr_days)).isoformat()
     n_ocr, total = 0, 0
-    for h, b in sorted(hmap.items()):
+    # Oct 22: accounts went in A-Z order and a run stopped at its time cap, so the same first accounts were read every
+    # run and the rest waited. Now the least recently read go first, and a full re-read (new BSKY_READ_VERSION) is kept
+    # per account (it used to restart from scratch until one run finished every account, which a capped run never did).
+    last = st.setdefault("bsky_last", {})
+    acc_v = st.setdefault("bsky_acc_v", {})
+    if st.get("bsky_v") == BSKY_READ_VERSION:
+        for h in hmap:
+            acc_v.setdefault(h, BSKY_READ_VERSION)
+    order = sorted(hmap.items(), key=lambda kv: (last.get(kv[0], ""), kv[0]))
+    done_n, failed = 0, []
+    for h, b in order:
         if time.time() > deadline:
+            if len(failed) >= 5:
+                _log(f"Bluesky: {len(failed)} account(s) couldn't be read this run (e.g. {', '.join(failed[:5])})")
+            _log(f"Bluesky: time cap reached after {done_n} of {len(order)} accounts; "
+                 f"the other {len(order) - done_n} go first next run" + (f" (+{total:,} new posts so far)" if total else ""))
             return False
         path = os.path.join(out_dir, re.sub(r"[^a-z0-9.-]", "_", h) + ".jsonl.gz")
         old = read_jsonl(path) if os.path.exists(path) else []
-        if st.get("bsky_v") != TAGGER_VERSION and old:
-            old = []                           # first run of this version: re-read the whole account
+        if acc_v.get(h) != BSKY_READ_VERSION and old:
+            old = []                           # first read under this version: re-read the whole account
         seen = {r[4] for r in old}
         newest = max((r[0] for r in old), default="")
-        rows, cursor = [], None
+        rows, cursor, read_failed, js = [], None, False, {}
         for _ in range(60):
+            if time.time() > deadline + 90:     # one account can't run far past the cap; it's read again next run
+                read_failed = True
+                break
             js = _get(BSKY + "app.bsky.feed.getAuthorFeed",
                       params={"actor": h, "limit": 100, "filter": "posts_no_replies", **({"cursor": cursor} if cursor else {})})
+            if js is None:
+                read_failed = True
             feed = (js or {}).get("feed", [])
             stop = False
             for f in feed:
@@ -763,10 +787,19 @@ def collect_bluesky(cfg, st, tg, hmap, deadline, ocr_days=120, max_ocr=300):
             if stop or not cursor or not feed:
                 break
             time.sleep(0.15)
-        if rows or not os.path.exists(path):
+        if read_failed:
+            if js is None:
+                failed.append(h)
+            continue        # an unfinished read keeps the file as it is (no gap behind the newest post); next run retries
+        if rows or not os.path.exists(path) or acc_v.get(h) != BSKY_READ_VERSION:
             write_jsonl(path, sorted(old + rows, key=lambda r: r[0]))
             total += len(rows)
-    st["bsky_v"] = TAGGER_VERSION
+        acc_v[h] = BSKY_READ_VERSION
+        last[h] = dt.datetime.utcnow().isoformat()
+        done_n += 1
+    st["bsky_v"] = BSKY_READ_VERSION
+    if len(failed) >= 5 and len(failed) >= 0.1 * max(1, len(order)):
+        _log(f"Bluesky: {len(failed)} of {len(order)} account(s) couldn't be read this run (e.g. {', '.join(failed[:5])})")
     if total:
         _log(f"Bluesky: {len(hmap)} accounts, {total:,} new posts ({n_ocr} images read)")
     return True
@@ -1400,16 +1433,26 @@ def update_all(cfg, minutes, history=True):
     hmap = bluesky_accounts(cfg, leg, acc, st, min(deadline, time.time() + minutes * 60 * 0.1))
     # fresh posts first (small), then the history backfills
     # each source gets its turn; one that the time limit cut out is logged (it shows on Data health), never dropped quietly
-    for name, fn in (("Congress Press releases", lambda: collect_press(cfg, st, tg, deadline, years=False)),
-                     ("Bluesky", lambda: collect_bluesky(cfg, st, tg, hmap, deadline)),
-                     ("Mastodon", lambda: collect_mastodon(cfg, st, tg, leg, acc, deadline)),
-                     ("Substack", lambda: collect_substack(cfg, st, tg, acc, deadline)),
-                     ("YouTube", lambda: collect_youtube(cfg, st, tg, leg, acc, deadline)),
-                     ("Instagram", lambda: collect_instagram(cfg, st, tg, leg, acc, deadline))):
-        if time.time() > deadline:
+    # Oct 22: Bluesky used the whole 12 minutes of every daily run, so Mastodon, Substack, YouTube and Instagram were
+    # skipped every day (and the members' own sites got no time at all). Each source now has its own share of the time,
+    # like the hourly job; Bluesky continues where it stopped (least recently read accounts first).
+    srcs = (("Congress Press releases", 0.15, lambda c: collect_press(cfg, st, tg, c, years=False)),
+            ("Bluesky", 0.30, lambda c: collect_bluesky(cfg, st, tg, hmap, c)),
+            ("Mastodon", 0.15, lambda c: collect_mastodon(cfg, st, tg, leg, acc, c)),
+            ("Substack", 0.10, lambda c: collect_substack(cfg, st, tg, acc, c)),
+            ("YouTube", 0.15, lambda c: collect_youtube(cfg, st, tg, leg, acc, c)),
+            ("Instagram", 0.15, lambda c: collect_instagram(cfg, st, tg, leg, acc, c)))
+    left_share = sum(f for _, f, _ in srcs)
+    for name, frac, fn in srcs:
+        now = time.time()
+        if now > deadline:
             _log(f"Social: {name} skipped: the {minutes:g}-minute time limit ran out before it")
+            left_share -= frac
             continue
-        fn()
+        # this source's share of the time still left (a source that finishes early leaves its time to the rest)
+        cap = min(deadline, now + max(60.0, (deadline - now) * frac / max(left_share, 1e-6)))
+        left_share -= frac
+        fn(cap)
     ok = True
     if history:
         ok &= collect_people(cfg, st, deadline - 600, per_run=60)
@@ -1425,10 +1468,11 @@ def update_all(cfg, minutes, history=True):
             _log(f"Press backfill: stopped ({type(e).__name__}: {e})")
             ok = False
     else:
-        collect_people(cfg, st, deadline, per_run=1)
+        collect_people(cfg, st, max(deadline, time.time() + 120), per_run=1)
         try:        # every current member's newest press releases, from their own sites
             import congress_signals.press_backfill as PB
-            PB.latest_current(cfg, tg, leg, min(deadline, time.time() + 300))
+            # its own 5 minutes (it used to be capped by the sources' deadline, so it checked nothing once they used it)
+            PB.latest_current(cfg, tg, leg, time.time() + 300)
         except Exception as e:
             _log(f"Latest press releases: failed ({type(e).__name__}: {e})")
     _save_state(cfg, st)
