@@ -159,7 +159,7 @@ def send_worth_alerts(items):
                 f"<tr><th>Stock</th><th>Members</th><th>Why</th></tr>{rows}</table><p><a href='{DASHBOARD_URL}'>Open Capitol Capital</a></p>")
         phones = cloud_store.has_phones()       # phone alerts cover these; email only when no phone has alerts on
         if phones:
-            E.log("Email: worth-a-look skipped (phone alerts are on)")
+            E.log("Email: worth-a-look goes to your phone instead (phone alerts are on)")
         if phones or _send_email("Worth a look: " + ", ".join(o["t"] for o in new), body, f"Email: sent {len(new)} worth-a-look item(s)"):
             for o in new:
                 for w in o["who"]:
