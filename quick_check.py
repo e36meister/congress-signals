@@ -125,6 +125,26 @@ def refresh_portfolio():
     if old.get("limits", {}).get("from_policy"):
         snap["limits"] = old["limits"]          # the full update knows the current holding periods; keep them
     data["portfolio"] = snap
+    # Stop check on the Account page: redone when it's over an hour old or a sale filled since, so a stop sale
+    # shows up the same day. The automatic stop switch only runs in the daily update.
+    try:
+        sc = data.get("stop_check") or {}
+        upd = sc.get("updated") or ""
+        sold_since = any(o.get("side") == "sell" and (o.get("at") or "") > upd for o in snap.get("orders") or [])
+        old_ = not upd or (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(upd)).total_seconds() > 3600
+        if old_ or sold_since:
+            import stop_check
+            s_ = broker.settings(int(os.environ.get("HOLD_DAYS", "60")))
+            rule = ((data.get("adaptive") or {}).get("policy") or {}).get("price_exit") \
+                or (snap.get("limits") or {}).get("price_exit") or "none"
+            new_sc = stop_check.check(broker.Alpaca(s_), rule, E.log)
+            if sc.get("switched"):
+                new_sc["switched"] = sc["switched"]
+            data["stop_check"] = new_sc
+            E.log(f"Quick check: stop check updated ({new_sc['summary']['n']} stop sale(s), "
+                  f"{new_sc['summary']['n_done']} past their planned hold)")
+    except Exception as e:
+        E.log(f"Quick check: stop check failed ({type(e).__name__}: {str(e)[:120]})")
     body = io.BytesIO(json.dumps(data).encode())
     drive.files().update(fileId=fid, media_body=MediaIoBaseUpload(body, mimetype="application/json"),
                          supportsAllDrives=True).execute()

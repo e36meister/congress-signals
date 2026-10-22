@@ -8897,6 +8897,13 @@ def _price_rule_check(scored, px, cfg, a, pol, rows, today, key, options, label)
             best = (k, c)
     if best and not confirmed(best[1]):      # chosen on earlier years; must also hold over the last 3
         best = None
+    if best and pol.get(key + "_lock"):      # set from this account's real trades (stop_check.py): those win
+        log(f"Adjustments: {label}: backtest favors {options[best[0]]}, but stays {options[curk]} "
+            f"(decided by {pol[key + '_lock']})")
+        for r in rows:
+            if r["Setting"] == label and r["Option"] == options[best[0]]:
+                r["Verdict"] = "Better in the backtest; real trades decide this one"
+        best = None
     if best:
         for r in rows:
             if r["Setting"] == label and r["Option"] == options[best[0]]:

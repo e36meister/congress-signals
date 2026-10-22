@@ -1423,6 +1423,7 @@ function renderPortfolio(d) {
     ${pos.map(x => `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${soldNote(x)}</td><td class="n">${Number(x.qty).toLocaleString()}</td><td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.px, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${heldCell(x, L)}</td></tr>`).join("")}
     </tbody></table></div>
     <p class="foot">Suggested sell dates for your own positions use the current best holding period from the weekly check (What works → Automatic adjustments): ${(state.data.adaptive?.policy?.hold_other) ?? L.hold_days ?? 60} trading days for most stocks, ${(state.data.adaptive?.policy?.hold_small) ?? L.hold_small ?? L.hold_days ?? 60} for companies under $2B. They update if the check changes. The tool never sells your own positions.</p>` : `<div class="empty">No open positions yet. New BUY picks are bought at the next market open.</div>`}</section>
+  ${stopSection(d)}
   ${divSection(p)}
   ${reqSection()}
   <section class="panel"><div class="ph"><h2>Recent orders</h2></div>
@@ -1442,6 +1443,32 @@ function dayLabel(p) {
   const part = k => (f.formatToParts(new Date()).find(x => x.type === k) || {}).value;
   const hm = (+part("hour") % 24) * 60 + +part("minute");
   return (["Sat", "Sun"].includes(part("weekday")) || hm < 960) ? "Since the last close (after-hours prices)" : "Change today";
+}
+// Stop check (owner, Oct 22): each stock the stop sold, what it would have been worth at the end of its planned
+// hold, and how much the stop saved or cost. Positive = the stop saved money.
+function stopSection(d) {
+  const S = d.stop_check;
+  if (!S || !S.rows) return "";
+  const sm = S.summary || {}, rows = S.rows, on = sm.on;
+  const rule = (S.watch || S.rule || "stop15").match(/(\d+)$/), lbl = rule ? rule[1] + "% stop" : "stop";
+  const sd = d => `<span class="foot">${esc(fmtDate(d))}</span>`;
+  const amt = v => `<b class="${cls(v)}">${v >= 0 ? "Saved " : "Cost "}${money(Math.abs(v))}</b>`;
+  const tot = sm.saved_all || 0;
+  const head = rows.length ? `So far the ${lbl} has ${tot >= 0 ? "saved you" : "cost you"} <b class="${cls(tot)}">${money(Math.abs(tot))}</b>`
+    + ` over ${rows.length} sale${rows.length === 1 ? "" : "s"}` + (sm.n_done !== rows.length ? ` (${sm.n_done} finished their hold; the rest are counted at today's price)` : "") + "."
+    : `The ${lbl} hasn't sold anything yet.`;
+  const status = S.switched ? `Switched ${S.switched.to === "none" ? "off" : "on"} automatically on ${esc(fmtDate(S.switched.date))}: ${esc(S.switched.why)}`
+    : `${on ? "Turns off" : "Turns back on"} automatically, with an alert, once ${sm.min_done ?? 10}+ sales have finished their hold and ${on ? "holding" : "the stop"} clearly did better (${sm.n_done ?? 0} finished so far).`;
+  return `<section class="panel" data-hl="pos:stops"><div class="ph"><h2>Stop check</h2><span class="sub">${on ? "" : "Stop is off: stocks that would have hit it · "}Updated ${esc(ago(S.updated))}${S.stale ? " (last update failed)" : ""}</span></div>
+    <p>${head}</p>
+    ${rows.length ? `<div class="tbl scroll"><table><thead><tr><th>Stock</th><th class="n">Bought at</th><th class="n">${on ? "Stop sold at" : "Would have sold at"}</th><th class="n">At end of hold</th><th class="n">Stop</th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td class="mono">${tkBtn(r.t)}${r.would ? `<span class="foot"> (would have)</span>` : ""}</td>
+      <td class="n">${money(r.buy_px, 2)}<br>${sd(r.bought)}</td>
+      <td class="n">${money(r.sell_px, 2)}<br>${sd(r.sold)}</td>
+      <td class="n">${money(r.end_px, 2)}<br><span class="foot">${r.done ? esc(fmtDate(r.end)) : "today · hold ends " + esc(fmtDate(r.end))}</span></td>
+      <td class="n">${amt(r.saved)}<br><span class="foot">${Number(r.qty).toLocaleString(undefined, { maximumFractionDigits: 3 })} sh${r.div ? " · incl. " + money(r.div, 2) + " dividends" : ""}</span></td></tr>`).join("")}
+    </tbody></table></div>` : ""}
+    <p class="foot">${status}</p></section>`;
 }
 function divSection(p) {
   const D = p.dividends;
