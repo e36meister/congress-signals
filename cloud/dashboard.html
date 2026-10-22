@@ -726,8 +726,8 @@ function render() {
   if (d.data_warning && (d.data_warning.problems || []).length && ["today", "port"].includes(state.tab)) html += dataWarning(d.data_warning);
   if (state.tab === "today") html += renderToday(d);
   if (state.tab === "record") html += renderRecord(d);
-  if (state.tab === "defense") html += renderDefense(d);
-  if (state.tab === "small") html += renderSmall(d);
+  if (state.tab === "defense") html += autoJump(renderDefense(d), "def");
+  if (state.tab === "small") html += autoJump(renderSmall(d), "sm");
   if (state.tab === "works") html += renderWorks(d);
   if (state.tab === "real") html += renderReal(d);
   if (state.tab === "port") html += renderPortfolio(d);
@@ -971,6 +971,32 @@ function todayJump(d, nb, nAvoid, nAlso) {
     .filter(([id, , n]) => n !== null && (id === "today-buy" || id === "posts" || n > 0));
   return `<nav class="jump" aria-label="Sections on this page">${items.map(([id, l, n]) =>
     `<button type="button" data-jump="${id}">${esc(l)}${n ? ` <span class="jn">${n}</span>` : ""}</button>`).join("")}</nav>`;
+}
+// the same jump list as Today for any page made of titled sections (Defense, Small caps): built from the section
+// titles, with a count where the section lists stocks
+const JUMP_SHORT = { "Defense buy candidates": "Buy", "Defense stocks to avoid": "Avoid", "Defense picks vs the market": "Chart",
+  "Defense portfolio results": "Results", "Which signals worked for defense stocks": "Signals", "Recent defense picks": "Recent picks",
+  "Small-company candidates": "Candidates", "Growth of $1": "Chart", "Results": "Results", "Year by year": "By year",
+  "Recent small-company picks": "Recent picks" };
+function autoJump(html, prefix) {
+  const rx = /<section class="panel"( id="[^"]*")?><div class="ph"><h2>([\s\S]*?)<\/h2>/g;
+  const found = [];
+  let k = 0;
+  const out = html.replace(rx, (all, idAttr, title) => {
+    const id = idAttr ? idAttr.slice(5, -1) : `${prefix}-${k++}`;
+    found.push({ id, title: title.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").trim() });
+    return `<section class="panel" id="${id}"><div class="ph"><h2>${title}</h2>`;
+  });
+  if (found.length < 3) return out;
+  // stocks listed in each section: count the cards between its start and the next section
+  const pos = found.map(f => out.indexOf(`id="${f.id}"`));
+  const nav = found.map((f, i) => {
+    const seg = out.slice(pos[i], i + 1 < pos.length ? pos[i + 1] : undefined);
+    const n = (seg.match(/<article class="pick"/g) || []).length;
+    const lab = JUMP_SHORT[f.title] || (f.title.length > 18 ? f.title.slice(0, 16) + "…" : f.title);
+    return `<button type="button" data-jump="${esc(f.id)}">${esc(lab)}${n ? ` <span class="jn">${n}</span>` : ""}</button>`;
+  }).join("");
+  return `<nav class="jump" aria-label="Sections on this page">${nav}</nav>` + out;
 }
 document.getElementById("main").addEventListener("click", ev => {
   const b = ev.target.closest("[data-jump]");
