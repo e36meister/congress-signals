@@ -34,7 +34,8 @@ for k in keys:
             stops.add((sk.split("|")[0], day))
 print("stop sales in reason files:", len(stops))
 s = broker.settings(60)
-sc = stop_check.check(broker.Alpaca(s), "stop15", print)
+sc = stop_check.check(broker.Alpaca(s), "stop15", print, reasons={})   # orders and prices alone
+print("with saved reasons:", len(stop_check.check(broker.Alpaca(s), "stop15", print)["rows"]))
 rows = [(r["t"], r["sold"]) for r in sc["rows"]]
 print("stop sales found from orders:", len(rows))
 near = lambda a, b: abs((dt.date.fromisoformat(a) - dt.date.fromisoformat(b)).days) <= 4
@@ -54,7 +55,7 @@ for sym, day in stops:
     os_ = [o for o in orders if o["symbol"].replace(".", "-") == sym]
     kinds = sorted({(o["side"], (o.get("client_order_id") or "")[:6]) for o in os_})
     ls = [l for l in lots if l["sym"].replace(".", "-") == sym]
-    print("missed: reason day", day, "| order kinds", kinds, "| lots", len(ls),
+    print("missed: reason day", day, "| lots", len(ls),
           [{"bought": l["bought"], "sold": l["sold"], "ratio": round(l.get("sell_px", 0) / l["buy_px"], 3) if l.get("sell_px") else None,
             "hold": l["hold"], "fully_sold": l["sold_q"] >= l["qty"] * 0.999} for l in ls],
           "| sell fills", [(o["filled_at"][:10], o["status"]) for o in os_ if o["side"] == "sell"])

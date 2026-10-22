@@ -134,10 +134,45 @@ def _lots(orders):
     return lots
 
 
-def check(api, rule, log=print):
+def sale_reasons(log=print):
+    """Why the tool sold each stock, as the runs saved it for trade alerts (R2 push/why/, since Oct 8):
+    {symbol: [(YYYY-MM-DD, reason), ...]}."""
+    import json
+    import cloud_store
+    out = {}
+    for k in cloud_store.list_keys("push/why/", log):
+        m = re.search(r"(\d{4})(\d\d)(\d\d)\d{4}\.json$", k)
+        raw = cloud_store.get(k, log) if m else None
+        try:
+            d = json.loads(raw) if raw else {}
+        except Exception:
+            continue
+        for sk, why in d.items():
+            sym, _, side = sk.partition("|")
+            if side == "sell":
+                out.setdefault(sym, []).append((f"{m.group(1)}-{m.group(2)}-{m.group(3)}", str(why)))
+    return out
+
+
+def _stop_reason(reasons, sym, sold):
+    """True / False when a run saved why this sale happened (up to 5 days before the fill: a stop that triggers
+    on Friday evening fills Monday), None when nothing was saved."""
+    near = [w for d, w in reasons.get(sym.replace(".", "-"), [])
+            if 0 <= (dt.date.fromisoformat(sold) - dt.date.fromisoformat(d)).days <= 5]
+    if not near:
+        return None
+    return any(w.startswith("fell ") for w in near)
+
+
+def check(api, rule, log=print, reasons=None):
     """Rows for the Account page plus the summary the automatic switch reads. `rule` is the current
-    main-pick price rule ("stop15", "trail15", "none", ...)."""
+    main-pick price rule ("stop15", "trail15", "none", ...). `reasons`: sale_reasons() (read here when None)."""
     on = bool(_pct(rule))
+    if reasons is None:
+        try:
+            reasons = sale_reasons(log)
+        except Exception:
+            reasons = {}
     watch = rule if on else DEFAULT_RULE
     pct, trail = _pct(watch), watch.startswith("trail")
     lots = _lots(_orders(api))
@@ -166,9 +201,13 @@ def check(api, rule, log=print):
         stop_end = min(x for x in (l["sold"], end, last_day) if x)
         days = sorted(d for d in S if l["bought"] < d <= stop_end)
         if on and l["sold"] and (end is None or l["sold"] < end):
-            hi = max([l["buy_px"]] + [S[d] * to_raw for d in days if d < l["sold"]])
-            ref = hi if trail else l["buy_px"]
-            if l["sell_px"] <= ref * (1 - pct) * 1.02:
+            why = _stop_reason(reasons, s, l["sold"])
+            if why is None:          # no saved reason (sales before Oct 8): judge by price. The sale fills at the
+                                     # next open, which can gap a few % past the stop line
+                hi = max([l["buy_px"]] + [S[d] * to_raw for d in days if d < l["sold"]])
+                ref = hi if trail else l["buy_px"]
+                why = l["sell_px"] <= ref * (1 - pct) * 1.05
+            if why:
                 sale_day, sale_px = l["sold"], l["sell_px"]
         elif not on:
             hi = l["buy_px"]
