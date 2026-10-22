@@ -1065,7 +1065,7 @@ function postsSection() {
       ${(x.ty || []).filter(t => t !== "other").slice(0, 2).map(t => `<span class="chip watch">${esc(POST_TY[t] || t)}</span>`).join("")}
       ${x.ins ? tipBtn("Hint", "Insider-style wording", `<p>“${esc(x.ins)}”</p>${detail}`, "neg") : ""}
       ${(x.meet || []).length ? `<span class="chip new">Met ${esc(x.meet[0])}</span>` : ""}
-      ${tg.map(g => `<span class="mono">${esc(g[0])}${arrow(g[2])}</span>`).join(" ")}
+      ${tg.map(g => `<span class="mono ${g[2] == null ? "" : g[2] >= 0.3 ? "pos" : g[2] <= -0.3 ? "neg" : ""}" title="${esc(stanceTxt(g[2]))}">${esc(g[0])}${arrow(g[2])}</span>`).join(" ")}
       ${x.url ? `<a class="tag go" href="${esc(x.url)}" target="_blank" rel="noopener">Go to post</a>` : ""}
     </div>${(x.why || []).length ? `<div class="foot">${esc(x.why[0])}${x.why.length > 1 ? ` ${tipBtn(`+${x.why.length - 1}`, "Why it's notable", `<ul class="tipl">${x.why.map(w => `<li>${esc(w)}</li>`).join("")}</ul>`, "more")}` : ""}</div>` : ""}</article>`;
   };
