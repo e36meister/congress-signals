@@ -34,7 +34,11 @@ WHY_WORDS = re.compile(r"\b(why|falls?|fell|drops?|dropped|slides?|slid|sinks?|s
                        r"jumps?|jumped|rises?|rose|surges?|soars?|rall(?:y|ies)|climbs?|gains?|sell-?off|selloff|"
                        r"down|up \d|lower|higher|beats?|miss(?:es)?|guidance|outlook|forecast|upgrades?|downgrades?|"
                        r"cuts?|raises?|lawsuit|probe|investigation|recall|deal|acquir\w*|merger)\b", re.I)
-JUNK = re.compile(r"((?:increases|raises|boosts|lifts|trims|cuts|reduces|lowers|sells|grows) (?:its )?(?:holdings|stake|position)|"
+DOWN_W = re.compile(r"\b(falls?|fell|drops?|dropped|slides?|slid|sinks?|sank|slumps?|plunges?|tumbles?|tanks?|sell-?off|"
+                    r"selloff|down|lower|miss(?:es)?|cuts?|downgrades?|slips?|declines?|retreats?|worries|fears?)\b", re.I)
+UP_W = re.compile(r"\b(jumps?|jumped|rises?|rose|surges?|soars?|rall(?:y|ies|ying)|climbs?|gains?|up \d|higher|beats?|"
+                  r"raises?|upgrades?|record|best day|new (?:1-year |52-week )?high|advances?)\b", re.I)
+JUNK = re.compile(r"((?:buys|sells|acquires|purchases|sold|bought) [\d,]+ shares of|shares of .{0,60}(?:sold|bought|acquired|purchased) by|(?:increases|raises|boosts|lifts|trims|cuts|reduces|lowers|sells|grows) (?:its )?(?:holdings|stake|position)|"
                   r"holdings (?:in|raised|lifted|trimmed|lowered|cut|boosted)|(?:new|takes) (?:stake|position) in|"
                   r"shares (?:sold|bought|acquired|purchased) by|acquires new|"
                   r"interactive stock chart|stock forecasts?|form 4|conference call date|announce\w* .*earnings on|"
@@ -113,7 +117,7 @@ def moves(api_h, syms, log):
 
 
 # ------------------------------------------------------------------------------------------------ context
-def news(api_h, t, co, log, days=3):
+def news(api_h, t, co, log, days=3, direction=0):
     """Latest headlines: Alpaca's news feed, then Google News as the backup source."""
     since = (dt.datetime.utcnow() - dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     items = []
@@ -165,7 +169,13 @@ def news(api_h, t, co, log, days=3):
         if n["h"] and k not in seen:
             seen.add(k)
             out.append(n)
-    score = lambda n: (2 if WHY_WORDS.search(n["h"]) else 0) - (3 if JUNK.search(n["h"]) else 0) - (1 if n["n_sym"] > 3 else 0)
+    recent = (dt.datetime.utcnow() - dt.timedelta(hours=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    def score(n):
+        x = (2 if WHY_WORDS.search(n["h"]) else 0) - (3 if JUNK.search(n["h"]) else 0) - (1 if n["n_sym"] > 3 else 0)
+        if direction:       # a story about the move this way beats one about a move the other way
+            same, other = (DOWN_W, UP_W) if direction < 0 else (UP_W, DOWN_W)
+            x += (2 if same.search(n["h"]) else 0) - (3 if other.search(n["h"]) and not same.search(n["h"]) else 0)
+        return x + (1 if (n["at"] or "") >= recent else 0)
     out = [n for n in out if not JUNK.search(n["h"])] or out
     out.sort(key=score, reverse=True)       # stable: newest first within the same score
     return [{k: v for k, v in n.items() if k != "n_sym"} for n in out[:4]]
@@ -358,7 +368,9 @@ def run(api_h, holdings, candidates, info, member_trades, log, dry=False, force=
                 y["co"] = co
             except Exception as e:
                 log(f"Why it moved: no company name for {t} ({type(e).__name__})")
-        y["news"] = news(api_h, t, co, log)
+        m_ = mv.get(t) or {}
+        dirn = (m_.get("day") if kind == "day" else m_.get("d5")) or 0
+        y["news"] = news(api_h, t, co, log, days=2 if kind == "day" else 6, direction=1 if dirn > 0 else -1 if dirn < 0 else 0)
         y["filings"] = filings(t, log)
         return t, kind, y
 
