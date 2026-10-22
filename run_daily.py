@@ -572,6 +572,37 @@ def main():
                 if s_:
                     ms[p["t"]] = {"bought": p["bought"], "sales": s_}
         d["member_sold"] = ms
+        # is the stop helping? each stop sale vs holding to the end of its planned hold (Account page),
+        # and the automatic switch when real trades clearly say so
+        try:
+            import stop_check
+            s_ = broker.settings(cfg.get("HOLD_DAYS", 60))
+            if s_["key"] and s_["secret"]:
+                rule = E.load_adaptive(cfg)["policy"].get("price_exit", "none")
+                sc = stop_check.check(broker.Alpaca(s_), rule, E.log)
+                sm_ = sc["summary"]
+                E.log(f"Stop check: {sm_['n']} stop sale(s), {sm_['n_done']} past their planned hold")   # no amounts: the log is public
+                if not DRY_RUN:
+                    def _tell(title, msg):
+                        cloud_store.notify(title, msg, "stop", "/#port/stops", E.log)
+                        _send_email("Capitol Capital: " + title, f"<p>{msg}</p><p>You can see every stop sale on the "
+                                    "Account page, under Stop check.</p>", "Email: sent stop-switch notice")
+                    ch = stop_check.apply(cfg, sc, E, _tell, E.log)
+                    if ch:
+                        sc["rule"] = ch["to"]
+                        sc["switched"] = dict(ch, date=dt.date.today().isoformat())
+                        try:
+                            d["adaptive"] = json.load(open(os.path.join(cfg["DATA_DIR"], "state", E.ADAPT_FILE)))
+                        except Exception:
+                            pass
+                d["stop_check"] = sc
+                json.dump(sc, open(os.path.join(cfg["DATA_DIR"], "state", "stop_check.json"), "w"), default=str)
+        except Exception as e:      # "failed" lines go to Data health and alert the phone
+            E.log(f"Stop check: failed ({type(e).__name__}: {str(e)[:160]}); the Account page keeps the last one")
+            try:
+                d["stop_check"] = dict(json.load(open(os.path.join(cfg["DATA_DIR"], "state", "stop_check.json"))), stale=True)
+            except Exception:
+                pass
         # shown on Today and Account while the picks' data is broken
         d["data_warning"] = {"at": dt.datetime.utcnow().isoformat(timespec="seconds") + "Z", "problems": PAUSE} if PAUSE else None
         json.dump(d, open(path, "w"))
