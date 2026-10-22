@@ -52,6 +52,14 @@ SCRIPT_JOBS = {"run_daily": "daily", "posts_live": "live", "close_report": "clos
 _CRIT = []                 # critical() results this run (picks paused), reported with the job's problems
 
 
+def _no_matches(r):
+    try:
+        b = (r.content or b"")[:400]
+        return b"NOT_FOUND" in b and b"No matches found" in b
+    except Exception:
+        return False
+
+
 def install(job=None):
     """Patch requests once so every call is tallied; register the exit hook. Safe to call many times.
     The job is named after the script that's running (research tools in tools/ don't report)."""
@@ -75,6 +83,10 @@ def install(job=None):
                 h["last"] = type(e).__name__
                 raise
             sc = getattr(r, "status_code", 0) or 0
+            if sc == 404 and host == "api.fda.gov" and _no_matches(r):
+                # openFDA answers a search with no results as 404 "No matches found!" (a company with no drug
+                # applications); a moved address or a broken query would come back differently or for every company
+                sc = 200
             if sc < 400:
                 h["ok"] += 1
             elif sc in (404, 410):
