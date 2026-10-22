@@ -45,6 +45,33 @@ def get(name, log=print):
         return None
 
 
+
+def list_keys(prefix, log=print):
+    """Names of the R2 objects starting with `prefix` ([] when Cloudflare isn't set up or the listing fails)."""
+    tok, acc = os.environ.get("CLOUDFLARE_API_TOKEN"), os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+    if not (tok and acc):
+        return []
+    keys, cursor = [], None
+    try:
+        for _ in range(50):
+            p = {"prefix": prefix, "per_page": 1000}
+            if cursor:
+                p["cursor"] = cursor
+            r = requests.get(f"https://api.cloudflare.com/client/v4/accounts/{acc}/r2/buckets/{BUCKET}/objects",
+                             headers={"Authorization": f"Bearer {tok}"}, params=p, timeout=60)
+            if r.status_code != 200:
+                log(f"Cloudflare: couldn't list {prefix} (HTTP {r.status_code})")
+                break
+            js = r.json()
+            keys += [o["key"] for o in js.get("result") or []]
+            info = js.get("result_info") or {}
+            cursor = info.get("cursor")
+            if not (cursor and info.get("is_truncated")):
+                break
+    except Exception as e:
+        log(f"Cloudflare: couldn't list {prefix} ({type(e).__name__})")
+    return keys
+
 def notify(title, body="", tag="", url="/", log=print, items=None):
     """Queue a phone alert; the Cloudflare Worker sends it within a minute to every phone that turned alerts on and
     keeps it in the app's Alerts tab. `url` is where tapping it goes in the app (e.g. "/#worth/NVDA", "/#post/<id>");
