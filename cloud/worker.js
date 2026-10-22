@@ -117,6 +117,7 @@ async function api(req, env, url) {
   if (p === "/api/notifications/clear" && req.method === "POST") return clearAlerts(req, env);
   if (p === "/api/search" && req.method === "GET") return tickerSearch(env, url);
   if (p === "/api/chart" && req.method === "GET") return oneChart(env, url);
+  if (p === "/api/news" && req.method === "GET") return stockNews(env, url);
   if (p === "/api/tax" && req.method === "GET") return taxIndex(env);
   if (p === "/api/tax/file" && req.method === "GET") return taxFile(env, url);
   if (p === "/api/tie-reviews" && req.method === "GET") return json(await tieReviews(env));
@@ -532,6 +533,23 @@ async function tickerSearch(env, url) {
 }
 // One stock's chart in the same shape as ticker_charts.json: from that file when the stock is in it, otherwise
 // 5 years of daily closes from Alpaca (adjusted for splits and dividends) plus members' trades of it.
+// latest headlines about one stock (Alpaca's news feed), for the chart popup's "What's going on"
+async function stockNews(env, url) {
+  const t = String(url.searchParams.get("t") || "").toUpperCase().trim();
+  if (!/^[A-Z][A-Z0-9-]{0,9}$/.test(t)) return json({ error: "bad-ticker" }, 400);
+  const a = alpaca(env);
+  if (!a.ready) return json({ error: "no-keys" }, 503);
+  const start = new Date(Date.now() - 10 * 864e5).toISOString().slice(0, 19) + "Z";
+  const r = await a.get(`https://data.alpaca.markets/v1beta1/news?symbols=${encodeURIComponent(t.replace(/-/g, "."))}&start=${start}&limit=12&sort=desc`);
+  if (!r.ok) { await wProblem(env, "news", `Headlines for the chart popup didn't load from Alpaca (HTTP ${r.status})`); return json({ error: "news", status: r.status }, 502); }
+  await wOk(env, "news");
+  const junk = /(acquires new|increases holdings|raises holdings|stake in|shares (?:sold|bought|acquired) by|[\d,]+ shares of|interactive stock chart|stock price, news, quote)/i;
+  const items = ((r.data && r.data.news) || []).filter(n => n.headline && !junk.test(n.headline))
+    .sort((x, y) => (x.symbols || []).length - (y.symbols || []).length || String(y.created_at).localeCompare(String(x.created_at)))
+    .slice(0, 6).sort((x, y) => String(y.created_at).localeCompare(String(x.created_at)))
+    .map(n => ({ h: n.headline, src: n.source || "", u: n.url || "", at: n.created_at }));
+  return json({ t, items });
+}
 async function oneChart(env, url) {
   const t = String(url.searchParams.get("t") || "").toUpperCase().trim();
   if (!/^[A-Z][A-Z0-9-]{0,9}$/.test(t)) return json({ error: "bad-ticker" }, 400);

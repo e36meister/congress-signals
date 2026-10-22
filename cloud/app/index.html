@@ -70,6 +70,7 @@ section.panel{display:grid;gap:12px;align-content:start}
 td .why{display:block;width:max-content}
 .why.neg{color:var(--bad) !important} .why.pos{color:var(--good) !important}
 .mover{padding:12px 14px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);margin-bottom:12px}
+.goon .mlines p{margin:0 0 4px;font-size:13.5px}
 .tag.peer.on{border-color:var(--accent);color:var(--ink)}
 .tag.peer span{margin-left:5px}
 .peerbuy{display:grid;gap:8px;margin:6px 0 4px;padding:10px 12px;border:1px solid var(--rule);border-radius:10px;background:var(--sunken)}
@@ -749,7 +750,8 @@ function moverCard(m) {
     ${(m.peers || []).length ? `<div class="foot"><b>Similar companies${m.industry ? ` (${esc(m.industry)})` : ""}:</b> <span class="foot">tap one to buy it</span></div>
       <div class="tags">${m.peers.map(([p, v]) => `<button type="button" class="tag peer${MOVERS.peer === m.t + "|" + p ? " on" : ""}" data-peer="${esc(m.t + "|" + p)}">${esc(p)} <span class="${cls(v)}">${esc(pct(v / 100))}</span></button>`).join("")}</div>
       ${MOVERS.peer && MOVERS.peer.startsWith(m.t + "|") ? (() => { const p = MOVERS.peer.split("|")[1], v = (m.peers.find(x => x[0] === p) || [])[1];
-        return `<div class="peerbuy"><div><b>${esc(p)}</b> ${v != null ? `<span class="${cls(v)}">${esc(pct(v / 100))}</span> ${m.kind === "day" ? "today" : "over 5 days"}` : ""}</div>${buyArea({ t: p })}${confirmBox({ t: p })}</div>`; })() : ""}` : ""}
+        return `<div class="peerbuy"><div><b>${esc(p)}</b> ${v != null ? `<span class="${cls(v)}">${esc(pct(v / 100))}</span> ${m.kind === "day" ? "today" : "over 5 days"}` : ""}</div>
+          <button type="button" class="btn ghost" data-chart="${esc(p)}">Chart and what's going on</button>${buyArea({ t: p })}${confirmBox({ t: p })}</div>`; })() : ""}` : ""}
     <div class="foot">Checked ${esc(tm(m.at))}</div></article>`;
 }
 function renderMovers() {
@@ -1998,6 +2000,24 @@ function tradeLineText(tr) {
     ${tr.note ? `<div style="margin-top:2px">Filing note: “${esc(tr.note)}”</div>` : ""}
     <div class="foot">Disclosed ${esc(fmtDate(tr.d))}${lag != null ? ` (${lag} days later)` : ""}${tr.own && OWN[tr.own] ? " · " + OWN[tr.own] : ""}</div>`;
 }
+// "What's going on" in the chart popup: a recent big move explained (Why it moved) and the latest headlines
+const NEWS = {};
+function goingOn(t) {
+  const m = moverFor(t);
+  if (!(t in NEWS)) {
+    NEWS[t] = null;
+    loadNews(t).then(js => { NEWS[t] = js || { items: [] }; }, e => { NEWS[t] = { err: e }; }).finally(() => { if (pop.t === t) drawPopup(); });
+  }
+  const n = NEWS[t];
+  const tm = x => { try { return fmtET(x); } catch (e) { return x; } };
+  const news = n === null ? `<div class="foot">Loading headlines…</div>`
+    : n.err ? `<div class="foot">${n.err.code === "app_only" ? "Headlines show in the phone app." : "Headlines didn't load; it's been logged in Data health."}</div>`
+    : (n.items || []).length ? `<ul class="mnews">${n.items.map(x => `<li>${x.u ? `<a href="${esc(x.u)}" target="_blank" rel="noopener">${esc(x.h)}</a>` : esc(x.h)} <span class="foot">${esc(x.src)} · ${esc(tm(x.at))}</span></li>`).join("")}</ul>`
+    : `<div class="foot">No headlines in the last 10 days.</div>`;
+  return `<div class="tdet goon" style="display:block"><b>What's going on</b>
+    ${m ? `<div class="mlines" style="margin-top:6px">${(m.lines || []).map(l => `<p>${esc(l)}</p>`).join("")}</div>` : ""}
+    ${news}</div>`;
+}
 function drawPopup() {
   const bg = document.getElementById("mbg"); if (!bg || !pop.t) return;
   const t = pop.t, C = chartsFor(t), one = pop.one[t];
@@ -2014,7 +2034,7 @@ function drawPopup() {
   } else {
     body = `<div class="spans" role="group" aria-label="Timespan">${SPANS.map(([k]) => `<button type="button" data-span="${k}" aria-pressed="${pop.span === k}">${k}</button>`).join("")}
 </div>
-      <div class="tc" id="tc"></div><div id="tdet"></div><div id="tlist"></div>
+      <div class="tc" id="tc"></div><div id="tdet"></div>${goingOn(t)}<div id="tlist"></div>
 `;
       // (owner, Oct 21: the chart note is kept in the project doc instead of under every chart) The line shows daily
       // closes; all prices are adjusted for splits and dividends, so a note's price can differ after a split. The
@@ -2609,6 +2629,7 @@ async function loadPosts() { return (await api("/api/posts")).js; }
 async function loadAlerts() { return (await api("/api/notifications")).js; }
 async function loadHealth() { return (await api("/api/health")).js; }
 async function loadMovers() { return (await api("/api/movers")).js; }
+async function loadNews(t) { return (await api("/api/news?t=" + encodeURIComponent(t))).js; }
 async function loadTax() { return (await api("/api/tax")).js; }
 async function loadTaxSales(y) { return (await api(`/api/tax/file?y=${encodeURIComponent(y)}&f=sales.json`)).js; }
 async function loadOneChart(t) { return (await api("/api/chart?t=" + encodeURIComponent(t))).js; }
