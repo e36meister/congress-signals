@@ -12,10 +12,11 @@ import requests
 env = os.environ.get
 BASE = {"paper": "https://paper-api.alpaca.markets", "live": "https://api.alpaca.markets"}
 PREFIX = "cs-"
-PARK_PREFIX = PREFIX + "park-"          # unused tool money parked in an S&P 500 fund, like the backtest
-# where the tool parks unused money (first one you don't hold yourself): paper copies the backtest (S&P 500);
-# real money uses a Treasury-bill fund (steady price, ~short-term interest rates, almost no taxable gains when sold).
-# PARK_FUND (comma-separated symbols) overrides either.
+PARK_PREFIX = PREFIX + "park-"          # unused tool money parked in a Treasury-bill fund
+# where the tool parks unused money (first one you don't hold yourself): a Treasury-bill fund (steady price,
+# ~short-term interest rates, almost no taxable gains when sold), on paper and with real money. Owner, Oct 22: parked
+# S&P money was swamping the daily numbers; the backtest still parks idle money in the S&P 500 because the goal is to
+# beat the S&P. PARK_FUND (comma-separated symbols) overrides.
 PARK_SP500 = ("SPY", "VOO", "IVV")
 PARK_TBILL = ("SGOV", "BIL", "SHV")
 PARK_ALL = PARK_SP500 + PARK_TBILL
@@ -23,7 +24,7 @@ PARK_ALL = PARK_SP500 + PARK_TBILL
 
 def park_choices(mode):
     own = [x.strip().upper() for x in (env("PARK_FUND") or "").split(",") if x.strip()]
-    return tuple(own) or (PARK_TBILL if mode == "live" else PARK_SP500)
+    return tuple(own) or PARK_TBILL
 
 
 def park_label(sym):
@@ -505,8 +506,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                 if ok:
                     inv_sleeve += amount
 
-        # 3. park the tool's unused money (S&P 500 fund on paper, like the backtest; Treasury-bill fund with real
-        #    money), keeping a little cash for your own Buy-button orders. Sold down as picks need the money.
+        # 3. park the tool's unused money in a Treasury-bill fund, keeping a little cash for your own Buy-button orders. Sold down as picks need the money.
         #    Money parked in a fund that's no longer the choice (e.g. after PARK_FUND changes) is sold first;
         #    it's re-parked in the right fund on the next run.
         stale = [p for p in positions if p in bot and p not in others and is_park(p) and p != park and p not in pending]
