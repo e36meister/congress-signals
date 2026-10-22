@@ -44,3 +44,17 @@ print("found from orders but no stop reason saved:", len(rows) - len(both))
 print("stop reason saved but not found from orders:", sum(1 for y in stops if not any(x[0] == y[0] and near(x[1], y[1]) for x in rows)))
 ok = all(r["sell_px"] < r["buy_px"] for r in sc["rows"])
 print("every row sold below its buy price:", ok, "| rows with prices filled:", sum(1 for r in sc["rows"] if r["end_px"] and r["sell_px"]))
+
+# why a saved stop reason wasn't matched (no tickers or amounts printed)
+orders = stop_check._orders(broker.Alpaca(s))
+lots = stop_check._lots(orders)
+for sym, day in stops:
+    if any(x[0] == sym and near(x[1], day) for x in rows):
+        continue
+    os_ = [o for o in orders if o["symbol"].replace(".", "-") == sym]
+    kinds = sorted({(o["side"], (o.get("client_order_id") or "")[:6]) for o in os_})
+    ls = [l for l in lots if l["sym"].replace(".", "-") == sym]
+    print("missed: reason day", day, "| order kinds", kinds, "| lots", len(ls),
+          [{"bought": l["bought"], "sold": l["sold"], "ratio": round(l.get("sell_px", 0) / l["buy_px"], 3) if l.get("sell_px") else None,
+            "hold": l["hold"], "fully_sold": l["sold_q"] >= l["qty"] * 0.999} for l in ls],
+          "| sell fills", [(o["filled_at"][:10], o["status"]) for o in os_ if o["side"] == "sell"])
