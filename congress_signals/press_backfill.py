@@ -9,6 +9,7 @@ are missing).
 
 Saved as social/posts/press_bf/<bioguide>.jsonl.gz and social/posts/press_wb/<bioguide>.jsonl.gz (same record
 format as the other posts); build_index skips any URL already in Congress Press. Resumable; runs in social.yml."""
+import threading
 import os, re, json, time, gzip, datetime as dt
 from concurrent.futures import ThreadPoolExecutor
 import requests
@@ -201,9 +202,15 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
             return [{"url": x["url"], "date": x["date"], "title": x["title"], "text": x["text"]} for x in r["items"]]
         return [{"url": u} for u in r["links"]] or None
 
-    def one(name):
-        if time.time() > deadline:
-            return name, None, []
+    def _is_house(name):
+        c = SCRAPER_CONFIG.get(name) or {}
+        u = PS.BACKUP.get(name) or c.get("url_base") or c.get("url") or ""
+        u = u[0] if isinstance(u, (list, tuple)) and u else u
+        return "house.gov" in str(u).lower()
+
+    house_gate = threading.Semaphore(4)     # House sites sit behind one firewall that throttles bursts
+
+    def fetch(name):
         res = None
         if name not in PS.BACKUP:
             try:
@@ -212,8 +219,21 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
                 res = None
         if not res:
             res = backup(name)
-            if res is None:
-                return name, None, None
+        return res
+
+    unchecked = []
+
+    def one(name, slow=False):
+        if not slow and time.time() > deadline:
+            unchecked.append(name)
+            return name, None, []
+        if _is_house(name) and not slow:
+            with house_gate:
+                res = fetch(name)
+        else:
+            res = fetch(name)
+        if res is None:
+            return name, None, None
         b, out = None, []
         for r in res:
             u = r.get("url")
@@ -234,21 +254,38 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
 
     added = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        for name, b, out in ex.map(one, names):
-            if out is None:
-                fails.append(name)
-                continue
-            if not b or not out:
-                continue
-            rows = [rec(d, b, "Press release", f"{title} — {text or ''}".strip(" —"), u, tg,
-                        full=(title or "") + "\n" + (text or "")) for d, u, title, text in out]
-            path = _dir(cfg, "posts", "press_bf", f"{b}.jsonl.gz")
-            old = read_jsonl(path) if os.path.exists(path) else []
-            write_jsonl(path, sorted(old + rows, key=lambda r: r[0]))
-            added += len(rows)
-            for r in rows:
-                seen.add(norm_url(r[4]))
-    _log(f"Latest press releases: {len(names)} member sites checked, +{added} new")
+        results = list(ex.map(one, names))
+    # Oct 22: 7 then 23 House sites failed every hour with 12 readers at once (timeouts from the House firewall).
+    # Sites that failed get a second, slow pass one at a time before they count as failed.
+    again = [n for n, b, out in results if out is None]
+    if again:
+        second = {}
+        for n in again:
+            if time.time() > deadline + 120:
+                break                   # the rest stay counted as failed
+            time.sleep(3)
+            second[n] = one(n, slow=True)
+        results = [second.get(n, (n, b, out)) if out is None else (n, b, out) for n, b, out in results]
+        late = [n for n in again if n in second and second[n][2] is not None]
+        if late:
+            _log(f"Latest press releases: {len(late)} site(s) answered on a second, slower try")
+    for name, b, out in results:
+        if out is None:
+            fails.append(name)
+            continue
+        if not b or not out:
+            continue
+        rows = [rec(d, b, "Press release", f"{title} — {text or ''}".strip(" —"), u, tg,
+                    full=(title or "") + "\n" + (text or "")) for d, u, title, text in out]
+        path = _dir(cfg, "posts", "press_bf", f"{b}.jsonl.gz")
+        old = read_jsonl(path) if os.path.exists(path) else []
+        write_jsonl(path, sorted(old + rows, key=lambda r: r[0]))
+        added += len(rows)
+        for r in rows:
+            seen.add(norm_url(r[4]))
+    _log(f"Latest press releases: {len(names) - len(unchecked)} of {len(names)} member sites checked, +{added} new")
+    if unchecked:
+        _log(f"Latest press releases: {len(unchecked)} member site(s) skipped: the time limit ran out before them")
     if fails:
         _log(f"Latest press releases: {len(fails)} member site(s) failed with both the site reader and the backup: "
              + ", ".join(sorted(fails)))
@@ -269,6 +306,33 @@ def departed_since(start="2021-01-03"):
         if b and hosts:
             out[b] = sorted(h for h in hosts if h)
     return out
+
+
+# One pause for every worker: when the Internet Archive refuses connections or times out, hammering it with 4 workers
+# (x 8 shards) keeps it refusing. Each failure in a row doubles the pause (10 s .. 5 min); an answer resets it.
+_WB_LOCK = threading.Lock()
+_WB = {"until": 0.0, "streak": 0}
+
+
+def _wb_wait():
+    while True:
+        with _WB_LOCK:
+            w = _WB["until"] - time.time()
+        if w <= 0:
+            return
+        time.sleep(min(w, 30))
+
+
+def _wb_trouble(base):
+    with _WB_LOCK:
+        _WB["streak"] += 1
+        pause = min(300, base * 2 ** min(_WB["streak"] - 1, 5))
+        _WB["until"] = max(_WB["until"], time.time() + pause)
+
+
+def _wb_ok():
+    with _WB_LOCK:
+        _WB["streak"] = 0
 
 
 def _cdx(host, frm="2021", to="2025"):
@@ -327,7 +391,7 @@ def backfill_departed(cfg, st, tg, deadline, per_run=40000, workers=4, root=None
             if os.path.exists(p_old) and not os.path.exists(p_new):
                 open(p_new, "wb").write(open(p_old, "rb").read())
     seen = known_press_urls(sdir)
-    fetched, added, cdx_fail = 0, 0, []
+    fetched, added, cdx_fail, requeued = 0, 0, [], 0
     for b, hosts in sorted(members.items()):
         p = prog.get(b) or {}
         if p.get("done"):
@@ -361,27 +425,36 @@ def backfill_departed(cfg, st, tg, deadline, per_run=40000, workers=4, root=None
         rows = []
 
         def get(item):
-            ts, orig = item
-            html = None
+            ts, orig = item[0], item[1]
+            html, transient = None, False
             for a in range(3):
+                _wb_wait()
                 try:
                     r = requests.get(f"{WB}/web/{ts}id_/{orig}", headers=UA, timeout=60)
-                    if r.status_code == 429:
-                        time.sleep(30 * (a + 1))      # the archive asked us to slow down
+                    if r.status_code == 429 or r.status_code >= 500:
+                        transient = True
+                        _wb_trouble(30 * (a + 1) if r.status_code == 429 else 10 * (a + 1))   # asked to slow down / busy
                         continue
                     html = r.text if r.status_code == 200 else None
+                    transient = False
+                    _wb_ok()
                     break
                 except Exception:
-                    html = None
-                    time.sleep(5)
+                    html, transient = None, True
+                    _wb_trouble(10 * (a + 1))         # refused or timed out: everyone backs off together
             time.sleep(0.5)                           # be gentle with the Internet Archive
             if not html:
+                # Oct 22: pages the archive didn't answer (connection refused, timeouts, 5xx) were dropped for good;
+                # about 3 in 4 pages were lost that way. They go back in the queue (up to 6 tries over later runs).
+                if transient and (len(item) < 3 or item[2] < 5):
+                    retry.append([ts, orig, (item[2] if len(item) > 2 else 0) + 1])
                 return None
             d, title, text = _text(orig, html=html)
             if not d or not text or len(text) < 200 or d < BACKFILL_FROM:
                 return None
             return rec(d[:10], b, "Press release (archived)", f"{title or ''} — {text}".strip(" —"),
                        f"{WB}/web/{ts}/{orig}", tg, full=(title or "") + "\n" + text)
+        retry = []
         with ThreadPoolExecutor(max_workers=workers) as ex:
             while queue and time.time() < deadline and fetched < per_run:
                 chunk = [queue.pop() for _ in range(min(len(queue), workers * 10))]
@@ -390,6 +463,8 @@ def backfill_departed(cfg, st, tg, deadline, per_run=40000, workers=4, root=None
                     if r_ is not None:
                         rows.append(r_)
                         seen.add(norm_url(r_[4].split("/", 5)[-1] if "/web/" in r_[4] else r_[4]))
+        queue[:0] = retry                     # retried last (the queue is read from the end)
+        requeued += len(retry)
         if rows:
             path = os.path.join(out_dir, f"{b}.jsonl.gz")
             old = read_jsonl(path) if os.path.exists(path) else []
@@ -406,5 +481,7 @@ def backfill_departed(cfg, st, tg, deadline, per_run=40000, workers=4, root=None
     _log(f"Archived press releases: {queued:,} saved pages still queued for {len(members)} members")
     if cdx_fail:
         _log(f"Archived press releases: the archive's index didn't answer for {len(cdx_fail)} member(s): {', '.join(cdx_fail[:10])}")
+    if requeued:
+        _log(f"Archived press releases: {requeued:,} pages the archive didn't answer went back in the queue for a later try")
     _log(f"Archived press releases: +{added:,} from {fetched:,} saved pages; {left} of {len(members)} departed members left")
     return left == 0
