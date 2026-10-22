@@ -545,6 +545,7 @@ const MORE_TABS = [
 function goTab(t) {
   state.tab = t;
   if (t === "health") { HEALTH.js = null; HEALTH.err = null; }
+  if (t === "movers") { MOVERS.focus = null; MOVERS.from = null; }
   if (t === "tax") { TAX.js = null; TAX.err = null; TAX.sales = {}; }
   if (typeof MEM !== "undefined") MEM.missing = null;
   try { localStorage.setItem("ctd-tab", t); } catch (e) {}
@@ -712,7 +713,7 @@ document.addEventListener("submit", ev => {
 });
 
 // ---------- why it moved: 3%+ daily or 7%+ 5-day moves vs the S&P, explained (congress_signals/movers.py) ----------
-const MOVERS = { js: null, err: null, loading: false, focus: null, at: 0 };
+const MOVERS = { js: null, err: null, loading: false, focus: null, at: 0, from: null };
 function moversLoad(force) {
   if (MOVERS.loading || (!force && MOVERS.js && Date.now() - MOVERS.at < 5 * 60e3)) return;
   MOVERS.loading = true;
@@ -749,15 +750,29 @@ function renderMovers() {
   moversLoad();
   if (MOVERS.err) return `<div class="note err">Couldn't load "Why it moved"${MOVERS.err.code === "app_only" ? " (it's in the phone app)" : ""}.</div>`;
   if (!MOVERS.js) return `<div class="empty">Loading…</div>`;
+  if (MOVERS.focus) {          // one stock (from its chip or an alert)
+    const m = (MOVERS.js.items || {})[MOVERS.focus];
+    return m ? moverCard(m) : `<div class="empty">No recent move on file for ${esc(MOVERS.focus)}.</div>`;
+  }
   const items = Object.values(MOVERS.js.items || {}).sort((a, b) => b.date.localeCompare(a.date) || Math.abs(b.rel || 0) - Math.abs(a.rel || 0));
   return `<div class="ph"><h2>Why it moved</h2><span class="sub">Stocks you hold and Buy candidates that moved 3%+ against the S&amp;P in a day, or 7%+ over 5 days. Checked every 30 minutes on market days.</span></div>
     ${items.length ? items.map(moverCard).join("") : `<div class="empty">Nothing has moved that much in the last week.</div>`}`;
 }
 document.addEventListener("click", ev => {
+  const bk = ev.target.closest("[data-whyback]");
+  if (bk) {                   // back to exactly where you were (tab and scroll position)
+    ev.preventDefault();
+    const f = MOVERS.from; MOVERS.focus = null; MOVERS.from = null;
+    if (!f) { render(); scrollTo(0, 0); return; }
+    state.tab = f.tab; try { localStorage.setItem("ctd-tab", f.tab); } catch (e) {}
+    render(); requestAnimationFrame(() => scrollTo(0, f.y));
+    return;
+  }
   const b = ev.target.closest("[data-why]"); if (!b) return;
   ev.preventDefault(); ev.stopPropagation();
-  goTab("movers"); MOVERS.focus = b.dataset.why;
-  setTimeout(() => { const el = document.querySelector(`[data-hl="mover:${CSS.escape(b.dataset.why)}"]`); if (el) { el.scrollIntoView({ block: "start" }); el.classList.remove("hl"); void el.offsetWidth; el.classList.add("hl"); } }, 60);
+  MOVERS.from = { tab: state.tab, y: scrollY };
+  MOVERS.focus = b.dataset.why;
+  state.tab = "movers"; render(); scrollTo(0, 0);
 });
 
 function renderMore() {
@@ -793,7 +808,8 @@ function render() {
   }
   let html = "";
   if (d.version === 1) html += `<div class="note warn"><b>Showing results from the first version (5 signals).</b> Run the new notebook (Run all) and this page switches to the full version with buy, short and avoid picks.</div>`;
-  if (MORE_TABS.some(m => m.k === state.tab)) html += `<button type="button" class="moreback" data-more="more">‹ More</button>`;
+  if (state.tab === "movers" && MOVERS.focus) html += `<button type="button" class="moreback" data-whyback="1">‹ Back</button>`;
+  else if (MORE_TABS.some(m => m.k === state.tab)) html += `<button type="button" class="moreback" data-more="more">‹ More</button>`;
   if (state.tab === "more") html += renderMore();
   if (state.tab === "health") html += renderHealth();
   if (state.tab === "movers") html += renderMovers();
@@ -2543,7 +2559,7 @@ function route(hash) {
   else if (a === "members") { tab("members"); MEM.key = b || null; MEM.open = null; MEM.tq = ""; MEM.tshow = 40; }
   else if (a === "health") { tab("health"); HEALTH.js = null; }
   else if (a === "me") { tab("me"); }
-  else if (a === "movers") { tab("movers"); MOVERS.focus = b || null; MOVERS.js = null; if (b) aim(`[data-hl="mover:${CSS.escape(b)}"]`); }
+  else if (a === "movers") { tab("movers"); MOVERS.focus = b || null; MOVERS.from = b ? { tab: "movers", y: 0 } : null; MOVERS.at = 0; }
   else if (["today", "record", "defense", "small", "works", "real", "port", "alerts"].includes(a)) tab(a);
   else return;
   render(); scrollTo(0, 0);
