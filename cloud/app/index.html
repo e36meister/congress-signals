@@ -66,6 +66,13 @@ section.panel{display:grid;gap:12px;align-content:start}
 .ph h2{font-size:19px;font-weight:600}
 .ph .sub{font-size:13px;color:var(--muted)}
 .morelist{display:grid}
+.sellbtn{font:600 13px var(--body);padding:6px 14px;border-radius:6px;border:1px solid var(--bad);background:none;color:var(--bad);cursor:pointer}
+.sellbtn.go{background:var(--bad);color:#fff}
+.sellbox{display:grid;gap:10px;padding:12px;border:1px solid var(--bad);border-radius:10px;background:var(--surface)}
+.sellbox input{font:500 16px var(--mono);padding:8px 10px;width:140px;border:1px solid var(--rule);border-radius:8px;background:var(--surface);color:var(--ink)}
+.segs{display:flex;gap:6px;flex-wrap:wrap}
+.seg1{font:600 12.5px var(--body);padding:6px 12px;border-radius:999px;border:1px solid var(--rule);background:var(--surface);color:var(--ink2);cursor:pointer}
+.seg1[aria-pressed="true"]{background:var(--ink);color:var(--surface);border-color:var(--ink)}
 .why{display:inline-block;margin:4px 0 0;font:600 12px var(--body);padding:3px 9px;border-radius:999px;border:1px solid var(--rule);background:var(--sunken);cursor:pointer;white-space:nowrap}
 td .why{display:block;width:max-content}
 .why.neg{color:var(--bad) !important} .why.pos{color:var(--good) !important}
@@ -490,7 +497,7 @@ nav.tabs button{overflow:hidden}
 "use strict";
 const SERVER = "Google Drive";
 const FILE_TITLE = "dashboard_data.json";
-const state = { data: null, tab: "today", fileId: null, modified: null, error: null, tradeSide: "longs", tradeFilter: "all", q: "",
+const state = { sellOpen: null, sellMode: {}, sellAmt: {}, sellMsg: {}, selling: false, data: null, tab: "today", fileId: null, modified: null, error: null, tradeSide: "longs", tradeFilter: "all", q: "",
   folderId: null, requests: [], confirm: null, amounts: {}, tapMsg: {}, sending: false };
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -1508,6 +1515,28 @@ function liveVsSpyTile(d) {
   if (!v) return "";
   return `<div class="tile"><span class="v ${cls(v.gap)}">${pnum(v.gap, 2)}</span><span class="l">${v.gap >= 0 ? "Ahead of" : "Behind"} the S&amp;P since start</span><span class="c">You ${pnum(v.acct, 2)} · S&amp;P ${pnum(v.spy, 2)}${v.live ? "" : " (last close)"}</span></div>`;
 }
+// Sell button on each position (Account tab only): all of it by default, or a number of shares, or dollars
+function sellBtn(x) {
+  if (!state.folderId || x.sleeve === "park") return "";
+  const m = state.sellMsg[x.t];
+  return `<div style="margin-top:6px"><button type="button" class="sellbtn" data-sell="${esc(x.t)}">Sell</button></div>${m && state.sellOpen !== x.t ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}`;
+}
+function sellRow(x) {
+  if (state.sellOpen !== x.t) return "";
+  const t = x.t, mode = state.sellMode[t] || "all", real = state.data?.portfolio?.mode === "live";
+  const sh = Number(x.qty).toLocaleString(undefined, { maximumFractionDigits: 4 });
+  const opt = (k, l) => `<button type="button" class="seg1" data-sellmode="${esc(t)}|${k}" aria-pressed="${mode === k}">${l}</button>`;
+  const m = state.sellMsg[t];
+  return `<tr class="sellrow"><td colspan="7" class="full" data-l=""><div class="sellbox">
+    <div><b>Sell ${esc(t)}</b> · you hold ${sh} sh (${money(x.mv)})${x.bot ? `<div class="foot">The tool bought this one; it won't buy it back for the same pick.</div>` : ""}</div>
+    <div class="segs">${opt("all", "All")}${opt("shares", "Shares")}${opt("dollars", "$ amount")}</div>
+    ${mode === "all" ? `<div>Sell all ${sh} shares, about ${money(x.mv)}</div>`
+      : `<label>${mode === "shares" ? "Shares" : "Dollars $"} <input type="number" inputmode="decimal" min="0" step="${mode === "shares" ? "any" : "10"}" id="samt-${esc(t)}" value="${esc(state.sellAmt[t] ?? "")}" aria-label="${mode === "shares" ? "Shares to sell" : "Dollars to sell"}"></label>`}
+    <div class="foot">${real ? "Real money account" : "Paper account (fake money)"} · fills now if the market is open, otherwise at the next open.</div>
+    <div style="display:flex;gap:10px;align-items:center"><button type="button" class="sellbtn go" data-sellsend="${esc(t)}"${state.selling ? " disabled" : ""}>${state.selling ? "Sending…" : "Send sell order"}</button>
+      <button type="button" class="link" data-sellcancel="1">Cancel</button></div>
+    ${m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</div></td></tr>`;
+}
 function renderPortfolio(d) {
   const p = d.portfolio;
   if (!p) return `<div class="empty">No brokerage account connected yet. Add your Alpaca paper keys as GitHub secrets (ALPACA_PAPER_KEY_ID and ALPACA_PAPER_SECRET_KEY); the next update fills this tab in.</div>`;
@@ -1530,7 +1559,7 @@ function renderPortfolio(d) {
   ${closeSection(d)}
   <section class="panel"><div class="ph"><h2>Positions</h2>${alpLink}</div>
     ${pos.length ? `<div class="tbl"><table><thead><tr><th>Ticker</th><th class="n">Shares</th><th class="n">Avg cost</th><th class="n">Price</th><th class="n">Value</th><th class="n">Gain</th><th>Held</th></tr></thead><tbody>
-    ${pos.map(x => `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${moverChip(x.t)}${soldNote(x)}</td><td class="n">${Number(x.qty).toLocaleString()}</td><td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.px, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${heldCell(x, L)}</td></tr>`).join("")}
+    ${pos.map(x => `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${moverChip(x.t)}${soldNote(x)}</td><td class="n">${Number(x.qty).toLocaleString()}</td><td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.px, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${heldCell(x, L)}${sellBtn(x)}</td></tr>${sellRow(x)}`).join("")}
     </tbody></table></div>
     <p class="foot">Suggested sell dates for your own positions use the current best holding period from the weekly check (What works → Automatic adjustments): ${(state.data.adaptive?.policy?.hold_other) ?? L.hold_days ?? 60} trading days for most stocks, ${(state.data.adaptive?.policy?.hold_small) ?? L.hold_small ?? L.hold_days ?? 60} for companies under $2B. They update if the check changes. The tool never sells your own positions.</p>` : `<div class="empty">No open positions yet. New BUY picks are bought at the next market open.</div>`}</section>
   ${stopSection(d)}
@@ -1538,7 +1567,7 @@ function renderPortfolio(d) {
   ${reqSection()}
   <section class="panel"><div class="ph"><h2>Recent orders</h2></div>
     ${ords.length ? `<div class="tbl scroll"><table><thead><tr><th>When</th><th>Ticker</th><th>Side</th><th class="n">Shares</th><th class="n">Fill price</th><th>Status</th><th>Placed by</th></tr></thead><tbody>
-    ${ords.map(o => `<tr><td class="nw">${esc(fmtET(o.at))}</td><td class="mono">${tkBtn(o.t)}</td><td>${esc(o.side)}</td><td class="n">${esc(o.qty ?? "–")}</td><td class="n">${o.filled_px ? money(+o.filled_px, 2) : "–"}</td><td>${esc(String(o.status).replace(/_/g, " "))}</td><td>${o.by === "tool" || (o.by == null && o.bot) ? "This tool" : o.by === "tap" ? "Buy button" : "You"}</td></tr>`).join("")}
+    ${ords.map(o => `<tr><td class="nw">${esc(fmtET(o.at))}</td><td class="mono">${tkBtn(o.t)}</td><td>${esc(o.side)}</td><td class="n">${esc(o.qty ?? "–")}</td><td class="n">${o.filled_px ? money(+o.filled_px, 2) : "–"}</td><td>${esc(String(o.status).replace(/_/g, " "))}</td><td>${o.by === "tool" || (o.by == null && o.bot) ? "This tool" : o.by === "tap" ? (o.side === "sell" ? "Sell button" : "Buy button") : "You"}</td></tr>`).join("")}
     </tbody></table></div>` : `<div class="empty">No orders yet.</div>`}</section>`;
   return h;
 }
@@ -2765,6 +2794,34 @@ async function sendOrder(t) {
       "Not placed: " + (WHY_BUY[e.why] || (e.why || "").replace(/-/g, " ") || e.message || "unknown reason") + "." };
   } finally { state.sending = false; render(); }
 }
+async function sendSell(t) {
+  const mode = state.sellMode[t] || "all", amount = parseFloat(state.sellAmt[t]);
+  if (mode !== "all" && !(amount > 0)) { state.sellMsg[t] = { ok: false, text: mode === "shares" ? "Enter how many shares." : "Enter a dollar amount." }; render(); return; }
+  state.selling = true; render();
+  try {
+    const { js } = await api("/api/sell", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t, mode, amount }) });
+    const what = js.all ? `all of ${t}` : js.qty ? `${Number(js.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh of ${t}` : `${money(js.notional)} of ${t}`;
+    state.sellMsg[t] = { ok: true, text: `Sell order placed: ${what}${js.value ? ` (about ${money(js.value)})` : ""}` +
+      (js.market_open ? "." : `. It fills when the market opens (${fmtET(js.next_open)}).`) };
+    state.sellOpen = null;
+    loadLive();
+  } catch (e) {
+    state.sellMsg[t] = { ok: false, text: e.code === "offline" ? "You're offline; the order wasn't sent." : e.code === "login" ? "Log in again, then tap Sell." :
+      "Not placed: " + ({ "not-held": "you don't hold it any more", "already-selling": "a sell order for it is already waiting",
+        "amount-too-small": "the amount is less than one share", "bad-amount": "the amount couldn't be read" }[e.why] || (e.why || "").replace(/-/g, " ") || e.message || "unknown reason") + "." };
+  } finally { state.selling = false; render(); }
+}
+document.getElementById("main").addEventListener("click", ev => {
+  const s = ev.target.closest("[data-sell],[data-sellsend],[data-sellcancel],[data-sellmode]");
+  if (!s) return;
+  if (s.dataset.sell) { state.sellOpen = s.dataset.sell; delete state.sellMsg[s.dataset.sell]; render(); }
+  else if (s.dataset.sellmode) { const [t, m] = s.dataset.sellmode.split("|"); state.sellMode[t] = m; render(); document.getElementById("samt-" + t)?.focus(); }
+  else if (s.dataset.sellsend) { if (!state.selling) sendSell(s.dataset.sellsend); }
+  else if (s.dataset.sellcancel) { state.sellOpen = null; render(); }
+});
+document.getElementById("main").addEventListener("input", ev => {
+  if (ev.target.id && ev.target.id.startsWith("samt-")) state.sellAmt[ev.target.id.slice(5)] = ev.target.value;
+});
 document.getElementById("main").addEventListener("click", ev => {
   const b = ev.target.closest("[data-buy],[data-send],[data-cancel]");
   if (!b) return;

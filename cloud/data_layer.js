@@ -125,6 +125,34 @@ async function sendOrder(t) {
       "Not placed: " + (WHY_BUY[e.why] || (e.why || "").replace(/-/g, " ") || e.message || "unknown reason") + "." };
   } finally { state.sending = false; render(); }
 }
+async function sendSell(t) {
+  const mode = state.sellMode[t] || "all", amount = parseFloat(state.sellAmt[t]);
+  if (mode !== "all" && !(amount > 0)) { state.sellMsg[t] = { ok: false, text: mode === "shares" ? "Enter how many shares." : "Enter a dollar amount." }; render(); return; }
+  state.selling = true; render();
+  try {
+    const { js } = await api("/api/sell", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t, mode, amount }) });
+    const what = js.all ? `all of ${t}` : js.qty ? `${Number(js.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh of ${t}` : `${money(js.notional)} of ${t}`;
+    state.sellMsg[t] = { ok: true, text: `Sell order placed: ${what}${js.value ? ` (about ${money(js.value)})` : ""}` +
+      (js.market_open ? "." : `. It fills when the market opens (${fmtET(js.next_open)}).`) };
+    state.sellOpen = null;
+    loadLive();
+  } catch (e) {
+    state.sellMsg[t] = { ok: false, text: e.code === "offline" ? "You're offline; the order wasn't sent." : e.code === "login" ? "Log in again, then tap Sell." :
+      "Not placed: " + ({ "not-held": "you don't hold it any more", "already-selling": "a sell order for it is already waiting",
+        "amount-too-small": "the amount is less than one share", "bad-amount": "the amount couldn't be read" }[e.why] || (e.why || "").replace(/-/g, " ") || e.message || "unknown reason") + "." };
+  } finally { state.selling = false; render(); }
+}
+document.getElementById("main").addEventListener("click", ev => {
+  const s = ev.target.closest("[data-sell],[data-sellsend],[data-sellcancel],[data-sellmode]");
+  if (!s) return;
+  if (s.dataset.sell) { state.sellOpen = s.dataset.sell; delete state.sellMsg[s.dataset.sell]; render(); }
+  else if (s.dataset.sellmode) { const [t, m] = s.dataset.sellmode.split("|"); state.sellMode[t] = m; render(); document.getElementById("samt-" + t)?.focus(); }
+  else if (s.dataset.sellsend) { if (!state.selling) sendSell(s.dataset.sellsend); }
+  else if (s.dataset.sellcancel) { state.sellOpen = null; render(); }
+});
+document.getElementById("main").addEventListener("input", ev => {
+  if (ev.target.id && ev.target.id.startsWith("samt-")) state.sellAmt[ev.target.id.slice(5)] = ev.target.value;
+});
 document.getElementById("main").addEventListener("click", ev => {
   const b = ev.target.closest("[data-buy],[data-send],[data-cancel]");
   if (!b) return;
