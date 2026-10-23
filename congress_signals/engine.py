@@ -1988,7 +1988,17 @@ def load_prices(cfg, tickers, max_age_hours=12, priority=None):
         # Yahoo only for the rest, and only those still trading: a stock with no price for 30+ days has almost
         # always been delisted or bought out, and asking Yahoo about hundreds of them just costs retries
         # (they get one weekly look on Mondays in case trading resumed)
-        last_seen = px.apply(pd.Series.last_valid_index)
+        # Oct 23: "last price on file" isn't enough: 53 long-gone stocks (SGEN, SPLK, CA, ANSS...) carry the same
+        # price copied forward day after day up to 2026-09-25, so they looked live and Yahoo was asked about them
+        # every run, returning nothing ("Yahoo download failed ... for 25 stock(s)"). Use the last day the price
+        # actually changed.
+        def _last_move(col):
+            v = col.dropna()
+            if v.empty:
+                return None
+            ch = v[v.diff().fillna(1) != 0]
+            return ch.index[-1] if len(ch) else v.index[0]
+        last_seen = px.apply(_last_move)
         live_cut = px.index.max() - pd.Timedelta(days=30)
         monday = pd.Timestamp.today().weekday() == 0
         rest = [c for c in cols if c not in set(al.columns)
