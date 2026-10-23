@@ -29,12 +29,9 @@ def senate_ids():
     try:
         s = E._senate_session()
         start = (dt.date.today() - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%m/%d/%Y 00:00:00")
-        r = s.post(f"{E.EFD}/search/report/data/", timeout=60,
-                   data={"start": "0", "length": "100", "report_types": "[11]", "filer_types": "[]",
-                         "submitted_start_date": start, "submitted_end_date": "", "candidate_state": "",
-                         "senator_state": "", "office_id": "", "first_name": "", "last_name": ""},
-                   headers={"Referer": f"{E.EFD}/search/", "X-CSRFToken": s.cookies.get("csrftoken", "")})
-        rows = r.json().get("data", [])
+        rows = E.senate_list(s, {"start": "0", "length": "100", "report_types": "[11]", "filer_types": "[]",
+                                 "submitted_start_date": start, "submitted_end_date": "", "candidate_state": "",
+                                 "senator_state": "", "office_id": "", "first_name": "", "last_name": ""})
     except Exception as e:
         E.log(f"Quick check: Senate listing failed ({e})")
         return set()

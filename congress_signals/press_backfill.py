@@ -252,6 +252,32 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
                 out.append((d, u, r.get("title") or t2 or "", text))
         return name, b, out
 
+    def _url(name):
+        c = SCRAPER_CONFIG.get(name) or {}
+        u = PS.BACKUP.get(name) or c.get("url_base") or c.get("url") or ""
+        return str(u[0] if isinstance(u, (list, tuple)) and u else u)
+
+    # Oct 23: the Senate's Akamai firewall began refusing every automated read of every senator's site (HTTP 403
+    # "Access Denied", any user agent, the WordPress feed too). Each blocked site cost ~40 refused requests an hour.
+    # Two sample sites are checked first; if both refuse page and feed, the Senate sites are not hammered this run
+    # but still count as failed below, so Data health keeps the problem open.
+    fw_blocked = []
+    sen = [n for n in names if "senate.gov" in _url(n).lower()]
+    if len(sen) >= 5:
+        def _refused(u):
+            root = "https://" + re.sub(r"^https?://", "", u).split("/")[0]
+            for t in (u, root + "/wp-json/"):
+                st, txt, _ = PS._get(t, timeout=20)
+                if not (st == 403 and ("Access Denied" in txt[:3000] or "Unauthorized" in txt[:3000])):
+                    return False
+            return True
+        if all(_refused(_url(n)) for n in sen[:2]):
+            fw_blocked = sen
+            names = [n for n in names if n not in set(sen)]
+            _log(f"Latest press releases: the Senate firewall refuses automated reads (HTTP 403 Access Denied on "
+                 f"pages and feeds); {len(sen)} senator sites not read this run (their releases still come from "
+                 f"Congress Press when it has them)")
+
     added = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
         results = list(ex.map(one, names))
@@ -269,6 +295,7 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
         late = [n for n in again if n in second and second[n][2] is not None]
         if late:
             _log(f"Latest press releases: {len(late)} site(s) answered on a second, slower try")
+    fails.extend(fw_blocked)
     for name, b, out in results:
         if out is None:
             fails.append(name)
@@ -283,7 +310,7 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
         added += len(rows)
         for r in rows:
             seen.add(norm_url(r[4]))
-    _log(f"Latest press releases: {len(names) - len(unchecked)} of {len(names)} member sites checked, +{added} new")
+    _log(f"Latest press releases: {len(names) - len(unchecked)} of {len(names) + len(fw_blocked)} member sites checked, +{added} new")
     if unchecked:
         _log(f"Latest press releases: {len(unchecked)} member site(s) skipped: the time limit ran out before them")
     if fails:
