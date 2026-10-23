@@ -930,6 +930,21 @@ def _senate_session():
     return s
 
 
+def senate_list(s, data):
+    """One page of the eFD filings list ([] at the end). Raises with a plain reason when the site refuses: since
+    Oct 23, 2026 the Senate's Akamai firewall answers the list with 'Access Denied' (HTTP 403) to automated reads
+    while the home page still loads, which used to show up only as a JSON error ('Expecting value')."""
+    r = s.post(f"{EFD}/search/report/data/", data=data, timeout=60,
+               headers={"Referer": f"{EFD}/search/", "X-CSRFToken": s.cookies.get("csrftoken", "")})
+    if r.status_code != 200:
+        why = "Access Denied by the Senate firewall" if "Access Denied" in r.text[:2000] else "unexpected answer"
+        raise RuntimeError(f"HTTP {r.status_code}: {why}")
+    try:
+        return r.json().get("data", [])
+    except ValueError:
+        raise RuntimeError(f"not a filings list (HTTP 200, {len(r.content)} bytes: {r.text[:80]!r})")
+
+
 def parse_senate_ptr_html(html):
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(html, "lxml")
@@ -1017,9 +1032,7 @@ def collect_senate(cfg):
                 "submitted_start_date": start.strftime("%m/%d/%Y 00:00:00"), "submitted_end_date": "",
                 "candidate_state": "", "senator_state": "", "office_id": "", "first_name": "", "last_name": ""}
         try:
-            r = s.post(f"{EFD}/search/report/data/", data=data, timeout=60,
-                       headers={"Referer": f"{EFD}/search/", "X-CSRFToken": s.cookies.get("csrftoken", "")})
-            page = r.json().get("data", [])
+            page = senate_list(s, data)
         except Exception as e:
             log(f"Senate: listing failed at {offset} ({e})")
             break
@@ -6060,8 +6073,7 @@ def collect_annual_disclosures(cfg, traders=None):
                 data = {"start": str(offset), "length": "100", "report_types": "[7]", "filer_types": "[]",
                         "submitted_start_date": start.strftime("%m/%d/%Y 00:00:00"), "submitted_end_date": "",
                         "candidate_state": "", "senator_state": "", "office_id": "", "first_name": "", "last_name": ""}
-                page = s.post(f"{EFD}/search/report/data/", data=data, timeout=60,
-                              headers={"Referer": f"{EFD}/search/", "X-CSRFToken": s.cookies.get("csrftoken", "")}).json().get("data", [])
+                page = senate_list(s, data)
                 if not page:
                     break
                 for row in page:
