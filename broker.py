@@ -247,6 +247,15 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
     positions = {p["symbol"]: p for p in api.get("/v2/positions")}
     open_orders = api.get("/v2/orders", status="open", limit=500)
     pending = {o["symbol"] for o in open_orders}
+    # stocks you sold with the app's Sell button in the last 45 days: the tool doesn't buy them back for the same pick
+    owner_sold = set()
+    try:
+        since = (dt.datetime.utcnow() - dt.timedelta(days=45)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for o in api.get("/v2/orders", status="all", limit=500, direction="desc", after=since):
+            if (o.get("client_order_id") or "").startswith("tap-sell-") and o.get("side") == "sell":
+                owner_sold.add(o["symbol"])
+    except Exception as e:
+        log(f"Broker: couldn't read your Sell-button orders ({type(e).__name__}); not buying anything you sold is not checked this run")
     bot = _bot_buys(api)
     actions, sold = [], set()
     # symbols you (or the Buy button) also bought: selling would close your shares too, so the tool leaves them
@@ -425,6 +434,9 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             sym = to_alpaca(t)
             price = last_prices.get(t)
             if sym in positions or sym in pending or sym in sold or not price or not math.isfinite(price) or price <= 0:
+                return None
+            if sym in owner_sold:
+                log(f"Broker: skipping {t}: you sold it with the Sell button")
                 return None
             try:
                 asset = api.get(f"/v2/assets/{sym}")

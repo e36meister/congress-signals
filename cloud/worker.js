@@ -128,6 +128,7 @@ async function api(req, env, url) {
   if (p === "/api/tie-review" && req.method === "POST") return tieReview(req, env);
   if (p === "/api/live" && req.method === "GET") return live(env);
   if (p === "/api/buy" && req.method === "POST") return buy(req, env);
+  if (p === "/api/sell" && req.method === "POST") return sell(req, env);
   if (p === "/api/widget/script" && req.method === "GET") return widgetScript(env, url, false);
   if (p === "/api/widget/script" && req.method === "POST") return widgetScript(env, url, true);   // new key
   if (p === "/api/push/key" && req.method === "GET") return json({ key: (await vapid(env)).pub, phones: (await getSubs(env)).length });
@@ -304,6 +305,44 @@ async function buy(req, env) {
   if (!r.ok) return json({ ok: false, why: "rejected-" + r.status, message: r.data && r.data.message }, 400);
   return json({ ok: true, status: r.data.status, market_open: !!(clock.data && clock.data.is_open), next_open: clock.data && clock.data.next_open,
     qty: order.qty ? +order.qty : null });
+}
+
+// ---------- Sell button (Account tab): all of a position, a number of shares, or a dollar amount ----------
+// Orders are marked tap-sell-…, so the tool won't buy the stock back for the same pick (broker.py).
+async function sell(req, env) {
+  const a = alpaca(env);
+  if (!a.ready) return json({ ok: false, why: "no-keys" }, 503);
+  let body = {};
+  try { body = await req.json(); } catch (e) {}
+  const t = String(body.t || "").toUpperCase(), mode = String(body.mode || "all"), amount = +body.amount;
+  if (!/^[A-Z][A-Z0-9-]{0,6}$/.test(t) || !["all", "shares", "dollars"].includes(mode)) return json({ ok: false, why: "bad-request" }, 400);
+  const sym = t.replace(/-/g, ".");
+  const [pos, asset, clock] = await Promise.all([a.get(`/v2/positions/${encodeURIComponent(sym)}`), a.get(`/v2/assets/${encodeURIComponent(sym)}`), a.get("/v2/clock")]);
+  if (pos.status === 404) return json({ ok: false, why: "not-held" }, 400);
+  if (!pos.ok || !asset.ok) { await wProblem(env, "sell", `Sell button couldn't read the ${t} position from Alpaca (HTTP ${pos.status})`); return json({ ok: false, why: "alpaca" }, 502); }
+  await wOk(env, "sell");
+  const held = +pos.data.qty_available || +pos.data.qty || 0, px = +pos.data.current_price || 0, frac = !!asset.data.fractionable;
+  if (!(held > 0)) return json({ ok: false, why: "already-selling" }, 400);
+  let qty = null, notional = null;
+  if (mode === "all") qty = held;
+  else if (mode === "shares") {
+    if (!(amount > 0)) return json({ ok: false, why: "bad-amount" }, 400);
+    qty = Math.min(amount, held);
+    if (!frac) qty = Math.floor(qty);
+  } else {
+    if (!(amount >= 1)) return json({ ok: false, why: "bad-amount" }, 400);
+    if (px && amount >= held * px * 0.995) qty = held;            // about the whole position: sell it all
+    else if (frac) notional = Math.round(amount * 100) / 100;
+    else qty = px ? Math.floor(amount / px) : 0;
+  }
+  if (qty != null && !(qty > 0)) return json({ ok: false, why: "amount-too-small" }, 400);
+  const order = { symbol: sym, side: "sell", type: "market", time_in_force: "day", client_order_id: `tap-sell-${t}-${Date.now()}`.slice(0, 48) };
+  if (notional != null) order.notional = notional.toFixed(2); else order.qty = String(qty);
+  const r = await a.post("/v2/orders", order);
+  if (!r.ok) return json({ ok: false, why: "rejected-" + r.status, message: r.data && r.data.message }, 400);
+  return json({ ok: true, status: r.data.status, qty: order.qty ? +order.qty : null, notional: order.notional ? +order.notional : null,
+    all: order.qty != null && +order.qty >= held, value: px ? (order.qty ? +order.qty * px : +order.notional) : null,
+    market_open: !!(clock.data && clock.data.is_open), next_open: clock.data && clock.data.next_open });
 }
 
 // ---------- a trade's context: the company's SEC filings around the trade date (8-K items, big holders, insiders) ----------
@@ -683,6 +722,7 @@ async function checkFills(env) {
     const w = why[`${t}|${o.side}`];
     if (o.side === "buy" && cid.startsWith("tap-")) msgs.push({ t, s: `bought ${t}`, title: `Bought ${t}`, body: `Your Buy-button order filled: ${sh}.` });
     else if (o.side === "buy" && cid.startsWith("cs-")) msgs.push({ t, s: `bought ${t}`, title: `Tool bought ${t}`, body: sh + (w ? ` · ${w}` : "") + "." });
+    else if (o.side === "sell" && cid.startsWith("tap-sell-")) msgs.push({ t, s: `sold ${t}`, title: `Sold ${t}`, body: `Your Sell-button order filled: ${sh}.` });
     else if (o.side === "sell") msgs.push({ t, s: `sold ${t}`, title: `Sold ${t}`, body: sh + (w ? ` · ${w}` : "") + "." });
   }
   await env.DATA.put("push/fills_state.json", JSON.stringify({ seen: [...seen].slice(-1500) }));
