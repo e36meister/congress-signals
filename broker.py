@@ -508,8 +508,16 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
 
         # 3. park the tool's unused money in a Treasury-bill fund, keeping a little cash for your own Buy-button orders. Sold down as picks need the money.
         #    Money parked in a fund that's no longer the choice (e.g. after PARK_FUND changes) is sold first;
-        #    it's re-parked in the right fund on the next run.
-        stale = [p for p in positions if p in bot and p not in others and is_park(p) and p != park and p not in pending]
+        #    it's re-parked in the right fund on the next run. Owner, Oct 22: the move out of a fund waits until it's
+        #    back at or above what was paid for it (the S&P was ~$825 down when parking switched to SGOV); until then
+        #    new spare cash goes to the new fund, and picks that need money take it from the new fund first.
+        old_park = [p for p in positions if p in bot and p not in others and is_park(p) and p != park and p not in pending]
+        below = lambda p: float(positions[p].get("current_price") or 0) < float(positions[p].get("avg_entry_price") or 0)
+        waiting = [p for p in old_park if below(p)]
+        stale = [p for p in old_park if not below(p)]
+        for p in waiting:
+            log(f"Broker: parked {p} stays until it's back to its cost (${float(positions[p]['avg_entry_price']):,.2f}; "
+                f"now ${float(positions[p]['current_price']):,.2f}) before moving to {park_label(park)}")
         for p in stale:
             r = api.post("/v2/orders", {"symbol": p, "side": "sell", "qty": positions[p].get("qty"), "type": "market",
                                         "time_in_force": "day",
@@ -527,12 +535,15 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             if diff > max(250.0, 0.005 * equity) and cash_free > 250:
                 body = {"symbol": park, "side": "buy", "notional": f"{min(diff, cash_free):.2f}"}
             elif diff < -max(250.0, 0.005 * equity) and parked > 0:
-                body = {"symbol": park, "side": "sell", "notional": f"{min(-diff, parked):.2f}"}
+                # picks need the money: from the current fund first, then a fund still waiting to move
+                src = park if park in positions and val(park) >= min(-diff, parked) else \
+                    max([p for p in [park] + waiting if p in positions], key=val, default=park)
+                body = {"symbol": src, "side": "sell", "notional": f"{min(-diff, val(src) if src in positions else parked):.2f}"}
             if body:
                 body.update({"type": "market", "time_in_force": "day",
                              "client_order_id": f"{PARK_PREFIX}{body['side']}-{dt.datetime.now():%Y%m%d%H%M%S}"})
                 r = api.post("/v2/orders", body)
-                actions.append({"side": body["side"], "symbol": park, "ok": r.status_code in (200, 201),
+                actions.append({"side": body["side"], "symbol": body["symbol"], "ok": r.status_code in (200, 201),
                                 "why": f"parking unused money in {park_label(park)} (${float(body['notional']):,.0f})"})
     if trade:
         log(f"Broker ({s['mode']}): {sum(a['ok'] for a in actions if a['side'] == 'buy')} buy order(s), "

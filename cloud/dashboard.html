@@ -635,7 +635,7 @@ function moverChip(t) {
   const m = moverFor(t);
   if (!m) return "";
   const ls = m.lines || [];
-  const kind = ls.some(l => /^Sector-wide/.test(l)) ? "sector" : ls.some(l => /^Mostly this stock/.test(l)) ? "just this stock" : "";
+  const kind = ls.some(l => /^Sector-wide/.test(l)) ? "sector" : ls.some(l => /^Mostly this stock/.test(l)) ? "stock" : "";
   return `<button type="button" class="why ${m.move < 0 ? "neg" : "pos"}" data-why="${esc(t)}">${m.move < 0 ? "▼" : "▲"} ${esc(pct(Math.abs(m.move) / 100).replace(/^[+-]/, ""))} ${m.kind === "day" ? "today" : "5 days"}${kind ? ` · ${kind}` : ""}</button>`;
 }
 function moverCard(m) {
