@@ -2160,7 +2160,7 @@ function drawTickerChart() {
     el.classList.add("on");
     const f = myF[+el.dataset.mf];
     det.innerHTML = `<div class="tdet"><img src="/me.jpg" alt="" style="width:34px;height:34px;border-radius:50%;object-fit:cover;border:2px solid var(--${f[1] === "sell" ? "bad" : "good"})" onerror="this.style.display='none'">
-      <div><b>You ${f[1] === "sell" ? "sold" : "bought"}</b> ${Number(f[2]).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at <b>${money2(f[3])}</b> on ${esc(fmtDate(f[0]))}<div class="foot">${esc({ you: "Placed by you", tap: "Buy button", tool: "Placed by the tool" }[f[4]] || "")}</div></div></div>`;
+      <div><span class="bs ${f[1] === "sell" ? "sell" : "buy"}">${f[1] === "sell" ? "Sell" : "Buy"}</span> ${Number(f[2]).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at <b>${money2(f[3])}</b> on ${esc(fmtDate(f[0]))}<div class="foot">${esc({ you: "Placed by you", tap: "Buy button", tool: "Placed by the tool" }[f[4]] || "")}</div></div></div>`;
   }));
   // your own trades of this stock in this span
   const myRows = myF.slice().sort((a, b) => b[0].localeCompare(a[0]));
