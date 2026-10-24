@@ -288,6 +288,10 @@ LIVE_MAX_DAYS = {"Members' own sites": 2, "Bluesky": 2, "Mastodon": 14, "Substac
 problems = []
 for k in counts:
     mx = LIVE_MAX_DAYS.get(k, 7)
+    if k == "Instagram" and not (os.environ.get("META_ACCESS_TOKEN") or "").strip():
+        # not a quiet source: it can't run until the owner adds the token, so say exactly that (still reported)
+        problems.append("Instagram: not set up yet; waiting for the owner to add the META_ACCESS_TOKEN GitHub secret")
+        continue
     if k in last_new:
         days = (now - dt.datetime.fromisoformat(last_new[k])).total_seconds() / 86400
         if days > mx:

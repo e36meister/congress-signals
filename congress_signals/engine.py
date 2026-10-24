@@ -924,7 +924,11 @@ def _senate_session():
     s = requests.Session()
     s.headers.update(UA)
     r = s.get(f"{EFD}/search/home/", timeout=60)
-    tok = re.search(r'name="csrfmiddlewaretoken" value="([^"]+)"', r.text).group(1)
+    m = re.search(r'name="csrfmiddlewaretoken" value="([^"]+)"', r.text)
+    if not m:       # since Oct 24 the firewall sometimes refuses the home page too; say so instead of 'NoneType...group'
+        why = "Access Denied by the Senate firewall" if "Access Denied" in r.text[:2000] else "no sign-in form on the page"
+        raise RuntimeError(f"HTTP {r.status_code}: {why}")
+    tok = m.group(1)
     s.post(f"{EFD}/search/home/", data={"prohibition_agreement": "1", "csrfmiddlewaretoken": tok},
            headers={"Referer": f"{EFD}/search/home/"}, timeout=60)
     return s
