@@ -218,6 +218,7 @@ HOUSE_ASSET = re.compile(r"(?:\(([A-Za-z0-9.\-/]{1,8})\)\s*)?\[([A-Za-z]{2})\]")
 HOUSE_PAREN_TICKER = re.compile(r"\(([A-Za-z]{1,5}(?:[.\-][A-Za-z])?)\)")
 NOT_TICKERS = {"SP", "DC", "JT", "IRA", "LLC", "LP", "INC", "CO", "NA", "SEP", "UTMA", "UGMA", "ROTH", "TR", "ETF",
                "PA", "MD", "VA", "CA", "TX", "NY", "FL", "DE", "US", "USA", "IL", "OH", "CT", "NJ", "MA", "GA", "WA"}
+FD_MISSING_RETRY_DAYS = 30   # reports the House clerk answers 404 for are asked about again after this many days
 FD_VERSION = 3        # 3: Senate tables read row by row; House tag case; holdings in untagged House reports
 
 
@@ -6027,14 +6028,32 @@ def collect_annual_disclosures(cfg, traders=None):
     start = pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=500)
     rows = []
 
-    # House: annual (O), amendments (A) and termination (T) reports sit in the same yearly index as trades
+    # House: annual (O), amendments (A) and termination (T) reports sit in the same yearly index as trades.
+    # Reports the clerk no longer has (HTTP 404, mostly 2012) are remembered and asked about again only every
+    # FD_MISSING_RETRY_DAYS: asking for ~600 missing PDFs every run made the clerk's firewall block GitHub on
+    # Oct 25 (HTTP 403 on every House site, which also endangers the trade downloads). A refusal (403/429)
+    # stops this low-priority backfill at once; the rest continues next run and the refusal is reported.
+    miss_path = _p(cfg, "cache", "annual_fd_missing.json")
+    try:
+        missing = json.load(open(miss_path)) if os.path.exists(miss_path) else {}
+    except Exception:
+        missing = {}
+    today_s = dt.date.today().isoformat()
+    recheck = (dt.date.today() - dt.timedelta(days=FD_MISSING_RETRY_DAYS)).isoformat()
+    recent_missing = {d for d, at in missing.items() if at > recheck}
+    house_blocked = None
     if cfg.get("USE_HOUSE", True):
         for y in range(start.year, dt.date.today().year + 1):
-            if out_of_time(cfg):
+            if out_of_time(cfg) or house_blocked:
                 break
             try:
                 r = requests.get(f"https://disclosures-clerk.house.gov/public_disc/financial-pdfs/{y}FD.zip",
                                  headers=UA, timeout=120)
+                if r.status_code in (403, 429):
+                    house_blocked = f"HTTP {r.status_code} on the {y} index"
+                    break
+                if r.status_code != 200:
+                    raise RuntimeError(f"HTTP {r.status_code}")
                 z = zipfile.ZipFile(io.BytesIO(r.content))
                 idx = pd.read_xml(z.open([n for n in z.namelist() if n.lower().endswith(".xml")][0]))
             except Exception as e:
@@ -6044,9 +6063,12 @@ def collect_annual_disclosures(cfg, traders=None):
             idx = idx[~idx["DocID"].astype(str).isin(done)]
             if traders:     # only members who actually trade stocks
                 idx = idx[idx["Last"].astype(str).map(lambda s: name_key(s).split(" ")[-1] if name_key(s) else "").isin(traders)]
+            n_miss = int(idx["DocID"].astype(str).isin(recent_missing).sum())
+            idx = idx[~idx["DocID"].astype(str).isin(recent_missing)]
             if not len(idx):
                 continue
-            log(f"Yearly disclosures: House {y}: {len(idx)} reports to read")
+            log(f"Yearly disclosures: House {y}: {len(idx)} reports to read"
+                + (f" ({n_miss} the clerk doesn't have are checked again every {FD_MISSING_RETRY_DAYS} days)" if n_miss else ""))
 
             def work(r):
                 import pdfplumber
@@ -6054,14 +6076,21 @@ def collect_annual_disclosures(cfg, traders=None):
                 try:
                     resp = requests.get(url, headers=UA, timeout=90)
                     if resp.status_code != 200:
-                        return r, None
+                        return r, None, resp.status_code
                     with pdfplumber.open(io.BytesIO(resp.content)) as pdf:
-                        return r, "\n".join((pg.extract_text() or "") for pg in pdf.pages[:FD_MAX_PAGES])
+                        return r, "\n".join((pg.extract_text() or "") for pg in pdf.pages[:FD_MAX_PAGES]), 200
                 except Exception:
-                    return r, None
+                    return r, None, None
 
             if True:
-                for r, text in chunked_map(work, [r for _, r in idx.iterrows()], cfg["WORKERS"], cfg):
+                n_read = 0
+                for r, text, code in chunked_map(work, [r for _, r in idx.iterrows()], min(3, cfg["WORKERS"]), cfg, chunk=6):
+                    if code in (403, 429):
+                        house_blocked = f"HTTP {code} after {n_read} {y} reports"
+                        break
+                    n_read += 1
+                    if code in (404, 410):
+                        missing[str(r["DocID"])] = today_s
                     done.add(str(r["DocID"]))
                     if len(done) % 200 == 0 and rows:
                         df = pd.concat([df, pd.DataFrame(rows)], ignore_index=True)
@@ -6075,8 +6104,15 @@ def collect_annual_disclosures(cfg, traders=None):
                                  "first": str(r.get("First") or ""), "state": str(r.get("StateDst") or "")[:2],
                                  "filed": pd.to_datetime(r.get("FilingDate"), errors="coerce"),
                                  "doc": str(r["DocID"]), "holdings": {h for h in hold if h}, "text": _z(ties), "v": FD_VERSION})
+            try:
+                json.dump(missing, open(miss_path, "w"))
+            except Exception:
+                pass
             if out_of_time(cfg):
                 break
+        if house_blocked:
+            log(f"Yearly disclosures: House site refused requests ({house_blocked}); stopped reading yearly reports "
+                "for this run so the trade downloads aren't blocked too (the rest continue next run)")
 
     # Senate: annual reports (report type 7) on eFD
     if cfg.get("USE_SENATE", True) and not out_of_time(cfg):
