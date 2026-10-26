@@ -218,6 +218,8 @@ HOUSE_ASSET = re.compile(r"(?:\(([A-Za-z0-9.\-/]{1,8})\)\s*)?\[([A-Za-z]{2})\]")
 HOUSE_PAREN_TICKER = re.compile(r"\(([A-Za-z]{1,5}(?:[.\-][A-Za-z])?)\)")
 NOT_TICKERS = {"SP", "DC", "JT", "IRA", "LLC", "LP", "INC", "CO", "NA", "SEP", "UTMA", "UGMA", "ROTH", "TR", "ETF",
                "PA", "MD", "VA", "CA", "TX", "NY", "FL", "DE", "US", "USA", "IL", "OH", "CT", "NJ", "MA", "GA", "WA"}
+FD_HOUSE_PAUSE = 1.5          # seconds between House yearly-report downloads (a faster burst gets GitHub firewalled)
+FD_HOUSE_PER_RUN = 250        # House yearly reports read per run at most (~6-10 min); the rest continue next run
 FD_MISSING_RETRY_DAYS = 30   # reports the House clerk answers 404 for are asked about again after this many days
 FD_VERSION = 3        # 3: Senate tables read row by row; House tag case; holdings in untagged House reports
 
@@ -1532,6 +1534,8 @@ def _yf_close(tickers, start, tries=3, quiet=False):
             if a < tries - 1:      # a retry that then works is not a failure; only the last try is reported as one
                 log(f"Prices: Yahoo try {a+1} came back with nothing ({type(e).__name__}); trying again")
                 time.sleep(5 * (a + 1))
+            elif quiet == "silent":     # the caller counts and reports what came back
+                pass
             elif quiet:
                 log(f"Prices: Yahoo came back with nothing for a batch of {len(tickers)}; trying again in smaller pieces")
             else:
@@ -2006,8 +2010,22 @@ def load_prices(cfg, tickers, max_age_hours=12, priority=None):
         last_seen = px.apply(_last_move)
         live_cut = px.index.max() - pd.Timedelta(days=30)
         monday = pd.Timestamp.today().weekday() == 0
-        rest = [c for c in cols if c not in set(al.columns)
-                and (monday or (pd.notna(last_seen.get(c)) and last_seen[c] >= live_cut))]
+        is_live = lambda c: pd.notna(last_seen.get(c)) and last_seen[c] >= live_cut
+        rest = [c for c in cols if c not in set(al.columns) and is_live(c)]
+        # Oct 26: the Monday look at long-quiet stocks used to share batches with live ones, so every Monday
+        # "Yahoo download failed ... for 25 stock(s)" was mostly those delisted names. They're now asked on
+        # their own and counted on their own; a live stock Yahoo misses is still reported as a failure.
+        quiet_look = [c for c in cols if c not in set(al.columns) and not is_live(c)] if monday else []
+        if quiet_look and not out_of_time(cfg, 45):
+            qgot = set()
+            for j in range(0, len(quiet_look), 25):
+                g = _yf_close(quiet_look[j:j + 25], since, tries=1, quiet="silent")
+                if len(g):
+                    upd.append(g)
+                    qgot |= set(g.columns)
+                time.sleep(2)
+            log(f"Prices: weekly look at {len(quiet_look)} stocks with no price move in 30+ days: "
+                f"{len(qgot)} trading again, {len(quiet_look) - len(qgot)} still without a price (mostly delisted)")
         for i in range(0, len(rest), 200):
             if out_of_time(cfg, 45):
                 break
@@ -6042,9 +6060,15 @@ def collect_annual_disclosures(cfg, traders=None):
     recheck = (dt.date.today() - dt.timedelta(days=FD_MISSING_RETRY_DAYS)).isoformat()
     recent_missing = {d for d, at in missing.items() if at > recheck}
     house_blocked = None
+    house_left = FD_HOUSE_PER_RUN
     if cfg.get("USE_HOUSE", True):
-        for y in range(start.year, dt.date.today().year + 1):
+        # newest year first, so this year's new reports never wait behind the old-year backlog
+        for y in range(dt.date.today().year, start.year - 1, -1):
             if out_of_time(cfg) or house_blocked:
+                break
+            if house_left <= 0:
+                log(f"Yearly disclosures: House {start.year}-{y}: continue next run (per-run limit of "
+                    f"{FD_HOUSE_PER_RUN} reports reached)")
                 break
             try:
                 r = requests.get(f"https://disclosures-clerk.house.gov/public_disc/financial-pdfs/{y}FD.zip",
@@ -6073,6 +6097,7 @@ def collect_annual_disclosures(cfg, traders=None):
             def work(r):
                 import pdfplumber
                 url = f"https://disclosures-clerk.house.gov/public_disc/financial-pdfs/{int(r['Year'])}/{r['DocID']}.pdf"
+                time.sleep(FD_HOUSE_PAUSE)
                 try:
                     resp = requests.get(url, headers=UA, timeout=90)
                     if resp.status_code != 200:
@@ -6084,7 +6109,15 @@ def collect_annual_disclosures(cfg, traders=None):
 
             if True:
                 n_read = 0
-                for r, text, code in chunked_map(work, [r for _, r in idx.iterrows()], min(3, cfg["WORKERS"]), cfg, chunk=6):
+                todo = [r for _, r in idx.iterrows()]
+                if len(todo) > house_left:
+                    log(f"Yearly disclosures: House {y}: reading {house_left} this run, "
+                        f"{len(todo) - house_left} in later runs (paced to stay under the clerk's request limit)")
+                    todo = todo[:house_left]
+                house_left -= len(todo)
+                # one request at a time, FD_HOUSE_PAUSE apart (Oct 26: 3 parallel workers reached ~20 requests a
+                # second on quick 404s and the firewall refused after 60; a probe 2 s apart read 60 with no refusal)
+                for r, text, code in chunked_map(work, todo, 1, cfg, chunk=6):
                     if code in (403, 429):
                         house_blocked = f"HTTP {code} after {n_read} {y} reports"
                         break
@@ -6582,7 +6615,12 @@ def collect_votes(cfg, lis_map):
     y0 = pd.Timestamp(cfg["START_DATE"]).year - 1
     added = 0
     # House: clerk.house.gov/evs/{year}/roll{nnn}.xml
+    # Oct 26: a refusal (HTTP 403/429) used to count as "no more votes this year", so a firewall block read as
+    # 42 quiet misses and no new votes. A refusal now stops the House votes for this run and is reported.
+    refused = {}
     for y in range(y0, dt.date.today().year + 1):
+        if refused.get("House"):
+            break
         n = 1
         misses = 0
         while not out_of_time(cfg) and misses < 3:
@@ -6592,6 +6630,9 @@ def collect_votes(cfg, lis_map):
                 continue
             try:
                 r = requests.get(f"https://clerk.house.gov/evs/{y}/roll{n:03d}.xml", headers=UA, timeout=30)
+                if r.status_code in (403, 429):
+                    refused["House"] = f"HTTP {r.status_code} on {y} roll call {n}"
+                    break
                 if r.status_code != 200 or b"<rollcall-vote" not in r.content:
                     misses += 1
                     n += 1
@@ -6615,7 +6656,7 @@ def collect_votes(cfg, lis_map):
     for cong in _congresses(cfg):
         for sess in (1, 2):
             n, misses = 1, 0
-            while not out_of_time(cfg) and misses < 3:
+            while not out_of_time(cfg) and misses < 3 and not refused.get("Senate"):
                 k = f"S|{cong}|{sess}|{n}"
                 if k in votes:
                     n += 1
@@ -6623,6 +6664,9 @@ def collect_votes(cfg, lis_map):
                 try:
                     r = requests.get(f"https://www.senate.gov/legislative/LIS/roll_call_votes/vote{cong}{sess}/"
                                      f"vote_{cong}_{sess}_{n:05d}.xml", headers=UA, timeout=30)
+                    if r.status_code in (403, 429):
+                        refused["Senate"] = f"HTTP {r.status_code} on vote {cong}-{sess}-{n}"
+                        break
                     if r.status_code != 200 or b"<roll_call_vote" not in r.content:
                         misses += 1
                         n += 1
@@ -6642,6 +6686,8 @@ def collect_votes(cfg, lis_map):
                     misses += 1
                 n += 1
                 time.sleep(0.15)
+    for ch, why in refused.items():
+        log(f"Votes: {ch} site refused requests ({why}); new {ch} roll calls not read this run")
     if added:
         pd.to_pickle(votes, cache_p)
         log(f"Votes: {added:,} new roll calls ({len(votes):,} total)")
