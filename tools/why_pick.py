@@ -17,7 +17,7 @@ def walk(x, path):
         for k, v in x.items(): walk(v, path + "." + str(k))
     elif isinstance(x, list):
         for i, v in enumerate(x[:5000]): walk(v, f"{path}[{i}]")
-walk(d, "data")
+walk({k: v for k, v in d.items() if k != "backtest"}, "data")
 idx = r2("members/index.json") or {}
 mem = idx.get("members") or idx.get("list") or idx
 keys = []
@@ -28,6 +28,12 @@ if isinstance(mem, list):
 print("member keys", keys)
 for k in keys:
     doc = r2(f"members/{k}.json") or {}
-    for tr in doc.get("trades") or doc.get("tr") or []:
-        if tr.get("t") == T and str(tr.get("td", "")) >= "2026-06":
-            print("TRADE", doc.get("n") or k, json.dumps(tr, default=str)[:2000])
+    print("DOC", k, list(doc.keys())[:20] if isinstance(doc, dict) else type(doc))
+    def find(x):
+        if isinstance(x, dict):
+            if x.get("t") == T and str(x.get("td", "")) >= "2026-06":
+                print("TRADE", k, json.dumps(x, default=str)[:2000]); return
+            for v in x.values(): find(v)
+        elif isinstance(x, list):
+            for v in x: find(v)
+    find(doc)
