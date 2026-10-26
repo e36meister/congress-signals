@@ -4,7 +4,7 @@ and recent headlines. Usage via research.yml: script = "stock_look.py" (ticker f
 import sys, os, json, datetime as dt
 sys.path.insert(0, ".")
 import cloud_store
-T = os.environ.get("STOCK", "ETN").upper()
+T = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("STOCK", "ETN")).upper()
 
 def r2(k):
     raw = cloud_store.get(k, log=lambda m: None)
