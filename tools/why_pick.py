@@ -36,4 +36,8 @@ for k in keys:
             for v in x.values(): find(v)
         elif isinstance(x, list):
             for v in x: find(v)
-    find(doc)
+    cols = doc.get("tcols") or []
+    for row in doc.get("trades") or []:
+        tr = dict(zip(cols, row)) if isinstance(row, list) else row
+        if tr.get("t") == T and str(tr.get("td", "")) >= "2026-06":
+            print("TRADE", doc.get("n"), json.dumps(tr, default=str)[:2000])
