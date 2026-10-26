@@ -118,6 +118,7 @@ async function api(req, env, url) {
   if (p === "/api/search" && req.method === "GET") return tickerSearch(env, url);
   if (p === "/api/chart" && req.method === "GET") return oneChart(env, url);
   if (p === "/api/news" && req.method === "GET") return stockNews(env, url);
+  if (p === "/api/about" && req.method === "GET") return about(env, url);
   if (p === "/api/tax" && req.method === "GET") return taxIndex(env);
   if (p === "/api/tax/file" && req.method === "GET") return taxFile(env, url);
   if (p === "/api/tie-reviews" && req.method === "GET") return json(await tieReviews(env));
@@ -343,6 +344,87 @@ async function sell(req, env) {
   return json({ ok: true, status: r.data.status, qty: order.qty ? +order.qty : null, notional: order.notional ? +order.notional : null,
     all: order.qty != null && +order.qty >= held, value: px ? (order.qty ? +order.qty * px : +order.notional) : null,
     market_open: !!(clock.data && clock.data.is_open), next_open: clock.data && clock.data.next_open });
+}
+
+// ---------- About a company (owner, Oct 26): what it does in plain words, and its CEO ----------
+// Summary: Wikipedia's opening paragraph (plain language) → Yahoo's business summary → the SEC's industry name.
+// CEO: Yahoo's officer list (kept current) → Wikidata's current CEO (no end date). Every source that errors is
+// reported to Data health; "this company has no Wikipedia page" is not an error. Cached 14 days (misses: 1 day).
+const WIKI_UA = "CapitolCapital/1.0 (personal research app; contact via GitHub e36meister)";
+const EXCH = ["Q13677", "Q82059", "Q846626", "Q2338019", "Q1477147"];   // NYSE, Nasdaq, NYSE American, NYSE Arca, Cboe
+function firstSentences(t, n) {
+  // sentence ends: ". " followed by a capital, so "Inc. is" and "U.S. company" don't split
+  const parts = String(t || "").replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s+(?=[A-Z"“(])/);
+  let out = "";
+  for (const p of parts.slice(0, n)) { if (out && out.length + p.length > 480) break; out += (out ? " " : "") + p; }
+  return out;
+}
+async function aboutWiki(t) {
+  const sym = t.replace(/-/g, ".");
+  const q = `SELECT ?item ?itemLabel ?ceoLabel ?article WHERE {
+    VALUES ?exch { ${EXCH.map(x => "wd:" + x).join(" ")} }
+    ?item p:P414 ?ex . ?ex ps:P414 ?exch ; pq:P249 "${sym}" .
+    OPTIONAL { ?item p:P169 ?cs . ?cs ps:P169 ?ceo . FILTER NOT EXISTS { ?cs pq:P582 ?end } }
+    OPTIONAL { ?article schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> }
+    SERVICE wikibase:label { bd:serviceParam wikibase:language "en" } } LIMIT 10`;
+  const r = await fetch("https://query.wikidata.org/sparql?format=json&query=" + encodeURIComponent(q),
+    { headers: { "User-Agent": WIKI_UA, Accept: "application/sparql-results+json" } });
+  if (!r.ok) throw new Error(`Wikidata HTTP ${r.status}`);
+  const rows = ((await r.json()).results || {}).bindings || [];
+  if (!rows.length) return null;
+  const row = rows.find(x => x.article) || rows[0];
+  const ceo = [...new Set(rows.filter(x => x.item.value === row.item.value && x.ceoLabel && !/^Q\d+$/.test(x.ceoLabel.value)).map(x => x.ceoLabel.value))];
+  const out = { name: row.itemLabel && row.itemLabel.value, ceo: ceo.join(" and ") || null, wiki: row.article ? row.article.value : null };
+  if (out.wiki) {
+    const title = out.wiki.split("/wiki/")[1];
+    const s = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${title}`, { headers: { "User-Agent": WIKI_UA } });
+    if (!s.ok) throw new Error(`Wikipedia HTTP ${s.status}`);
+    out.summary = firstSentences((await s.json()).extract, 3) || null;
+  }
+  return out;
+}
+async function aboutYahoo(t) {
+  const c = await fetch("https://fc.yahoo.com/", { headers: { "User-Agent": "Mozilla/5.0" }, redirect: "manual" });
+  const cookie = (c.headers.get("set-cookie") || "").split(";")[0];
+  const cr = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", { headers: { "User-Agent": "Mozilla/5.0", Cookie: cookie } });
+  const crumb = cr.ok ? (await cr.text()).trim() : "";
+  if (!crumb || crumb.includes("<")) throw new Error(`Yahoo sign-in step failed (HTTP ${cr.status})`);
+  const r = await fetch(`https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(t)}?modules=assetProfile&crumb=${encodeURIComponent(crumb)}`,
+    { headers: { "User-Agent": "Mozilla/5.0", Cookie: cookie } });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`Yahoo HTTP ${r.status}`);
+  const ap = ((((await r.json()).quoteSummary || {}).result || [])[0] || {}).assetProfile;
+  if (!ap) return null;
+  const off = (ap.companyOfficers || []).find(o => /\b(CEO|chief executive)\b/i.test(o.title || ""));
+  return { ceo: off ? String(off.name).replace(/^(Mr\.|Ms\.|Mrs\.|Dr\.)\s+/i, "") : null, summary: firstSentences(ap.longBusinessSummary, 3) || null,
+           industry: ap.industry || null, site: ap.website || null };
+}
+async function aboutSec(env, t) {
+  const cik = await secCik(env, t);
+  if (!cik) return null;
+  const r = await secFetch(env, `https://data.sec.gov/submissions/CIK${String(cik).padStart(10, "0")}.json`);
+  if (!r.ok) throw new Error(`SEC HTTP ${r.status}`);
+  const j = await r.json();
+  return { name: j.name, industry: j.sicDescription || null, summary: j.description || null };
+}
+async function about(env, url) {
+  const t = String(url.searchParams.get("t") || "").toUpperCase();
+  if (!/^[A-Z][A-Z0-9-]{0,6}$/.test(t)) return json({ error: "bad-ticker" }, 400);
+  const key = `cache/about/${t}.json`, cached = await r2json(env, key, null);
+  if (cached && Date.now() - Date.parse(cached.at) < (cached.summary || cached.ceo ? 14 : 1) * 864e5) return json(cached);
+  const tryIt = async (src, label, fn) => { try { const v = await fn(); await wOk(env, src); return v; }
+    catch (e) { await wProblem(env, src, `Company About: ${label} failed for ${t} (${String(e && e.message || e).slice(0, 80)})`); return { err: true }; } };
+  const [w, y] = await Promise.all([tryIt("about-wiki", "Wikipedia/Wikidata", () => aboutWiki(t)), tryIt("about-yahoo", "Yahoo profile", () => aboutYahoo(t))]);
+  const W = w && !w.err ? w : {}, Y = y && !y.err ? y : {};
+  let S = {};
+  if (!W.summary && !Y.summary) { const s = await tryIt("about-sec", "SEC company record", () => aboutSec(env, t)); S = s && !s.err ? s : {}; }
+  const out = { t, at: new Date().toISOString(), name: W.name || S.name || null,
+    summary: W.summary || Y.summary || S.summary || null, from: W.summary ? "Wikipedia" : Y.summary ? "Yahoo Finance" : S.summary ? "SEC" : null,
+    ceo: Y.ceo || W.ceo || null, ceo_from: Y.ceo ? "Yahoo Finance" : W.ceo ? "Wikidata" : null,
+    industry: Y.industry || S.industry || null, wiki: W.wiki || null, site: Y.site || null,
+    partial: !!((w && w.err) || (y && y.err)) };
+  if (!out.partial || out.summary) await env.DATA.put(key, JSON.stringify(out));   // don't cache a result a broken source left thin
+  return json(out);
 }
 
 // ---------- a trade's context: the company's SEC filings around the trade date (8-K items, big holders, insiders) ----------

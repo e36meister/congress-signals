@@ -70,6 +70,8 @@ section.panel{display:grid;gap:12px;align-content:start}
 .sellbtn.go{background:var(--bad);color:#fff}
 .sellbox{display:grid;gap:10px;padding:12px;border:1px solid var(--bad);border-radius:10px;background:var(--surface)}
 .sellbox input{font:500 16px var(--mono);padding:8px 10px;width:140px;border:1px solid var(--rule);border-radius:8px;background:var(--surface);color:var(--ink)}
+.abtn{font:600 12px var(--body);padding:3px 10px;margin-left:6px;vertical-align:middle;border-radius:999px;border:1px solid var(--rule);background:var(--surface);color:var(--accent);cursor:pointer}.abtn[aria-expanded="true"]{background:var(--accent);color:var(--surface);border-color:var(--accent)}
+.sellin{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.sellin .u{font:500 16px var(--mono);color:var(--ink2)}.sellin .segs{display:inline-flex;gap:4px;margin-left:4px}
 .segs{display:flex;gap:6px;flex-wrap:wrap}
 .seg1{font:600 12.5px var(--body);padding:6px 12px;border-radius:999px;border:1px solid var(--rule);background:var(--surface);color:var(--ink2);cursor:pointer}
 .seg1[aria-pressed="true"]{background:var(--ink);color:var(--surface);border-color:var(--ink)}
@@ -140,7 +142,7 @@ td .why{display:block;width:max-content}
 .prow{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px}
 .tipbg{position:fixed;inset:0;z-index:70;background:rgba(10,15,25,.4);display:flex;align-items:flex-end;justify-content:center}
 .tipsheet{background:var(--surface);color:var(--ink);width:min(560px,100%);max-height:70vh;overflow:auto;border-radius:14px 14px 0 0;
-  padding:14px 16px calc(16px + env(safe-area-inset-bottom,0px));box-shadow:0 -6px 24px rgba(0,0,0,.18)}
+  padding:14px 16px max(14px, calc(env(safe-area-inset-bottom,0px) - 8px));box-shadow:0 -6px 24px rgba(0,0,0,.18)}
 @media (min-width:761px){.tipbg{align-items:center}.tipsheet{border-radius:12px}}
 .tiph{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:6px}
 .tipb p{margin:6px 0}
@@ -428,10 +430,11 @@ nav.tabs button{overflow:hidden}
   font:600 12.5px var(--body);box-shadow:0 4px 14px rgba(0,0,0,.12);pointer-events:none;opacity:0;white-space:nowrap}
 #ptr.go{color:var(--accent)}
 @media (max-width: 760px){
-  body{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
+  body{padding-bottom:calc(64px + max(0px, env(safe-area-inset-bottom,0px) - 16px))}
+  :root{padding-bottom:0}
   nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:50;margin:0;gap:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 64px;
     overflow:visible;background:color-mix(in srgb,var(--surface) 92%,transparent);-webkit-backdrop-filter:saturate(1.6) blur(14px);
-    backdrop-filter:saturate(1.6) blur(14px);border-top:1px solid var(--rule);padding:6px 2px calc(6px + env(safe-area-inset-bottom,0px))}
+    backdrop-filter:saturate(1.6) blur(14px);border-top:1px solid var(--rule);padding:6px 2px max(4px, calc(env(safe-area-inset-bottom,0px) - 16px))}
   nav.tabs button{font-size:0;border:0;padding:4px 0 2px;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--muted);
     min-width:0;-webkit-tap-highlight-color:transparent}
   nav.tabs button::before{content:"";width:24px;height:24px;background:currentColor;-webkit-mask:var(--ic) center/contain no-repeat;mask:var(--ic) center/contain no-repeat}
@@ -746,11 +749,20 @@ function moverChip(t) {
   const kind = ls.some(l => /^Sector-wide/.test(l)) ? "sector" : ls.some(l => /^Mostly this stock/.test(l)) ? "stock" : "";
   return `<button type="button" class="why ${m.move < 0 ? "neg" : "pos"}" data-why="${esc(t)}">${m.move < 0 ? "▼" : "▲"} ${esc(pct(Math.abs(m.move) / 100).replace(/^[+-]/, ""))} ${m.kind === "day" ? "today" : "5 days"}${kind ? ` · ${kind}` : ""}</button>`;
 }
+function moverLine(l, m) {
+  let h = esc(l);
+  const tks = [...new Set([...(m.peers || []).map(p => p[0]), ...(m.etf ? [m.etf[0]] : [])])].filter(x => x && x !== m.t);
+  for (const x of tks) {
+    const e = esc(x).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    h = h.replace(new RegExp(`(^|[^A-Za-z0-9>-])(${e})(?![A-Za-z0-9-])`, "g"), (_, a, b) => a + tkBtn(b));
+  }
+  return h;
+}
 function moverCard(m) {
   const tm = x => { try { return fmtET(x); } catch (e) { return x; } };
   return `<article class="panel mover" data-hl="mover:${esc(m.t)}"><div class="ph"><h2>${tkBtn(m.t)} <span class="${cls(m.move)}">${esc(pct(m.move / 100))}</span></h2>
     <span class="sub">${esc(m.co || "")}${m.held ? " · you hold it" : ""}${m.cand ? " · Buy candidate" : ""} · ${esc(fmtDate(m.date))}</span></div>
-    <div class="mlines">${(m.lines || []).map(l => `<p>${esc(l)}</p>`).join("")}</div>
+    <div class="mlines">${(m.lines || []).map(l => `<p>${moverLine(l, m)}</p>`).join("")}</div>
     ${(m.news || []).length ? `<div class="foot"><b>Headlines</b></div><ul class="mnews">${m.news.map(n => `<li>${n.u ? `<a href="${esc(n.u)}" target="_blank" rel="noopener">${esc(n.h)}</a>` : esc(n.h)} <span class="foot">${esc(n.src || "")}${n.at ? " · " + esc(tm(n.at)) : ""}</span></li>`).join("")}</ul>` : ""}
     ${(m.analysts || []).length > 2 ? `<div class="foot"><b>All analyst changes this week:</b> ${m.analysts.map(a => esc(a.d.slice(5) + " " + a.x)).join(" · ")}</div>` : ""}
     ${(m.filings || []).length ? `<div class="foot"><b>Company filings:</b> ${m.filings.map(f => f.u ? `<a href="${esc(f.u)}" target="_blank" rel="noopener">${esc(f.d.slice(5) + " " + f.x)}</a>` : esc(f.d.slice(5) + " " + f.x)).join(" · ")}</div>` : ""}
@@ -770,7 +782,7 @@ function renderMovers() {
     return m ? moverCard(m) : `<div class="empty">No recent move on file for ${esc(MOVERS.focus)}.</div>`;
   }
   const items = Object.values(MOVERS.js.items || {}).sort((a, b) => b.date.localeCompare(a.date) || Math.abs(b.rel || 0) - Math.abs(a.rel || 0));
-  return `<div class="ph"><h2>Why it moved</h2><span class="sub">Stocks you hold and Buy candidates that moved 3%+ against the S&amp;P in a day, or 7%+ over 5 days. Checked every 30 minutes on market days.</span></div>
+  return `<div class="ph"><h2>Why it moved</h2><span class="sub">Stocks you hold and Buy candidates that moved 3%+ against the S&amp;P in a day, or 7%+ over 5 days. Checked every 15 minutes on market days.</span></div>
     ${items.length ? items.map(moverCard).join("") : `<div class="empty">Nothing has moved that much in the last week.</div>`}`;
 }
 document.addEventListener("click", ev => {
@@ -1521,17 +1533,29 @@ function sellBtn(x) {
   const m = state.sellMsg[x.t];
   return `<div style="margin-top:6px"><button type="button" class="sellbtn" data-sell="${esc(x.t)}">Sell</button></div>${m && state.sellOpen !== x.t ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}`;
 }
+function sellConv(x, mode, v) {
+  const n = parseFloat(v), px = +x.px || (x.qty ? x.mv / x.qty : 0);
+  if (!(n > 0) || !px) return `At about ${money(px, 2)} a share`;
+  if (mode === "dollars") {
+    const sh = Math.min(n / px, +x.qty);
+    return `≈ ${sh.toLocaleString(undefined, { maximumFractionDigits: 4 })} shares at ${money(px, 2)}${n / px > +x.qty ? " (that's all you hold)" : ""}`;
+  }
+  const sh = Math.min(n, +x.qty);
+  return `≈ ${money(sh * px, 2)} at ${money(px, 2)} a share${n > +x.qty ? " (that's all you hold)" : ""}`;
+}
 function sellRow(x) {
   if (state.sellOpen !== x.t) return "";
-  const t = x.t, mode = state.sellMode[t] || "all", real = state.data?.portfolio?.mode === "live";
+  const t = x.t, mode = state.sellMode[t] === "dollars" ? "dollars" : "shares", real = state.data?.portfolio?.mode === "live";
   const sh = Number(x.qty).toLocaleString(undefined, { maximumFractionDigits: 4 });
   const opt = (k, l) => `<button type="button" class="seg1" data-sellmode="${esc(t)}|${k}" aria-pressed="${mode === k}">${l}</button>`;
-  const m = state.sellMsg[t];
+  const m = state.sellMsg[t], v = state.sellAmt[t] ?? "";
   return `<tr class="sellrow"><td colspan="7" class="full" data-l=""><div class="sellbox">
     <div><b>Sell ${esc(t)}</b> · you hold ${sh} sh (${money(x.mv)})${x.bot ? `<div class="foot">The tool bought this one; it won't buy it back for the same pick.</div>` : ""}</div>
-    <div class="segs">${opt("all", "All")}${opt("shares", "Shares")}${opt("dollars", "$ amount")}</div>
-    ${mode === "all" ? `<div>Sell all ${sh} shares, about ${money(x.mv)}</div>`
-      : `<label>${mode === "shares" ? "Shares" : "Dollars $"} <input type="number" inputmode="decimal" min="0" step="${mode === "shares" ? "any" : "10"}" id="samt-${esc(t)}" value="${esc(state.sellAmt[t] ?? "")}" aria-label="${mode === "shares" ? "Shares to sell" : "Dollars to sell"}"></label>`}
+    <div class="sellin"><span class="u">${mode === "dollars" ? "$" : ""}</span><input type="number" inputmode="decimal" min="0" step="any" id="samt-${esc(t)}" value="${esc(v)}"
+      placeholder="${mode === "dollars" ? "Dollar amount" : "Shares"}" aria-label="${mode === "dollars" ? "Dollars to sell" : "Shares to sell"}"><span class="u">${mode === "dollars" ? "" : "sh"}</span>
+      <span class="segs">${opt("shares", "Shares")}${opt("dollars", "$")}</span></div>
+    <div class="foot" id="sconv-${esc(t)}">${esc(sellConv(x, mode, v))}</div>
+    <div><button type="button" class="link" data-sellall="${esc(t)}">Sell all ${sh} shares</button></div>
     <div class="foot">${real ? "Real money account" : "Paper account (fake money)"} · fills now if the market is open, otherwise at the next open.</div>
     <div style="display:flex;gap:10px;align-items:center"><button type="button" class="sellbtn go" data-sellsend="${esc(t)}"${state.selling ? " disabled" : ""}>${state.selling ? "Sending…" : "Send sell order"}</button>
       <button type="button" class="link" data-sellcancel="1">Cancel</button></div>
@@ -2004,12 +2028,14 @@ async function loadCharts() {
   if (!pop.loading) pop.loading = api("/api/charts").then(r => (pop.charts = r.js)).finally(() => { pop.loading = null; });
   return pop.loading;
 }
-function openChart(t) {
+function openChart(t, back) {
+  if (!back) { if (pop.t && pop.t !== t) (pop.hist = pop.hist || []).push(pop.t); else if (!pop.t) pop.hist = []; }
   pop.t = t; pop.sel = null; pop.err = null;
   let bg = document.getElementById("mbg");
   if (!bg) {
     bg = document.createElement("div"); bg.id = "mbg"; bg.className = "mbg";
-    bg.addEventListener("click", ev => { if (ev.target === bg || ev.target.closest(".mx")) closeChart(); });
+    bg.addEventListener("click", ev => { if (ev.target === bg || ev.target.closest(".mx")) closeChart();
+      else if (ev.target.closest(".mback")) { const p = (pop.hist || []).pop(); if (p) openChart(p, true); } });
     document.body.appendChild(bg);
   }
   bg.hidden = false; document.body.style.overflow = "hidden";
@@ -2017,7 +2043,7 @@ function openChart(t) {
   if (!pop.charts) loadCharts().then(() => { ensureOne(t); drawPopup(); }, e => { pop.err = e; ensureOne(t); drawPopup(); });
   else ensureOne(t);
 }
-function closeChart() { const bg = document.getElementById("mbg"); if (bg) { bg.hidden = true; bg.innerHTML = ""; } document.body.style.overflow = ""; pop.t = null; }
+function closeChart() { const bg = document.getElementById("mbg"); if (bg) { bg.hidden = true; bg.innerHTML = ""; } document.body.style.overflow = ""; pop.t = null; pop.hist = []; }
 addEventListener("keydown", ev => { if (ev.key === "Escape" && pop.t) closeChart(); });
 document.addEventListener("click", ev => { const b = ev.target.closest("[data-chart]"); if (b) { ev.preventDefault(); openChart(b.dataset.chart); } });
 
@@ -2070,14 +2096,36 @@ function goingOn(t) {
     : (n.items || []).length ? `<ul class="mnews">${n.items.map(x => `<li>${x.u ? `<a href="${esc(x.u)}" target="_blank" rel="noopener">${esc(x.h)}</a>` : esc(x.h)} <span class="foot">${esc(x.src)} · ${esc(tm(x.at))}</span></li>`).join("")}</ul>`
     : `<div class="foot">No headlines in the last 10 days.</div>`;
   return `<div class="tdet goon" style="display:block"><b>What's going on</b>
-    ${m ? `<div class="mlines" style="margin-top:6px">${(m.lines || []).map(l => `<p>${esc(l)}</p>`).join("")}</div>` : ""}
+    ${m ? `<div class="mlines" style="margin-top:6px">${(m.lines || []).map(l => `<p>${moverLine(l, m)}</p>`).join("")}</div>` : ""}
+    ${m && (m.peers || []).length ? `<div class="foot" style="margin-top:6px"><b>Similar companies${m.industry ? ` (${esc(m.industry)})` : ""}:</b> tap one for its chart</div>
+      <div class="tags">${m.peers.map(([p, v]) => `<button type="button" class="tag peer" data-chart="${esc(p)}">${esc(p)} <span class="${cls(v)}">${esc(pct(v / 100))}</span></button>`).join("")}</div>` : ""}
     ${news}</div>`;
+}
+// About the company: what it does in plain words and its CEO (from /api/about; Wikipedia, Yahoo, SEC)
+const ABOUT = {};
+function aboutLoad(t) {
+  if (t in ABOUT) return;
+  ABOUT[t] = null;
+  loadAbout(t).then(js => { ABOUT[t] = js || {}; }, e => { ABOUT[t] = { err: e }; })
+    .finally(() => { if (pop.t === t && pop.about) drawPopup(); });
+}
+function aboutBox(t) {
+  aboutLoad(t);
+  const a = ABOUT[t];
+  if (a === null) return `<div class="tdet about" style="display:block"><div class="foot">Loading…</div></div>`;
+  if (a.err) return `<div class="tdet about" style="display:block"><div class="foot">${a.err.code === "app_only" ? "Company details show in the phone app." : "Couldn't load the company details; it's been logged in Data health."}</div></div>`;
+  return `<div class="tdet about" style="display:block">
+    ${a.name ? `<b>${esc(a.name)}</b>${a.industry ? ` <span class="foot">· ${esc(a.industry)}</span>` : ""}` : a.industry ? `<span class="foot">${esc(a.industry)}</span>` : ""}
+    <p style="margin:6px 0">${a.summary ? esc(a.summary) : "No company summary found for this ticker."}</p>
+    <div><b>CEO:</b> ${a.ceo ? esc(a.ceo) : "not listed"}${a.ceo_from ? ` <span class="foot">(${esc(a.ceo_from)})</span>` : ""}</div>
+    <div class="foot" style="margin-top:4px">${a.from ? "Summary from " + esc(a.from) : ""}${a.wiki ? ` · <a href="${esc(a.wiki)}" target="_blank" rel="noopener">Wikipedia</a>` : ""}${a.site ? ` · <a href="${esc(a.site)}" target="_blank" rel="noopener">Company site</a>` : ""}</div></div>`;
 }
 function drawPopup() {
   const bg = document.getElementById("mbg"); if (!bg || !pop.t) return;
   const t = pop.t, C = chartsFor(t), one = pop.one[t];
   const info = { ...infoFor(t) }; if (!info.co && one && one.co) info.co = one.co;
-  const head = `<div class="mh"><div><div class="t">${esc(t)}</div><div class="co">${esc(info.co || "")}${info.sec ? " · " + esc(info.sec) : ""}</div></div>
+  const prev = (pop.hist || []).slice(-1)[0];
+  const head = `<div class="mh"><div>${prev ? `<button type="button" class="link mback" style="padding:0;margin-bottom:4px">‹ Back to ${esc(prev)}</button>` : ""}<div class="t">${esc(t)} <button type="button" class="abtn" data-about="1" aria-expanded="${!!pop.about}">About</button></div><div class="co">${esc(info.co || "")}${info.sec ? " · " + esc(info.sec) : ""}</div></div>
     <div style="display:flex;gap:10px;align-items:flex-start"><div class="px" id="mpx"></div><button type="button" class="mx" aria-label="Close">×</button></div></div>`;
   let body;
   if (!C) {
@@ -2096,7 +2144,8 @@ function drawPopup() {
       // forms give the trade date and a dollar range, not the time, price or share count. So the price shown is that
       // day's low-to-high range and the share count is estimated from it, unless the member wrote the shares or price.
   }
-  bg.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="${esc(t)} price chart">${head}${body}</div>`;
+  bg.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="${esc(t)} price chart">${head}${pop.about ? aboutBox(t) : ""}${body}</div>`;
+  bg.querySelector("[data-about]")?.addEventListener("click", () => { pop.about = !pop.about; drawPopup(); });
   bg.querySelectorAll("[data-span]").forEach(b => b.addEventListener("click", () => { pop.span = b.dataset.span; pop.sel = null; drawPopup(); }));
   if (C && C.px && C.px[t]) drawTickerChart();
 }
@@ -2685,6 +2734,7 @@ async function loadAlerts() { return (await api("/api/notifications")).js; }
 async function loadHealth() { return (await api("/api/health")).js; }
 async function loadMovers() { return (await api("/api/movers")).js; }
 async function loadNews(t) { return (await api("/api/news?t=" + encodeURIComponent(t))).js; }
+async function loadAbout(t) { return (await api("/api/about?t=" + encodeURIComponent(t))).js; }
 async function loadTax() { return (await api("/api/tax")).js; }
 async function loadTaxSales(y) { return (await api(`/api/tax/file?y=${encodeURIComponent(y)}&f=sales.json`)).js; }
 async function loadOneChart(t) { return (await api("/api/chart?t=" + encodeURIComponent(t))).js; }
@@ -2728,6 +2778,19 @@ const WHY_BUY = { "amount-over-limit": "the amount is over your per-order limit"
   "amount-too-small": "the amount is less than one share", "no-keys": "no Alpaca keys are set up", "bad-request": "the request couldn't be read" };
 
 let loading = false, lastEtag = null, lastData = 0, lastLive = null, liveTimer = null;
+const REFRESH_MS = 15 * 60000;                 // while the app is on screen; pull down to refresh sooner
+const ST = { upd: null, synced: null, live: null, stale: false };
+// the status line: when prices were last checked (live, from Alpaca) and when the picks were last rebuilt
+function paintStatus() {
+  if (!ST.upd) return;
+  const parts = [];
+  if (ST.live) parts.push("Prices " + ago(ST.live));
+  parts.push("Picks updated " + ago(ST.upd) + " (" + fmtET(ST.upd) + ")" + (ST.stale ? " · the daily update hasn't run since then" : ""));
+  setStatus(ST.stale ? "stale" : "ok", parts.join(" · "), true);
+}
+setInterval(() => { if (document.visibilityState === "visible" && $("#login").hidden && !loading) paintStatus(); }, 30000);
+// don't redraw under the user's thumb while they're typing an amount
+function typing() { const a = document.activeElement; return !!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.closest("#main")); }
 async function loadData() {
   if (loading) return; loading = true;
   let redraw = true;
@@ -2736,25 +2799,20 @@ async function loadData() {
     const etag = headers.get("ETag");
     if (etag && etag === lastEtag && state.data) {          // nothing new: keep the page as it is (no jump)
       lastData = Date.now();
-      const synced = headers.get("X-Uploaded");
-      if (synced) $("#statusText").textContent = $("#statusText").textContent.replace(/ · synced .*$/, "") + " · synced " + ago(synced);
       redraw = false;
       loadLive();
       return;
     }
     lastEtag = etag;
     state.data = js; state.error = null; lastData = Date.now();
-    const synced = headers.get("X-Uploaded");
     if (lastLive) applyLive(lastLive);
-    const upd = js.updated;
-    const hours = (Date.now() - Date.parse(upd)) / 3.6e6;
-    setStatus(hours > 36 ? "stale" : "ok", "Results updated " + ago(upd) + " (" + fmtET(upd) + ")" + (hours > 36 ? " · the daily update hasn't run since then" : "") +
-      (synced ? " · synced " + ago(synced) : ""), true);
+    ST.upd = js.updated; ST.stale = (Date.now() - Date.parse(js.updated)) / 3.6e6 > 36;
+    paintStatus();
   } catch (e) {
     if (e.code === "login") return;
     if (state.data) setStatus("stale", e.code === "offline" ? "Offline · showing the last results" : "Couldn't refresh · showing the last results", true);
     else { state.error = errorText(e); setStatus("err", e.code === "no_file" ? "Waiting for the first upload" : "Couldn't load results", true); }
-  } finally { loading = false; if (redraw) render(); }
+  } finally { loading = false; if (redraw && !typing()) render(); }
   loadLive();
 }
 
@@ -2772,9 +2830,12 @@ function applyLive(L) {
 async function loadLive() {
   clearTimeout(liveTimer);
   if (document.visibilityState === "visible" && state.data && !window.__CTD_SAMPLE) {
-    try { lastLive = (await api("/api/live")).js; applyLive(lastLive); render(); } catch (e) {}
+    try {
+      lastLive = (await api("/api/live")).js; applyLive(lastLive); ST.live = lastLive.at || new Date().toISOString();
+      paintStatus(); moversLoad(true); if (!typing()) render();
+    } catch (e) { if (ST.upd) setStatus("stale", "Couldn't get live prices · showing prices from " + (ST.live ? ago(ST.live) : "the last update"), true); }
   }
-  liveTimer = setTimeout(loadLive, 60000);
+  liveTimer = setTimeout(loadLive, REFRESH_MS);
 }
 
 async function sendOrder(t) {
@@ -2794,8 +2855,11 @@ async function sendOrder(t) {
       "Not placed: " + (WHY_BUY[e.why] || (e.why || "").replace(/-/g, " ") || e.message || "unknown reason") + "." };
   } finally { state.sending = false; render(); }
 }
+function sellPos(t) { return (state.data?.portfolio?.positions || []).find(x => x.t === t); }
 async function sendSell(t) {
-  const mode = state.sellMode[t] || "all", amount = parseFloat(state.sellAmt[t]);
+  let mode = state.sellMode[t] === "dollars" ? "dollars" : "shares", amount = parseFloat(state.sellAmt[t]);
+  const pos = (state.data?.portfolio?.positions || []).find(x => x.t === t);
+  if (mode === "shares" && pos && amount >= +pos.qty) mode = "all";      // the whole position: sell it all
   if (mode !== "all" && !(amount > 0)) { state.sellMsg[t] = { ok: false, text: mode === "shares" ? "Enter how many shares." : "Enter a dollar amount." }; render(); return; }
   state.selling = true; render();
   try {
@@ -2812,15 +2876,24 @@ async function sendSell(t) {
   } finally { state.selling = false; render(); }
 }
 document.getElementById("main").addEventListener("click", ev => {
-  const s = ev.target.closest("[data-sell],[data-sellsend],[data-sellcancel],[data-sellmode]");
+  const s = ev.target.closest("[data-sell],[data-sellsend],[data-sellcancel],[data-sellmode],[data-sellall]");
   if (!s) return;
   if (s.dataset.sell) { state.sellOpen = s.dataset.sell; delete state.sellMsg[s.dataset.sell]; render(); }
-  else if (s.dataset.sellmode) { const [t, m] = s.dataset.sellmode.split("|"); state.sellMode[t] = m; render(); document.getElementById("samt-" + t)?.focus(); }
+  else if (s.dataset.sellmode) {          // switch $ <-> shares, keeping the same amount (converted)
+    const [t, m] = s.dataset.sellmode.split("|"), was = state.sellMode[t] === "dollars" ? "dollars" : "shares";
+    const x = sellPos(t), n = parseFloat(state.sellAmt[t]), px = x ? (+x.px || (x.qty ? x.mv / x.qty : 0)) : 0;
+    if (m !== was && n > 0 && px) state.sellAmt[t] = m === "dollars" ? (Math.round(n * px * 100) / 100).toFixed(2) : String(Math.round(n / px * 10000) / 10000);
+    state.sellMode[t] = m; render(); document.getElementById("samt-" + t)?.focus();
+  }
+  else if (s.dataset.sellall) { const t = s.dataset.sellall, x = sellPos(t); state.sellMode[t] = "shares"; state.sellAmt[t] = x ? String(x.qty) : ""; render(); }
   else if (s.dataset.sellsend) { if (!state.selling) sendSell(s.dataset.sellsend); }
   else if (s.dataset.sellcancel) { state.sellOpen = null; render(); }
 });
 document.getElementById("main").addEventListener("input", ev => {
-  if (ev.target.id && ev.target.id.startsWith("samt-")) state.sellAmt[ev.target.id.slice(5)] = ev.target.value;
+  if (!(ev.target.id && ev.target.id.startsWith("samt-"))) return;
+  const t = ev.target.id.slice(5), x = sellPos(t), c = document.getElementById("sconv-" + t);
+  state.sellAmt[t] = ev.target.value;
+  if (x && c) c.textContent = sellConv(x, state.sellMode[t] === "dollars" ? "dollars" : "shares", ev.target.value);   // live, without a redraw
 });
 document.getElementById("main").addEventListener("click", ev => {
   const b = ev.target.closest("[data-buy],[data-send],[data-cancel]");
@@ -2857,7 +2930,7 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible" || !$("#login").hidden) return;
   loadData();
 });
-setInterval(() => { if (document.visibilityState === "visible" && $("#login").hidden) loadData(); }, 2 * 60000);
+setInterval(() => { if (document.visibilityState === "visible" && $("#login").hidden) loadData(); }, REFRESH_MS);
 
 // ---------- alerts (push notifications; iPhone: only from the home-screen app) ----------
 function keyBytes(s) { const b = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)); return Uint8Array.from(b, c => c.charCodeAt(0)); }

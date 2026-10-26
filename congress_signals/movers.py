@@ -6,7 +6,7 @@
   * the latest headlines (Alpaca's news feed; Google News as the backup source),
   * member trades of the stock in the last 30 days.
 Saved to Cloudflare (movers/latest.json, shown in the app) and ONE combined phone alert per check for the stocks newly
-flagged. Runs from the 15-minute filings check, at most every 30 minutes, on weekdays 9:45 AM-6 PM ET.
+flagged. Runs from the filings check, at most every 15 minutes (owner, Oct 26), on weekdays 9:45 AM-6 PM ET.
 Every source failure is logged (Data health picks it up); nothing is silently skipped."""
 import os, re, json, html, time, datetime as dt
 from concurrent.futures import ThreadPoolExecutor
@@ -59,7 +59,7 @@ def due(state, now=None):
     if now.weekday() >= 5 or not (dt.time(9, 45) <= now.time() <= dt.time(18, 0)):
         return False
     last = state.get("last")
-    return not last or (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(last)).total_seconds() > 29 * 60
+    return not last or (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(last)).total_seconds() > 14 * 60
 
 
 def _pct(a, b):

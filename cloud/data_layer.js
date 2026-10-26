@@ -16,6 +16,7 @@ async function loadAlerts() { return (await api("/api/notifications")).js; }
 async function loadHealth() { return (await api("/api/health")).js; }
 async function loadMovers() { return (await api("/api/movers")).js; }
 async function loadNews(t) { return (await api("/api/news?t=" + encodeURIComponent(t))).js; }
+async function loadAbout(t) { return (await api("/api/about?t=" + encodeURIComponent(t))).js; }
 async function loadTax() { return (await api("/api/tax")).js; }
 async function loadTaxSales(y) { return (await api(`/api/tax/file?y=${encodeURIComponent(y)}&f=sales.json`)).js; }
 async function loadOneChart(t) { return (await api("/api/chart?t=" + encodeURIComponent(t))).js; }
@@ -59,6 +60,19 @@ const WHY_BUY = { "amount-over-limit": "the amount is over your per-order limit"
   "amount-too-small": "the amount is less than one share", "no-keys": "no Alpaca keys are set up", "bad-request": "the request couldn't be read" };
 
 let loading = false, lastEtag = null, lastData = 0, lastLive = null, liveTimer = null;
+const REFRESH_MS = 15 * 60000;                 // while the app is on screen; pull down to refresh sooner
+const ST = { upd: null, synced: null, live: null, stale: false };
+// the status line: when prices were last checked (live, from Alpaca) and when the picks were last rebuilt
+function paintStatus() {
+  if (!ST.upd) return;
+  const parts = [];
+  if (ST.live) parts.push("Prices " + ago(ST.live));
+  parts.push("Picks updated " + ago(ST.upd) + " (" + fmtET(ST.upd) + ")" + (ST.stale ? " · the daily update hasn't run since then" : ""));
+  setStatus(ST.stale ? "stale" : "ok", parts.join(" · "), true);
+}
+setInterval(() => { if (document.visibilityState === "visible" && $("#login").hidden && !loading) paintStatus(); }, 30000);
+// don't redraw under the user's thumb while they're typing an amount
+function typing() { const a = document.activeElement; return !!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.closest("#main")); }
 async function loadData() {
   if (loading) return; loading = true;
   let redraw = true;
@@ -67,25 +81,20 @@ async function loadData() {
     const etag = headers.get("ETag");
     if (etag && etag === lastEtag && state.data) {          // nothing new: keep the page as it is (no jump)
       lastData = Date.now();
-      const synced = headers.get("X-Uploaded");
-      if (synced) $("#statusText").textContent = $("#statusText").textContent.replace(/ · synced .*$/, "") + " · synced " + ago(synced);
       redraw = false;
       loadLive();
       return;
     }
     lastEtag = etag;
     state.data = js; state.error = null; lastData = Date.now();
-    const synced = headers.get("X-Uploaded");
     if (lastLive) applyLive(lastLive);
-    const upd = js.updated;
-    const hours = (Date.now() - Date.parse(upd)) / 3.6e6;
-    setStatus(hours > 36 ? "stale" : "ok", "Results updated " + ago(upd) + " (" + fmtET(upd) + ")" + (hours > 36 ? " · the daily update hasn't run since then" : "") +
-      (synced ? " · synced " + ago(synced) : ""), true);
+    ST.upd = js.updated; ST.stale = (Date.now() - Date.parse(js.updated)) / 3.6e6 > 36;
+    paintStatus();
   } catch (e) {
     if (e.code === "login") return;
     if (state.data) setStatus("stale", e.code === "offline" ? "Offline · showing the last results" : "Couldn't refresh · showing the last results", true);
     else { state.error = errorText(e); setStatus("err", e.code === "no_file" ? "Waiting for the first upload" : "Couldn't load results", true); }
-  } finally { loading = false; if (redraw) render(); }
+  } finally { loading = false; if (redraw && !typing()) render(); }
   loadLive();
 }
 
@@ -103,9 +112,12 @@ function applyLive(L) {
 async function loadLive() {
   clearTimeout(liveTimer);
   if (document.visibilityState === "visible" && state.data && !window.__CTD_SAMPLE) {
-    try { lastLive = (await api("/api/live")).js; applyLive(lastLive); render(); } catch (e) {}
+    try {
+      lastLive = (await api("/api/live")).js; applyLive(lastLive); ST.live = lastLive.at || new Date().toISOString();
+      paintStatus(); moversLoad(true); if (!typing()) render();
+    } catch (e) { if (ST.upd) setStatus("stale", "Couldn't get live prices · showing prices from " + (ST.live ? ago(ST.live) : "the last update"), true); }
   }
-  liveTimer = setTimeout(loadLive, 60000);
+  liveTimer = setTimeout(loadLive, REFRESH_MS);
 }
 
 async function sendOrder(t) {
@@ -125,8 +137,11 @@ async function sendOrder(t) {
       "Not placed: " + (WHY_BUY[e.why] || (e.why || "").replace(/-/g, " ") || e.message || "unknown reason") + "." };
   } finally { state.sending = false; render(); }
 }
+function sellPos(t) { return (state.data?.portfolio?.positions || []).find(x => x.t === t); }
 async function sendSell(t) {
-  const mode = state.sellMode[t] || "all", amount = parseFloat(state.sellAmt[t]);
+  let mode = state.sellMode[t] === "dollars" ? "dollars" : "shares", amount = parseFloat(state.sellAmt[t]);
+  const pos = (state.data?.portfolio?.positions || []).find(x => x.t === t);
+  if (mode === "shares" && pos && amount >= +pos.qty) mode = "all";      // the whole position: sell it all
   if (mode !== "all" && !(amount > 0)) { state.sellMsg[t] = { ok: false, text: mode === "shares" ? "Enter how many shares." : "Enter a dollar amount." }; render(); return; }
   state.selling = true; render();
   try {
@@ -143,15 +158,24 @@ async function sendSell(t) {
   } finally { state.selling = false; render(); }
 }
 document.getElementById("main").addEventListener("click", ev => {
-  const s = ev.target.closest("[data-sell],[data-sellsend],[data-sellcancel],[data-sellmode]");
+  const s = ev.target.closest("[data-sell],[data-sellsend],[data-sellcancel],[data-sellmode],[data-sellall]");
   if (!s) return;
   if (s.dataset.sell) { state.sellOpen = s.dataset.sell; delete state.sellMsg[s.dataset.sell]; render(); }
-  else if (s.dataset.sellmode) { const [t, m] = s.dataset.sellmode.split("|"); state.sellMode[t] = m; render(); document.getElementById("samt-" + t)?.focus(); }
+  else if (s.dataset.sellmode) {          // switch $ <-> shares, keeping the same amount (converted)
+    const [t, m] = s.dataset.sellmode.split("|"), was = state.sellMode[t] === "dollars" ? "dollars" : "shares";
+    const x = sellPos(t), n = parseFloat(state.sellAmt[t]), px = x ? (+x.px || (x.qty ? x.mv / x.qty : 0)) : 0;
+    if (m !== was && n > 0 && px) state.sellAmt[t] = m === "dollars" ? (Math.round(n * px * 100) / 100).toFixed(2) : String(Math.round(n / px * 10000) / 10000);
+    state.sellMode[t] = m; render(); document.getElementById("samt-" + t)?.focus();
+  }
+  else if (s.dataset.sellall) { const t = s.dataset.sellall, x = sellPos(t); state.sellMode[t] = "shares"; state.sellAmt[t] = x ? String(x.qty) : ""; render(); }
   else if (s.dataset.sellsend) { if (!state.selling) sendSell(s.dataset.sellsend); }
   else if (s.dataset.sellcancel) { state.sellOpen = null; render(); }
 });
 document.getElementById("main").addEventListener("input", ev => {
-  if (ev.target.id && ev.target.id.startsWith("samt-")) state.sellAmt[ev.target.id.slice(5)] = ev.target.value;
+  if (!(ev.target.id && ev.target.id.startsWith("samt-"))) return;
+  const t = ev.target.id.slice(5), x = sellPos(t), c = document.getElementById("sconv-" + t);
+  state.sellAmt[t] = ev.target.value;
+  if (x && c) c.textContent = sellConv(x, state.sellMode[t] === "dollars" ? "dollars" : "shares", ev.target.value);   // live, without a redraw
 });
 document.getElementById("main").addEventListener("click", ev => {
   const b = ev.target.closest("[data-buy],[data-send],[data-cancel]");
@@ -188,7 +212,7 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible" || !$("#login").hidden) return;
   loadData();
 });
-setInterval(() => { if (document.visibilityState === "visible" && $("#login").hidden) loadData(); }, 2 * 60000);
+setInterval(() => { if (document.visibilityState === "visible" && $("#login").hidden) loadData(); }, REFRESH_MS);
 
 // ---------- alerts (push notifications; iPhone: only from the home-screen app) ----------
 function keyBytes(s) { const b = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)); return Uint8Array.from(b, c => c.charCodeAt(0)); }

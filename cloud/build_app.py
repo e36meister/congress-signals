@@ -82,10 +82,11 @@ _short = {"today": "Today", "alerts": "Alerts", "record": "Record", "defense": "
 _svg = lambda body: ("url(\"data:image/svg+xml," + quote('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
                      'stroke="#000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + body + '</svg>') + "\")")
 tabcss = "\n@media (max-width: 760px){\n" + \
-"""  body{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
+"""  body{padding-bottom:calc(64px + max(0px, env(safe-area-inset-bottom,0px) - 16px))}
+  :root{padding-bottom:0}
   nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:50;margin:0;gap:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 64px;
     overflow:visible;background:color-mix(in srgb,var(--surface) 92%,transparent);-webkit-backdrop-filter:saturate(1.6) blur(14px);
-    backdrop-filter:saturate(1.6) blur(14px);border-top:1px solid var(--rule);padding:6px 2px calc(6px + env(safe-area-inset-bottom,0px))}
+    backdrop-filter:saturate(1.6) blur(14px);border-top:1px solid var(--rule);padding:6px 2px max(4px, calc(env(safe-area-inset-bottom,0px) - 16px))}
   nav.tabs button{font-size:0;border:0;padding:4px 0 2px;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--muted);
     min-width:0;-webkit-tap-highlight-color:transparent}
   nav.tabs button::before{content:"";width:24px;height:24px;background:currentColor;-webkit-mask:var(--ic) center/contain no-repeat;mask:var(--ic) center/contain no-repeat}
@@ -169,7 +170,7 @@ src = src[:start] + r"""function reqSection() {
 
 # ---- ticker charts from Cloudflare ----
 start = src.index("async function loadCharts() {")
-end = src.index("function openChart(t) {")
+end = src.index("function openChart(t, back) {")
 src = src[:start] + """async function loadCharts() {
   if (pop.charts) return pop.charts;
   if (window.__CTD_CHARTS) return (pop.charts = window.__CTD_CHARTS);

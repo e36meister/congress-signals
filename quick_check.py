@@ -151,7 +151,7 @@ def refresh_portfolio():
 
 
 def why_it_moved(force=(), dry=False):
-    """Explain big moves in what you hold and the BUY candidates (congress_signals/movers.py); every 30 min at most."""
+    """Explain big moves in what you hold and the BUY candidates (congress_signals/movers.py); every 15 min at most."""
     import broker, cloud_store
     from congress_signals import movers as M
     if not force and not dry:
