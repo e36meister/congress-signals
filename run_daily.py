@@ -377,6 +377,16 @@ def main():
     PAUSE = health.critical(cfg, E.PART_SIZES, px)
     if PAUSE:
         E.log("DATA HEALTH: picks marked and new auto-buys paused: " + "; ".join(PAUSE))
+    try:      # owner, Oct 27: a pause breaks something, so it alerts right away (once when it starts, once when it clears)
+        import cloud_store
+        was = json.loads(cloud_store.get("push/pause_state.json", log=lambda m: None) or b"{}").get("paused")
+        if bool(PAUSE) != bool(was):
+            cloud_store.notify("New auto-buys paused" if PAUSE else "Auto-buys running again",
+                               ("; ".join(PAUSE) if PAUSE else "The data the picks are built from is healthy again.")[:600],
+                               tag="health-urgent", url="/#health", log=E.log)
+            cloud_store.put("push/pause_state.json", json.dumps({"paused": bool(PAUSE)}), log=lambda m: None)
+    except Exception as e:
+        E.log(f"Pause alert: skipped ({type(e).__name__})")
     early, helpers = None, None
     try:
         early, helpers = trade_now(scored, px)

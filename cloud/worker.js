@@ -30,6 +30,7 @@ export default {
     await step("daily", "Starting the daily update", () => startDailyOnTime(env, new Date(ev.scheduledTime)));
     if (min === 5) await step("substack", "Reading members' Substack feeds", () => mirrorSubstack(env));
     await step("senate-reminder", "Sending the Senate filings reminder", () => senateReminder(env, new Date(ev.scheduledTime)));
+    await step("digest", "Sending the data-health summary", () => sendDigest(env, new Date(ev.scheduledTime)));
     if (min === 7) await step("posts", "Starting the hourly posts job", () => dispatch(env, "posts.yml", {}));
   },
 };
@@ -501,6 +502,9 @@ async function tradeContext(env, url) {
 
 // ---------- Data health from the app's server side: failures are saved and alerted, never silently skipped ----------
 const WHEALTH = "health/app.json";
+// owner, Oct 27: only problems that break something alert right away (trading, the account, orders, the updates
+// themselves); everything else waits for the data-health summary every 2 hours
+const URGENT_SRC = new Set(["alpaca-live", "sell", "buy", "fills", "outbox", "quick", "daily", "senate-import"]);
 async function wProblem(env, src, text) {
   try {
     const st = await r2json(env, WHEALTH, {}), now = new Date().toISOString();
@@ -515,7 +519,8 @@ async function wProblem(env, src, text) {
     await env.DATA.put(WHEALTH, JSON.stringify(st));
     if (push) {
       const key = `push/outbox/${Date.now()}-${Math.floor(Math.random() * 1e5)}.json`;
-      await env.DATA.put(key, JSON.stringify({ title: ("Data problem: " + text).slice(0, 120), body: text.slice(0, 600), tag: "health", url: "/#health" }));
+      await env.DATA.put(key, JSON.stringify({ title: ("Data problem: " + text).slice(0, 120), body: text.slice(0, 600),
+        tag: URGENT_SRC.has(src) ? "health-urgent" : "health", url: "/#health" }));
     }
   } catch (e) {}
 }
@@ -761,11 +766,33 @@ async function drainOutbox(env) {
       const age = Date.now() - o.uploaded.getTime();
       if (age < 6 * 3600e3) {
         const msg = await (await env.DATA.get(o.key))?.json();
-        if (msg && msg.title) await deliver(env, msg);
+        if (msg && msg.title && msg.tag === "health") await holdForDigest(env, msg);
+        else if (msg && msg.title) await deliver(env, msg);
       }
     } catch (e) {}
     await env.DATA.delete(o.key);
   }
+}
+
+// ---------- data-health summary (owner, Oct 27): routine data problems are held and sent together ----------
+const DIGEST_KEY = "push/health_digest.json";
+async function holdForDigest(env, msg) {
+  const q = await r2json(env, DIGEST_KEY, []);
+  const items = (msg.items && msg.items.length ? msg.items : [{ l: String(msg.body || msg.title).split("\n")[0].replace(/^•\s*/, ""), u: "/#health" }]);
+  for (const it of items) q.push({ at: new Date().toISOString(), l: String(it.l || "").slice(0, 200) });
+  await env.DATA.put(DIGEST_KEY, JSON.stringify(q.slice(-200)));
+}
+async function sendDigest(env, when) {
+  const et = new Date(when.toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const h = et.getHours();
+  if (et.getMinutes() !== 0 || h % 2 !== 0 || h < 8 || h > 22) return;      // every 2 hours, 8 AM-10 PM
+  const q = await r2json(env, DIGEST_KEY, []);
+  if (!q.length) return;
+  const uniq = [...new Map(q.map(x => [x.l, x])).values()];
+  await deliver(env, { title: `Data health: ${uniq.length} new problem${uniq.length === 1 ? "" : "s"} (nothing broken)`,
+    body: uniq.slice(0, 6).map(x => "• " + x.l.slice(0, 150)).join("\n") + (uniq.length > 6 ? `\n…and ${uniq.length - 6} more` : ""),
+    tag: "health-digest", url: "", items: uniq.slice(0, 20).map(x => ({ l: x.l, u: "/#health" })) });
+  await env.DATA.put(DIGEST_KEY, "[]");
 }
 
 async function reasons(env) {
@@ -913,18 +940,15 @@ async function senateImport(req, env) {
   catch (e) { await wProblem(env, "senate-import", `Senate import: couldn't start the full update (${String(e && e.message || e).slice(0, 100)})`); started = " They'll be added at the next scheduled update."; }
   return txt(`Got it: ${n} row${n === 1 ? "" : "s"} from ${who}${filed ? ", filed " + filed : ""}.${started}`);
 }
-// weekday evening reminder to look for new Senate filings (nothing can watch the Senate site automatically)
+// reminders to look for new Senate filings (owner, Oct 27): every day at 8 AM, 1 PM and 5 PM Eastern
 async function senateReminder(env, when) {
   const et = new Date(when.toLocaleString("en-US", { timeZone: "America/New_York" }));
-  const wd = et.getDay();
-  if (wd === 0 || wd === 6 || et.getHours() !== 18 || et.getMinutes() !== 0) return;
-  const fmp = await r2json(env, "sources/fmp_senate.json", null);
-  const newest = fmp && fmp.rows ? Object.values(fmp.rows).map(r => String(r.disclosureDate || "").slice(0, 10)).sort().pop() : null;
+  if (![8, 13, 17].includes(et.getHours()) || et.getMinutes() !== 0) return;
   const log = await importLog(env);
-  const lastImp = log.length ? log[0] : null;
+  const last = log.find(h => h.filed);
   await deliver(env, { title: "Check for new Senate filings",
-    body: `Search Periodic Transactions filed since ${lastImp && lastImp.filed ? lastImp.filed : newest || "your last check"}, open each new one and tap Share → Capitol Capital Senate.`,
-    tag: "senate-reminder", url: "https://efdsearch.senate.gov/search/home/" });
+    body: `Periodic Transactions, newest first.${last ? ` Last one you sent was filed ${last.filed}.` : ""} Open each new one → Share → Capitol Capital Senate.`,
+    tag: "senate-reminder-" + et.getHours(), url: "https://efdsearch.senate.gov/search/" });
 }
 
 // ---------- home-screen widget (Scriptable) ----------

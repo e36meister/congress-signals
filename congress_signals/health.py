@@ -237,17 +237,31 @@ def finish(job, problems=(), failures=(), log=None, extra=None):
         return []
 
 
+# owner, Oct 27: only problems that break something alert right away; the rest are held by the app server and sent
+# together as a data-health summary every 2 hours
+URGENT = re.compile(r"\b(broker|orders?|alpaca|auto-?buys?|paused|sell(?:ing)?|stop check|portfolio|account)\b", re.I)
+URGENT_JOBS = ("Daily update", "Filings and orders check")
+
+
+def _urgent(x):
+    t = str(x.get("text") or "")
+    return bool(URGENT.search(t)) or (x.get("kind") == "watchdog" and t.startswith(URGENT_JOBS))
+
+
 def _alert(job, new, log):
     try:
         import cloud_store
         jn = JOB_NAMES.get(job, job)
-        if len(new) == 1:
-            title = f"Data problem: {_short(new[0]['text'])}"
-        else:
-            title = f"{len(new)} new data problems ({jn})"
-        body = "\n".join("• " + x["text"][:160] for x in new[:6]) + (f"\n…and {len(new) - 6} more" if len(new) > 6 else "")
-        cloud_store.notify(title, body, tag="health", url="/#health",
-                           items=[{"l": x["text"][:200], "u": "/#health"} for x in new[:20]], log=lambda m: None)
+        for group, tag in (([x for x in new if _urgent(x)], "health-urgent"), ([x for x in new if not _urgent(x)], "health")):
+            if not group:
+                continue
+            if len(group) == 1:
+                title = f"Data problem: {_short(group[0]['text'])}"
+            else:
+                title = f"{len(group)} new data problems ({jn})"
+            body = "\n".join("• " + x["text"][:160] for x in group[:6]) + (f"\n…and {len(group) - 6} more" if len(group) > 6 else "")
+            cloud_store.notify(title, body, tag=tag, url="/#health",
+                               items=[{"l": x["text"][:200], "u": "/#health"} for x in group[:20]], log=lambda m: None)
     except Exception as e:
         _log(f"DATA HEALTH: alert not sent ({type(e).__name__})", log)
 
