@@ -156,8 +156,8 @@ jobs:
         if: always() && github.event.inputs.dry_run != 'true'
         run: |
           if [ "$(date -u +%d)" = "01" ] && [ "$(date -u +%H)" -lt 13 ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898+github-actions[bot]@users.noreply.github.com"
+            git config user.name "matey"
+            git config user.email "matey@users.noreply.invalid"
             git commit --allow-empty -m "Monthly keep-alive" && git push || true
           fi
 
