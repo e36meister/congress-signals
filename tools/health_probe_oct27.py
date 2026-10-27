@@ -31,9 +31,18 @@ for y in (2024, 2025, 2026):
             try:
                 r = requests.get(u, headers=E.UA, timeout=30)
                 print(f"   {r.status_code} {len(r.content):>8,} B rollcall={b'<rollcall-vote' in r.content} {u}")
+                print(f"      body: {r.text[:120]!r}  type={r.headers.get('content-type')}")
             except Exception as e:
                 print(f"   EXC {type(e).__name__} {u}")
             time.sleep(2)
+for u in ("https://clerk.house.gov/evs/2026/index.asp", "https://clerk.house.gov/evs/2026/roll314.xml"):
+    try:
+        r = requests.get(u, headers=E.UA, timeout=30)
+        import re as _re
+        print(f"{u}: {r.status_code} {len(r.content):,} B; roll links: {_re.findall(r'roll(\\d{3})', r.text)[:6]}")
+    except Exception as e:
+        print(f"{u}: EXC {type(e).__name__}")
+    time.sleep(2)
 try:
     r = requests.get("https://clerk.house.gov/Votes", headers=E.UA, timeout=30)
     import re
