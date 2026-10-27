@@ -535,7 +535,7 @@ function renderMe(d) {
       const k = f.t + "|" + f.td + "|" + f.side + "|" + i, g = sinceBuy(f);
       return `<div class="metr"><div class="top" data-meopen="${esc(k)}" style="cursor:pointer">${tkBtn(f.t)}<span class="bs ${f.side}">${f.side === "buy" ? "Bought" : "Sold"}</span>
         <span>${esc(fmtDate(f.td))}</span><span class="mono">${Number(f.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at ${money2(f.px)}</span>
-        ${g != null ? `<span class="${cls(g)}">${pct(g)} since</span>` : ""}<span class="foot">${esc(BY[f.by] || f.by || "")}</span></div>
+        ${g != null ? `<span class="${cls(g)}">${pct(g)} since</span>` : ""}<span class="foot">${esc((f.by === "tap" && f.side === "sell" ? "Sell button" : BY[f.by]) || f.by || "")}</span></div>
         ${ME.open === k ? ctxBlock(f) : ""}</div>`;
     }).join("") : `<div class="empty">No trades in your account yet.</div>`}
   </section>`;
@@ -2111,7 +2111,16 @@ function drawTickerChart() {
   const t = pop.t, C = chartsFor(t), host = document.getElementById("tc");
   if (!C || !host) return;
   const css = getComputedStyle(document.documentElement), cv = k => css.getPropertyValue(k).trim();
-  const dates = C.dates, all = C.px[t];
+  let dates = C.dates, all = C.px[t];
+  // the daily charts end at the last update's close: add today at the live price so today's moves and your fills show
+  {
+    const P0 = state.data?.portfolio || {}, lastD = dates[dates.length - 1];
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    const late = ((P0.fills || {})[t] || []).filter(f => f[0] > lastD).sort((a, b) => a[0].localeCompare(b[0]));
+    const hp = (P0.positions || []).find(x => x.t === t);
+    const nowPx = (hp && +hp.px) || (late.length ? +late[late.length - 1][3] : null);
+    if (nowPx && today > lastD && new Date(today + "T12:00:00").getDay() % 6 !== 0) { dates = dates.concat([today]); all = all.concat([nowPx]); }
+  }
   const months = (SPANS.find(s => s[0] === pop.span) || SPANS[1])[1];
   const endD = new Date(dates[dates.length - 1] + "T12:00:00"); const startD = new Date(endD); startD.setMonth(startD.getMonth() - months);
   const s0 = dates.findIndex(d => new Date(d + "T12:00:00") >= startD);
@@ -2196,12 +2205,12 @@ function drawTickerChart() {
     el.classList.add("on");
     const f = myF[+el.dataset.mf];
     det.innerHTML = `<div class="tdet"><img src="/me.jpg" alt="" style="width:34px;height:34px;border-radius:50%;object-fit:cover;border:2px solid var(--${f[1] === "sell" ? "bad" : "good"})" onerror="this.style.display='none'">
-      <div><span class="bs ${f[1] === "sell" ? "sell" : "buy"}">${f[1] === "sell" ? "Sell" : "Buy"}</span> ${Number(f[2]).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at <b>${money2(f[3])}</b> on ${esc(fmtDate(f[0]))}<div class="foot">${esc({ you: "Placed by you", tap: "Buy button", tool: "Placed by the tool" }[f[4]] || "")}</div></div></div>`;
+      <div><span class="bs ${f[1] === "sell" ? "sell" : "buy"}">${f[1] === "sell" ? "Sell" : "Buy"}</span> ${Number(f[2]).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at <b>${money2(f[3])}</b> on ${esc(fmtDate(f[0]))}<div class="foot">${esc(f[4] === "tap" ? (f[1] === "sell" ? "Sell button" : "Buy button") : ({ you: "Placed by you", tool: "Placed by the tool" }[f[4]] || ""))}</div></div></div>`;
   }));
   // your own trades of this stock in this span
   const myRows = myF.slice().sort((a, b) => b[0].localeCompare(a[0]));
   const myHtml = myRows.length || held ? `<div class="tdet" style="display:block"><b>Your trades</b>${held ? ` · holding ${Number(held.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh, cost ${money2(held.avg)}, ${pct(held.plpc)}` : ""}
-    ${myRows.map(f => `<div class="foot" style="color:var(--ink2)"><span class="bs ${f[1]}">${f[1] === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(f[0]))} · ${Number(f[2]).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at ${money2(f[3])} · ${esc(BY[f[4]] || f[4])}</div>`).join("")}
+    ${myRows.map(f => `<div class="foot" style="color:var(--ink2)"><span class="bs ${f[1]}">${f[1] === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(f[0]))} · ${Number(f[2]).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at ${money2(f[3])} · ${esc((f[4] === "tap" && f[1] === "sell" ? "Sell button" : BY[f[4]] || f[4]))}</div>`).join("")}
     ${!myRows.length && held ? `<div class="foot">Bought before this timespan; try a longer one.</div>` : ""}</div>` : "";
   // trades in this span, newest first
   const rows = trades.slice().sort((a, b) => b.td.localeCompare(a.td));
