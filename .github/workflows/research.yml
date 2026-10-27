@@ -52,3 +52,11 @@ jobs:
         run: |
           sudo apt-get install -y -qq tesseract-ocr >/dev/null 2>&1 || true
           python tools/${{ github.event.inputs.script }}
+      - name: Keep any files the script wrote to out/ (read-only studies)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-out
+          path: out/
+          if-no-files-found: ignore
+          retention-days: 7
