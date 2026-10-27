@@ -29,6 +29,7 @@ export default {
     await step("quick", "Starting the filings check", () => startQuickCheck(env, min));
     await step("daily", "Starting the daily update", () => startDailyOnTime(env, new Date(ev.scheduledTime)));
     if (min === 5) await step("substack", "Reading members' Substack feeds", () => mirrorSubstack(env));
+    await step("senate-reminder", "Sending the Senate filings reminder", () => senateReminder(env, new Date(ev.scheduledTime)));
     if (min === 7) await step("posts", "Starting the hourly posts job", () => dispatch(env, "posts.yml", {}));
   },
 };
@@ -100,6 +101,7 @@ async function api(req, env, url) {
   if (p === "/api/login" && req.method === "POST") return login(req, env);
   if (p === "/api/logout" && req.method === "POST") return json({ ok: true }, 200, { "Set-Cookie": `${COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict` });
   if (p === "/api/widget" && req.method === "GET") return widget(req, env, url);   // its own read-only key
+  if (p === "/api/senate-import" && req.method === "POST") return senateImport(req, env);   // iPhone Shortcut, its own key
   if (!(await validSession(req, env))) return json({ error: "login" }, 401);
 
   if (p === "/api/session") return json({ ok: true, mode: (env.TRADING_MODE || "paper") });
@@ -130,6 +132,8 @@ async function api(req, env, url) {
   if (p === "/api/live" && req.method === "GET") return live(env);
   if (p === "/api/buy" && req.method === "POST") return buy(req, env);
   if (p === "/api/sell" && req.method === "POST") return sell(req, env);
+  if (p === "/api/senate-import/setup" && req.method === "GET") return json({ url: url.origin + "/api/senate-import", key: await importKey(env, false), recent: await importLog(env) });
+  if (p === "/api/senate-import/setup" && req.method === "POST") return json({ url: url.origin + "/api/senate-import", key: await importKey(env, true), recent: await importLog(env) });
   if (p === "/api/widget/script" && req.method === "GET") return widgetScript(env, url, false);
   if (p === "/api/widget/script" && req.method === "POST") return widgetScript(env, url, true);   // new key
   if (p === "/api/push/key" && req.method === "GET") return json({ key: (await vapid(env)).pub, phones: (await getSubs(env)).length });
@@ -864,6 +868,63 @@ async function startQuickCheck(env, min) {
     });
     if (!r.ok) throw new Error(`GitHub refused to start the job (HTTP ${r.status}): ${(await r.text()).slice(0, 120)}`);
   }
+}
+
+// ---------- Senate filings sent from Safari by the iPhone Shortcut (owner, Oct 27) ----------
+// The Senate site blocks automated reads (since Oct 23), but it opens normally for the owner. The Shortcut sends the
+// filing page the owner has open; this checks it is a Senate trade report, saves it in R2 for the next full update
+// (which reads the trades with the same parser as before and adds them as official Senate filings) and starts that
+// update right away. The Shortcut uses its own key (not the login), which can only send filings.
+async function importKey(env, renew) {
+  const o = renew ? null : await env.DATA.get("senate_import/key.txt");
+  if (o) return (await o.text()).trim();
+  const k = b64url(crypto.getRandomValues(new Uint8Array(24)));
+  await env.DATA.put("senate_import/key.txt", k);
+  return k;
+}
+async function importLog(env) { return (await r2json(env, "senate_import/log.json", [])).slice(0, 15); }
+const txt = (s, status = 200) => new Response(s, { status, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
+const deTag = h => h.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#39;|&#x27;/g, "'").replace(/\s+/g, " ").trim();
+async function senateImport(req, env) {
+  const given = req.headers.get("X-Import-Key") || "";
+  const key = await importKey(env, false);
+  if (!given || !timingSafeEqual(given, key))
+    return txt("Not sent: the Shortcut's key doesn't match. Open Capitol Capital → More → Senate import and copy the key again.", 401);
+  let b = {};
+  try { b = JSON.parse(await req.text()); } catch (e) { return txt("Not sent: the Shortcut didn't send the page. Check the 'Run JavaScript' step.", 400); }
+  const page = String(b.url || ""), html = String(b.html || "");
+  const m = page.match(/^https:\/\/efdsearch\.senate\.gov(\/search\/view\/(ptr|paper)\/[A-Za-z0-9-]+\/?)/);
+  if (!m) return txt("Not sent: this isn't a Senate filing page. Open the filing itself on efdsearch.senate.gov (the 'Periodic Transaction Report' link), then run the Shortcut.", 400);
+  if (html.length > 3e6) return txt("Not sent: the page is unusually large.", 400);
+  const link = m[1].endsWith("/") ? m[1] : m[1] + "/";
+  if (m[2] === "paper") return txt("This is a scanned paper filing. The app can't read scanned filings from the Shortcut yet; nothing was saved.", 400);
+  if (!/Transaction Date/i.test(html) || !/<table/i.test(html)) return txt("Not sent: no trade table on this page. If the page shows a Senate agreement or 'Access Denied', tap through to the filing and try again.", 400);
+  const who = deTag((html.match(/The Honorable[\s\S]{0,200}?<\/h2>/i) || [""])[0]).replace(/^The Honorable\s*/i, "").replace(/\s*\(.*$/, "") || "the senator";
+  const filed = (deTag(html).match(/Filed\s+(\d{1,2}\/\d{1,2}\/\d{4})/i) || [])[1] || null;
+  const body = (html.match(/<tbody[\s\S]*?<\/tbody>/i) || [""])[0];
+  const n = (body.match(/<tr[\s>]/gi) || []).length;
+  const id = link.split("/").filter(Boolean).pop();
+  await env.DATA.put(`senate_import/pending/${id}.json`, JSON.stringify({ link, html, who, filed, at: new Date().toISOString() }));
+  const log = await r2json(env, "senate_import/log.json", []);
+  log.unshift({ id, who, filed, rows: n, at: new Date().toISOString(), status: "received" });
+  await env.DATA.put("senate_import/log.json", JSON.stringify(log.slice(0, 100)));
+  let started = "";
+  try { await dispatch(env, "daily.yml", { chain: "0", why: "senate import" }); started = " The full update has started; you'll get an alert when they're added (usually within an hour)."; }
+  catch (e) { await wProblem(env, "senate-import", `Senate import: couldn't start the full update (${String(e && e.message || e).slice(0, 100)})`); started = " They'll be added at the next scheduled update."; }
+  return txt(`Got it: ${n} row${n === 1 ? "" : "s"} from ${who}${filed ? ", filed " + filed : ""}.${started}`);
+}
+// weekday evening reminder to look for new Senate filings (nothing can watch the Senate site automatically)
+async function senateReminder(env, when) {
+  const et = new Date(when.toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const wd = et.getDay();
+  if (wd === 0 || wd === 6 || et.getHours() !== 18 || et.getMinutes() !== 0) return;
+  const fmp = await r2json(env, "sources/fmp_senate.json", null);
+  const newest = fmp && fmp.rows ? Object.values(fmp.rows).map(r => String(r.disclosureDate || "").slice(0, 10)).sort().pop() : null;
+  const log = await importLog(env);
+  const lastImp = log.length ? log[0] : null;
+  await deliver(env, { title: "Check for new Senate filings",
+    body: `Search Periodic Transactions filed since ${lastImp && lastImp.filed ? lastImp.filed : newest || "your last check"}, open each new one and tap Share → Capitol Capital Senate.`,
+    tag: "senate-reminder", url: "https://efdsearch.senate.gov/search/home/" });
 }
 
 // ---------- home-screen widget (Scriptable) ----------

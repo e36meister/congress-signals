@@ -562,6 +562,7 @@ const MORE_TABS = [
   { k: "real", l: "Reality check", d: "Walk-forward test: the strategy on years it never saw" },
   { k: "tax", l: "Taxes", d: "Each sale's gain or loss, the Form 8949 statement and what to file" },
   { k: "movers", l: "Why it moved", d: "Big moves in what you hold and the Buy candidates, explained" },
+  { k: "senate", l: "Senate import", d: "Send a Senate filing from Safari with the iPhone Shortcut (the Senate site blocks automatic reads)" },
   { k: "health", l: "Data health", d: "Every data source: what's broken right now and what was fixed" },
 ];
 function goTab(t) {
@@ -812,6 +813,47 @@ document.addEventListener("click", ev => {
   state.tab = "movers"; render(); scrollTo(0, 0);
 });
 
+// ---------- Senate import: the iPhone Shortcut that sends a filing open in Safari (owner, Oct 27) ----------
+const SIMP = { js: null, err: null, loading: false, msg: "" };
+const SIMP_JS = 'completion(JSON.stringify({ url: location.href, html: document.documentElement.outerHTML }));';
+function senateLoad(renew) {
+  if (SIMP.loading) return; SIMP.loading = true;
+  loadSenateSetup(renew).then(js => { SIMP.js = js; SIMP.err = null; SIMP.msg = renew ? "New key made. Paste it into the Shortcut's X-Import-Key header." : ""; },
+    e => { SIMP.err = e; }).finally(() => { SIMP.loading = false; if (state.tab === "senate") render(); });
+}
+function renderSenate() {
+  if (!SIMP.js && !SIMP.err) senateLoad(false);
+  if (SIMP.err) return `<div class="note ${SIMP.err.code === "app_only" ? "warn" : "err"}">${SIMP.err.code === "app_only" ? "Senate import is set up in the phone app." : "Couldn't load the Senate import setup."}</div>`;
+  if (!SIMP.js) return `<div class="empty">Loading…</div>`;
+  const J = SIMP.js, copy = (k, label) => `<button type="button" class="btn ghost" data-scopy="${k}">${label}</button>`;
+  const st = h => /^added/.test(h.status) ? "pos" : /couldn't/.test(h.status) ? "neg" : "";
+  return `<section class="panel"><div class="ph"><h2>Senate import</h2><span class="sub">The Senate site blocks automatic reads, but it opens normally for you. When a senator files, open the filing in Safari and send it here.</span></div>
+    <p><b>Each time:</b> on efdsearch.senate.gov open the filing (the "Periodic Transaction Report" link), tap <b>Share → Capitol Capital Senate</b>. You'll see "Got it: N rows…", then an alert when the trades are added and scored. A 6 PM reminder on weekdays links you to the site.</p>
+    <div class="ph" style="margin-top:14px"><h2 style="font-size:17px">One-time setup</h2></div>
+    <ol class="steps" style="padding-left:20px;display:grid;gap:8px;margin:0">
+      <li>In the <b>Shortcuts</b> app tap <b>+</b>. Name it <b>Capitol Capital Senate</b>.</li>
+      <li>Tap the <b>ⓘ</b> (Details) → turn on <b>Show in Share Sheet</b>. Set what it receives to <b>Safari web pages</b> only.</li>
+      <li>Add the action <b>Run JavaScript on Web Page</b> (input: Shortcut Input). Replace its script with: ${copy("js", "Copy script")}</li>
+      <li>Add <b>Get Contents of URL</b>. URL: ${copy("url", "Copy URL")}<br>Tap <b>Show More</b>: Method <b>POST</b>. Headers: add <b>X-Import-Key</b> = ${copy("key", "Copy key")} and <b>Content-Type</b> = <code>application/json</code>. Request Body: <b>File</b> → choose <b>JavaScript Result</b>.</li>
+      <li>Add <b>Show Result</b> (it shows what the app answered).</li>
+      <li>In the iPhone <b>Settings</b> app: <b>Apps → Shortcuts → Advanced</b> → turn on <b>Allow Running Scripts</b>.</li>
+    </ol>
+    <p class="foot">The key only lets the Shortcut send Senate filings; it can't read your account or trade. <button type="button" class="link" data-snew="1">Make a new key</button> ${SIMP.msg ? esc(SIMP.msg) : ""}</p>
+    <div id="scopymsg" class="foot"></div></section>
+    <section class="panel"><div class="ph"><h2>Sent filings</h2><span class="sub">Newest first</span></div>
+    ${(J.recent || []).length ? `<div class="tbl tlist"><table><thead><tr><th>Sent</th><th>Senator</th><th>Filed</th><th>Rows</th><th>Status</th></tr></thead><tbody>
+      ${J.recent.map(h => `<tr><td class="nw">${esc(fmtET(h.at))}</td><td>${esc(h.who || "")}</td><td class="nw">${esc(h.filed || "")}</td><td class="n">${esc(h.rows ?? "")}</td><td class="${st(h)}">${esc(h.status === "received" ? "waiting for the update" : h.status || "")}</td></tr>`).join("")}
+      </tbody></table></div>` : `<div class="empty">Nothing sent yet.</div>`}</section>`;
+}
+document.addEventListener("click", async ev => {
+  const c = ev.target.closest("[data-scopy],[data-snew]");
+  if (!c || !SIMP.js) return;
+  if (c.dataset.snew) { if (confirm("Make a new key? The Shortcut stops working until you paste the new key into it.")) senateLoad(true); return; }
+  const v = { js: SIMP_JS, url: SIMP.js.url, key: SIMP.js.key }[c.dataset.scopy];
+  const m = document.getElementById("scopymsg");
+  try { await navigator.clipboard.writeText(v); if (m) m.textContent = "Copied. Paste it into the Shortcut."; }
+  catch (e) { if (m) m.textContent = "Copy didn't work here; long-press to copy: " + v; }
+});
 function renderMore() {
   return `<section class="panel"><div class="morelist">
   ${MORE_TABS.map(m => `<button type="button" class="moreitem" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}
@@ -849,6 +891,7 @@ function render() {
   else if (MORE_TABS.some(m => m.k === state.tab)) html += `<button type="button" class="moreback" data-more="more">‹ More</button>`;
   if (state.tab === "more") html += renderMore();
   if (state.tab === "health") html += renderHealth();
+  if (state.tab === "senate") html += renderSenate();
   if (state.tab === "movers") html += renderMovers();
   if (state.tab === "me") html += renderMe(d);
   if (d.data_warning && (d.data_warning.problems || []).length && ["today", "port"].includes(state.tab)) html += dataWarning(d.data_warning);
@@ -2800,6 +2843,7 @@ async function loadAlerts() { return (await api("/api/notifications")).js; }
 async function loadHealth() { return (await api("/api/health")).js; }
 async function loadMovers() { return (await api("/api/movers")).js; }
 async function loadNews(t) { return (await api("/api/news?t=" + encodeURIComponent(t))).js; }
+async function loadSenateSetup(renew) { return (await api("/api/senate-import/setup", renew ? { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" } : {})).js; }
 async function loadAbout(t) { return (await api("/api/about?t=" + encodeURIComponent(t))).js; }
 async function loadTax() { return (await api("/api/tax")).js; }
 async function loadTaxSales(y) { return (await api(`/api/tax/file?y=${encodeURIComponent(y)}&f=sales.json`)).js; }

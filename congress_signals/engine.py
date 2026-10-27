@@ -1003,6 +1003,83 @@ def parse_senate_ptr_html(html):
     return out
 
 
+def _ptr_filer(html):
+    """(first, last, filed MM/DD/YYYY) from a Senate filing page: 'The Honorable Jane Q Doe (Doe, Jane)', 'Filed 10/26/2026'."""
+    from bs4 import BeautifulSoup
+    t = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
+    m = re.search(r"The Honorable\s+(.+?)\s*\(([^,()]+),\s*([^()]+)\)", t)
+    first, last = (m.group(3).strip(), m.group(2).strip()) if m else (None, None)
+    if not m:
+        m2 = re.search(r"The Honorable\s+([A-Z][\w.'-]+(?:\s+[A-Z][\w.'-]+)*)", t)
+        if m2:
+            parts = m2.group(1).split()
+            first, last = parts[0], parts[-1]
+    f = re.search(r"Filed\s+(\d{1,2}/\d{1,2}/\d{4})", t)
+    return first, last, f.group(1) if f else None
+
+
+def senate_imports(cfg, tx, done):
+    """Filings the owner sent from Safari with the iPhone Shortcut (R2 senate_import/pending/, owner Oct 27): read
+    with the same parser as before and added as official Senate filings. Returns the new rows. An alert says what
+    was added, or why a filing couldn't be read (that one is kept under senate_import/failed/ and logged)."""
+    import cloud_store
+    keys = [k for k in cloud_store.list_keys("senate_import/pending/", log=log) if k.endswith(".json")]
+    if not keys:
+        return []
+    try:
+        hist = json.loads(cloud_store.get("senate_import/log.json", log=lambda m: None) or b"[]")
+    except Exception:
+        hist = []
+    rows, msgs = [], []
+    for k in keys:
+        try:
+            rec = json.loads(cloud_store.get(k, log=log) or b"{}")
+        except Exception:
+            rec = {}
+        link, html = rec.get("link"), rec.get("html") or ""
+        items = parse_senate_ptr_html(html) if html else None
+        if not items and "transaction date" not in html.lower():
+            items = None
+        first, last, filed = _ptr_filer(html) if html else (None, None, None)
+        filed = filed or rec.get("filed")
+        rid = k.rsplit("/", 1)[-1][:-5]
+        if not (link and items is not None and last and filed):
+            why = "no trade table" if items is None else "no senator name" if not last else "no filing date" if not filed else "no page"
+            log(f"Senate import: couldn't read {rid} ({why}); kept for a look")
+            cloud_store.put(f"senate_import/failed/{rid}.json", json.dumps(rec), log=lambda m: None)
+            cloud_store.delete(k, log=log)
+            msgs.append(("fail", rid, rec.get("who") or "a filing", why))
+            status = f"couldn't read ({why})"
+        else:
+            new = [] if link in done else items
+            for t in new:
+                rows.append({"member": f"{first} {last}", "first": first, "last": last, "chamber": "Senate", "state": None,
+                             "ticker": t["ticker"], "tx_type": norm_type(t["tx_raw"]), "trade_date": t["trade_date"],
+                             "filed_date": filed, "amt_lo": t["amt_lo"], "amt_hi": t["amt_hi"], "owner": t["owner"],
+                             "source": "senate_efd", "doc_id": link, "tx_raw": t["tx_raw"], "option": t["option"]})
+            done.add(link)
+            cloud_store.delete(k, log=log)
+            stocks = sorted({str(t["ticker"]) for t in new if t.get("ticker") and str(t["ticker"]).strip() not in ("--", "-")})
+            msgs.append(("ok", rid, last, len(new), len(items), stocks, filed))
+            status = f"added {len(new)} trade(s)" if new else "already on file"
+            log(f"Senate import: {last} filed {filed}: {len(items)} row(s) read, {len(new)} new")
+        for h in hist:
+            if h.get("id") == rid and h.get("status") == "received":
+                h["status"], h["done"] = status, dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    cloud_store.put("senate_import/log.json", json.dumps(hist[:100]), log=lambda m: None)
+    for m in msgs:
+        if m[0] == "ok":
+            _, rid, last, n, total, stocks, filed = m
+            cloud_store.notify(f"Senate filing added: {last}" if n else f"Senate filing already on file: {last}",
+                               (f"{n} trade(s) filed {filed}" + (f": {', '.join(stocks[:8])}" if stocks else "") + ". Scored in this update.")
+                               if n else f"All {total} row(s) were already in the app.", tag="senate-import", url="/#today", log=log)
+        else:
+            _, rid, who, why = m
+            cloud_store.notify("Senate filing couldn't be read", f"{who}: {why}. Nothing was added; it's kept so it can be fixed.",
+                               tag="senate-import", url="/#health", log=log)
+    return rows
+
+
 def collect_senate(cfg):
     start = pd.Timestamp(cfg["START_DATE"])
     cache_tx = _p(cfg, "cache", "senate_tx.pkl")
@@ -1027,6 +1104,14 @@ def collect_senate(cfg):
             tx.to_pickle(cache_tx)
             json.dump(sorted(done), open(cache_done, "w"))
         open(fix_path, "w").write(str(SENATE_FIX))
+    try:       # filings the owner sent from Safari (the site blocks automated reads since Oct 23)
+        imp = senate_imports(cfg, tx, done)
+        if imp:
+            tx = pd.concat([tx, pd.DataFrame(imp)], ignore_index=True)
+        tx.to_pickle(cache_tx)
+        json.dump(sorted(done), open(cache_done, "w"))
+    except Exception as e:
+        log(f"Senate import: failed ({type(e).__name__}: {str(e)[:150]})")
     try:
         s = _senate_session()
     except Exception as e:

@@ -46,6 +46,20 @@ def get(name, log=print):
 
 
 
+def delete(name, log=print):
+    """Remove one object from R2. True when it's gone."""
+    tok, acc = os.environ.get("CLOUDFLARE_API_TOKEN"), os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+    if not (tok and acc):
+        return False
+    try:
+        r = requests.delete(f"https://api.cloudflare.com/client/v4/accounts/{acc}/r2/buckets/{BUCKET}/objects/{name}",
+                            headers={"Authorization": f"Bearer {tok}"}, timeout=60)
+        return r.status_code < 300 or r.status_code == 404
+    except Exception as e:
+        log(f"Cloudflare: couldn't delete {name} ({type(e).__name__})")
+        return False
+
+
 def list_keys(prefix, log=print):
     """Names of the R2 objects starting with `prefix` ([] when Cloudflare isn't set up or the listing fails)."""
     tok, acc = os.environ.get("CLOUDFLARE_API_TOKEN"), os.environ.get("CLOUDFLARE_ACCOUNT_ID")
