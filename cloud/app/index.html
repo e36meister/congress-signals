@@ -129,6 +129,13 @@ td .why{display:block;width:max-content}
 .chip.avoid,.chip.mixed{background:var(--warn-soft);color:var(--warn)}
 .chip.watch{background:var(--sunken);color:var(--ink2)}
 .chip.new{background:var(--accent-soft);color:var(--accent)}
+.mstat{display:flex;flex-wrap:wrap;gap:6px 8px;margin:2px 0 10px}
+.mstat{flex-direction:column;flex-wrap:nowrap;gap:4px}
+.mst{display:flex;align-items:baseline;gap:8px;background:var(--sunken);border:1px solid var(--rule);border-radius:8px;padding:6px 10px;cursor:pointer;font:inherit;color:inherit;text-align:left;width:100%}
+.mst .chip{flex:none}
+.mst .foot{flex:1;min-width:0}
+.mst::after{content:"›";color:var(--muted);margin-left:auto;padding-left:6px}
+.mst:hover{border-color:var(--accent)}
 .posts-feed{display:grid;gap:8px}
 .tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .tag{font:600 12px var(--body);padding:4px 9px;border-radius:999px;border:1px solid var(--rule);background:var(--sunken);color:var(--ink2);cursor:pointer;
@@ -2120,6 +2127,40 @@ function aboutBox(t) {
     <div><b>CEO:</b> ${a.ceo ? esc(a.ceo) : "not listed"}${a.ceo_from ? ` <span class="foot">(${esc(a.ceo_from)})</span>` : ""}</div>
     <div class="foot" style="margin-top:4px">${a.from ? "Summary from " + esc(a.from) : ""}${a.wiki ? ` · <a href="${esc(a.wiki)}" target="_blank" rel="noopener">Wikipedia</a>` : ""}${a.site ? ` · <a href="${esc(a.site)}" target="_blank" rel="noopener">Company site</a>` : ""}</div></div>`;
 }
+// Everything the app already says about a stock (buy pick, avoid, worth a look, held...), shown at the top of its
+// chart popup. Each label links to where it's listed.
+function statusFor(t) {
+  const d = state.data || {}, w = d.watchlist || {}, out = [];
+  const isNew = side => (w.new || []).some(n => n.t === t && (side === "sell" ? n.action === "SHORT" : n.action === "BUY"));
+  const sc = r => r.s != null ? ` · score ${Number(r.s).toFixed(0)}` : "";
+  for (const r of (w.buys || []).filter(r => r.t === t)) {
+    if (r.action === "BUY") out.push({ c: "BUY", l: "Buy", x: ((r.sm ?? 0) >= 1 ? "small-company " : "") + "buy candidate" + (isNew("buy") ? ", new since the last run" : "") + sc(r), go: "#worth/" + t });
+    else if (r.action === "mixed") out.push({ c: "mixed", l: "Mixed", x: "members buying and selling, so not a buy" + sc(r), go: "#today-also" });
+    else out.push({ c: "watch", l: "Watch", x: "also bought recently, below the buy bar" + sc(r), go: "#today-also" });
+    if (r.def) out.push({ c: "watch", l: "Defense", x: "defense company", go: "#defense" });
+    if (r.ags) out.push({ c: "avoid", l: "Contrarian", x: "bought while most analysts rated it hold or worse", go: "#worth/" + t });
+  }
+  for (const r of (w.sells || []).filter(r => r.t === t)) {
+    if (r.action === "SHORT") out.push({ c: "SHORT", l: "Short", x: "short candidate" + (isNew("sell") ? ", new since the last run" : "") + sc(r), go: "#worth/" + t });
+    else if (r.action === "avoid") out.push({ c: "avoid", l: "Avoid", x: "sales like the ones followed by drops", go: "#worth/" + t });
+  }
+  const wl = (d.worth || []).find(r => r.t === t);
+  if (wl) { const rs = (Array.isArray(wl.why) ? wl.why : String(wl.why || "").split(/;\s*/)).filter(Boolean);
+    out.push({ c: "avoid", l: "Worth a look", x: rs.length ? "red flag: " + reasonTag(String(rs[0])).label.toLowerCase() : "a rare red flag", go: "#worth/" + t }); }
+  const un = (d.unusual || []).find(r => r.t === t);
+  if (un) out.push({ c: "watch", l: "Unusual", x: un.ratio != null ? `volume ${un.ratio.toFixed(1)}× normal last week` : "", go: "#today-unusual" });
+  const ps = (d.portfolio?.positions || []).find(x => x.t === t);
+  if (ps) out.push({ c: "new", l: "Held",
+    x: `${ps.sleeve === "park" ? "parked cash, " : ps.bot ? "the tool holds " : "you hold "}${Number(ps.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} shares · ${pct(ps.plpc)}`, go: "#port/" + t });
+  const ms = d.member_sold?.[t];
+  if (ps && ms && (ms.sales || []).length) out.push({ c: "avoid", l: "Member sold", x: "a member behind this buy disclosed a sale", go: "#port/" + t });
+  return out;
+}
+function statusBar(t) {
+  const s = statusFor(t);
+  if (!s.length) return "";
+  return `<div class="mstat">${s.map((x, i) => `<button type="button" class="mst" data-st="${i}"><span class="chip ${esc(x.c)}">${esc(x.l)}</span>${x.x ? `<span class="foot">${esc(x.x)}</span>` : ""}</button>`).join("")}</div>`;
+}
 function drawPopup() {
   const bg = document.getElementById("mbg"); if (!bg || !pop.t) return;
   const t = pop.t, C = chartsFor(t), one = pop.one[t];
@@ -2144,7 +2185,8 @@ function drawPopup() {
       // forms give the trade date and a dollar range, not the time, price or share count. So the price shown is that
       // day's low-to-high range and the share count is estimated from it, unless the member wrote the shares or price.
   }
-  bg.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="${esc(t)} price chart">${head}${pop.about ? aboutBox(t) : ""}${body}</div>`;
+  bg.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="${esc(t)} price chart">${head}${statusBar(t)}${pop.about ? aboutBox(t) : ""}${body}</div>`;
+  bg.querySelectorAll("[data-st]").forEach(b => b.addEventListener("click", () => { const x = statusFor(t)[+b.dataset.st]; if (x) { closeChart(); go(x.go); } }));
   bg.querySelector("[data-about]")?.addEventListener("click", () => { pop.about = !pop.about; drawPopup(); });
   bg.querySelectorAll("[data-span]").forEach(b => b.addEventListener("click", () => { pop.span = b.dataset.span; pop.sel = null; drawPopup(); }));
   if (C && C.px && C.px[t]) drawTickerChart();
@@ -2357,7 +2399,7 @@ function tradeCard(doc, tr, h, sec) {
   const pre = ev.filter(x => days(x.d, tr.td) < 0).length;
   return `<article class="mtr${open ? " on" : ""}">
     <button type="button" class="mtr-h" data-mtr="${id}" aria-expanded="${open}">
-      <span class="mt-t"><b>${esc(tr.t)}</b><span class="bs ${tr.ty}">${tr.ty === "buy" ? "Buy" : "Sell"}</span></span>
+      <span class="mt-t"><b class="tkl" role="link" data-chart="${esc(tr.t)}" title="Show ${esc(tr.t)} chart and labels">${esc(tr.t)}</b><span class="bs ${tr.ty}">${tr.ty === "buy" ? "Buy" : "Sell"}</span></span>
       <span class="mt-c"><span class="co">${esc(tr.co || tr.t)}</span>
         <span class="ms">${esc(fmtDate(tr.td))}${amountTxt(tr) ? " · " + amountTxt(tr) : ""}${own ? " · " + own : ""}</span></span>
       <span class="mt-r ${cls(e)}">${e == null ? "–" : pct(e)}<span class="foot">${ev.length ? `${ev.length} event${ev.length === 1 ? "" : "s"}${pre ? ` · ${pre} before` : ""}` : "vs S&P"}</span></span>
@@ -2465,7 +2507,7 @@ function renderMember(k) {
     ${all.length > MEM.tshow ? `<button type="button" class="link" data-tmore="1">Show ${Math.min(40, all.length - MEM.tshow)} more of ${all.length}</button>` : ""}
     ${postProfile(doc)}
     <div class="ph"><h2>Posts</h2>${(doc.posts || []).length ? `<div class="seg" role="group">${[["all", "All"], ["co", "Name a company"]].map(([v, l]) => `<button type="button" data-mpo="${v}" aria-pressed="${MEM.posts === v}">${l}</button>`).join("")}</div>` : ""}</div>
-    ${posts.length ? `<ol class="posts">${posts.slice(-40).reverse().map(p => `<li><span class="ms">${esc(fmtDate(p[0]))} · ${esc(p[1])}${(p[3] || []).length ? ` · <b>${esc(p[3].join(", "))}</b>` : ""}${(p[7] || []).filter(t => t !== "other").map(t => ` <span class="chip watch">${esc(POST_TY[t] || t)}</span>`).join("")}${p[8] ? ` <span class="chip avoid" title="${esc(p[8])}">Insider hint</span>` : ""}${(p[9] || []).length ? ` <span class="chip new">Meeting: ${esc(p[9].join(", "))}</span>` : ""}${(p[10] || []).length ? ` · ${p[10].map(g => `${esc(g[0])} ${stanceTxt(g[1])}`).join(", ")}` : ""}</span>
+    ${posts.length ? `<ol class="posts">${posts.slice(-40).reverse().map(p => `<li><span class="ms">${esc(fmtDate(p[0]))} · ${esc(p[1])}${(p[3] || []).length ? ` · ${p[3].map(x => tkBtn(x)).join(", ")}` : ""}${(p[7] || []).filter(t => t !== "other").map(t => ` <span class="chip watch">${esc(POST_TY[t] || t)}</span>`).join("")}${p[8] ? ` <span class="chip avoid" title="${esc(p[8])}">Insider hint</span>` : ""}${(p[9] || []).length ? ` <span class="chip new">Meeting: ${esc(p[9].join(", "))}</span>` : ""}${(p[10] || []).length ? ` · ${p[10].map(g => `${esc(g[0])} ${stanceTxt(g[1])}`).join(", ")}` : ""}</span>
       <span>${p[5] ? `<a href="${esc(p[5])}" target="_blank" rel="noopener">${esc(String(p[2]).slice(0, 400))}</a>` : esc(String(p[2]).slice(0, 400))}</span></li>`).join("")}</ol>`
       : `<div class="foot">No posts collected for this member yet. Press releases, newsletters and social posts are being added.</div>`}
   </section>`;
@@ -2484,6 +2526,7 @@ function bindMembers() {
 }
 document.getElementById("main").addEventListener("click", ev => {
   if (state.tab !== "members") return;
+  if (ev.target.closest("[data-chart]")) return;          // a ticker: opens its chart (handled for the whole page)
   const t = ev.target.closest("[data-mem],[data-mback],[data-msort],[data-mmore],[data-mtr],[data-mbs],[data-mbh],[data-tmore],[data-mpo]");
   if (!t) return;
   const D = t.dataset;
