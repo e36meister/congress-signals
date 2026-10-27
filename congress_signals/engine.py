@@ -1172,50 +1172,92 @@ def collect_quiver(cfg):
         return pd.DataFrame()
 
 
+# FMP backup for Senate trades (owner, Oct 27). The Senate filings site (eFD) blocks automated reads since Oct 23.
+# FMP's free plan only returns the newest 25 Senate trades (page 0, limit 25; anything more is HTTP 402), so every
+# read is merged into a saved list on Cloudflare (sources/fmp_senate.json) and the quick check reads it every 15
+# minutes, so nothing scrolls past before it is saved. Free plan cap: 250 requests a day; this uses about 70.
+FMP_STORE = "sources/fmp_senate.json"
+FMP_LOCAL = "fmp_senate.json"
+
+
+def _fmp_key(d):
+    return "|".join(str(d.get(k) or "") for k in ("firstName", "lastName", "symbol", "assetDescription", "type",
+                                                  "transactionDate", "amount", "owner", "disclosureDate", "link"))
+
+
+def fmp_senate_poll(key, log=print, local_dir=None):
+    """Read FMP's newest Senate trades, add them to the saved list and return (all saved rows, new keys, error).
+    error is None when FMP answered with trades."""
+    import cloud_store
+    saved = {}
+    raw = cloud_store.get(FMP_STORE, log=lambda m: None)
+    lp = os.path.join(local_dir, FMP_LOCAL) if local_dir else None
+    if raw is None and lp and os.path.exists(lp):
+        raw = open(lp, "rb").read()
+    try:
+        saved = json.loads(raw or b"{}").get("rows") or {}
+    except Exception:
+        saved = {}
+    err, new = None, []
+    try:
+        r = requests.get("https://financialmodelingprep.com/stable/senate-latest",
+                         params={"page": 0, "limit": 25, "apikey": key}, timeout=60)
+        data = r.json() if r.headers.get("content-type", "").startswith("application/json") or r.text[:1] in "[{" else None
+        if not isinstance(data, list) or not data:
+            err = f"HTTP {r.status_code} {_err_text(r)}"
+        else:
+            for d in data:
+                k = _fmp_key(d)
+                if k not in saved:
+                    saved[k] = {f: d.get(f) for f in ("firstName", "lastName", "office", "symbol", "assetDescription",
+                                                      "assetType", "type", "transactionDate", "disclosureDate",
+                                                      "amount", "owner", "link")}
+                    saved[k]["seen"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+                    new.append(k)
+    except Exception as e:
+        err = f"{type(e).__name__}: {str(e)[:120]}"
+    if new:
+        body = json.dumps({"updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "rows": saved})
+        ok = cloud_store.put(FMP_STORE, body, log=lambda m: None)
+        if lp:
+            try:
+                open(lp, "w").write(body)
+                ok = True
+            except Exception:
+                pass
+        if not ok:
+            log("FMP Senate: couldn't save the new trades (Cloudflare refused); they are read again next time while FMP still lists them")
+    return saved, new, err
+
+
 def collect_fmp(cfg):
     key = cfg.get("FMP_API_KEY")
     if not key:
         source_health(cfg, "fmp", ok=False, error="no FMP_API_KEY secret set")
         return pd.DataFrame()
-    first_err = None
-    start = pd.Timestamp(cfg["START_DATE"])
+    saved, new, err = fmp_senate_poll(key, log, local_dir=_p(cfg, "cache", ""))
+    if err:
+        log(f"FMP Senate backup failed ({err}); using the {len(saved)} trades saved before")
     rows = []
-    for chamber, ep in (("Senate", "senate-latest"), ("House", "house-latest")):
-        for page in range(0, 400):
-            try:
-                r = requests.get(f"https://financialmodelingprep.com/stable/{ep}",
-                                 params={"page": page, "limit": 250, "apikey": key}, timeout=60)
-                data = r.json()
-            except Exception as e:
-                log(f"FMP {chamber}: failed ({e})")
-                break
-            if not isinstance(data, list) or not data:
-                if page == 0 and first_err is None:
-                    first_err = f"{chamber}: HTTP {r.status_code} {_err_text(r)}"
-                break
-            oldest = None
-            for d in data:
-                lo, hi = parse_amount(_pick(d, "amount"))
-                filed = _pick(d, "disclosureDate", "dateRecieved", "dateReceived")
-                oldest = filed
-                rows.append({"member": f"{_pick(d, 'firstName') or ''} {_pick(d, 'lastName') or ''}".strip()
-                                       or _pick(d, "office", "representative"),
-                             "first": _pick(d, "firstName"), "last": _pick(d, "lastName"),
-                             "chamber": chamber, "state": None, "ticker": _pick(d, "symbol", "ticker"),
-                             "tx_type": norm_type(_pick(d, "type")), "tx_raw": _pick(d, "type"),
-                             "trade_date": _pick(d, "transactionDate"),
-                             "filed_date": filed, "amt_lo": lo, "amt_hi": hi,
-                             "owner": _pick(d, "owner"), "source": "fmp"})
-            if oldest and pd.to_datetime(oldest, errors="coerce") < start:
-                break
-    log(f"FMP: {len(rows)} rows")
+    for d in saved.values():
+        lo, hi = parse_amount(d.get("amount"))
+        rows.append({"member": f"{d.get('firstName') or ''} {d.get('lastName') or ''}".strip() or d.get("office"),
+                     "first": d.get("firstName"), "last": d.get("lastName"),
+                     "chamber": "Senate", "state": None, "ticker": d.get("symbol"),
+                     "tx_type": norm_type(d.get("type")), "tx_raw": d.get("type"),
+                     "trade_date": d.get("transactionDate"), "filed_date": d.get("disclosureDate"),
+                     "amt_lo": lo, "amt_hi": hi, "owner": d.get("owner"), "source": "fmp"})
     df = pd.DataFrame(rows)
+    newest = str(max((d.get("disclosureDate") or "" for d in saved.values()), default=""))[:10] or None
+    log(f"FMP Senate backup: {len(saved)} trades saved ({len(new)} new this run), newest filed {newest}")
     yrs = pd.to_datetime(df["filed_date"], errors="coerce").dt.year.value_counts().sort_index().to_dict() if len(df) else {}
-    source_health(cfg, "fmp", ok=bool(len(df)), rows=len(df), error=first_err,
+    source_health(cfg, "fmp", ok=err is None, rows=len(df), error=err, newest=newest,
                   by_year={int(k): int(v) for k, v in yrs.items() if k == k})
+    FMP_STATUS.update(ok=err is None, rows=len(df), newest=newest)
     return df
 
 
+FMP_STATUS = {}       # this run's Senate backup result (checked before auto-buying)
 PART_SIZES = {}       # trades read from each source this run (checked before auto-buying)
 
 

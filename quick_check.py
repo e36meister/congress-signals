@@ -34,13 +34,43 @@ def senate_ids():
                                  "senator_state": "", "office_id": "", "first_name": "", "last_name": ""})
     except Exception as e:
         E.log(f"Quick check: Senate listing failed ({e})")
-        return set()
+        return fmp_senate_ids()
     out = set()
     for row in rows:
         m = re.search(r'href="([^"]+)"', row[3])
         if m:
             out.add("S" + m.group(1))
     return out
+
+
+FMP_EVERY_MIN = 15          # FMP free plan: 250 requests a day; every 15 min is under 100
+
+
+def fmp_senate_ids():
+    """Backup when the Senate site refuses: new Senate trades from FMP (owner, Oct 27). Each new trade's key is an ID,
+    so a new filing starts the full update the same way. Read at most every 15 minutes."""
+    key = os.environ.get("FMP_API_KEY")
+    if not key:
+        E.log("Quick check: no Senate backup (FMP_API_KEY isn't set)")
+        return set()
+    stamp = os.path.join(os.path.dirname(STATE), "fmp_at.txt")
+    try:
+        last = dt.datetime.fromisoformat(open(stamp).read().strip())
+        if (dt.datetime.now(dt.timezone.utc) - last).total_seconds() < (FMP_EVERY_MIN - 1) * 60:
+            prev = os.path.join(os.path.dirname(STATE), "fmp_ids.json")
+            return set(json.load(open(prev))) if os.path.exists(prev) else set()
+    except Exception:
+        pass
+    saved, new, err = E.fmp_senate_poll(key, E.log)
+    open(stamp, "w").write(dt.datetime.now(dt.timezone.utc).isoformat())
+    if err:
+        E.log(f"Quick check: FMP Senate backup failed ({err})")
+        return set()
+    cutoff = (dt.date.today() - dt.timedelta(days=LOOKBACK_DAYS)).isoformat()
+    ids = {"F" + k for k, d in saved.items() if str(d.get("disclosureDate") or "") >= cutoff}
+    json.dump(sorted(ids), open(os.path.join(os.path.dirname(STATE), "fmp_ids.json"), "w"))
+    E.log(f"Quick check: Senate via FMP backup: {len(new)} new trade(s) ({len(ids)} filed in the last {LOOKBACK_DAYS} days)")
+    return ids
 
 
 def start_full_update():

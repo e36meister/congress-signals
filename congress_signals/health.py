@@ -276,13 +276,21 @@ def critical(cfg, part_sizes, px, prev=None):
     try:
         st = prev if prev is not None else _load(SIZES_KEY)
         last = st.get("trades") or {}
+        # owner, Oct 27: the Senate site blocks automated reads; when FMP's Senate feed answered this run, Senate
+        # trades are covered by it (the eFD problem stays open on Data health, but new buys aren't paused for it)
+        from congress_signals import engine as _E
+        fmp_ok = bool(_E.FMP_STATUS.get("ok")) and int(part_sizes.get("fmp") or 0) > 0
         for part, need in (("house_clerk", True), ("senate_efd", True)):
             n = int(part_sizes.get(part) or 0)
+            if part == "senate_efd" and fmp_ok:
+                continue
             if need and n == 0:
                 out.append(f"No {'House' if 'house' in part else 'Senate'} trade filings were read this run")
             elif last.get(part) and n < 0.8 * last[part]:
                 out.append(f"{'House' if 'house' in part else 'Senate'} trade filings shrank from {last[part]:,} to {n:,}")
         for host in ("disclosures-clerk.house.gov", "efdsearch.senate.gov"):
+            if host.startswith("efd") and fmp_ok:
+                continue
             h = _HTTP.get(host)
             if h and h["n"] >= 2 and h["ok"] == 0:
                 out.append(f"The {'House' if 'house' in host else 'Senate'} filings site refused every request ({h['last']})")
