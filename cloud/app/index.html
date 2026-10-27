@@ -71,6 +71,7 @@ section.panel{display:grid;gap:12px;align-content:start}
 .sellbox{display:grid;gap:10px;padding:12px;border:1px solid var(--bad);border-radius:10px;background:var(--surface)}
 .sellbox input{font:500 16px var(--mono);padding:8px 10px;width:140px;border:1px solid var(--rule);border-radius:8px;background:var(--surface);color:var(--ink)}
 .abtn{font:600 12px var(--body);padding:3px 10px;margin-left:6px;vertical-align:middle;border-radius:999px;border:1px solid var(--rule);background:var(--surface);color:var(--accent);cursor:pointer}.abtn[aria-expanded="true"]{background:var(--accent);color:var(--surface);border-color:var(--accent)}
+.sellcost{margin-top:4px;font-size:13.5px}
 .sellin{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.sellin .u{font:500 16px var(--mono);color:var(--ink2)}.sellin .segs{display:inline-flex;gap:4px;margin-left:4px}
 .segs{display:flex;gap:6px;flex-wrap:wrap}
 .seg1{font:600 12.5px var(--body);padding:6px 12px;border-radius:999px;border:1px solid var(--rule);background:var(--surface);color:var(--ink2);cursor:pointer}
@@ -1569,7 +1570,8 @@ function sellRow(x) {
   const opt = (k, l) => `<button type="button" class="seg1" data-sellmode="${esc(t)}|${k}" aria-pressed="${mode === k}">${l}</button>`;
   const m = state.sellMsg[t], v = state.sellAmt[t] ?? "";
   return `<tr class="sellrow"><td colspan="7" class="full" data-l=""><div class="sellbox">
-    <div><b>Sell ${esc(t)}</b> · you hold ${sh} sh (${money(x.mv)})${x.bot ? `<div class="foot">The tool bought this one; it won't buy it back for the same pick.</div>` : ""}</div>
+    <div><b>Sell ${esc(t)}</b> · you hold ${sh} sh (${money(x.mv)})${x.avg != null && x.qty ? (() => { const cost = +x.avg * +x.qty, gain = (+x.mv || 0) - cost;
+      return `<div class="sellcost">Initial investment <b>${money(cost, 2)}</b> <span class="foot">(${sh} sh at ${money(+x.avg, 2)} avg)</span> · now ${money(x.mv, 2)} · <span class="${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain, 2)} (${pct(cost ? gain / cost : 0)})</span></div>`; })() : ""}${x.bot ? `<div class="foot">The tool bought this one; it won't buy it back for the same pick.</div>` : ""}</div>
     <div class="sellin"><span class="u">${mode === "dollars" ? "$" : ""}</span><input type="number" inputmode="decimal" min="0" step="any" id="samt-${esc(t)}" value="${esc(v)}"
       placeholder="${mode === "dollars" ? "Dollar amount" : "Shares"}" aria-label="${mode === "dollars" ? "Dollars to sell" : "Shares to sell"}"><span class="u">${mode === "dollars" ? "" : "sh"}</span>
       <span class="segs">${opt("shares", "Shares")}${opt("dollars", "$")}</span></div>
