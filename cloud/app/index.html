@@ -1535,6 +1535,18 @@ function liveVsSpyTile(d) {
   return `<div class="tile"><span class="v ${cls(v.gap)}">${pnum(v.gap, 2)}</span><span class="l">${v.gap >= 0 ? "Ahead of" : "Behind"} the S&amp;P since start</span><span class="c">You ${pnum(v.acct, 2)} · S&amp;P ${pnum(v.spy, 2)}${v.live ? "" : " (last close)"}</span></div>`;
 }
 // Sell button on each position (Account tab only): all of it by default, or a number of shares, or dollars
+// shares on an order: what filled (a dollar-amount order has no share count until then)
+function shQty(o) {
+  const q = +(o.filled_qty || 0) || +(o.qty || 0);
+  if (q) return Number(q).toLocaleString(undefined, { maximumFractionDigits: 4 });
+  return o.notional ? money(+o.notional) : "–";
+}
+// your sales of a position in the last 7 days, shown on its row
+function soldLine(x) {
+  const cut = new Date(Date.now() - 7 * 864e5).toISOString();
+  const s = ((state.data?.portfolio?.orders) || []).filter(o => o.t === x.t && o.side === "sell" && o.status === "filled" && (o.at || "") >= cut);
+  return s.map(o => `<div class="foot pos" style="font-family:var(--body)">Sold ${shQty(o)} sh at ${money(+o.filled_px, 2)} · ${esc(fmtShort(String(o.at).slice(0, 10)))}${o.by === "tap" ? " (Sell button)" : ""}</div>`).join("");
+}
 function sellBtn(x) {
   if (!state.folderId || x.sleeve === "park") return "";
   const m = state.sellMsg[x.t];
@@ -1590,7 +1602,7 @@ function renderPortfolio(d) {
   ${closeSection(d)}
   <section class="panel"><div class="ph"><h2>Positions</h2>${alpLink}</div>
     ${pos.length ? `<div class="tbl"><table><thead><tr><th>Ticker</th><th class="n">Shares</th><th class="n">Avg cost</th><th class="n">Price</th><th class="n">Value</th><th class="n">Gain</th><th>Held</th></tr></thead><tbody>
-    ${pos.map(x => `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${moverChip(x.t)}${soldNote(x)}</td><td class="n">${Number(x.qty).toLocaleString()}</td><td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.px, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${heldCell(x, L)}${sellBtn(x)}</td></tr>${sellRow(x)}`).join("")}
+    ${pos.map(x => `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${moverChip(x.t)}${soldNote(x)}${soldLine(x)}</td><td class="n">${Number(x.qty).toLocaleString()}</td><td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.px, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${heldCell(x, L)}${sellBtn(x)}</td></tr>${sellRow(x)}`).join("")}
     </tbody></table></div>
     <p class="foot">Suggested sell dates for your own positions use the current best holding period from the weekly check (What works → Automatic adjustments): ${(state.data.adaptive?.policy?.hold_other) ?? L.hold_days ?? 60} trading days for most stocks, ${(state.data.adaptive?.policy?.hold_small) ?? L.hold_small ?? L.hold_days ?? 60} for companies under $2B. They update if the check changes. The tool never sells your own positions.</p>` : `<div class="empty">No open positions yet. New BUY picks are bought at the next market open.</div>`}</section>
   ${stopSection(d)}
@@ -1598,7 +1610,7 @@ function renderPortfolio(d) {
   ${reqSection()}
   <section class="panel"><div class="ph"><h2>Recent orders</h2></div>
     ${ords.length ? `<div class="tbl scroll"><table><thead><tr><th>When</th><th>Ticker</th><th>Side</th><th class="n">Shares</th><th class="n">Fill price</th><th>Status</th><th>Placed by</th></tr></thead><tbody>
-    ${ords.map(o => `<tr><td class="nw">${esc(fmtET(o.at))}</td><td class="mono">${tkBtn(o.t)}</td><td>${esc(o.side)}</td><td class="n">${esc(o.qty ?? "–")}</td><td class="n">${o.filled_px ? money(+o.filled_px, 2) : "–"}</td><td>${esc(String(o.status).replace(/_/g, " "))}</td><td>${o.by === "tool" || (o.by == null && o.bot) ? "This tool" : o.by === "tap" ? (o.side === "sell" ? "Sell button" : "Buy button") : "You"}</td></tr>`).join("")}
+    ${ords.map(o => `<tr><td class="nw">${esc(fmtET(o.at))}</td><td class="mono">${tkBtn(o.t)}</td><td>${esc(o.side)}</td><td class="n">${shQty(o)}</td><td class="n">${o.filled_px ? money(+o.filled_px, 2) : "–"}</td><td>${esc(String(o.status).replace(/_/g, " "))}</td><td>${o.by === "tool" || (o.by == null && o.bot) ? "This tool" : o.by === "tap" ? (o.side === "sell" ? "Sell button" : "Buy button") : "You"}</td></tr>`).join("")}
     </tbody></table></div>` : `<div class="empty">No orders yet.</div>`}</section>`;
   return h;
 }

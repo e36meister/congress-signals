@@ -632,7 +632,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                        "sleeve_extend": pol.get("sleeve_extend", "none"),
                        "per_pick": per_pick, "sizing": pol.get("sizing", "equal")},
             "positions": sorted(pos, key=lambda x: -x["mv"]),
-            "orders": [{"t": from_alpaca(o["symbol"]), "side": o["side"], "qty": o.get("qty"), "status": o.get("status", ""),
+            "orders": [{"t": from_alpaca(o["symbol"]), "side": o["side"], "qty": o.get("qty"), "filled_qty": o.get("filled_qty"),
+                        "notional": o.get("notional"), "status": o.get("status", ""),
                         "filled_px": o.get("filled_avg_price"), "at": o.get("filled_at") or o.get("submitted_at") or "",
                         "bot": (o.get("client_order_id") or "").startswith(PREFIX),
                         "by": "tool" if (o.get("client_order_id") or "").startswith(PREFIX)
