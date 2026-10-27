@@ -39,7 +39,8 @@ for u in ("https://clerk.house.gov/evs/2026/index.asp", "https://clerk.house.gov
     try:
         r = requests.get(u, headers=E.UA, timeout=30)
         import re as _re
-        print(f"{u}: {r.status_code} {len(r.content):,} B; roll links: {_re.findall(r'roll(\\d{3})', r.text)[:6]}")
+        links = _re.findall(r"roll(\d{3})", r.text)[:6]
+        print(f"{u}: {r.status_code} {len(r.content):,} B; roll links: {links}")
     except Exception as e:
         print(f"{u}: EXC {type(e).__name__}")
     time.sleep(2)
