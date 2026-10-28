@@ -982,7 +982,7 @@ def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
                 _log(f"Instagram: Meta refused Business Discovery for this app ({str(err.get('message'))[:120]}); "
                      "the token works, but the Meta app needs Business Discovery access (app mode or advanced access)")
                 return
-            if code in (190, 102) or err.get("type") == "OAuthException":
+            if code in (190, 102):          # (code 100 "Invalid user id" etc. is one missing account: skipped below)
                 _log(f"Instagram: the Meta access token was refused ({str(err.get('message'))[:120]}); it may have expired")
                 return
             if code in (4, 17, 32, 613):
