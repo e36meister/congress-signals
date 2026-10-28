@@ -460,6 +460,7 @@ const MORE_TABS = [
   { k: "real", l: "Reality check", d: "Walk-forward test: the strategy on years it never saw" },
   { k: "tax", l: "Taxes", d: "Each sale's gain or loss, the Form 8949 statement and what to file" },
   { k: "movers", l: "Why it moved", d: "Big moves in what you hold and the Buy candidates, explained" },
+  { k: "notes", l: "Filing notes", d: "What members write on their trades, sorted into categories, and the notes to check by hand" },
   { k: "senate", l: "Senate import", d: "Send a Senate filing from Safari with the iPhone Shortcut (the Senate site blocks automatic reads)" },
   { k: "health", l: "Data health", d: "Every data source: what's broken right now and what was fixed" },
 ];
@@ -711,6 +712,32 @@ document.addEventListener("click", ev => {
   state.tab = "movers"; render(); scrollTo(0, 0);
 });
 
+// ---------- Filing notes: the comments members write on their trades, sorted (congress_signals/notes.py) ----------
+const NOTES = { js: null, err: null, loading: false, show: 40 };
+function renderNotes() {
+  if (!NOTES.js && !NOTES.err && !NOTES.loading) {
+    NOTES.loading = true;
+    loadNotes().then(js => { NOTES.js = js; }, e => { NOTES.err = e; }).finally(() => { NOTES.loading = false; if (state.tab === "notes") render(); });
+  }
+  if (NOTES.err) return `<div class="note ${NOTES.err.code === "no_file" ? "warn" : "err"}">${NOTES.err.code === "app_only" ? "Filing notes are in the phone app." : NOTES.err.code === "no_file" ? "Filing notes appear after the next full update." : "Couldn't load filing notes."}</div>`;
+  const J = NOTES.js;
+  if (!J) return `<div class="empty">Loading…</div>`;
+  const cats = J.categories || [], who = cats.filter(c => c.who), det = cats.filter(c => !c.who);
+  const row = c => `<tr><td>${esc(c.label)}${c.who ? (c.common ? "" : ` <span class="chip new">rare</span>`) : ""}</td><td class="n">${Number(c.n).toLocaleString()}</td>${c.who ? `<td class="n">${Number(c.main).toLocaleString()}</td>` : ""}</tr>`;
+  const ck = (J.check || []).slice(0, NOTES.show);
+  return `<section class="panel"><div class="ph"><h2>Filing notes</h2><span class="sub">Updated ${esc(ago(J.updated))}</span></div>
+    <div class="tiles"><div class="tile"><span class="v">${Number(J.with_note).toLocaleString()}</span><span class="l">Trades with a note</span><span class="c">of ${Number(J.trades).toLocaleString()} · ${Number(J.distinct).toLocaleString()} different notes</span></div>
+      <div class="tile"><span class="v">${Number(J.check_n).toLocaleString()}</span><span class="l">Notes to check by hand</span><span class="c">Nothing fits, or a one-off note filed under a routine category</span></div>
+      <div class="tile"><span class="v">${Number(J.house_reports_left).toLocaleString()}</span><span class="l">Older House reports still to read</span><span class="c">About 300 a run, read slowly so the House site doesn't block us</span></div></div>
+    <p class="foot">A note can fit several categories. Its main category is the rarest one, so a rare reason is never hidden under "advisor" or "rebalancing". Each "who decided / why" category is tested per trade on What works; it only changes picks if it passes.</p></section>
+    <section class="panel"><div class="ph"><h2>Who decided, or why</h2></div><div class="tbl tlist"><table><thead><tr><th>Category</th><th class="n">Trades</th><th class="n">Main category</th></tr></thead><tbody>${who.map(row).join("")}</tbody></table></div></section>
+    <section class="panel"><div class="ph"><h2>To check by hand</h2><span class="sub">Newest first</span></div>
+    ${ck.length ? `<div class="tbl tlist"><table><thead><tr><th>Filed</th><th>Stock</th><th>Note</th><th>Sorted as</th></tr></thead><tbody>
+      ${ck.map(x => `<tr><td class="nw">${esc(x.d || "")}<div class="foot">${esc(x.ch || "")}${x.who ? " · " + esc(x.who) : ""}</div></td><td class="mono">${x.t ? tkBtn(x.t) : ""}</td><td style="min-width:220px">${esc(x.note)}${x.n > 1 ? ` <span class="foot">×${x.n}</span>` : ""}</td><td>${(x.tags || []).length ? esc(x.tags.map(k => (cats.find(c => c.k === k) || {}).label || k).join(", ")) : `<span class="neg">Nothing fits</span>`}</td></tr>`).join("")}
+      </tbody></table></div>${(J.check || []).length > NOTES.show ? `<button type="button" class="link" data-notesmore="1">Show more</button>` : ""}` : `<div class="empty">Nothing to check.</div>`}</section>
+    <section class="panel"><div class="ph"><h2>Details about the asset or trade</h2><span class="sub">Help read the trade; not a reason for it</span></div><div class="tbl tlist"><table><thead><tr><th>Category</th><th class="n">Trades</th></tr></thead><tbody>${det.map(row).join("")}</tbody></table></div></section>`;
+}
+document.addEventListener("click", ev => { if (ev.target.closest("[data-notesmore]")) { NOTES.show += 60; render(); } });
 // ---------- Senate import: the iPhone Shortcut that sends a filing open in Safari (owner, Oct 27) ----------
 const SIMP = { js: null, err: null, loading: false, msg: "" };
 const SIMP_JS = 'completion(JSON.stringify({ url: location.href, html: document.documentElement.outerHTML }));';
@@ -790,6 +817,7 @@ function render() {
   if (state.tab === "more") html += renderMore();
   if (state.tab === "health") html += renderHealth();
   if (state.tab === "senate") html += renderSenate();
+  if (state.tab === "notes") html += renderNotes();
   if (state.tab === "movers") html += renderMovers();
   if (state.tab === "me") html += renderMe(d);
   if (d.data_warning && (d.data_warning.problems || []).length && ["today", "port"].includes(state.tab)) html += dataWarning(d.data_warning);
@@ -2046,7 +2074,7 @@ function tradeLineText(tr) {
   const sh = shares(tr);
   return `<b>${mlink(tr.n, tr.b)}</b>${tagHtml({ n: tr.n, b: tr.b })} <span class="bs ${tr.ty}">${tr.ty === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(tr.td))}
     <div>${priceText(tr)} · ${kfmt(tr.lo)}${tr.hi ? "–" + kfmt(tr.hi) : "+"} reported${sh ? ` · ${sh}` : ""}</div>
-    ${tr.note ? `<div style="margin-top:2px">Filing note: “${esc(tr.note)}”</div>` : ""}
+    ${tr.note ? `<div style="margin-top:2px">Filing note: “${esc(tr.note)}”${tr.nc ? ` <span class="chip watch">${esc(tr.nc)}</span>` : ""}</div>` : ""}
     <div class="foot">Disclosed ${esc(fmtDate(tr.d))}${lag != null ? ` (${lag} days later)` : ""}${tr.own && OWN[tr.own] ? " · " + OWN[tr.own] : ""}</div>`;
 }
 // "What's going on" in the chart popup: a recent big move explained (Why it moved) and the latest headlines
@@ -2739,6 +2767,7 @@ function loadHealth() { return Promise.reject({ code: "app_only" }); }
 function loadMovers() { return Promise.reject({ code: "app_only" }); }
 function loadNews() { return Promise.reject({ code: "app_only" }); }
 function loadSenateSetup() { return Promise.reject({ code: "app_only" }); }
+function loadNotes() { return Promise.reject({ code: "app_only" }); }
 function loadAbout() { return Promise.reject({ code: "app_only" }); }
 function loadOneChart() { return Promise.reject({ code: "app_only" }); }
 function loadTax() { return Promise.reject({ code: "app_only" }); }

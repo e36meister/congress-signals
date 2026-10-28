@@ -111,6 +111,7 @@ async function api(req, env, url) {
   if (p === "/api/members" && req.method === "GET") return fromR2(req, env, "members/index.json");
   if (p === "/api/posts" && req.method === "GET") return fromR2(req, env, "posts/feed.json");
   if (p === "/api/movers" && req.method === "GET") return fromR2(req, env, "movers/latest.json");
+  if (p === "/api/notes" && req.method === "GET") return fromR2(req, env, "notes/summary.json");
   if (p === "/api/member" && req.method === "GET") {
     const k = url.searchParams.get("k") || "";
     if (!/^([A-Z]\d{6}|n-[a-z0-9-]{1,40})$/.test(k)) return json({ error: "bad-member" }, 400);

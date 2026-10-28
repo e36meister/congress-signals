@@ -183,7 +183,7 @@ def to_date(x):
 
 
 TX_COLS = ["member", "first", "last", "chamber", "state", "ticker", "tx_type", "trade_date",
-           "filed_date", "amt_lo", "amt_hi", "owner", "source", "doc_id", "tx_raw", "option"]
+           "filed_date", "amt_lo", "amt_hi", "owner", "source", "doc_id", "tx_raw", "option", "note"]
 
 
 def finalize_tx(df):
@@ -471,7 +471,7 @@ def collect_house(cfg):
                                  "tx_type": norm_type(t["tx_raw"]), "trade_date": t["trade_date"],
                                  "filed_date": r["FilingDate"], "amt_lo": t["amt_lo"], "amt_hi": t["amt_hi"],
                                  "owner": t["owner"], "source": "house_clerk", "doc_id": str(r["DocID"]),
-                                 "tx_raw": t["tx_raw"], "option": t["option"]})
+                                 "tx_raw": t["tx_raw"], "option": t["option"], "note": t.get("note")})
             if n % 250 == 0:
                 log(f"House: {n}/{len(todo)} reports processed")
                 flush()
@@ -1056,7 +1056,8 @@ def senate_imports(cfg, tx, done):
                 rows.append({"member": f"{first} {last}", "first": first, "last": last, "chamber": "Senate", "state": None,
                              "ticker": t["ticker"], "tx_type": norm_type(t["tx_raw"]), "trade_date": t["trade_date"],
                              "filed_date": filed, "amt_lo": t["amt_lo"], "amt_hi": t["amt_hi"], "owner": t["owner"],
-                             "source": "senate_efd", "doc_id": link, "tx_raw": t["tx_raw"], "option": t["option"]})
+                             "source": "senate_efd", "doc_id": link, "tx_raw": t["tx_raw"], "option": t["option"],
+                             "note": t.get("note")})
             done.add(link)
             cloud_store.delete(k, log=log)
             stocks = sorted({str(t["ticker"]) for t in new if t.get("ticker") and str(t["ticker"]).strip() not in ("--", "-")})
@@ -1168,7 +1169,7 @@ def collect_senate(cfg):
                              "tx_type": norm_type(t["tx_raw"]), "trade_date": t["trade_date"],
                              "filed_date": rep["filed"], "amt_lo": t["amt_lo"], "amt_hi": t["amt_hi"],
                              "owner": t["owner"], "source": "senate_efd", "doc_id": rep["link"],
-                             "tx_raw": t["tx_raw"], "option": t["option"]})
+                             "tx_raw": t["tx_raw"], "option": t["option"], "note": t.get("note")})
             if i % 200 == 0:
                 log(f"Senate: {i}/{len(todo)} reports processed")
                 if rows:
@@ -1296,7 +1297,7 @@ def fmp_senate_poll(key, log=print, local_dir=None):
                 if k not in saved:
                     saved[k] = {f: d.get(f) for f in ("firstName", "lastName", "office", "symbol", "assetDescription",
                                                       "assetType", "type", "transactionDate", "disclosureDate",
-                                                      "amount", "owner", "link")}
+                                                      "amount", "owner", "link", "comment")}
                     saved[k]["seen"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
                     new.append(k)
     except Exception as e:
@@ -1331,7 +1332,8 @@ def collect_fmp(cfg):
                      "chamber": "Senate", "state": None, "ticker": d.get("symbol"),
                      "tx_type": norm_type(d.get("type")), "tx_raw": d.get("type"),
                      "trade_date": d.get("transactionDate"), "filed_date": d.get("disclosureDate"),
-                     "amt_lo": lo, "amt_hi": hi, "owner": d.get("owner"), "source": "fmp"})
+                     "amt_lo": lo, "amt_hi": hi, "owner": d.get("owner"), "source": "fmp",
+                     "note": None if str(d.get("comment") or "").strip() in ("", "--", "-") else d.get("comment")})
     df = pd.DataFrame(rows)
     newest = str(max((d.get("disclosureDate") or "" for d in saved.values()), default=""))[:10] or None
     log(f"FMP Senate backup: {len(saved)} trades saved ({len(new)} new this run), newest filed {newest}")
@@ -1343,6 +1345,125 @@ def collect_fmp(cfg):
 
 
 FMP_STATUS = {}       # this run's Senate backup result (checked before auto-buying)
+# ----------------------------------------------------------------------------
+# Filing notes (owner, Oct 27): the comment or description on each trade, sorted into categories
+# (congress_signals/notes.py). Each "who decided / why" category is a trial signal (f_note_<category>), tested per
+# trade by the rare-signal test before it can count. Older House reports are read again slowly for their notes.
+# ----------------------------------------------------------------------------
+NOTES_PER_RUN = 300          # House reports re-read per run for their notes (one at a time, FD_HOUSE_PAUSE apart)
+
+
+def notes_backfill(cfg, tx, per_run=NOTES_PER_RUN):
+    """Read the notes on House reports not read for notes yet (cache/trade_notes.json, the cache the charts use).
+    One request at a time; a refusal (403/429) stops it for this run. Senate reports can't be fetched (the site
+    blocks automated reads since Oct 23); their notes come from imports and from what was saved before."""
+    cache, path = _cache_json(cfg, "trade_notes.json", {})
+    h = tx[(tx["source"] == "house_clerk") & tx["doc_id"].notna()]
+    docs = (h.sort_values("filed_date", ascending=False).drop_duplicates("doc_id")[["doc_id", "filed_date"]])
+    todo = [(str(d), f) for d, f in zip(docs["doc_id"], docs["filed_date"]) if str(d) not in cache]
+    n = refused = 0
+    for doc, filed in todo[:per_run]:
+        if out_of_time(cfg, 150):
+            break
+        yr = pd.Timestamp(filed).year
+        url = f"https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/{yr}/{doc}.pdf"
+        try:
+            r = requests.get(url, headers=UA, timeout=60)
+            if r.status_code in (403, 429):
+                refused = r.status_code
+                break
+            if r.status_code == 404 and pd.Timestamp(filed).month == 1:
+                r = requests.get(url.replace(f"/{yr}/", f"/{yr - 1}/"), headers=UA, timeout=60)
+            if r.status_code == 404:
+                cache[doc] = []
+                continue
+            r.raise_for_status()
+            import pdfplumber
+            with pdfplumber.open(io.BytesIO(r.content)) as pdf:
+                text = "\n".join((pg.extract_text() or "") for pg in pdf.pages)
+            items = parse_house_ptr_text(text)
+            cache[doc] = [{"t": it.get("ticker"), "td": str(pd.to_datetime(it.get("trade_date"), errors="coerce").date())
+                           if pd.notna(pd.to_datetime(it.get("trade_date"), errors="coerce")) else None,
+                           "ty": norm_type(it.get("tx_raw")), "note": it.get("note")} for it in items if it.get("note")]
+            n += 1
+        except Exception:
+            pass
+        time.sleep(FD_HOUSE_PAUSE)
+    if n or refused:
+        json.dump(cache, open(path, "w"))
+    left = max(0, len(todo) - n)
+    if refused:
+        log(f"Filing notes: House site refused requests (HTTP {refused}); stopped after {n} report(s), {left:,} left for later runs")
+    else:
+        log(f"Filing notes: read {n} older House report(s) for their notes; {left:,} left")
+    return cache, left
+
+
+def attach_notes(cfg, tx):
+    """Fill tx["note"] from the notes cache where the trade came without one, then sort every note: note_main
+    (main category), note_tags, and one f_note_<category> column per 'who decided / why' category. Saves a summary
+    and the check list (state/notes_summary.json; Cloudflare notes/summary.json for the app)."""
+    from congress_signals import notes as N
+    cache, left = notes_backfill(cfg, tx)
+    lookup = {}
+    for doc, items in cache.items():
+        for it in items or []:
+            lookup.setdefault((str(doc), it.get("t"), it.get("td")), []).append((it.get("ty"), it.get("note")))
+    if "note" not in tx.columns:
+        tx["note"] = None
+    miss = tx["note"].isna() & tx["doc_id"].notna()
+    td = tx["trade_date"].dt.strftime("%Y-%m-%d")
+    filled = 0
+    for i in tx.index[miss]:
+        hits = lookup.get((str(tx.at[i, "doc_id"]), tx.at[i, "ticker"], td.at[i]))
+        if hits:
+            note = next((nt for ty, nt in hits if ty == tx.at[i, "tx_type"] or not ty), None)
+            if note:
+                tx.at[i, "note"] = note
+                filled += 1
+    notes = tx["note"].map(N.clean).where(tx["note"].notna(), "")
+    counts = notes[notes != ""].value_counts()
+    tg = notes.map(lambda n: N.tags(n) if n else [])
+    tx["note_tags"] = tg.map(lambda t: ",".join(t) if t else None)
+    tx["note_main"] = tg.map(lambda t: N.main(t) if t else None)
+    for k, _, _ in N.WHO:
+        tx[f"f_note_{k}"] = tg.map(lambda t, k=k: 1.0 if k in t else 0.0)
+    # summary for the app: how many trades carry a note, per category, and the check list
+    has = notes != ""
+    by = {}
+    for t in tg[has]:
+        for k in t:
+            by[k] = by.get(k, 0) + 1
+    main_n = tx.loc[has, "note_main"].value_counts().to_dict()
+    seen = set()
+    check = []
+    for i in tx.index[has]:
+        n = notes.at[i]
+        if n in seen:
+            continue
+        seen.add(n)
+        if N.needs_check(n, tg.at[i], int(counts.get(n, 1))):
+            check.append({"note": n[:300], "tags": tg.at[i], "n": int(counts.get(n, 1)), "t": tx.at[i, "ticker"],
+                          "who": str(tx.at[i, "last"] or ""), "ch": tx.at[i, "chamber"],
+                          "d": tx.at[i, "filed_date"].strftime("%Y-%m-%d") if pd.notna(tx.at[i, "filed_date"]) else None})
+    check.sort(key=lambda x: x["d"] or "", reverse=True)
+    summ = {"updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+            "trades": int(len(tx)), "with_note": int(has.sum()), "distinct": int(len(counts)),
+            "house_reports_left": int(left),
+            "categories": [{"k": k, "label": l, "who": any(k == w for w, _, _ in N.WHO), "common": k in N.COMMON,
+                            "n": int(by.get(k, 0)), "main": int(main_n.get(k, 0))} for k, l, _ in N.WHO + N.DETAIL],
+            "unsorted": int(sum(1 for t in tg[has] if not t)), "check": check[:400], "check_n": len(check)}
+    json.dump(summ, open(_p(cfg, "state", "notes_summary.json"), "w"))
+    try:
+        import cloud_store
+        cloud_store.put("notes/summary.json", json.dumps(summ), log=lambda m: None)
+    except Exception:
+        pass
+    log(f"Filing notes: {int(has.sum()):,} trades carry a note ({filled:,} filled from saved reports), "
+        f"{len(counts):,} different; {summ['unsorted']:,} not placed; {len(check):,} on the check list")
+    return tx
+
+
 PART_SIZES = {}       # trades read from each source this run (checked before auto-buying)
 
 
@@ -1402,6 +1523,10 @@ def collect_all(cfg):
     tx = tx.drop(columns="_p")
     tx = tx[tx["filed_date"] >= pd.Timestamp(cfg["START_DATE"])]
     tx = tx.sort_values("filed_date").reset_index(drop=True)
+    try:
+        tx = attach_notes(cfg, tx)
+    except Exception as e:
+        log(f"Filing notes: failed ({type(e).__name__}: {str(e)[:150]})")
     tx.to_pickle(_p(cfg, "cache", "all_tx.pkl"))
     tx.to_csv(_p(cfg, "data", "all_transactions.csv"), index=False)
     log(f"All sources: {len(tx)} unique transactions, {tx['member'].nunique()} members, "
@@ -3829,7 +3954,13 @@ TRIAL_SIGNALS = {"relative_tie": 0.5, "unusual_volume": 0.4, "reg_action": 0.3, 
                  "post_named_before": 0.3, "post_sector_burst": 0.2, "post_tone_clash": 0.2, "post_crowd": 0.2,
                  "committee_staff_lobbyist": 0.3, "family_possible": 0.3,
                  # the same unusual-volume flag, tested the other way round (it did worse per trade): score lower
-                 "unusual_volume_low": -0.4}
+                 "unusual_volume_low": -0.4,
+                 # filing notes (congress_signals/notes.py, owner Oct 27): who made the call or why. Routine or
+                 # outside-driven trades are expected to say less (negative), the member's own call more.
+                 "note_advisor": -0.2, "note_rebalance": -0.2, "note_automatic": -0.3, "note_account_move": -0.2,
+                 "note_corporate": -0.2, "note_comp": -0.2, "note_inherit_gift": -0.3, "note_conflict": -0.3,
+                 "note_error": -0.3, "note_required": -0.3, "note_plan": -0.2, "note_hedge": -0.2, "note_tax": -0.2,
+                 "note_self": 0.3}
 TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "unusual_volume": "Signal: unusual trading volume before the trade",
                 "reg_action": "Signal: federal rule naming the company soon after the trade",
@@ -3850,6 +3981,11 @@ TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "committee_staff_lobbyist": "Signal: a company lobbyist used to work for one of the member's committees",
                 "family_possible": "Signal: possible family tie to the company (SEC name match, not confirmed by state)",
                 "unusual_volume_low": "Signal: score lower when trading volume was unusual before the trade"}
+try:
+    from congress_signals import notes as _NOTES
+    TRIAL_LABELS.update({f"note_{k}": f"Signal: filing note says {l[0].lower() + l[1:]}" for k, l, _ in _NOTES.WHO})
+except Exception:
+    pass
 
 
 def _inst():
@@ -5715,7 +5851,14 @@ def export_ticker_charts(cfg, scored, px, tickers, years=5):
             "hi": float(hi) if hi is not None and pd.notna(hi) else None,
             "own": str(r["owner"]) if isinstance(r.get("owner"), str) and r.get("owner") else None,
             "dl": rng(dlo, t, td), "dh": rng(dhi, t, td)})
-        note = notes.get((r.get("doc_id"), t, td.strftime("%Y-%m-%d"), r["tx_type"]))
+        note = notes.get((r.get("doc_id"), t, td.strftime("%Y-%m-%d"), r["tx_type"])) or (
+            r.get("note") if isinstance(r.get("note"), str) and r.get("note").strip() else None)
+        if isinstance(r.get("note_main"), str) and r.get("note_main"):
+            try:
+                from congress_signals import notes as _N
+                out["trades"][t][-1]["nc"] = _N.LABEL.get(r["note_main"])
+            except Exception:
+                pass
         if note:
             sh, pr = parse_note(note)
             out["trades"][t][-1].update({"note": note[:300], "nsh": sh, "npx": pr})

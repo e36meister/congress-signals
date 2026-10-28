@@ -15,6 +15,7 @@ async function loadPosts() { return (await api("/api/posts")).js; }
 async function loadAlerts() { return (await api("/api/notifications")).js; }
 async function loadHealth() { return (await api("/api/health")).js; }
 async function loadMovers() { return (await api("/api/movers")).js; }
+async function loadNotes() { return (await api("/api/notes")).js; }
 async function loadNews(t) { return (await api("/api/news?t=" + encodeURIComponent(t))).js; }
 async function loadSenateSetup(renew) { return (await api("/api/senate-import/setup", renew ? { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" } : {})).js; }
 async function loadAbout(t) { return (await api("/api/about?t=" + encodeURIComponent(t))).js; }
