@@ -935,6 +935,7 @@ def _meta_ig_user(token):
 
 IG_STATUS_KEY = "posts/ig_status.json"     # kept in Cloudflare R2: the hourly job doesn't keep its own state
 IG_GUESS_PER_RUN = 25                      # Business Discovery calls spent per run looking for missing accounts
+IG_EXTRA_PER_RUN = 60                      # calls per run looking for members' second (official/personal) accounts
 IG_RECHECK_DAYS = 7                        # an unreadable account is tried again after this many days
 IG_GUESS_AGAIN_DAYS = 30                   # a member with no account found is searched again after this many days
 
@@ -986,6 +987,8 @@ def _ig_is_member(info, m):
     text = f"{info.get('name') or ''} {info.get('biography') or ''}".lower()
     last = _ig_plain((m.get("last") or "").split(",")[0])
     title = re.search(r"congress|representative|\brep\.?\b|senator|\bsen\.?\b|u\.?s\.? house|u\.?s\.? senate", text)
+    if re.search(r"state (?:rep|representative|senator|senate|house)|assembly(?:man|woman|member)?|city council|county", text):
+        return False         # a state or local official with the same name
     return bool(last and last in _ig_plain(text) and title)
 
 
@@ -1021,8 +1024,9 @@ IG_MANUAL_FILE = "instagram_handles.json"
 
 
 def ig_manual(leg):
-    """Owner-checked Instagram handles: {"Member name or bioguide ID": "handle"} in instagram_handles.json at the repo
-    root. They win over the lists and guesses, and the member leaves the Data health check list once read."""
+    """Owner-checked Instagram handles: {"Member name or bioguide ID": "handle" or ["handle", ...]} in
+    instagram_handles.json at the repo root (owner, Oct 28: read both accounts when a member has an official and a
+    personal one). They win over the lists and guesses, and the member leaves the Data health check list once read."""
     try:
         raw = json.load(open(IG_MANUAL_FILE))
     except Exception:
@@ -1034,12 +1038,14 @@ def ig_manual(leg):
                 if nm and nm.strip():
                     by_name[_ig_plain(nm)] = b
     out = {}
-    for k, h in raw.items():
-        if k.startswith("_") or not isinstance(h, str) or not h.strip("@ "):
+    for k, hs in raw.items():
+        hs = [hs] if isinstance(hs, str) else hs
+        if k.startswith("_") or not isinstance(hs, list):
             continue
         b = k if k in leg else by_name.get(_ig_plain(k))
-        if b:
-            out[b] = h.strip("@ ").lower()
+        for h in hs:
+            if b and isinstance(h, str) and h.strip("@ "):
+                out.setdefault(b, []).append(h.strip("@ ").lower())
     return out
 
 
@@ -1068,8 +1074,14 @@ def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
     for b, h in found.items():
         if leg.get(b, {}).get("current"):
             handles.setdefault(h, b)
-    for b, h in ig_manual(leg).items():          # handles the owner checked by hand (instagram_handles.json)
-        handles[h] = b
+    extra = igs.setdefault("extra", {})          # second accounts found for members (owner: read both, Oct 28)
+    for b, hs in extra.items():
+        if leg.get(b, {}).get("current"):
+            for h in hs:
+                handles.setdefault(h, b)
+    for b, hs in ig_manual(leg).items():         # handles the owner checked by hand (instagram_handles.json)
+        for h in hs:
+            handles[h] = b
     ig = _meta_ig_user(token)
     if not ig:
         _log("Instagram: the Meta token can't see an Instagram professional account linked to a Facebook Page; set META_IG_USER_ID")
@@ -1187,6 +1199,40 @@ def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
             if b not in found and not [c for c in _ig_candidates(leg[b]) if c not in g["c"]]:
                 none[b] = time.time()      # every likely username tried: list the member for a manual check
                 gone_none += 1
+    # owner, Oct 28: "always add both if they are more active on it". Members who already have an account: try their
+    # other likely usernames once a month (official vs personal/campaign), same bio check; every match is read too.
+    ecalls, newly_x = 0, []
+    have_h = set(handles)
+    for b in sorted(have_b, key=lambda b: guessed.get(b, {}).get("xat", 0)):
+        if stop or ecalls >= IG_EXTRA_PER_RUN or time.time() > deadline:
+            break
+        if not leg.get(b, {}).get("current"):
+            continue
+        g = guessed.setdefault(b, {"c": [], "at": 0})
+        if g.get("xdone") and now - g["xdone"] < IG_GUESS_AGAIN_DAYS * 86400:
+            continue
+        if g.get("xdone"):
+            g["x"], g["xdone"] = [], 0
+        left = [c for c in _ig_candidates(leg[b]) if c not in have_h and c not in g.setdefault("x", [])]
+        for c in left:
+            if ecalls >= IG_EXTRA_PER_RUN:
+                break
+            ecalls += 1
+            info, why = ask(c, "username,name,biography,website")
+            if why and why.split(":")[0] in ("app", "token", "limit"):
+                stop = why
+                break
+            g["x"].append(c)
+            g["xat"] = time.time()
+            if info and _ig_is_member(info, leg[b]):
+                extra.setdefault(b, []).append(c)
+                handles[c] = b
+                have_h.add(c)
+                newly_x.append(f"{leg[b].get('name')} @{c}")
+        else:
+            g["xdone"] = time.time()
+    if newly_x:
+        newly += [x + " (second account)" for x in newly_x]
     igs["handles"] = {h: b for h, b in handles.items() if leg.get(b, {}).get("current")}
     igs["at"] = dt.datetime.utcnow().isoformat(timespec="seconds")
     _ig_status_save(igs)

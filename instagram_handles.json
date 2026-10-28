@@ -1,5 +1,9 @@
 {
-  "_how": "Instagram handles checked by hand (owner, Oct 28). Add one line per member: \"Member name\": \"handle\". These win over the automatic lists.",
+  "_how": "Instagram handles checked by hand (owner, Oct 28). One line per member: \"Member name\": \"handle\", or a list [\"official\", \"personal\"] to read both. These win over the automatic lists.",
   "Alexandria Ocasio-Cortez": "aoc",
-  "Nancy Pelosi": "speakerpelosi"
+  "Nancy Pelosi": "speakerpelosi",
+  "Bernard Sanders": [
+    "sensanders",
+    "berniesanders"
+  ]
 }
