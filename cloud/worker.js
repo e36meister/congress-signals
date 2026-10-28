@@ -740,7 +740,9 @@ async function taxFile(env, url) {
     ...(f === "sales.json" ? {} : { "Content-Disposition": `attachment; filename="${name}"` }) } });
 }
 
-async function deliver(env, msg) {
+// quiet: kept in the app's Alerts tab (the notification center) without a phone push (owner, Oct 28: per-member
+// Instagram check-list lines)
+async function deliver(env, msg, quiet = false) {
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const items = (Array.isArray(msg.items) ? msg.items : []).slice(0, 20)
     .map(x => ({ l: String(x.l || "").slice(0, 160), u: String(x.u || "").slice(0, 200), x: x.x ? String(x.x).slice(0, 500) : undefined }))
@@ -753,6 +755,7 @@ async function deliver(env, msg) {
   log.unshift(entry);
   await env.DATA.put(LOG_KEY, JSON.stringify(log.slice(0, 400)), { httpMetadata: { contentType: "application/json" } });
   // the id rides along so opening the alert marks it read in the app
+  if (quiet) return;
   const u = url.includes("#") ? url.replace("#", `?n=${id}#`) : url + `?n=${id}`;
   return sendAll(env, { title: entry.title, body: entry.body, tag: msg.tag || "", url: u });
 }
@@ -768,6 +771,7 @@ async function drainOutbox(env) {
       if (age < 6 * 3600e3) {
         const msg = await (await env.DATA.get(o.key))?.json();
         if (msg && msg.title && msg.tag === "health") await holdForDigest(env, msg);
+        else if (msg && msg.title && msg.tag === "health-quiet") await deliver(env, msg, true);
         else if (msg && msg.title) await deliver(env, msg);
       }
     } catch (e) {}

@@ -243,6 +243,15 @@ URGENT = re.compile(r"\b(broker|orders?|alpaca|auto-?buys?|paused|sell(?:ing)?|s
 URGENT_JOBS = ("Daily update", "Filings and orders check")
 
 
+# owner, Oct 28: the per-member Instagram check list ("can't read X" / "no account found for X") goes to the app's
+# Alerts tab without a phone push; a whole-source Instagram failure (token or app refused) still alerts as usual
+QUIET = re.compile(r"^Instagram: (?:can't read|no account found for) ")
+
+
+def _quiet(x):
+    return bool(QUIET.match(str(x.get("text") or "")))
+
+
 def _urgent(x):
     t = str(x.get("text") or "")
     return bool(URGENT.search(t)) or (x.get("kind") == "watchdog" and t.startswith(URGENT_JOBS))
@@ -252,10 +261,15 @@ def _alert(job, new, log):
     try:
         import cloud_store
         jn = JOB_NAMES.get(job, job)
-        for group, tag in (([x for x in new if _urgent(x)], "health-urgent"), ([x for x in new if not _urgent(x)], "health")):
+        quiet = [x for x in new if _quiet(x)]
+        loud = [x for x in new if not _quiet(x)]
+        for group, tag in (([x for x in loud if _urgent(x)], "health-urgent"), ([x for x in loud if not _urgent(x)], "health"),
+                           (quiet, "health-quiet")):
             if not group:
                 continue
-            if len(group) == 1:
+            if tag == "health-quiet":
+                title = (f"Instagram: {len(group)} members to check by hand" if len(group) > 1 else _short(group[0]["text"]))
+            elif len(group) == 1:
                 title = f"Data problem: {_short(group[0]['text'])}"
             else:
                 title = f"{len(group)} new data problems ({jn})"
