@@ -2753,7 +2753,7 @@ function renderAlerts() {
         many ? `<div class="foot">${a.items.length} items · tap to see them</div>` : ""}
     </div></div>`;
   };
-  return `<section class="panel"><div class="ph"><h2>Alerts</h2><span class="sub">Every alert sent to your phone, newest first. Tap one to go to it; swipe left to clear it.</span>
+  return `<section class="panel"><div class="ph"><h2>Alerts</h2>
     <button type="button" class="link" data-arefresh="1">Refresh</button>${list.length ? ` <button type="button" class="link" data-aclear="1">Clear all</button>` : ""}</div>
     ${ALERTS.loading && !ALERTS.items ? `<div class="empty">Loading…</div>` : ALERTS.err ? `<div class="note warn">${esc(errorText(ALERTS.err))}</div>` :
       list.length ? `<div class="alist">${list.map(row).join("")}</div>` : `<div class="empty">No alerts yet. New ones show up here as they're sent.</div>`}
