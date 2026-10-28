@@ -572,7 +572,10 @@ async function peopleReview(req, env) {
   try { b = await req.json(); } catch (e) {}
   const key = String(b.key || "").toLowerCase(), verdict = String(b.verdict || "");
   if (!/^[a-z][a-z'\-]{1,30}\|[a-z0-9.\-]{1,12}$/.test(key)) return json({ ok: false, why: "bad-key" }, 400);
-  if (!["yes", "no", "clear"].includes(verdict)) return json({ ok: false, why: "bad-verdict" }, 400);
+  if (!["yes", "no", "relative", "clear"].includes(verdict)) return json({ ok: false, why: "bad-verdict" }, 400);
+  const REL = ["son", "daughter", "child", "brother", "sister", "sibling", "father", "mother", "parent", "in-law", "relative"];
+  const rel = String(b.rel || "");
+  if (verdict === "relative" && !REL.includes(rel)) return json({ ok: false, why: "bad-relation" }, 400);
   const all = await r2json(env, PEOPLE_FILE, {});
   if (verdict === "clear") delete all[key];
   else all[key] = { verdict, n: String(b.n || "").slice(0, 80), at: new Date().toISOString() };
@@ -591,10 +594,13 @@ async function tieReview(req, env) {
   try { b = await req.json(); } catch (e) {}
   const key = String(b.key || ""), verdict = String(b.verdict || "");
   if (!/^[A-Za-z0-9-]{1,20}\|[A-Za-z0-9.\-]{1,12}\|[A-Za-z0-9 .'\-]{1,60}$/.test(key)) return json({ ok: false, why: "bad-key" }, 400);
-  if (!["yes", "no", "clear"].includes(verdict)) return json({ ok: false, why: "bad-verdict" }, 400);
+  if (!["yes", "no", "relative", "clear"].includes(verdict)) return json({ ok: false, why: "bad-verdict" }, 400);
+  const REL = ["son", "daughter", "child", "brother", "sister", "sibling", "father", "mother", "parent", "in-law", "relative"];
+  const rel = String(b.rel || "");
+  if (verdict === "relative" && !REL.includes(rel)) return json({ ok: false, why: "bad-relation" }, 400);
   const all = await tieReviews(env);
   if (verdict === "clear") delete all[key];
-  else all[key] = { verdict, note: String(b.note || "").slice(0, 500), at: new Date().toISOString() };
+  else all[key] = { verdict, ...(verdict === "relative" ? { rel } : {}), note: String(b.note || "").slice(0, 500), at: new Date().toISOString() };
   await env.DATA.put(TIE_FILE, JSON.stringify(all), { httpMetadata: { contentType: "application/json" } });
   return json({ ok: true, review: all[key] || null });
 }

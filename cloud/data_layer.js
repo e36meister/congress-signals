@@ -35,8 +35,8 @@ async function savePeopleReview(key, verdict, n) {
   return (await api("/api/people-review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, verdict, n }) })).js;
 }
 async function loadTieReviews() { return (await api("/api/tie-reviews")).js; }
-async function saveTieReview(key, verdict, note) {
-  return (await api("/api/tie-review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, verdict, note }) })).js;
+async function saveTieReview(key, verdict, note, rel) {
+  return (await api("/api/tie-review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, verdict, note, rel }) })).js;
 }
 function errorText(e) {
   switch (e?.code) {

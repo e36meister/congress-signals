@@ -87,6 +87,8 @@ td .why{display:block;width:max-content}
 .moreitem .ml{grid-area:l;font:600 16px var(--head)}
 .moreitem .md{grid-area:d;font-size:13px;color:var(--muted)}
 .moreitem .mc{grid-area:c;font-size:22px;color:var(--muted)}
+.tie-rel{display:inline-flex;gap:6px;align-items:center}
+.tie-rel select{font:500 14px var(--body);padding:8px;border:1px solid var(--rule);border-radius:8px;background:var(--surface);color:var(--ink)}
 .moretiles{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .moretile{font:600 15px var(--head);padding:12px 14px;border:1px solid var(--rule);border-radius:12px;background:var(--surface);color:var(--ink);text-align:left;cursor:pointer;display:flex;justify-content:space-between}
 .moretile span{color:var(--muted)}
@@ -1779,6 +1781,7 @@ function tieConf(r) {
   const v = tieRev(r);
   if (v && v.verdict === "yes") return "Confirmed by you";
   if (v && v.verdict === "no") return "Not them (you)";
+  if (v && v.verdict === "relative") return "Confirmed by you";
   return r.Auto || r.Confidence;
 }
 function tiesPanel(rows) {
@@ -1786,19 +1789,20 @@ function tiesPanel(rows) {
     TIE.loading = true;
     loadTieReviews().then(js => { TIE.rev = js || {}; }).catch(e => { TIE.err = e; TIE.rev = {}; }).finally(() => { TIE.loading = false; render(); });
   }
-  const unsure = c => c === "Needs review" || c === "Unique name";
+  const unsure = c => c === "Needs review" || c === "Unique name" || c === "Suffix differs";
   const list = rows.map((r, i) => ({ ...r, _c: tieConf(r), _i: i }))
     .sort((a, b) => (unsure(b._c) && b.key ? 1 : 0) - (unsure(a._c) && a.key ? 1 : 0) || a._i - b._i);
   const todo = list.filter(r => r.key && unsure(r._c)).length;
   const chip = c => c === "Needs review" ? `<span class="chip avoid">Needs review</span>` :
     c === "Unique name" ? `<span class="chip avoid">Unique name</span>` :
+    c === "Suffix differs" ? `<span class="chip avoid" title="Same first and last name, but Jr/Sr differs: maybe a son or father">Jr/Sr differs</span>` :
     c === "Not them (you)" ? `<span class="chip watch">Not them (you)</span>` : `<span class="chip BUY">${esc(c)}</span>`;
   const canReview = TIE.err?.code !== "app_only";
   const row = r => {
     const open = TIE.open === r.key, v = tieRev(r), fam = (r.Spouse || "").replace(/\s*\(.*\)$/, "");
     const rel = (r.Spouse || "").match(/\(([^)]+)\)$/)?.[1] || (r.Source === "Yearly financial disclosure" ? "spouse" : "spouse");
     const web = "https://www.google.com/search?q=" + encodeURIComponent(`"${fam}" ${r.Member} ${String(r.Company).replace(/\s*\([^)]*\)$/, "")}`);
-    let h = `<tr><td>${mlink(r.Member, r.b)}</td><td>${esc(r.Spouse || "–")}</td>
+    let h = `<tr><td>${mlink(r.Member, r.b)}</td><td>${esc(r.Spouse || "–")}${r.Filer ? `<div class="foot" style="margin:2px 0 0">SEC filer: ${esc(r.Filer)}</div>` : ""}</td>
       <td>${chip(r._c)}${r.key && canReview ? `<div style="margin-top:4px"><button class="btn sm" data-tie="${esc(r.key)}">${open ? "Close" : v ? "Change" : "Review"}</button></div>` : ""}${v && v.note ? `<div class="foot" style="margin:2px 0 0">${esc(v.note)}</div>` : ""}</td>
       <td>${esc(r.Company)}</td><td>${esc(r.Role)}</td>
       <td class="nw">${esc(r.Since ? fmtDate(r.Since) : "–")}</td><td class="nw">${esc(r["Last filing"] ? fmtDate(r["Last filing"]) : "–")}${r["Last filing"] && (Date.now() - Date.parse(r["Last filing"])) > 548 * 864e5 ? ` <span class="chip avoid" title="No SEC filing for 18+ months: they may have left. Trades still count at half weight, with a warning.">Former?</span>` : ""}</td>
@@ -1806,11 +1810,14 @@ function tiesPanel(rows) {
     if (open) {
       const m = TIE.msg[r.key];
       h += `<tr class="tie-open"><td colspan="8"><div class="tie-box">
-        <b>Is ${esc(fam)}, ${esc(String(r.Role || "insider").toLowerCase())} at ${esc(r.Company)}, really ${esc(r.Member)}'s ${esc(rel)}?</b>
-        <div class="foot" style="margin:4px 0 8px">The match is by name only${r.Auto === "Unique name" ? " (nobody else in SEC filings has this exact name)" : ""}. Open the <a href="${esc(r.link || "#")}" target="_blank" rel="noopener">SEC filings</a> (the filer's address and companies) or <a href="${esc(web)}" target="_blank" rel="noopener">search the web</a> for the two names together. "It's them" makes it count in the score like a confirmed tie; "Not them" removes it from scores and alerts.</div>
+        <b>Is ${esc(r.Filer || fam)}, ${esc(String(r.Role || "insider").toLowerCase())} at ${esc(r.Company)}, really ${esc(r.Member)}'s ${esc(rel)}?</b>
+        ${r.Filer ? `<div class="foot" style="margin:4px 0 0">The SEC filer is <b>${esc(r.Filer)}</b>; the ${esc(rel)} is ${esc(fam)}. A different Jr/Sr usually means a son or father: if so, tap "It's a relative".</div>` : ""}
+        <div class="foot" style="margin:4px 0 8px">The match is by name only${r.Auto === "Unique name" ? " (nobody else in SEC filings has this exact name)" : ""}. Open the <a href="${esc(r.link || "#")}" target="_blank" rel="noopener">SEC filings</a> (the filer's address and companies) or <a href="${esc(web)}" target="_blank" rel="noopener">search the web</a> for the two names together. "It's them" makes it count in the score like a confirmed tie; "Not them" removes it from scores and alerts${rel === "spouse" ? `; "It's a relative" moves it to the member's relatives (pick which) and counts it like a confirmed relative tie` : ""}.</div>
         <textarea id="tienote" rows="2" placeholder="Optional: what you found (e.g. news article says she joined the board in 2019; or a different person, lives in Ohio)">${esc(TIE.note[r.key] ?? (v?.note || ""))}</textarea>
         <div class="tie-btns"><button class="btn" data-tiev="yes" data-tk="${esc(r.key)}" ${TIE.busy ? "disabled" : ""}>It's them</button>
         <button class="btn" data-tiev="no" data-tk="${esc(r.key)}" ${TIE.busy ? "disabled" : ""}>Not them</button>
+        ${rel === "spouse" ? `<span class="tie-rel"><select id="tierel" aria-label="Relation">${["son", "daughter", "brother", "sister", "father", "mother", "in-law", "relative"].map(x => `<option${(v?.rel || "son") === x ? " selected" : ""}>${x}</option>`).join("")}</select>
+        <button class="btn" data-tiev="relative" data-tk="${esc(r.key)}" ${TIE.busy ? "disabled" : ""}>It's a relative</button></span>` : ""}
         ${v ? `<button class="btn ghost" data-tiev="clear" data-tk="${esc(r.key)}" ${TIE.busy ? "disabled" : ""}>Undo my answer</button>` : ""}</div>
         ${m ? `<div class="note ${m.ok ? "" : "warn"}" style="margin-top:8px">${esc(m.text)}</div>` : ""}
       </div></td></tr>`;
@@ -1826,7 +1833,7 @@ async function sendTieReview(key, verdict) {
   const note = ($("#tienote")?.value ?? TIE.note[key] ?? "").trim();
   TIE.busy = true; render();
   try {
-    const js = await saveTieReview(key, verdict, note);
+    const js = await saveTieReview(key, verdict, note, verdict === "relative" ? ($("#tierel")?.value || "relative") : undefined);
     if (js.review) TIE.rev[key] = js.review; else delete TIE.rev[key];
     delete TIE.note[key];
     TIE.msg[key] = { ok: true, text: verdict === "clear" ? "Answer removed. Back to the automatic match from the next update." :

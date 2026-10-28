@@ -5624,6 +5624,7 @@ def prepare(cfg):
             lt = relative_lobbyist_ties(rel, data.get("lobbying"), members)
             data["relative_ties"] = pd.concat([x for x in (rt, lt) if len(x)], ignore_index=True) if (len(rt) or len(lt)) else pd.DataFrame()
             data["relative_ties"] = apply_tie_reviews(data["relative_ties"], load_tie_reviews(cfg), "relative")
+            data["spouse_ties"], data["relative_ties"] = spouse_to_relatives(data.get("spouse_ties"), data["relative_ties"])
             log(f"Relatives: {len(data['relative_ties'])} possible relative-company ties")
         except Exception as e:
             log(f"Relatives: skipped ({e})")
@@ -5646,7 +5647,8 @@ def prepare(cfg):
         st_ = data.get("spouse_ties")
         if st_ is not None and len(st_):
             for r in st_.sort_values("first_filed").drop_duplicates(["bioguide", "ticker", "owner_cik"]).to_dict("records"):
-                ties.append({"Member": r["member"], "Spouse": r["spouse"], "Company": f"{r['issuer']} ({r['ticker']})",
+                ties.append({"Member": r["member"], "Spouse": r["spouse"],
+                             "Filer": _sec_pretty(r.get("owner_name")) if r.get("sfx_diff") else "", "Company": f"{r['issuer']} ({r['ticker']})",
                              "Role": r["role"], "Since": str(pd.Timestamp(r["first_filed"]).date()),
                              "Last filing": str(pd.Timestamp(r["last_filed"]).date()) if pd.notna(r.get("last_filed")) else "",
                              "Confidence": r["confidence"], "Source": "SEC insider filings",
@@ -8409,9 +8411,33 @@ TIE_REJECTED = "Not them (you)"
 TIE_REVIEW_FILE = "tie_reviews.json"
 
 
-def tie_key(bioguide, ticker, cik="", person=""):
-    """Stable id for one family tie row: member | stock | SEC filer id (or the person's name when there is none)."""
+TIE_SFX_DIFF = "Suffix differs"     # same first and last name, but Jr/Sr/II... differ: needs review, not scored
+TIE_AS_RELATIVE = "Relative (you)"  # owner, Oct 28: "It's a relative" moves a spouse match to the relatives table
+
+
+def _name_sfx(s):
+    """'jr', 'sr', 'ii', 'iii' or 'iv' in a name, else ''."""
+    m = re.search(r"\b(jr|sr|ii|iii|iv)\b\.?", _strip_accents(str(s or "")).lower())
+    return m.group(1) if m else ""
+
+
+def _sec_pretty(owner_name):
+    """SEC 'PELOSI PAUL JR' -> 'Paul Pelosi Jr'."""
+    p = str(owner_name or "").split()
+    if len(p) < 2:
+        return str(owner_name or "").title()
+    sfx = [x for x in p[1:] if _name_sfx(x)]
+    rest = [x for x in p[1:] if not _name_sfx(x)]
+    return " ".join([x.title() for x in rest] + [p[0].title()] + [x.title() for x in sfx])
+
+
+def tie_key(bioguide, ticker, cik="", person="", sfx=""):
+    """Stable id for one family tie row: member | stock | SEC filer id (or the person's name when there is none).
+    A suffix-mismatch row gets '-jr' etc. on the end, so an answer given before Oct 28 (when suffixes were ignored)
+    doesn't carry over to it."""
     who = str(cik or "").strip() or name_key(person or "")
+    if sfx:
+        who = f"{who}-{sfx}"
     return f"{bioguide}|{ticker}|{who}"[:90]
 
 
@@ -8428,15 +8454,34 @@ def apply_tie_reviews(df, reviews, person_col):
     if df is None or not len(df):
         return df
     df = df.copy()
-    df["key"] = [tie_key(b, t, c, p) for b, t, c, p in zip(df["bioguide"], df["ticker"],
-                                                            df.get("owner_cik", pd.Series("", index=df.index)).fillna(""),
-                                                            df[person_col])]
+    sx = df["sfx_diff"].fillna("") if "sfx_diff" in df else pd.Series("", index=df.index)
+    df["key"] = [tie_key(b, t, c, p, x) for b, t, c, p, x in zip(df["bioguide"], df["ticker"],
+                                                                  df.get("owner_cik", pd.Series("", index=df.index)).fillna(""),
+                                                                  df[person_col], sx)]
     df["auto_confidence"] = df["confidence"]
     if reviews:
         v = df["key"].map(lambda k: (reviews.get(k) or {}).get("verdict"))
         df.loc[v == "yes", "confidence"] = "Confirmed by you"
         df.loc[v == "no", "confidence"] = TIE_REJECTED
+        df.loc[v == "relative", "confidence"] = TIE_AS_RELATIVE
+        df["review_rel"] = df["key"].map(lambda k: (reviews.get(k) or {}).get("rel") or "relative")
     return df
+
+
+def spouse_to_relatives(st_, rt_):
+    """Spouse matches the owner said are really a relative (e.g. the son, Jr.): taken out of the spouse table and
+    added to the relatives table as confirmed, with the relation the owner picked."""
+    if st_ is None or not len(st_) or not (st_["confidence"] == TIE_AS_RELATIVE).any():
+        return st_, rt_
+    mv = st_[st_["confidence"] == TIE_AS_RELATIVE].copy()
+    mv["relative"] = [_sec_pretty(o) if o else s_ for o, s_ in zip(mv.get("owner_name", pd.Series("", index=mv.index)).fillna(""), mv["spouse"])]
+    mv["relation"] = mv["review_rel"]
+    mv["confidence"] = "Confirmed by you"
+    mv["source"] = "SEC insider filings"
+    mv = mv.drop(columns=["spouse"])
+    st_ = st_[st_["confidence"] != TIE_AS_RELATIVE]
+    rt_ = pd.concat([x for x in (rt_, mv) if x is not None and len(x)], ignore_index=True)
+    return st_, rt_
 
 
 def _tie_live(first, last, when):
@@ -8920,13 +8965,20 @@ def spouse_ties(spouses, ins, members):
             same_state = hit[hit["state"].fillna("") == (m.get("state") or "")]
             ambiguous = same_state["owner_cik"].nunique() > 1
             unique = hit["owner_cik"].nunique() == 1          # only one SEC filer anywhere has this exact name
+            want_sfx = _name_sfx(nm)
             for (cik, t), g in hit.groupby(["owner_cik", "ticker"]):
                 ok = (g["state"].fillna("") == (m.get("state") or "")).any() and not ambiguous
-                rows.append({"bioguide": bio, "member": m.get("name"), "spouse": nm, "ticker": t,
+                oname = g["owner_name"].dropna().iloc[0] if "owner_name" in g and g["owner_name"].notna().any() else ""
+                got_sfx = _name_sfx(oname)
+                diff = got_sfx if got_sfx != want_sfx else ""
+                if got_sfx != want_sfx and not diff:
+                    diff = "no" + want_sfx          # we want "Jr" and the filer has none
+                rows.append({"owner_name": oname, "sfx_diff": diff,"bioguide": bio, "member": m.get("name"), "spouse": nm, "ticker": t,
                              "issuer": g["issuer"].dropna().iloc[0] if g["issuer"].notna().any() else t,
                              "role": g["role"].mode().iloc[0] if g["role"].str.len().gt(0).any() else "Insider",
                              "first_filed": g["filed"].min(), "last_filed": g["filed"].max(), "owner_cik": str(cik),
-                             "confidence": "Confirmed by state" if ok else ("Unique name" if unique else "Needs review")})
+                             "confidence": TIE_SFX_DIFF if diff else
+                             ("Confirmed by state" if ok else ("Unique name" if unique else "Needs review"))})
     return pd.DataFrame(rows)
 
 
