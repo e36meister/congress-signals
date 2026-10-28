@@ -17,7 +17,10 @@ print("me/accounts:", hide(acc)[:600])
 ig = None
 for pg in acc.get("data") or []:
     ig = (pg.get("instagram_business_account") or {}).get("id") or ig
-print("own ig:", hide(get(f"/{ig}", fields="id,username,account_type,media_count")) if ig else None)
-for h in ("nasa", "speakerjohnson", "aoc"):
+print("own ig:", hide(get(f"/{ig}", fields="id,username,media_count")) if ig else None)
+print("own media:", hide(get(f"/{ig}/media", fields="id,timestamp", limit=1))[:300] if ig else None)
+print("app:", hide(get("/" + str(d.get("app_id")), fields="name,link"))[:300])
+me_ig = (get(f"/{ig}", fields="username") or {}).get("username") if ig else None
+for h in ([me_ig] if me_ig else []) + ["nasa"]:
     js = get(f"/{ig}", fields=f"business_discovery.username({h}){{username,media_count,media.limit(1){{timestamp}}}}") if ig else {}
     print("bd", h, hide(js)[:400])
