@@ -1894,16 +1894,28 @@ def _alpaca_actions(tickers, start, h):
         _ACT_BUF.append(("Stock Splits", pd.DataFrame(spl).sort_index()))
 
 
-def _stooq_close(t, start):
-    try:
-        r = requests.get(f"https://stooq.com/q/d/l/?s={t.lower()}.us&i=d", headers=UA, timeout=30)
-        d = pd.read_csv(io.StringIO(r.text))
-        if "Close" not in d.columns:
-            return None
-        s = d.set_index(pd.to_datetime(d["Date"]))["Close"].rename(t)
-        return s[s.index >= start]
-    except Exception:
+def _tiingo_close(t, start):
+    """One stock's full daily history from Tiingo (adjusted for splits and dividends, the same basis as Yahoo's
+    auto-adjusted close). Backup for SPY when Yahoo comes back empty. Stooq used to be this backup, but since
+    Oct 2026 its CSV download answers every script with a JavaScript browser check instead of prices."""
+    key = (os.environ.get("TIINGO_API_KEY") or "").strip()
+    if not key:
         return None
+    for a in range(3):
+        try:
+            r = requests.get(f"https://api.tiingo.com/tiingo/daily/{t.lower()}/prices",
+                             params={"startDate": str(pd.Timestamp(start).date()), "token": key}, timeout=60)
+            if r.status_code == 200 and isinstance(r.json(), list) and r.json():
+                s = pd.Series({pd.Timestamp(x["date"][:10]): x.get("adjClose") for x in r.json()}, name=t).dropna()
+                return s if len(s) else None
+            if r.status_code not in (429,) and r.status_code < 500:
+                log(f"Prices: Tiingo backup for {t} answered HTTP {r.status_code}")
+                return None
+        except Exception as e:
+            if a == 2:
+                log(f"Prices: Tiingo backup for {t} failed ({type(e).__name__})")
+        time.sleep(5 * (a + 1))
+    return None
 
 
 def _yf_volume(tickers, start):
@@ -2180,10 +2192,16 @@ def load_prices(cfg, tickers, max_age_hours=12, priority=None):
         if px is None or "SPY" in missing:
             spy = _yf_close(["SPY"], start)
             if "SPY" not in spy.columns:
-                s = _stooq_close("SPY", pd.Timestamp(start))
+                s = _tiingo_close("SPY", start)
                 spy = s.to_frame() if s is not None else pd.DataFrame()
+                if "SPY" in spy.columns:
+                    log("Prices: Yahoo had no SPY history; used Tiingo's instead")
             if "SPY" not in spy.columns:
-                raise RuntimeError("Could not download SPY prices from Yahoo or Stooq.")
+                spy = _alpaca_close(["SPY"], str(pd.Timestamp(start).date()), side_effects=False)
+                if "SPY" in spy.columns:
+                    log("Prices: Yahoo and Tiingo had no SPY history; used Alpaca's (from 2016) instead")
+            if "SPY" not in spy.columns:
+                raise RuntimeError("Could not download SPY prices from Yahoo, Tiingo or Alpaca.")
             frames.append(spy)
         rest = [t for t in missing if t != "SPY"]
         for i in range(0, len(rest), 50):
@@ -2200,11 +2218,11 @@ def load_prices(cfg, tickers, max_age_hours=12, priority=None):
                 time.sleep(3)
             got = set().union(*[set(f.columns) for f in frames])
             still = [t for t in retry if t not in got][:300]
-            if still:
-                with ThreadPoolExecutor(4) as ex:
-                    for s_ in ex.map(lambda t: _stooq_close(t, pd.Timestamp(start)), still):
-                        if s_ is not None and len(s_):
-                            frames.append(s_.to_frame())
+            if still:          # Yahoo missed them twice: Alpaca's bars (all US exchanges, adjusted, from 2016)
+                a_ = _alpaca_close(still, str(pd.Timestamp(start).date()), side_effects=False)
+                if len(a_):
+                    frames.append(a_.dropna(how="all", axis=1))
+                    log(f"Prices: Alpaca filled in {a_.shape[1]} of {len(still)} stock(s) Yahoo missed")
             got = set().union(*[set(f.columns) for f in frames])
         still = [t for t in rest if t not in got]
         if still and cfg.get("TIINGO_API_KEY") and not out_of_time(cfg, 60):
