@@ -976,7 +976,13 @@ def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
         err = js.get("error") or {}
         if err:
             code = err.get("code")
-            if code in (190, 102) or err.get("type") == "OAuthException" and code in (10, 200):
+            if code in (10, 200) and err.get("type") == "OAuthException":
+                # Oct 28: the token itself was valid (it read the owner's own account); Meta refused Business
+                # Discovery for the app. That needs a change in the Meta app (access level / app mode), not a new token.
+                _log(f"Instagram: Meta refused Business Discovery for this app ({str(err.get('message'))[:120]}); "
+                     "the token works, but the Meta app needs Business Discovery access (app mode or advanced access)")
+                return
+            if code in (190, 102) or err.get("type") == "OAuthException":
                 _log(f"Instagram: the Meta access token was refused ({str(err.get('message'))[:120]}); it may have expired")
                 return
             if code in (4, 17, 32, 613):
