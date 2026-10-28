@@ -1554,7 +1554,7 @@ function closeSection(d) {
     <div class="tile"><span class="v ${cls(c.day_pl)}">${c.day_pl == null ? "–" : (c.day_pl > 0 ? "+" : "") + money(c.day_pl)}</span><span class="l">Change on ${esc(fmtDate(c.date))}</span></div>
   </div>
   <div class="chart" id="pchart"></div>
-  <p class="foot">Shaded: the luck range, where an account with no real edge lands 95% of the time (about ±29% from the S&amp;P after a year, less early on). Inside it, results can't be told apart from luck. Early on, one stock's big day can push the account outside it.</p>
+  
   ${(c.sleeves || []).length ? `<div class="tbl"><table><thead><tr><th>Strategy</th><th class="n">Positions</th><th class="n">Avg days</th><th class="n">Since bought</th><th class="n">S&amp;P same days</th><th class="n">Difference</th><th class="n">Backtest expects</th></tr></thead><tbody>
   ${c.sleeves.map(x => `<tr><td>${esc(x.name)}</td><td class="n">${x.positions}</td><td class="n">${x.avg_days}</td><td class="n ${cls(x.ret)}">${pct(x.ret)}</td><td class="n">${pct(x.spy)}</td><td class="n ${cls(x.diff)}">${pct(x.diff)}</td><td class="n">${expCell(x.expected)}</td></tr>`).join("")}
   </tbody></table></div>` : ""}
