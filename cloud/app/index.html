@@ -97,6 +97,10 @@ td .why{display:block;width:max-content}
 .moreitem .ml{grid-area:l;font:600 16px var(--head)}
 .moreitem .md{grid-area:d;font-size:13px;color:var(--muted)}
 .moreitem .mc{grid-area:c;font-size:22px;color:var(--muted)}
+.moretiles{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.moretile{font:600 15px var(--head);padding:12px 14px;border:1px solid var(--rule);border-radius:12px;background:var(--surface);color:var(--ink);text-align:left;cursor:pointer;display:flex;justify-content:space-between}
+.moretile span{color:var(--muted)}
+.newrow{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .moreback{background:none;border:0;color:var(--accent);font:600 14px var(--body);padding:0;cursor:pointer;justify-self:start}
 .newline{font-size:13px;color:var(--ink2);display:flex;align-items:center;gap:8px}
 .newline b{font:600 13px var(--mono)}
@@ -557,15 +561,15 @@ const MORE_TABS = [
   { k: "search", l: "Company search", d: "Any ticker or company: its chart with every member's trades" },
   { k: "small", l: "Small caps", d: "The small-company portfolio and its picks" },
   { k: "defense", l: "Defense", d: "Defense stocks members bought or sold" },
-  { k: "record", l: "Track record", d: "How past picks did against the S&P 500" },
   { k: "works", l: "What works", d: "Which signals hold up, and the weekly automatic adjustments" },
   { k: "real", l: "Reality check", d: "Walk-forward test: the strategy on years it never saw" },
-  { k: "tax", l: "Taxes", d: "Each sale's gain or loss, the Form 8949 statement and what to file" },
   { k: "movers", l: "Why it moved", d: "Big moves in what you hold and the Buy candidates, explained" },
   { k: "notes", l: "Filing notes", d: "What members write on their trades, sorted into categories, and the notes to check by hand" },
-  { k: "senate", l: "Senate import", d: "Send a Senate filing from Safari with the iPhone Shortcut (the Senate site blocks automatic reads)" },
   { k: "health", l: "Data health", d: "Every data source: what's broken right now and what was fixed" },
+  { k: "record", l: "Track record", d: "How past picks did against the S&P 500" },
 ];
+// pages opened from a button elsewhere (not listed in More): where Back goes
+const SUB_TABS = { tax: { back: "me", l: "‹ Profile" }, senate: { back: "today", l: "‹ Today" } };
 function goTab(t) {
   state.tab = t;
   if (t === "health") { HEALTH.js = null; HEALTH.err = null; }
@@ -626,7 +630,7 @@ function renderMe(d) {
   const sinceBuy = f => { const x = pos[f.t]; return f.side === "buy" && x && x.px && f.px ? x.px / f.px - 1 : null; };
   const nb = fills.filter(f => f.side === "buy").length, ns = fills.length - nb;
   return `<section class="panel"><div class="mehead"><img src="/me.jpg" alt="" onerror="this.style.display='none'"><div><h2>Your profile</h2>
-      <div class="foot">${P.mode === "live" ? "Real money" : "Paper account"}${c.start ? ` · since ${esc(fmtDate(c.start))}` : ""} · ${nb} buy${nb === 1 ? "" : "s"}, ${ns} sale${ns === 1 ? "" : "s"}</div></div></div></section>
+      <div class="foot">${P.mode === "live" ? "Real money" : "Paper account"}${c.start ? ` · since ${esc(fmtDate(c.start))}` : ""} · ${nb} buy${nb === 1 ? "" : "s"}, ${ns} sale${ns === 1 ? "" : "s"}</div></div><button type="button" class="btn ghost" data-more="tax" style="margin-left:auto;align-self:center">Taxes</button></div></section>
   <div class="tiles">
     <div class="tile"><span class="v">${money(P.equity)}</span><span class="l">Account value</span></div>
     ${v ? `<div class="tile"><span class="v ${cls(v.acct)}">${pnum(v.acct, 2)}</span><span class="l">Your results since start</span><span class="c">S&amp;P ${pnum(v.spy, 2)}</span></div>
@@ -705,13 +709,13 @@ document.addEventListener("click", ev => {
 const SEARCH = { q: "", items: null, err: null, n: 0 };
 function searchRows() {
   if (SEARCH.err) return `<div class="note warn">${SEARCH.err.code === "app_only" ? "Company search is in the phone app." : esc(errorText(SEARCH.err))}</div>`;
-  if (!SEARCH.q) return `<div class="foot">Type a ticker (like NVDA) or part of a company's name. Stocks members traded come first.</div>`;
+  if (!SEARCH.q) return "";
   if (SEARCH.items === null) return `<div class="empty">Searching…</div>`;
   if (!SEARCH.items.length) return `<div class="foot">No company found. Press Go to look up ${esc(SEARCH.q.toUpperCase())} as a ticker anyway.</div>`;
   return `<div class="cslist">${SEARCH.items.map(x => `<button type="button" class="csrow" data-chart="${esc(x.t)}"><span class="ct">${esc(x.t)}</span><span class="cc">${esc(x.co || "")}</span><span class="cn">${x.n ? `${x.n.toLocaleString()} member trade${x.n === 1 ? "" : "s"}` : ""}</span></button>`).join("")}</div>`;
 }
 function renderSearch() {
-  return `<section class="panel"><div class="ph"><h2>Company search</h2><span class="sub">Same chart as everywhere else: prices with every member's buys and sells.</span></div>
+  return `<section class="panel"><div class="ph"><h2>Company search</h2></div>
     <form class="csbox" id="csform" autocomplete="off"><input id="csq" type="search" inputmode="search" placeholder="Ticker or company" value="${esc(SEARCH.q)}" aria-label="Ticker or company" enterkeyhint="go"><button type="submit" class="btn">Go</button></form>
     <div id="csres">${searchRows()}</div></section>`;
 }
@@ -791,10 +795,18 @@ function renderMovers() {
     const m = (MOVERS.js.items || {})[MOVERS.focus];
     return m ? moverCard(m) : `<div class="empty">No recent move on file for ${esc(MOVERS.focus)}.</div>`;
   }
-  const items = Object.values(MOVERS.js.items || {}).sort((a, b) => b.date.localeCompare(a.date) || Math.abs(b.rel || 0) - Math.abs(a.rel || 0));
-  return `<div class="ph"><h2>Why it moved</h2><span class="sub">Stocks you hold and Buy candidates that moved 3%+ against the S&amp;P in a day, or 7%+ over 5 days. Checked every 15 minutes on market days.</span></div>
-    ${items.length ? items.map(moverCard).join("") : `<div class="empty">Nothing has moved that much in the last week.</div>`}`;
+  const mq = (MOVERS.q || "").trim().toUpperCase();
+  const items = Object.values(MOVERS.js.items || {}).filter(m => !mq || String(m.t || "").toUpperCase().includes(mq) || String(m.co || "").toUpperCase().includes(mq)).sort((a, b) => b.date.localeCompare(a.date) || Math.abs(b.rel || 0) - Math.abs(a.rel || 0));
+  return `<div class="ph"><h2>Why it moved</h2></div>
+    <form class="csbox" id="mvform" autocomplete="off" onsubmit="return false"><input id="mvq" type="search" placeholder="Ticker or company" value="${esc(MOVERS.q || "")}" aria-label="Search moves"></form>
+    <div id="mvres">${items.length ? items.map(moverCard).join("") : `<div class="empty">${mq ? "No move on file for that." : "Nothing has moved that much in the last week."}</div>`}</div>`;
 }
+document.addEventListener("input", ev => {
+  if (ev.target.id !== "mvq") return;
+  MOVERS.q = ev.target.value;
+  const at = ev.target.selectionStart; render();
+  const i = document.getElementById("mvq"); if (i) { i.focus(); try { i.setSelectionRange(at, at); } catch (e) {} }
+});
 document.addEventListener("click", ev => {
   const pb = ev.target.closest("[data-peer]");
   if (pb) { ev.preventDefault(); MOVERS.peer = MOVERS.peer === pb.dataset.peer ? null : pb.dataset.peer; const y = scrollY; render(); scrollTo(0, y); return; }
@@ -854,20 +866,7 @@ function renderSenate() {
   if (!SIMP.js) return `<div class="empty">Loading…</div>`;
   const J = SIMP.js, copy = (k, label) => `<button type="button" class="btn ghost" data-scopy="${k}">${label}</button>`;
   const st = h => /^added/.test(h.status) ? "pos" : /couldn't/.test(h.status) ? "neg" : "";
-  return `<section class="panel"><div class="ph"><h2>Senate import</h2><span class="sub">The Senate site blocks automatic reads, but it opens normally for you. When a senator files, open the filing in Safari and send it here.</span></div>
-    <p><b>Each time:</b> on efdsearch.senate.gov open the filing (the "Periodic Transaction Report" link), tap <b>Share → Capitol Capital Senate</b>. You'll see "Got it: N rows…", then an alert when the trades are added and scored. A 6 PM reminder on weekdays links you to the site.</p>
-    <div class="ph" style="margin-top:14px"><h2 style="font-size:17px">One-time setup</h2></div>
-    <ol class="steps" style="padding-left:20px;display:grid;gap:8px;margin:0">
-      <li>In the <b>Shortcuts</b> app tap <b>+</b>. Name it <b>Capitol Capital Senate</b>.</li>
-      <li>Tap the <b>ⓘ</b> (Details) → turn on <b>Show in Share Sheet</b>. Set what it receives to <b>Safari web pages</b> only.</li>
-      <li>Add the action <b>Run JavaScript on Web Page</b> (input: Shortcut Input). Replace its script with: ${copy("js", "Copy script")}</li>
-      <li>Add <b>Get Contents of URL</b>. URL: ${copy("url", "Copy URL")}<br>Tap <b>Show More</b>: Method <b>POST</b>. Headers: add <b>X-Import-Key</b> = ${copy("key", "Copy key")} and <b>Content-Type</b> = <code>application/json</code>. Request Body: <b>File</b> → choose <b>JavaScript Result</b>.</li>
-      <li>Add <b>Show Result</b> (it shows what the app answered).</li>
-      <li>In the iPhone <b>Settings</b> app: <b>Apps → Shortcuts → Advanced</b> → turn on <b>Allow Running Scripts</b>.</li>
-    </ol>
-    <p class="foot">The key only lets the Shortcut send Senate filings; it can't read your account or trade. <button type="button" class="link" data-snew="1">Make a new key</button> ${SIMP.msg ? esc(SIMP.msg) : ""}</p>
-    <div id="scopymsg" class="foot"></div></section>
-    <section class="panel"><div class="ph"><h2>Sent filings</h2><span class="sub">Newest first</span></div>
+  return `<section class="panel"><div class="ph"><h2>Senate filings you sent</h2></div>
     ${(J.recent || []).length ? `<div class="tbl tlist"><table><thead><tr><th>Sent</th><th>Senator</th><th>Filed</th><th>Rows</th><th>Status</th></tr></thead><tbody>
       ${J.recent.map(h => `<tr><td class="nw">${esc(fmtET(h.at))}</td><td>${esc(h.who || "")}</td><td class="nw">${esc(h.filed || "")}</td><td class="n">${esc(h.rows ?? "")}</td><td class="${st(h)}">${esc(h.status === "received" ? "waiting for the update" : h.status || "")}</td></tr>`).join("")}
       </tbody></table></div>` : `<div class="empty">Nothing sent yet.</div>`}</section>`;
@@ -882,8 +881,12 @@ document.addEventListener("click", async ev => {
   catch (e) { if (m) m.textContent = "Copy didn't work here; long-press to copy: " + v; }
 });
 function renderMore() {
-  return `<section class="panel"><div class="morelist">
-  ${MORE_TABS.map(m => `<button type="button" class="moreitem" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}
+  const item = m => `<button type="button" class="moreitem" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`;
+  const tiles = ["small", "defense"].map(k => MORE_TABS.find(m => m.k === k));
+  return `<section class="panel"><div class="morelist">${item(MORE_TABS[0])}</div></section>
+  <div class="moretiles">${tiles.map(m => `<button type="button" class="moretile" data-more="${m.k}">${esc(m.l)} <span aria-hidden="true">›</span></button>`).join("")}</div>
+  <section class="panel"><div class="morelist">
+  ${MORE_TABS.filter(m => !["search", "small", "defense"].includes(m.k)).map(m => `<button type="button" class="moreitem" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}
   </div></section>`;
 }
 document.addEventListener("click", ev => { const b = ev.target.closest("[data-more]"); if (b) { ev.preventDefault(); goTab(b.dataset.more); } });
@@ -902,7 +905,7 @@ document.getElementById("bell").addEventListener("click", () => {
 function render() {
   setHeaderHeight();
   TIPS = [];
-  const navTab = MORE_TABS.some(m => m.k === state.tab) ? "more" : state.tab;
+  const navTab = SUB_TABS[state.tab] ? SUB_TABS[state.tab].back : MORE_TABS.some(m => m.k === state.tab) ? "more" : state.tab;
   document.querySelectorAll("nav.tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === navTab)));
   $("#bell")?.setAttribute("aria-pressed", String(state.tab === "alerts"));
   $("#mebtn")?.setAttribute("aria-pressed", String(state.tab === "me"));
@@ -915,6 +918,7 @@ function render() {
   let html = "";
   if (d.version === 1) html += `<div class="note warn"><b>Showing results from the first version (5 signals).</b> Run the new notebook (Run all) and this page switches to the full version with buy, short and avoid picks.</div>`;
   if (state.tab === "movers" && MOVERS.focus) html += `<button type="button" class="moreback" data-whyback="1">‹ Back</button>`;
+  else if (SUB_TABS[state.tab]) html += `<button type="button" class="moreback" data-more="${SUB_TABS[state.tab].back}">${SUB_TABS[state.tab].l}</button>`;
   else if (MORE_TABS.some(m => m.k === state.tab)) html += `<button type="button" class="moreback" data-more="more">‹ More</button>`;
   if (state.tab === "more") html += renderMore();
   if (state.tab === "health") html += renderHealth();
@@ -1177,7 +1181,9 @@ function todayJump(d, nb, nAvoid, nAlso) {
 const JUMP_SHORT = { "Defense buy candidates": "Buy", "Defense stocks to avoid": "Avoid", "Defense picks vs the market": "Chart",
   "Defense portfolio results": "Results", "Which signals worked for defense stocks": "Signals", "Recent defense picks": "Recent picks",
   "Small-company candidates": "Candidates", "Growth of $1": "Chart", "Results": "Results", "Year by year": "By year",
-  "Recent small-company picks": "Recent picks" };
+  "Recent small-company picks": "Recent picks", "The 45-day disclosure delay": "Delay", "How long to hold": "Hold time",
+  "Do skilled members stay skilled?": "Skill", "Company size": "Size", "Busiest traders check": "Busiest", "Trading partners": "Partners",
+  "Copycat traders": "Copycats", "Buy signals": "Buy signals", "Sell signals": "Sell signals", "Weight tuning": "Tuning", "Missing price data": "Missing data" };
 function autoJump(html, prefix) {
   const rx = /<section class="panel"( id="[^"]*")?><div class="ph"><h2>([\s\S]*?)<\/h2>/g;
   const found = [];
@@ -1217,7 +1223,7 @@ function renderToday(d) {
   const nb = buys.filter(r => r.action === "BUY").length, ns = sells.filter(r => r.action === "SHORT").length, na = sells.filter(r => r.action === "avoid").length;
   const topBuys = buys.filter(r => r.action === "BUY"), watch = buys.filter(r => r.action !== "BUY");
   return `
-  <div class="newline"><b>${(w.new || []).length}</b> new since the last run</div>
+  <div class="newrow"><div class="newline"><b>${(w.new || []).length}</b> new since the last run</div><button type="button" class="btn ghost" data-more="senate">Senate import</button></div>
   ${todayJump(d, nb, sells.length, watch.length)}
   <section class="panel" id="today-buy">
     <div class="ph"><h2>Buy candidates</h2><span class="sub">Purchases disclosed in the last ${w.lookback} days that score in the top of all past buy signals</span></div>
@@ -1970,7 +1976,6 @@ function renderWorks(d) {
   if (!b) return `<div class="empty">No backtest yet. Run the new notebook through <b>Step 2</b>.</div>`;
   h += renderAdjust(d);
   h += postTests(d);
-  h += `<p class="note">Each signal splits every past disclosed trade into groups (low, mid, high or no, yes). A signal is useful when its high or yes group clearly beats its low or no group. Numbers read: average result vs the S&amp;P 500 · share of trades that worked · number of trades.</p>`;
   if (b.lag && b.lag.length) {
     const k2 = Object.keys(b.lag[0]);
     h += `<section class="panel"><div class="ph"><h2>The 45-day disclosure delay</h2><span class="sub">How much of the move happens before the public can see the trade</span></div>
@@ -2010,8 +2015,9 @@ function renderWorks(d) {
   const pc = b.price_coverage;
   if (pc && pc.trades) h += `<section class="panel"><div class="ph"><h2>Missing price data</h2><span class="sub">Mostly companies that were delisted, bankrupt or bought out</span></div>
     <div class="note ${pc.missing_share > 0.05 ? "warn" : ""}"><b>${Math.round(pc.with_prices).toLocaleString()} of ${pc.trades.toLocaleString()} trades (${(100 - pc.missing_share * 100).toFixed(1)}%) have prices.</b> The other ${pc.missing.toLocaleString()} can't be tested yet${pc.missing_tickers ? " (" + pc.missing_tickers.toLocaleString() + " different stocks)" : ""}, which can make results look a little better than they were. ${(pc.top_missing || []).length ? "Most-traded missing: " + pc.top_missing.slice(0, 10).map(([t, n]) => esc(t) + " (" + n + ")").join(", ") + "." : ""}</div></section>`;
+  h = h.replace(/<span class="sub">[\s\S]*?<\/span>/g, "").replace(/<p class="note">Effect = [\s\S]*?<\/p>/, "");
   if (b.coverage) h += `<p class="foot">Data behind these results: ${Object.entries(b.coverage).map(([k, v]) => `${esc(k.toLowerCase())} ${Number(v).toLocaleString()}`).join(" · ")}.</p>`;
-  return h;
+  return autoJump(h, "wk");
 }
 
 // ---------- chart ----------
