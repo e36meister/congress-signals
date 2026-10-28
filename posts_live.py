@@ -298,6 +298,12 @@ for k in counts:
             problems.append(f"{k}: nothing new for {days:.0f} days (normally new within {mx})")
     elif runs > mx * 24:
         problems.append(f"{k}: nothing new since these hourly checks started")
+if (os.environ.get("META_ACCESS_TOKEN") or "").strip():
+    # owner, Oct 28: almost every member has an Instagram; list each one the app can't read, for a manual check
+    try:
+        problems += S.ig_unreadable(leg)
+    except Exception as e:
+        E.log(f"Live posts: Instagram check list not built ({type(e).__name__}: {e})")
 fails = sorted(set(runlog.LINES))
 if problems or fails:
     E.log(f"COLLECTION CHECK (live): {len(problems)} source problem(s), {len(fails)} failure line(s)")

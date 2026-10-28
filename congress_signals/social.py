@@ -933,14 +933,130 @@ def _meta_ig_user(token):
     return None
 
 
+IG_STATUS_KEY = "posts/ig_status.json"     # kept in Cloudflare R2: the hourly job doesn't keep its own state
+IG_GUESS_PER_RUN = 25                      # Business Discovery calls spent per run looking for missing accounts
+IG_RECHECK_DAYS = 7                        # an unreadable account is tried again after this many days
+IG_GUESS_AGAIN_DAYS = 30                   # a member with no account found is searched again after this many days
+
+
+def _ig_status():
+    try:
+        import cloud_store
+        raw = cloud_store.get(IG_STATUS_KEY, log=lambda m: None)
+        js = json.loads(raw) if raw else {}
+        return js if isinstance(js, dict) else {}
+    except Exception:
+        return {}
+
+
+def _ig_status_save(igs):
+    try:
+        import cloud_store
+        cloud_store.put(IG_STATUS_KEY, json.dumps(igs), log=lambda m: None)
+    except Exception:
+        pass
+
+
+def _ig_plain(x):
+    import unicodedata
+    x = unicodedata.normalize("NFKD", str(x or "")).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z]", "", x)
+
+
+def _ig_candidates(m):
+    """Likely Instagram usernames for a member with none on file (checked against the account's own bio)."""
+    last = _ig_plain((m.get("last") or "").split(",")[0])
+    firsts = [_ig_plain(m.get("first")), _ig_plain(m.get("nick"))]
+    firsts = [f for f in dict.fromkeys(firsts) if f]
+    out = []
+    if m.get("chamber") == "Senate":
+        out += [f"sen{last}", f"senator{last}"] + [f"sen{f}{last}" for f in firsts] + [f"senator{f}{last}" for f in firsts]
+    else:
+        out += [f"rep{last}"] + [f"rep{f}{last}" for f in firsts] + [f"congressman{last}", f"congresswoman{last}"]
+    out += [f"{f}{last}" for f in firsts] + [f"{f}_{last}" for f in firsts] + [f"{f}.{last}" for f in firsts]
+    return [c for c in dict.fromkeys(out) if last and 3 <= len(c) <= 30]
+
+
+def _ig_is_member(info, m):
+    """A guessed account counts only when it is plainly the member's: an official .gov website, or their last name
+    plus a congressional title in the name or bio."""
+    site = str(info.get("website") or "").lower()
+    if ".house.gov" in site or ".senate.gov" in site:
+        return True
+    text = f"{info.get('name') or ''} {info.get('biography') or ''}".lower()
+    last = _ig_plain((m.get("last") or "").split(",")[0])
+    title = re.search(r"congress|representative|\brep\.?\b|senator|\bsen\.?\b|u\.?s\.? house|u\.?s\.? senate", text)
+    return bool(last and last in _ig_plain(text) and title)
+
+
+def ig_unreadable(leg):
+    """Current members whose Instagram the app can't read, for Data health (owner, Oct 28: almost every member has
+    an Instagram, so each missing one is listed for a manual check). A member with at least one readable account
+    is not listed."""
+    igs = _ig_status()
+    bad, found, ok, tried = igs.get("bad") or {}, igs.get("found") or {}, igs.get("ok") or {}, igs.get("guessed") or {}
+    per, all_h = {}, {}
+    for h, b in (igs.get("handles") or {}).items():
+        all_h.setdefault(b, set()).add(h)
+    for h, x in bad.items():
+        per.setdefault(x.get("b"), []).append((h, x.get("why")))
+    lines = []
+    for b, m in sorted(leg.items(), key=lambda kv: kv[1].get("name") or ""):
+        if not m.get("current"):
+            continue
+        who = f"{m.get('name')} ({m.get('state')}, {m.get('chamber')})"
+        if any(x.get("b") == b for x in ok.values()):
+            continue
+        if b in per and all_h.get(b, set()) <= {h for h, _ in per[b]}:     # every account on file is unreadable
+            why = "; ".join(f"@{h}: " + ("a personal account (Meta only lets apps read Business/Creator accounts)"
+                                          if w == "personal" else "no such account (renamed or deleted?)") for h, w in per[b])
+            lines.append(f"Instagram: can't read {who}. {why}. Please check their Instagram and send me the right handle")
+        elif b in (igs.get("none") or {}) and b not in all_h:
+            lines.append(f"Instagram: no account found for {who} (none on file, and {len(tried.get(b, {}).get('c', []))} "
+                         "likely usernames didn't match). Please check their Instagram and send me the handle")
+    return lines
+
+
+IG_MANUAL_FILE = "instagram_handles.json"
+
+
+def ig_manual(leg):
+    """Owner-checked Instagram handles: {"Member name or bioguide ID": "handle"} in instagram_handles.json at the repo
+    root. They win over the lists and guesses, and the member leaves the Data health check list once read."""
+    try:
+        raw = json.load(open(IG_MANUAL_FILE))
+    except Exception:
+        return {}
+    by_name = {}
+    for b, m in leg.items():
+        if m.get("current"):
+            for nm in (m.get("name"), f"{m.get('first') or ''} {m.get('last') or ''}", f"{m.get('nick') or ''} {m.get('last') or ''}"):
+                if nm and nm.strip():
+                    by_name[_ig_plain(nm)] = b
+    out = {}
+    for k, h in raw.items():
+        if k.startswith("_") or not isinstance(h, str) or not h.strip("@ "):
+            continue
+        b = k if k in leg else by_name.get(_ig_plain(k))
+        if b:
+            out[b] = h.strip("@ ").lower()
+    return out
+
+
 def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
     """Members' public Instagram posts through Meta's Instagram Business Discovery (free; owner's Meta app + token,
     Oct 21). Works for members whose accounts are Business or Creator accounts (most official ones are). Meta allows
-    about 200 calls an hour, so each run reads `per_run` accounts, the least recently read first."""
+    about 200 calls an hour, so each run reads `per_run` accounts, the least recently read first.
+    Oct 28 (owner): every member should have one, so each run also spends a few calls looking for members with no
+    account on file (likely usernames, accepted only when the bio shows it's them), and the members it can't read
+    are kept in R2 (posts/ig_status.json) for the Data health list."""
     token = (os.environ.get("META_ACCESS_TOKEN") or "").strip()
     if not token:
         _log("Instagram: waiting for the Meta setup (META_ACCESS_TOKEN not added yet)")
         return
+    igs = _ig_status()
+    bad, found, ok = igs.setdefault("bad", {}), igs.setdefault("found", {}), igs.setdefault("ok", {})
+    guessed, none = igs.setdefault("guessed", {}), igs.setdefault("none", {})
     handles = {}
     for b, m in leg.items():
         v = (m.get("social") or {}).get("instagram")
@@ -949,53 +1065,76 @@ def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
     for b, a in acc.items():
         for v in a.get("instagram") or []:
             handles.setdefault(v.strip("@").lower(), b)
+    for b, h in found.items():
+        if leg.get(b, {}).get("current"):
+            handles.setdefault(h, b)
+    for b, h in ig_manual(leg).items():          # handles the owner checked by hand (instagram_handles.json)
+        handles[h] = b
     ig = _meta_ig_user(token)
     if not ig:
         _log("Instagram: the Meta token can't see an Instagram professional account linked to a Facebook Page; set META_IG_USER_ID")
         return
+    now = time.time()
     seen_at = st.setdefault("ig_read", {})
-    skip = st.setdefault("ig_skip", {})          # not a Business/Creator account (or gone): look again in 30 days
-    ok_h = sorted(h for h in handles if time.time() - skip.get(h, 0) > 30 * 86400)
+    skip = st.setdefault("ig_skip", {})          # not a Business/Creator account (or gone): look again later
+    for h, x in bad.items():
+        if now - x.get("at", 0) < IG_RECHECK_DAYS * 86400:
+            skip[h] = max(skip.get(h, 0), x.get("at", 0))
+    ok_h = sorted(h for h in handles if now - skip.get(h, 0) > IG_RECHECK_DAYS * 86400)
     if rotate is not None and ok_h:       # the hourly job doesn't keep its state: take the next slice each hour
         k = (rotate * per_run) % len(ok_h)
         todo = (ok_h[k:] + ok_h[:k])[:per_run]
     else:
         todo = sorted(ok_h, key=lambda h: seen_at.get(h, 0))[:per_run]
     out_dir = _dir(cfg, "posts", "ig")
-    added, n, failed = 0, 0, []
+    added, n, failed, stop = 0, 0, [], None
+
+    def ask(h, fields):
+        """One Business Discovery call: (data, None) / (None, 'personal'|'missing'|'limit'|'token'|'app'|'other:..')."""
+        try:
+            r = requests.get(f"{META_GRAPH}/{ig}", params={"fields": f"business_discovery.username({h}){{{fields}}}",
+                                                           "access_token": token}, timeout=30)
+            js = r.json()
+        except Exception as e:
+            return None, f"other:{type(e).__name__}"
+        err = js.get("error") or {}
+        if not err:
+            return js.get("business_discovery") or {}, None
+        code, msg = err.get("code"), str(err.get("message") or "")
+        if code in (10, 200) and err.get("type") == "OAuthException":
+            # Oct 28: the token itself was valid (it read the owner's own account); Meta refused Business
+            # Discovery for the app. That needs a change in the Meta app (permissions / app mode), not a new token.
+            return None, "app:" + msg[:120]
+        if code in (190, 102):
+            return None, "token:" + msg[:120]
+        if code in (4, 17, 32, 613):
+            return None, "limit"
+        if code == 110 or "business" in msg.lower() or "creator" in msg.lower():
+            return None, "personal"
+        if code == 100 or err.get("error_subcode") in (2207013,):
+            return None, "missing"           # "Invalid user id": no such username (renamed or deleted)
+        return None, f"other:{code}"
+
     for h in todo:
         if time.time() > deadline:
             break
-        fields = f"business_discovery.username({h}){{media.limit(25){{caption,timestamp,permalink,media_type}}}}"
-        try:
-            r = requests.get(f"{META_GRAPH}/{ig}", params={"fields": fields, "access_token": token}, timeout=30)
-            js = r.json()
-        except Exception as e:
-            failed.append(f"{h} ({type(e).__name__})")
+        js, why = ask(h, "media.limit(25){caption,timestamp,permalink,media_type}")
+        if why and why.split(":")[0] in ("app", "token", "limit"):
+            stop = why
+            break
+        if why in ("personal", "missing"):
+            skip[h] = time.time()
+            bad[h] = {"b": handles[h], "why": why, "at": time.time()}
+            ok.pop(h, None)
             continue
-        err = js.get("error") or {}
-        if err:
-            code = err.get("code")
-            if code in (10, 200) and err.get("type") == "OAuthException":
-                # Oct 28: the token itself was valid (it read the owner's own account); Meta refused Business
-                # Discovery for the app. That needs a change in the Meta app (access level / app mode), not a new token.
-                _log(f"Instagram: Meta refused Business Discovery for this app ({str(err.get('message'))[:120]}); "
-                     "the token works, but the Meta app needs Business Discovery access (app mode or advanced access)")
-                return
-            if code in (190, 102):          # (code 100 "Invalid user id" etc. is one missing account: skipped below)
-                _log(f"Instagram: the Meta access token was refused ({str(err.get('message'))[:120]}); it may have expired")
-                return
-            if code in (4, 17, 32, 613):
-                _log("Instagram: Meta's hourly limit reached; the next run continues")
-                break
-            if code == 110 or err.get("error_subcode") in (2207013,) or "business" in str(err.get("message", "")).lower() or code == 100:
-                skip[h] = time.time()           # a personal account or no such account: Business Discovery can't read it
-                continue
-            failed.append(f"{h} ({code})")
+        if why:
+            failed.append(f"{h} ({why.split(':', 1)[-1]})")
             continue
         n += 1
         seen_at[h] = time.time()
-        media = ((js.get("business_discovery") or {}).get("media") or {}).get("data") or []
+        bad.pop(h, None)
+        ok[h] = {"b": handles[h], "at": time.time()}
+        media = (js.get("media") or {}).get("data") or []
         path = os.path.join(out_dir, re.sub(r"[^a-z0-9._-]", "_", h) + ".jsonl.gz")
         old = read_jsonl(path) if os.path.exists(path) else []
         have = {x[4] for x in old}
@@ -1012,8 +1151,60 @@ def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
         if rows or not os.path.exists(path):
             write_jsonl(path, sorted(old + rows, key=lambda x: x[0]))
         added += len(rows)
+
+    # members with no account on file: try likely usernames, a few calls a run, accept only a clear match
+    newly, gone_none, calls = [], 0, 0
+    have_b = set(handles.values())
+    for b in [b for b in none if b in have_b]:      # an account turned up (a list, or the owner's file)
+        none.pop(b)
+    missing_b = [b for b, m in leg.items() if m.get("current") and b not in have_b]
+    for b in sorted(missing_b, key=lambda b: guessed.get(b, {}).get("at", 0)):
+        if stop or calls >= IG_GUESS_PER_RUN or time.time() > deadline:
+            break
+        g = guessed.setdefault(b, {"c": [], "at": 0})
+        if b in none and now - none[b] < IG_GUESS_AGAIN_DAYS * 86400:
+            continue
+        if b in none:                       # searched before and found nothing: start over after a month
+            g["c"] = []
+            none.pop(b)
+        left = [c for c in _ig_candidates(leg[b]) if c not in g["c"]]
+        for c in left:
+            if calls >= IG_GUESS_PER_RUN:
+                break
+            calls += 1
+            info, why = ask(c, "username,name,biography,website")
+            if why and why.split(":")[0] in ("app", "token", "limit"):
+                stop = why
+                break
+            g["c"].append(c)
+            g["at"] = time.time()
+            if info and _ig_is_member(info, leg[b]):
+                found[b] = c
+                none.pop(b, None)
+                newly.append(f"{leg[b].get('name')} @{c}")
+                break
+        else:
+            if b not in found and not [c for c in _ig_candidates(leg[b]) if c not in g["c"]]:
+                none[b] = time.time()      # every likely username tried: list the member for a manual check
+                gone_none += 1
+    igs["handles"] = {h: b for h, b in handles.items() if leg.get(b, {}).get("current")}
+    igs["at"] = dt.datetime.utcnow().isoformat(timespec="seconds")
+    _ig_status_save(igs)
+    if stop and stop.startswith("app"):
+        _log(f"Instagram: Meta refused Business Discovery for this app ({stop[4:]}); the token works, but the Meta app "
+             "needs Business Discovery access (instagram_manage_insights and ads_read permissions, app published)")
+        return
+    if stop and stop.startswith("token"):
+        _log(f"Instagram: the Meta access token was refused ({stop[6:]}); it may have expired")
+        return
+    if stop == "limit":
+        _log("Instagram: Meta's hourly limit reached; the next run continues")
+    cur_b = {b for b, m in leg.items() if m.get("current")}
     _log(f"Instagram: {n} of {len(handles)} member accounts read this run, +{added:,} posts"
-         + (f"; {sum(1 for h in handles if h in skip)} aren't Business/Creator accounts (Meta can't read those)" if skip else "")
+         + (f"; found accounts for {', '.join(newly)}" if newly else "")
+         + f"; {len(cur_b - set(handles.values()) - set(found))} members still have no account on file"
+         + f" ({sum(1 for b in none if b in cur_b)} searched with no match)"
+         + (f"; {sum(1 for x in bad.values() if x.get('b') in cur_b)} accounts can't be read" if bad else "")
          + (f"; failed for {len(failed)}: {', '.join(failed[:6])}" if failed else ""))
 
 
