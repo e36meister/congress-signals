@@ -8465,6 +8465,7 @@ def apply_tie_reviews(df, reviews, person_col):
         df.loc[v == "no", "confidence"] = TIE_REJECTED
         df.loc[v == "relative", "confidence"] = TIE_AS_RELATIVE
         df["review_rel"] = df["key"].map(lambda k: (reviews.get(k) or {}).get("rel") or "relative")
+        df["review_note"] = df["key"].map(lambda k: str((reviews.get(k) or {}).get("note") or "").strip())
     return df
 
 
@@ -8522,8 +8523,9 @@ def relationship_features(tx, data, cfg, mems):
     if st_ is not None and len(st_):
         ok = st_[st_["confidence"].isin(TIE_CONFIRMED)]
         lastc = ok["last_filed"] if "last_filed" in ok else pd.Series([None] * len(ok), index=ok.index)
-        tie = {(b, t): (f0, sp, role, l0) for b, t, f0, sp, role, l0 in
-               zip(ok["bioguide"], ok["ticker"], ok["first_filed"], ok["spouse"], ok["role"], lastc)}
+        notec = ok["review_note"].fillna("") if "review_note" in ok else pd.Series("", index=ok.index)
+        tie = {(b, t): (f0, sp, role, l0, nt_) for b, t, f0, sp, role, l0, nt_ in
+               zip(ok["bioguide"], ok["ticker"], ok["first_filed"], ok["spouse"], ok["role"], lastc, notec)}
         fs, nt = np.zeros(n), [""] * n
         for i, (m, t, f) in enumerate(zip(mems, tx["ticker"], fdt)):
             h = tie.get(((m or {}).get("bioguide"), t))
@@ -8533,6 +8535,8 @@ def relationship_features(tx, data, cfg, mems):
             elif stt == "former":
                 fs[i], nt[i] = TIE_FORMER_WEIGHT, (f"spouse {h[1]} was a company insider ({h[2].lower()}) per SEC filings; "
                                                    + _former_note(h[3], f))
+        nt = [x + (f" (your note: {tie[((m or {}).get('bioguide'), t)][4]})" if x and tie.get(((m or {}).get("bioguide"), t), ("",) * 5)[4] else "")
+              for x, m, t in zip(nt, mems, tx["ticker"])]
         tx["f_spouse_insider"], tx["spouse_note"] = fs, nt
     tx["f_relative_tie"], tx["relative_note"] = 0.0, ""
     rt_ = data.get("relative_ties")
@@ -8540,10 +8544,11 @@ def relationship_features(tx, data, cfg, mems):
         ok = rt_[rt_["confidence"].isin(TIE_CONFIRMED)].dropna(subset=["first_filed"])
         lastc = ok["last_filed"] if "last_filed" in ok else pd.Series([None] * len(ok), index=ok.index)
         tie = {}
-        for b, t, f0, nm, rel, role, l0 in zip(ok["bioguide"], ok["ticker"], ok["first_filed"], ok["relative"],
-                                               ok["relation"], ok["role"], lastc):
+        notec = ok["review_note"].fillna("") if "review_note" in ok else pd.Series("", index=ok.index)
+        for b, t, f0, nm, rel, role, l0, nt_ in zip(ok["bioguide"], ok["ticker"], ok["first_filed"], ok["relative"],
+                                                    ok["relation"], ok["role"], lastc, notec):
             if (b, t) not in tie or f0 < tie[(b, t)][0]:
-                tie[(b, t)] = (f0, nm, rel, role, l0)
+                tie[(b, t)] = (f0, nm, rel, role, l0, nt_)
         fr, nr = np.zeros(n), [""] * n
         for i, (m, t, f) in enumerate(zip(mems, tx["ticker"], fdt)):
             h = tie.get(((m or {}).get("bioguide"), t))
@@ -8553,6 +8558,8 @@ def relationship_features(tx, data, cfg, mems):
             elif stt == "former":
                 fr[i], nr[i] = TIE_FORMER_WEIGHT, (f"{h[2]} {h[1]} was a company insider ({str(h[3]).lower()}) per SEC "
                                                    f"filings; " + _former_note(h[4], f))
+        nr = [x + (f" (your note: {tie[((m or {}).get('bioguide'), t)][5]})" if x and tie.get(((m or {}).get("bioguide"), t), ("",) * 6)[5] else "")
+              for x, m, t in zip(nr, mems, tx["ticker"])]
         tx["f_relative_tie"], tx["relative_note"] = fr, nr
     # family ties not confirmed by state (SEC filers often give the company's address): not scored, but flagged in
     # Worth a look so the owner sees every possible one
