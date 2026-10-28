@@ -43,6 +43,7 @@ jobs:
           TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
           QUIVER_API_KEY: ${{ secrets.QUIVER_API_KEY }}
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
           DISCLOSED_CAPITOL_API_KEY: ${{ secrets.DISCLOSED_CAPITOL_API_KEY }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
