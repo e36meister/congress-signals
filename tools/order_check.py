@@ -11,6 +11,6 @@ except Exception as e:
     print("position: none", type(e).__name__)
 after = (dt.datetime.utcnow() - dt.timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
 for o in api.get("/v2/orders", status="all", limit=100, direction="desc", after=after, symbols=broker.to_alpaca(T)):
-    print("order", o["side"], o.get("qty"), o.get("notional"), o["status"], "filled", o.get("filled_qty"), "@", o.get("filled_avg_price"),
+    print("order", o["side"], o.get("type"), "limit", o.get("limit_price"), "ext", o.get("extended_hours"), o.get("qty"), o.get("notional"), o["status"], "filled", o.get("filled_qty"), "@", o.get("filled_avg_price"),
           o.get("client_order_id"), "submitted", o.get("submitted_at"), "filled_at", o.get("filled_at"), "canceled", o.get("canceled_at"))
 c = api.get("/v2/clock"); print("market open", c.get("is_open"), "next open", c.get("next_open"))
