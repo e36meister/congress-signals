@@ -304,7 +304,13 @@ def parse_house_ptr_text(text):
         if c.group(4).startswith("SPOUSE/DC"):
             lo, hi = 1000001.0, 5000000.0
         notes = [n.group(1).strip() for n in HOUSE_NOTE.finditer(text[ls:row_end])]
-        out.append({"ticker": ticker, "asset_type": atype, "tx_raw": c.group(1).replace("PARTIAL", "partial"),
+        # the asset as written (Oct 29: kept for bonds and other non-stock rows): the row's text before the
+        # transaction columns plus its wrapped lines, without the owner code, ticker and [XX] tag
+        cont_txt = text[c.end():c.end() + len(cont)]
+        asset = re.sub(r"\s+", " ", (text[ls:c.start()] + " " + cont_txt).replace("\n", " "))
+        asset = re.sub(r"^\s*(SP|JT|DC)\s+", "", re.sub(r"\[[A-Za-z]{2}\]|\([A-Za-z][A-Za-z0-9.\-/]{0,7}\)", " ", asset))
+        out.append({"ticker": ticker, "asset_type": atype, "asset": re.sub(r"\s+", " ", asset).strip()[:200] or None,
+                    "tx_raw": c.group(1).replace("PARTIAL", "partial"),
                     "trade_date": c.group(2), "notif_date": c.group(3), "amt_lo": lo, "amt_hi": hi,
                     "owner": own.group(1) if own else "", "option": opt, "note": " ".join(n for n in notes if n) or None})
     return out
@@ -950,6 +956,35 @@ def senate_list(s, data):
         return r.json().get("data", [])
     except ValueError:
         raise RuntimeError(f"not a filings list (HTTP 200, {len(r.content)} bytes: {r.text[:80]!r})")
+
+
+def parse_senate_other_html(html):
+    """Oct 29: the rows parse_senate_ptr_html leaves out (municipal and corporate bonds, Treasuries, other assets),
+    with the asset name and type as written, for the bonds-and-safety views. None if no trade table."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "lxml")
+    table = soup.find("table")
+    if table is None:
+        return []
+    heads = [h.get_text(" ", strip=True).lower() for h in table.find_all("th")]
+    if not any("transaction date" in h for h in heads):
+        return None
+    idx = lambda name, exact=False: next((i for i, h in enumerate(heads) if (h == name if exact else name in h)), None)
+    ci = {"date": idx("transaction date"), "owner": idx("owner"), "name": idx("asset name"), "atype": idx("asset type"),
+          "type": idx("type", True), "amount": idx("amount"), "comment": idx("comment")}
+    out = []
+    for tr in (table.find("tbody") or table).find_all("tr"):
+        tds = [td.get_text(" ", strip=True) for td in tr.find_all("td")]
+        if len(tds) < len(heads) or not tds:
+            continue
+        g = lambda k: tds[ci[k]] if ci[k] is not None and ci[k] < len(tds) else None
+        atype = (g("atype") or "").strip()
+        if not atype or any(k in atype.lower() for k in ("stock", "fund", "etf", "option")):
+            continue
+        lo, hi = parse_amount(g("amount"))
+        out.append({"trade_date": g("date"), "owner": g("owner"), "asset": re.sub(r"\s+", " ", g("name") or "")[:200],
+                    "asset_type": atype, "tx_raw": g("type"), "amt_lo": lo, "amt_hi": hi})
+    return out
 
 
 def parse_senate_ptr_html(html):
