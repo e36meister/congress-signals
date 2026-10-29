@@ -1085,7 +1085,7 @@ def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
     handles = {}
     for b, m in leg.items():
         v = (m.get("social") or {}).get("instagram")
-        if m.get("current") and isinstance(v, str) and v:
+        if m.get("current") and isinstance(v, str) and v and not _not_a_handle(v.strip("@")):
             handles[v.strip("@").lower()] = b
     # Oct 29: a handle linked from several members' websites is a shared account (a party or caucus account in the
     # page footer, e.g. @houserepublicans on Mark Messmer's site), not any one member's: don't file it as theirs.
@@ -1099,13 +1099,14 @@ def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
             if not _not_a_handle(v) and len(site_ig[v]) == 1:
                 handles.setdefault(v, b)
     for b, h in found.items():
-        if leg.get(b, {}).get("current"):
+        if leg.get(b, {}).get("current") and not _not_a_handle(h):
             handles.setdefault(h, b)
     extra = igs.setdefault("extra", {})          # second accounts found for members (owner: read both, Oct 28)
     for b, hs in extra.items():
         if leg.get(b, {}).get("current"):
             for h in hs:
-                handles.setdefault(h, b)
+                if not _not_a_handle(h):
+                    handles.setdefault(h, b)
     for b, hs in ig_manual(leg).items():         # handles the owner checked by hand (instagram_handles.json)
         for h in hs:
             handles[h] = b
