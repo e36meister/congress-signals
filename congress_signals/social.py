@@ -944,7 +944,16 @@ def _meta_ig_user(token):
     if os.environ.get("META_IG_USER_ID"):
         return os.environ["META_IG_USER_ID"].strip()
     r = requests.get(META_GRAPH + "/me/accounts", params={"fields": "instagram_business_account", "access_token": token}, timeout=30)
-    for pg in (r.json().get("data") or []) if r.status_code == 200 else []:
+    try:
+        js = r.json()
+    except Exception:
+        js = {}
+    if r.status_code != 200:
+        # Oct 29: Meta answered "API access blocked." (code 200) to every call, /me included; that used to be logged as
+        # "can't see an Instagram account", which Data health didn't count. Say what Meta said, as a failure.
+        e = js.get("error") or {}
+        raise RuntimeError(f"Meta refused the request (HTTP {r.status_code}, code {e.get('code')}: {str(e.get('message') or '')[:120]})")
+    for pg in js.get("data") or []:
         if (pg.get("instagram_business_account") or {}).get("id"):
             return pg["instagram_business_account"]["id"]
     return None
@@ -1110,9 +1119,15 @@ def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
     for b, hs in ig_manual(leg).items():         # handles the owner checked by hand (instagram_handles.json)
         for h in hs:
             handles[h] = b
-    ig = _meta_ig_user(token)
+    try:
+        ig = _meta_ig_user(token)
+    except Exception as e:
+        _log(f"Instagram: failed, nothing read this run. {e}. If it says 'API access blocked', Meta has restricted the "
+             "Meta app: open developers.facebook.com, select the app and check its alerts / App Review status")
+        return
     if not ig:
-        _log("Instagram: the Meta token can't see an Instagram professional account linked to a Facebook Page; set META_IG_USER_ID")
+        _log("Instagram: failed, the Meta token can't see an Instagram professional account linked to a Facebook Page; "
+             "set META_IG_USER_ID")
         return
     now = time.time()
     seen_at = st.setdefault("ig_read", {})
