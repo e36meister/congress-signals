@@ -471,12 +471,18 @@ NOT_MASTO = ("youtube", "tiktok", "threads", "medium", "instagram", "facebook", 
 # instagram.com/facebook.com paths that are pages or scripts, not accounts (Oct 29: a site's embed script
 # instagram.com/embed.js was read as Barrasso's account "@embed.js")
 NOT_HANDLES = {"p", "sharer", "share", "sharer.php", "reel", "reels", "tr", "plugins", "explore", "accounts", "about",
-               "developer", "legal", "embed", "stories", "tv", "watch", "pages", "groups", "events", "help", "privacy"}
+               "developer", "legal", "embed", "stories", "tv", "watch", "pages", "groups", "events", "help", "privacy",
+               "v", "o1"}
+# party, caucus and chamber accounts that members link in their site footers (Oct 29: @houserepublicans was filed as
+# Mark Messmer's account). They aren't any one member's.
+PARTY_HANDLES = {"houserepublicans", "housegop", "housedemocrats", "housedems", "senategop", "senaterepublicans",
+                 "senatedems", "senatedemocrats", "gop", "thedemocrats", "dnc", "rnc", "nrcc", "dccc", "nrsc", "dscc",
+                 "whitehouse", "uscapitol", "ushouse", "ussenate", "housedemocraticcaucus"}
 
 
 def _not_a_handle(v):
     v = (v or "").lower().strip(".")
-    return v in NOT_HANDLES or bool(re.search(r"\.(?:js|css|php|html?|png|jpe?g|svg|gif)$", v))
+    return v in NOT_HANDLES or v in PARTY_HANDLES or bool(re.search(r"\.(?:js|css|php|html?|png|jpe?g|svg|gif)$", v))
 
 
 def discover_accounts(cfg, leg, st, deadline):
