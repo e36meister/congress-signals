@@ -11,9 +11,7 @@ def get(path, **p):
 _, acc = get("/me/accounts", fields="instagram_business_account")
 ig = next((pg["instagram_business_account"]["id"] for pg in acc.get("data") or [] if pg.get("instagram_business_account")), None)
 print("own ig found:", bool(ig))
-for h in ["nasa", "zzqx_no_such_user_88123", "senatorbaldwin", "senjerrymoran", "repstenyhoyer", "mcconnellpress",
-          "houserepublicans", "senatorfischer", "repandybiggs", "repgarypalmer", "embed.js", "speakerpelosi",
-          "aoc", "sensanders", "repmikerogersal", "reprileymoore"]:
+for h in ["nasa", "anguskingmaine", "darlinegrahamsc"]:
     sc, js = get(f"/{ig}", fields=f"business_discovery.username({h}){{username,name,website,followers_count,media_count}}")
     e = js.get("error") or {}
     if e:
