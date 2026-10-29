@@ -26,3 +26,12 @@ for pre in ("senate_import/pending/", "senate_import/failed/"):
         print("   page start:", repr(t[:500]))
         for tag in ("h1", "h2", "h3"):
             print(f"   {tag}:", [x.get_text(" ", strip=True)[:120] for x in BeautifulSoup(html, "lxml").find_all(tag)][:6])
+
+# every row of each failed filing's table, as the page shows it
+for k in [k for k in cloud_store.list_keys("senate_import/failed/", log=lambda m: None) if k.endswith(".json")][-2:]:
+    html = (json.loads(cloud_store.get(k, log=lambda m: None) or b"{}").get("html") or "")
+    soup = BeautifulSoup(html, "lxml")
+    for ti, tb in enumerate(soup.find_all("table")):
+        print(f"\nTABLE {ti} heads:", [h.get_text(" ", strip=True) for h in tb.find_all("th")])
+        for tr in tb.find_all("tr")[:30]:
+            print("   ", [td.get_text(" ", strip=True)[:60] for td in tr.find_all("td")])
