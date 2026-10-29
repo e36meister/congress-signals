@@ -468,6 +468,17 @@ SOCIAL_LINKS = {
 NOT_MASTO = ("youtube", "tiktok", "threads", "medium", "instagram", "facebook", "twitter", "x.com", "substack", "truthsocial", "bsky")
 
 
+# instagram.com/facebook.com paths that are pages or scripts, not accounts (Oct 29: a site's embed script
+# instagram.com/embed.js was read as Barrasso's account "@embed.js")
+NOT_HANDLES = {"p", "sharer", "share", "sharer.php", "reel", "reels", "tr", "plugins", "explore", "accounts", "about",
+               "developer", "legal", "embed", "stories", "tv", "watch", "pages", "groups", "events", "help", "privacy"}
+
+
+def _not_a_handle(v):
+    v = (v or "").lower().strip(".")
+    return v in NOT_HANDLES or bool(re.search(r"\.(?:js|css|php|html?|png|jpe?g|svg|gif)$", v))
+
+
 def discover_accounts(cfg, leg, st, deadline):
     """Accounts linked from members' official websites (bluesky, threads, substack, mastodon, youtube, ...).
     Re-checked every 30 days, a batch per run."""
@@ -497,7 +508,7 @@ def discover_accounts(cfg, leg, st, deadline):
                     found.add(next(g for g in m.groups() if g))
                 else:
                     v = m.group(1).strip(".")
-                    if k in ("instagram", "facebook") and v.lower() in ("p", "sharer", "share", "sharer.php", "reel", "tr", "plugins"):
+                    if k in ("instagram", "facebook") and _not_a_handle(v):
                         continue
                     found.add(v)
             if found:
@@ -1010,9 +1021,11 @@ def ig_unreadable(leg):
         who = f"{m.get('name')} ({m.get('state')}, {m.get('chamber')})"
         if any(x.get("b") == b for x in ok.values()):
             continue
-        if b in per and all_h.get(b, set()) <= {h for h, _ in per[b]}:     # every account on file is unreadable
-            why = "; ".join(f"@{h}: " + ("a personal account (Meta only lets apps read Business/Creator accounts)"
-                                          if w == "personal" else "no such account (renamed or deleted?)") for h, w in per[b])
+        if b in per and b in all_h and all_h[b] <= {h for h, _ in per[b]}:     # every account on file is unreadable
+            # Oct 29 (probe): Meta answers the same "Cannot find User" (code 110) for a personal account and for a
+            # username that doesn't exist, so the line can't say which it is
+            why = "; ".join(f"@{h}: Meta can't find it (a personal account, which Meta doesn't let apps read, "
+                            "or the username changed)" for h, w in per[b])
             lines.append(f"Instagram: can't read {who}. {why}. Please check their Instagram and send me the right handle")
         elif b in (igs.get("none") or {}) and b not in all_h:
             lines.append(f"Instagram: no account found for {who} (none on file, and {len(tried.get(b, {}).get('c', []))} "
@@ -1068,9 +1081,17 @@ def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
         v = (m.get("social") or {}).get("instagram")
         if m.get("current") and isinstance(v, str) and v:
             handles[v.strip("@").lower()] = b
+    # Oct 29: a handle linked from several members' websites is a shared account (a party or caucus account in the
+    # page footer, e.g. @houserepublicans on Mark Messmer's site), not any one member's: don't file it as theirs.
+    site_ig = {}
     for b, a in acc.items():
         for v in a.get("instagram") or []:
-            handles.setdefault(v.strip("@").lower(), b)
+            site_ig.setdefault(v.strip("@").lower(), set()).add(b)
+    for b, a in acc.items():
+        for v in a.get("instagram") or []:
+            v = v.strip("@").lower()
+            if not _not_a_handle(v) and len(site_ig[v]) == 1:
+                handles.setdefault(v, b)
     for b, h in found.items():
         if leg.get(b, {}).get("current"):
             handles.setdefault(h, b)
@@ -1233,6 +1254,8 @@ def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
             g["xdone"] = time.time()
     if newly_x:
         newly += [x + " (second account)" for x in newly_x]
+    for h in [h for h in bad if h not in handles]:     # dropped from the lists (e.g. not a real account handle)
+        bad.pop(h)
     igs["handles"] = {h: b for h, b in handles.items() if leg.get(b, {}).get("current")}
     igs["at"] = dt.datetime.utcnow().isoformat(timespec="seconds")
     _ig_status_save(igs)

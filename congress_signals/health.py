@@ -60,6 +60,16 @@ def _no_matches(r):
         return False
 
 
+def _ig_not_found(r):
+    """Instagram Business Discovery answers a username it can't read (a personal account, or renamed) with HTTP 400
+    "Cannot find User" (code 110, subcode 2207013): an answer about that one account, not the site failing."""
+    try:
+        b = (r.content or b"")[:600]
+        return b"2207013" in b and b"Invalid user id" in b
+    except Exception:
+        return False
+
+
 def install(job=None):
     """Patch requests once so every call is tallied; register the exit hook. Safe to call many times.
     The job is named after the script that's running (research tools in tools/ don't report)."""
@@ -87,6 +97,8 @@ def install(job=None):
                 # openFDA answers a search with no results as 404 "No matches found!" (a company with no drug
                 # applications); a moved address or a broken query would come back differently or for every company
                 sc = 200
+            if sc == 400 and host == "graph.facebook.com" and _ig_not_found(r):
+                sc = 404      # tallied as 'not found'; the account itself is listed in Data health for a manual check
             if sc < 400:
                 h["ok"] += 1
             elif sc in (404, 410):
