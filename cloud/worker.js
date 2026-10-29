@@ -554,13 +554,38 @@ async function mirrorSubstack(env) {
   const bad = [];
   for (const s of subs) {
     try {
-      const r = await fetch(`https://${s}.substack.com/feed`, { headers: { "User-Agent": "Mozilla/5.0 (compatible; CapitolCapital/1.0)", Accept: "application/rss+xml, application/xml" } });
-      const t = r.ok ? await r.text() : "";
-      if (!r.ok || !t.includes("<rss")) { bad.push(`${s} (HTTP ${r.status})`); continue; }
-      await env.DATA.put(`feeds/substack/${s}.json`, JSON.stringify({ at: new Date().toISOString(), xml: t }), { httpMetadata: { contentType: "application/json" } });
+      // Oct 29: Substack started answering the Worker with HTTP 429 (too many requests) for some feeds. Wait as long
+      // as it asks (up to 20 s) and try again; if the feed still won't load, read the newsletter's post list
+      // (/api/v1/archive, a different Substack address) and keep it in the same RSS shape the posts jobs read.
+      let r = await substackGet(`https://${s}.substack.com/feed`, "application/rss+xml, application/xml");
+      let t = r.ok ? await r.text() : "", via = "feed", why = `HTTP ${r.status}`;
+      if (!r.ok || !t.includes("<rss")) {
+        const a = await substackGet(`https://${s}.substack.com/api/v1/archive?sort=new&limit=20`, "application/json");
+        const posts = a.ok ? await a.json().catch(() => null) : null;
+        if (Array.isArray(posts) && posts.length) { t = substackRss(posts); via = "archive"; }
+        else { bad.push(`${s} (${why}; backup HTTP ${a.status})`); continue; }
+      }
+      await env.DATA.put(`feeds/substack/${s}.json`, JSON.stringify({ at: new Date().toISOString(), via, xml: t }), { httpMetadata: { contentType: "application/json" } });
     } catch (e) { bad.push(`${s} (${String(e && e.message || e).slice(0, 40)})`); }
   }
   if (bad.length) throw new Error(`${bad.length} of ${subs.length} feeds didn't load: ${bad.slice(0, 6).join(", ")}`);
+}
+async function substackGet(url, accept) {
+  let r;
+  for (let i = 0; i < 3; i++) {
+    r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; CapitolCapital/1.0)", Accept: accept } });
+    if (r.status !== 429 && r.status < 500) return r;
+    const wait = Math.min(20, Math.max(2, parseInt(r.headers.get("Retry-After") || "", 10) || 5 * (i + 1)));
+    await new Promise(ok => setTimeout(ok, wait * 1000));
+  }
+  return r;
+}
+function substackRss(posts) {
+  const x = v => String(v || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const items = posts.filter(p => p && p.canonical_url && p.post_date).map(p =>
+    `<item><title>${x(p.title)}</title><link>${x(p.canonical_url)}</link><pubDate>${new Date(p.post_date).toUTCString()}</pubDate>` +
+    `<description>${x([p.subtitle || p.description, p.truncated_body_text].filter(Boolean).join(" "))}</description></item>`);
+  return `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>${items.join("")}</channel></rss>`;
 }
 
 async function r2json(env, key, dflt) { try { const o = await env.DATA.get(key); if (o) return await o.json(); } catch (e) {} return dflt; }
