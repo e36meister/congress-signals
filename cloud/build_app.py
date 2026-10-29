@@ -184,6 +184,34 @@ start = src.index("// ---------- data from Google Drive ----------")
 end = src.index("})();\n</script>")
 src = src[:start] + open(os.path.join(HERE, "data_layer.js"), encoding="utf-8").read() + src[end:]
 
+# ---- no autocorrect, auto-capitals or spell-check in any text box (owner, Oct 29) ----
+# Boxes are drawn and redrawn by the page's code, so a watcher marks every box as it appears.
+nocorrect = """<script>
+(function () {
+  function off(el) {
+    if (el.dataset.nocorrect) return;
+    el.dataset.nocorrect = "1";
+    el.setAttribute("autocorrect", "off");
+    el.setAttribute("autocapitalize", "off");
+    el.setAttribute("spellcheck", "false");
+    el.spellcheck = false;
+    if (!el.hasAttribute("autocomplete")) el.setAttribute("autocomplete", "off");
+  }
+  function scan(root) {
+    if (!root || !root.querySelectorAll) return;
+    if (root.matches && root.matches("input,textarea,[contenteditable]")) off(root);
+    root.querySelectorAll("input,textarea,[contenteditable]").forEach(off);
+  }
+  function start() {
+    scan(document.body);
+    new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(scan))).observe(document.body, { childList: true, subtree: true });
+  }
+  if (document.body) start(); else document.addEventListener("DOMContentLoaded", start);
+})();
+</script>
+"""
+src = sub("</body></html>", nocorrect + "</body></html>", src)
+
 for gone in ("mcp.callTool", "window.claude", "order_request_${"):
     if gone in src:
         sys.exit(f"build_app: leftover Drive code: {gone}")

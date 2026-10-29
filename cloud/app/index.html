@@ -3248,4 +3248,27 @@ api("/api/session").then(() => { loadData(); alertsState(); refreshAlerts(); }, 
 })();
 </script>
 
+<script>
+(function () {
+  function off(el) {
+    if (el.dataset.nocorrect) return;
+    el.dataset.nocorrect = "1";
+    el.setAttribute("autocorrect", "off");
+    el.setAttribute("autocapitalize", "off");
+    el.setAttribute("spellcheck", "false");
+    el.spellcheck = false;
+    if (!el.hasAttribute("autocomplete")) el.setAttribute("autocomplete", "off");
+  }
+  function scan(root) {
+    if (!root || !root.querySelectorAll) return;
+    if (root.matches && root.matches("input,textarea,[contenteditable]")) off(root);
+    root.querySelectorAll("input,textarea,[contenteditable]").forEach(off);
+  }
+  function start() {
+    scan(document.body);
+    new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(scan))).observe(document.body, { childList: true, subtree: true });
+  }
+  if (document.body) start(); else document.addEventListener("DOMContentLoaded", start);
+})();
+</script>
 </body></html>
