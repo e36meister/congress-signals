@@ -149,7 +149,7 @@ src = sub("state.requests.find(f => f.title.startsWith(\"order_request_\") && ti
 src = sub("const tickerOf = name =>", "const OPEN = [\"new\", \"accepted\", \"pending_new\", \"partially_filled\", \"accepted_for_bidding\", \"held\", \"calculated\"];\nconst tickerOf = name =>", src)
 src = sub("<span class=\"chip new\">Order pending</span>", "<span class=\"chip new\">Order placed · waiting to fill</span>", src)
 src = sub("<span class=\"foot\">Placed within about 15 minutes, or at the next market open.</span></div>`;",
-          "<span class=\"foot\">Sent to Alpaca right away; fills now if the market is open, otherwise at the next open.</span>"
+          "<span class=\"foot\">Sent to Alpaca right away; fills now if the market is open, otherwise tries after-hours and pre-market (within 0.5% of the last price), then the open.</span>"
           "${state.tapMsg[r.t] ? `<div class=\"tapmsg neg\">${esc(state.tapMsg[r.t].text)}</div>` : \"\"}</div>`;", src)
 
 # "From the Buy button" section: real orders from Alpaca instead of request files

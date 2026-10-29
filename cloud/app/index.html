@@ -1040,7 +1040,7 @@ function confirmBox(r) {
     <span class="${real ? "real" : ""}">${real ? "Real money account" : "Paper account (fake money)"}</span>
     <button type="button" class="buybtn" data-send="${esc(r.t)}"${state.sending ? " disabled" : ""}>${state.sending ? "Sending…" : "Send order"}</button>
     <button type="button" class="link" data-cancel="1">Cancel</button>
-    <span class="foot">Sent to Alpaca right away; fills now if the market is open, otherwise at the next open.</span>${state.tapMsg[r.t] ? `<div class="tapmsg neg">${esc(state.tapMsg[r.t].text)}</div>` : ""}</div>`;
+    <span class="foot">Sent to Alpaca right away; fills now if the market is open, otherwise tries after-hours and pre-market (within 0.5% of the last price), then the open.</span>${state.tapMsg[r.t] ? `<div class="tapmsg neg">${esc(state.tapMsg[r.t].text)}</div>` : ""}</div>`;
 }
 
 // ---------- shorthand tags: a short word on the card, the full reason in a popup ----------
@@ -1674,7 +1674,7 @@ function sellRow(x) {
       <span class="segs">${opt("shares", "Shares")}${opt("dollars", "$")}</span></div>
     <div class="foot" id="sconv-${esc(t)}">${esc(sellConv(x, mode, v))}</div>
     <div><button type="button" class="link" data-sellall="${esc(t)}">Sell all ${sh} shares</button></div>
-    <div class="foot">${real ? "Real money account" : "Paper account (fake money)"} · fills now if the market is open, otherwise at the next open.</div>
+    <div class="foot">${real ? "Real money account" : "Paper account (fake money)"} · fills now if the market is open; otherwise tries after-hours and pre-market within 0.5% of the last price, then the open.</div>
     <div style="display:flex;gap:10px;align-items:center"><button type="button" class="sellbtn go" data-sellsend="${esc(t)}"${state.selling ? " disabled" : ""}>${state.selling ? "Sending…" : "Send sell order"}</button>
       <button type="button" class="link" data-sellcancel="1">Cancel</button></div>
     ${m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</div></td></tr>`;
@@ -3039,7 +3039,7 @@ async function sendOrder(t) {
   try {
     const { js } = await api("/api/buy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t, dollars }) });
     state.tapMsg[t] = { ok: true, text: `Order placed: ${money(dollars)} of ${t}` + (js.qty ? ` (${js.qty} shares)` : "") +
-      (js.market_open ? "." : `. It fills when the market opens (${fmtET(js.next_open)}).`) };
+      (js.market_open ? "." : ". Until the open it tries after-hours (to 8 PM) and pre-market (from 4 AM) within 0.5% of the last price; if it hasn't filled by 9:30, it fills at the open.") };
     state.confirm = null;
     loadLive();
   } catch (e) {
@@ -3059,7 +3059,7 @@ async function sendSell(t) {
     const { js } = await api("/api/sell", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t, mode, amount }) });
     const what = js.all ? `all of ${t}` : js.qty ? `${Number(js.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh of ${t}` : `${money(js.notional)} of ${t}`;
     state.sellMsg[t] = { ok: true, text: `Sell order placed: ${what}${js.value ? ` (about ${money(js.value)})` : ""}` +
-      (js.market_open ? "." : `. It fills when the market opens (${fmtET(js.next_open)}).`) };
+      (js.market_open ? "." : ". Until the open it tries after-hours (to 8 PM) and pre-market (from 4 AM) within 0.5% of the last price; if it hasn't filled by 9:30, it fills at the open.") };
     state.sellOpen = null;
     loadLive();
   } catch (e) {

@@ -26,6 +26,7 @@ export default {
     await step("outbox", "Sending phone alerts", () => drainOutbox(env));
     const min = new Date(ev.scheduledTime).getUTCMinutes();
     if (min % 2 === 0) await step("fills", "Checking for new fills", () => checkFills(env));
+    if (min % 3 === 0) await step("buy", "Managing pre-market and after-hours orders", () => extendedHours(env, new Date(ev.scheduledTime)));
     await step("quick", "Starting the filings check", () => startQuickCheck(env, min));
     await step("daily", "Starting the daily update", () => startDailyOnTime(env, new Date(ev.scheduledTime)));
     if (min === 5) await step("substack", "Reading members' Substack feeds", () => mirrorSubstack(env));
@@ -228,7 +229,8 @@ function alpaca(env) {
     try { data = await r.json(); } catch (e) {}
     return { status: r.status, ok: r.ok, data };
   };
-  return { mode, ready: !!(env.ALPACA_KEY && env.ALPACA_SECRET), get: p => call("GET", p), post: (p, b) => call("POST", p, b) };
+  return { mode, ready: !!(env.ALPACA_KEY && env.ALPACA_SECRET), get: p => call("GET", p), post: (p, b) => call("POST", p, b),
+           patch: (p, b) => call("PATCH", p, b), del: p => call("DELETE", p) };
 }
 
 async function live(env) {
@@ -881,6 +883,110 @@ async function checkFills(env) {
   } else {
     for (const m of msgs) await deliver(env, { title: m.title, body: m.body, tag: "fill-" + m.title, url: `/#port/${m.t}` });
   }
+}
+
+// ---------- pre-market and after-hours trading (owner, Oct 29) ----------
+// Alpaca only fills orders outside regular hours if they're limit orders marked for extended hours. So, every
+// 3 minutes outside regular hours, our waiting market orders (Buy button "tap-", Sell button "tap-sell-", the tool's
+// buys "cs-", but not the parked-cash fund "cs-park-") are swapped for extended-hours limit orders: buys at up to
+// 0.5% above the last trade, sells at up to 0.5% below, re-priced as the price moves. After-hours (4-8 PM) orders
+// expire at 8 PM; unfilled ones are placed again at 4 AM. Anything still unfilled at the 9:30 open becomes a market
+// order. The swapped order keeps its prefix, so fills, alerts and the tool's bookkeeping treat it the same.
+const EXT_KEY = "ext/intents.json", EXT_PAD = 0.005, EXT_REPRICE_MIN = 15;
+const extOurs = cid => /^(tap-|cs-)/.test(cid || "") && !(cid || "").startsWith(PARK_PREFIX);
+function extCid(cid, tag) {          // same prefix and hold suffix ("-h60"), a new unique id
+  const m = String(cid).match(/^(.*?)(-h\d+)?$/), stamp = tag + Date.now().toString(36).slice(-5);
+  const base = m[1].slice(0, 48 - stamp.length - (m[2] || "").length - 1);
+  return `${base}-${stamp}${m[2] || ""}`.slice(0, 48);
+}
+async function extLast(a, sym) {
+  const r = await a.get(`https://data.alpaca.markets/v2/stocks/${encodeURIComponent(sym)}/snapshot?feed=iex`);
+  const d = r.ok ? r.data || {} : {};
+  return +(d.latestTrade && d.latestTrade.p) || +(d.minuteBar && d.minuteBar.c) || +(d.dailyBar && d.dailyBar.c) || +(d.prevDailyBar && d.prevDailyBar.c) || null;
+}
+const extPx = (p, side) => { const v = side === "buy" ? p * (1 + EXT_PAD) : p * (1 - EXT_PAD); return v >= 1 ? Math.round(v * 100) / 100 : Math.round(v * 1e4) / 1e4; };
+async function extendedHours(env, when) {
+  const a = alpaca(env);
+  if (!a.ready) return;
+  const et = new Date(when.toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const hm = et.getHours() * 60 + et.getMinutes();
+  const st = await r2json(env, EXT_KEY, { intents: {} });
+  const I = st.intents || {};
+  const clock = await a.get("/v2/clock");
+  if (!clock.ok) throw new Error(`Alpaca clock didn't answer (HTTP ${clock.status})`);
+  const open = !!clock.data.is_open;
+  // a trading day: the next open is today (before the open) or the market opened today (after the close)
+  const today = et.toLocaleDateString("en-CA");
+  const nextOpenDay = new Date(clock.data.next_open).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  let tradingDay = nextOpenDay === today;
+  if (!tradingDay && hm >= 16 * 60) {
+    const cal = await a.get(`/v2/calendar?start=${today}&end=${today}`);
+    tradingDay = cal.ok && Array.isArray(cal.data) && cal.data.length > 0;
+  }
+  const session = open ? "open" : !tradingDay ? "none" : hm >= 4 * 60 && hm < 9 * 60 + 30 ? "pre" : hm >= 16 * 60 && hm < 20 * 60 ? "after" : "none";
+  if (session === "none" && !Object.keys(I).length) return;
+  const ords = await a.get("/v2/orders?status=open&limit=200&nested=false");
+  if (!ords.ok) throw new Error(`Alpaca orders didn't answer (HTTP ${ords.status})`);
+  const live = {};
+  for (const o of ords.data || []) live[o.id] = o;
+  let changed = false;
+  const place = async (it, extended, px) => {
+    const body = { symbol: it.sym, side: it.side, type: extended ? "limit" : "market", time_in_force: "day",
+                   client_order_id: extCid(it.cid, extended ? "x" : "m") };
+    if (extended) { body.limit_price = String(px); body.extended_hours = true; }
+    if (it.notional != null) body.notional = Math.max(1, it.notional).toFixed(2); else body.qty = String(it.qty);
+    let r = await a.post("/v2/orders", body);
+    if (!r.ok && extended && it.notional != null && r.status === 422) {          // no fractional orders out of hours for this stock: whole shares
+      const q = Math.floor(it.notional / px);
+      if (q >= 1) { delete body.notional; body.qty = String(q); r = await a.post("/v2/orders", body); }
+    }
+    if (!r.ok) throw new Error(`${it.side} ${it.sym}: Alpaca refused the ${extended ? "extended-hours" : "market"} order (HTTP ${r.status}: ${String(r.data && r.data.message || "").slice(0, 80)})`);
+    it.oid = r.data.id; it.px = extended ? px : null; it.at = new Date().toISOString(); it.ext = extended;
+    changed = true;
+  };
+  // 1) new waiting market orders of ours -> intents (only outside regular hours)
+  if (session !== "open") {
+    for (const o of Object.values(live)) {
+      if (o.type !== "market" || o.extended_hours || !extOurs(o.client_order_id) || Object.values(I).some(x => x.oid === o.id)) continue;
+      if (!["buy", "sell"].includes(o.side)) continue;
+      const key = o.client_order_id;
+      I[key] = { cid: key, sym: o.symbol, side: o.side, notional: o.notional != null ? +o.notional : null, qty: o.qty != null ? +o.qty : null,
+                 oid: o.id, ext: false, created: new Date().toISOString() };
+      changed = true;
+    }
+  }
+  const failures = [];
+  for (const [key, it] of Object.entries(I)) {
+    try {
+      const o = it.oid ? (live[it.oid] || (await a.get(`/v2/orders/${it.oid}`)).data) : null;
+      const filled = o ? +o.filled_qty || 0 : 0;
+      if (o && o.status === "filled") { delete I[key]; changed = true; continue; }
+      if (o && filled > 0) {                                       // partly filled: carry on with what's left
+        if (it.notional != null) it.notional = Math.max(0, it.notional - filled * (+o.filled_avg_price || 0)); else it.qty = Math.max(0, (+o.qty || it.qty) - filled);
+      }
+      const isLive = o && ["new", "accepted", "pending_new", "partially_filled", "held", "accepted_for_bidding", "calculated"].includes(o.status);
+      if ((it.notional != null && it.notional < 1) || (it.qty != null && it.qty <= 0)) { if (isLive) await a.del(`/v2/orders/${o.id}`); delete I[key]; changed = true; continue; }
+      if (o && ["canceled", "rejected"].includes(o.status)) { delete I[key]; changed = true; continue; }   // cancelled by you or the tool: drop it (an 8 PM expiry is "expired")
+      if (session === "open") {
+        if (isLive && it.ext) { await a.del(`/v2/orders/${o.id}`); await place(it, false); }
+        else if (!isLive) await place(it, false);
+        delete I[key]; changed = true; continue;                    // a market order now: the open takes it from here
+      }
+      if (session === "none") continue;                             // 8 PM-4 AM and holidays: wait for the next session
+      const last = await extLast(a, it.sym);
+      if (!last) { failures.push(`${it.sym}: no last price`); continue; }
+      const px = extPx(last, it.side);
+      if (isLive && !it.ext) { await a.del(`/v2/orders/${o.id}`); await place(it, true, px); continue; }
+      if (!isLive) { await place(it, true, px); continue; }        // expired at 8 PM, or the first time this session
+      const age = (Date.now() - Date.parse(it.at || 0)) / 60000;
+      if (age >= EXT_REPRICE_MIN && Math.abs(px - (it.px || 0)) / px > 0.001) {
+        const r = await a.patch(`/v2/orders/${o.id}`, { limit_price: String(px) });
+        if (r.ok) { it.oid = r.data.id; it.px = px; it.at = new Date().toISOString(); changed = true; }
+      }
+    } catch (e) { failures.push(String(e && e.message || e).slice(0, 160)); }
+  }
+  if (changed) { st.intents = I; st.updated = new Date().toISOString(); await env.DATA.put(EXT_KEY, JSON.stringify(st)); }
+  if (failures.length) throw new Error(failures.join("; "));
 }
 
 // ---------- fast filing check ----------

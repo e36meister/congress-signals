@@ -1569,7 +1569,7 @@ function sellRow(x) {
       <span class="segs">${opt("shares", "Shares")}${opt("dollars", "$")}</span></div>
     <div class="foot" id="sconv-${esc(t)}">${esc(sellConv(x, mode, v))}</div>
     <div><button type="button" class="link" data-sellall="${esc(t)}">Sell all ${sh} shares</button></div>
-    <div class="foot">${real ? "Real money account" : "Paper account (fake money)"} · fills now if the market is open, otherwise at the next open.</div>
+    <div class="foot">${real ? "Real money account" : "Paper account (fake money)"} · fills now if the market is open; otherwise tries after-hours and pre-market within 0.5% of the last price, then the open.</div>
     <div style="display:flex;gap:10px;align-items:center"><button type="button" class="sellbtn go" data-sellsend="${esc(t)}"${state.selling ? " disabled" : ""}>${state.selling ? "Sending…" : "Send sell order"}</button>
       <button type="button" class="link" data-sellcancel="1">Cancel</button></div>
     ${m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</div></td></tr>`;

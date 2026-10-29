@@ -130,7 +130,7 @@ async function sendOrder(t) {
   try {
     const { js } = await api("/api/buy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t, dollars }) });
     state.tapMsg[t] = { ok: true, text: `Order placed: ${money(dollars)} of ${t}` + (js.qty ? ` (${js.qty} shares)` : "") +
-      (js.market_open ? "." : `. It fills when the market opens (${fmtET(js.next_open)}).`) };
+      (js.market_open ? "." : ". Until the open it tries after-hours (to 8 PM) and pre-market (from 4 AM) within 0.5% of the last price; if it hasn't filled by 9:30, it fills at the open.") };
     state.confirm = null;
     loadLive();
   } catch (e) {
@@ -150,7 +150,7 @@ async function sendSell(t) {
     const { js } = await api("/api/sell", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t, mode, amount }) });
     const what = js.all ? `all of ${t}` : js.qty ? `${Number(js.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh of ${t}` : `${money(js.notional)} of ${t}`;
     state.sellMsg[t] = { ok: true, text: `Sell order placed: ${what}${js.value ? ` (about ${money(js.value)})` : ""}` +
-      (js.market_open ? "." : `. It fills when the market opens (${fmtET(js.next_open)}).`) };
+      (js.market_open ? "." : ". Until the open it tries after-hours (to 8 PM) and pre-market (from 4 AM) within 0.5% of the last price; if it hasn't filled by 9:30, it fills at the open.") };
     state.sellOpen = null;
     loadLive();
   } catch (e) {
