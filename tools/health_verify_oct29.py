@@ -11,9 +11,11 @@ site = {}
 for b, a in acc.items():
     for v in a.get("instagram") or []:
         site.setdefault(v.strip("@").lower(), set()).add(b)
-shared = {h: sorted(leg.get(b, {}).get("name", b) for b in bs) for h, bs in site.items() if len(bs) > 1}
-print("shared website handles (now ignored):", json.dumps(shared, indent=0)[:3000])
-print("non-handles (now ignored):", {h: sorted(leg.get(b, {}).get("name", b) for b in bs) for h, bs in site.items() if S._not_a_handle(h)})
+shared = {h: sorted(leg.get(b, {}).get("name", b) for b in bs) for h, bs in site.items() if len(bs) > 1 and not S._not_a_handle(h)}
+print("shared website handles (now ignored):", len(shared))
+for h, ns in sorted(shared.items(), key=lambda kv: -len(kv[1])):
+    print(f"  @{h}: {len(ns)} members: {', '.join(ns[:5])}")
+print("non-handles (now ignored):", {h: len(bs) for h, bs in site.items() if S._not_a_handle(h)})
 igs = S._ig_status()
 print("status keys:", {k: len(v) if hasattr(v, "__len__") else v for k, v in igs.items()})
 lines = S.ig_unreadable(leg)
