@@ -930,6 +930,32 @@ async function extendedHours(env, when) {
   const live = {};
   for (const o of ords.data || []) live[o.id] = o;
   let changed = false;
+  const cancel = async id => {          // cancel and confirm; a replacement never goes in while the old order can still fill
+    const r = await a.del(`/v2/orders/${id}`);
+    for (let k = 0; k < 4; k++) {
+      const o = (await a.get(`/v2/orders/${id}`)).data || {};
+      if (["canceled", "expired", "rejected", "replaced"].includes(o.status)) return true;
+      if (o.status === "filled") return false;
+      await new Promise(res => setTimeout(res, 700));
+    }
+    throw new Error(`couldn't cancel order ${id} (HTTP ${r.status}: ${String(r.data && r.data.message || "").slice(0, 80)}); nothing new was placed`);
+  };
+  // safety net: a waiting market order of ours whose extended-hours replacement already exists is a duplicate
+  const recent = await a.get(`/v2/orders?status=all&limit=200&direction=desc&after=${encodeURIComponent(new Date(Date.now() - 3 * 864e5).toISOString())}`);
+  const extOf = {};
+  for (const o of recent.data || []) {
+    const m = String(o.client_order_id || "").match(/^(.*)-[xm][0-9a-z]{5}(-h\d+)?$/);
+    if (m && ["filled", "partially_filled", "new", "accepted", "pending_new"].includes(o.status)) extOf[m[1] + (m[2] || "")] = o;
+  }
+  const dupes = [];
+  for (const o of Object.values(live)) {
+    if (o.type === "market" && !o.extended_hours && extOurs(o.client_order_id) && extOf[o.client_order_id]) {
+      try { await cancel(o.id); dupes.push(`${o.symbol} (${o.client_order_id.split("-")[0]})`); delete live[o.id];
+            for (const [k, it] of Object.entries(I)) if (it.oid === o.id) delete I[k]; changed = true; }
+      catch (e) { throw new Error(`a duplicate ${o.side} order for ${o.symbol} is still waiting and couldn't be cancelled: ${e.message}`); }
+    }
+  }
+  if (dupes.length) await deliver(env, { title: "Cancelled a duplicate order", body: `A waiting order for ${dupes.join(", ")} was a duplicate of one that already went in before the open, so it was cancelled.`, tag: "fills", url: "/#port" });
   const place = async (it, extended, px) => {
     const body = { symbol: it.sym, side: it.side, type: extended ? "limit" : "market", time_in_force: "day",
                    client_order_id: extCid(it.cid, extended ? "x" : "m") };
@@ -965,10 +991,10 @@ async function extendedHours(env, when) {
         if (it.notional != null) it.notional = Math.max(0, it.notional - filled * (+o.filled_avg_price || 0)); else it.qty = Math.max(0, (+o.qty || it.qty) - filled);
       }
       const isLive = o && ["new", "accepted", "pending_new", "partially_filled", "held", "accepted_for_bidding", "calculated"].includes(o.status);
-      if ((it.notional != null && it.notional < 1) || (it.qty != null && it.qty <= 0)) { if (isLive) await a.del(`/v2/orders/${o.id}`); delete I[key]; changed = true; continue; }
+      if ((it.notional != null && it.notional < 1) || (it.qty != null && it.qty <= 0)) { if (isLive) await cancel(o.id); delete I[key]; changed = true; continue; }
       if (o && ["canceled", "rejected"].includes(o.status)) { delete I[key]; changed = true; continue; }   // cancelled by you or the tool: drop it (an 8 PM expiry is "expired")
       if (session === "open") {
-        if (isLive && it.ext) { await a.del(`/v2/orders/${o.id}`); await place(it, false); }
+        if (isLive && it.ext) { if (await cancel(o.id)) await place(it, false); }
         else if (!isLive) await place(it, false);
         delete I[key]; changed = true; continue;                    // a market order now: the open takes it from here
       }
@@ -976,7 +1002,7 @@ async function extendedHours(env, when) {
       const last = await extLast(a, it.sym);
       if (!last) { failures.push(`${it.sym}: no last price`); continue; }
       const px = extPx(last, it.side);
-      if (isLive && !it.ext) { await a.del(`/v2/orders/${o.id}`); await place(it, true, px); continue; }
+      if (isLive && !it.ext) { if (await cancel(o.id)) await place(it, true, px); else { delete I[key]; changed = true; } continue; }
       if (!isLive) { await place(it, true, px); continue; }        // expired at 8 PM, or the first time this session
       const age = (Date.now() - Date.parse(it.at || 0)) / 60000;
       if (age >= EXT_REPRICE_MIN && Math.abs(px - (it.px || 0)) / px > 0.001) {
