@@ -324,7 +324,8 @@ def export_members(cfg, scored, px, data, log=print, put=None, photos=None, post
                "tcols": ["i", "td", "fd", "t", "co", "ty", "own", "lo", "hi", "sec", "x3m", "x1y", "r3m", "r1y", "p30", "sg"],
                "trades": trades, "ecols": ["d", "k", "x", "t", "sec", "u"], "events": [list(e) for e in evs],
                "posts": [p for p in (posts or {}).get(key, [])][-300:],
-               "pprof": (post_profiles or {}).get(key)}
+               "pprof": (post_profiles or {}).get(key),
+               "ties": _fd_ties(g)}
         txt = json.dumps(_clean(doc), separators=(",", ":"), default=str)
         h = hashlib.md5(txt.encode()).hexdigest()
         path = os.path.join(out_dir, f"{key}.json")
@@ -347,6 +348,26 @@ def export_members(cfg, scored, px, data, log=print, put=None, photos=None, post
     log(f"Member pages: {len(index)} members, {len(tr):,} trades; {sent} page(s) changed and uploaded "
         f"({len(itxt)/1024:,.0f} KB index)")
     return ipath
+
+
+def _fd_ties(g):
+    """The yearly-report lines behind this member's company ties (spouse's job, outside positions, sponsored
+    travel), newest first, with a link to the report and any dollar amount on the line (owner, Oct 29)."""
+    try:
+        from . import engine as E
+    except Exception:
+        return []
+    out, seen = [], set()
+    for w in (g["who"].dropna().unique() if "who" in g else []):
+        for e in E.FD_TIE_EV.get(w, []):
+            k = (e["t"], e["kind"], e["doc"])
+            if k in seen:
+                continue
+            seen.add(k)
+            amt = re.findall(r"(?:over\s+)?\$[\d,]+(?:\s*-\s*\$[\d,]+)?", e["line"], re.I)
+            out.append({**e, "amt": amt[0] if amt else None})
+    out.sort(key=lambda e: e["filed"] or "", reverse=True)
+    return out[:60]
 
 
 def _mean(s):

@@ -4077,6 +4077,14 @@ def apply_scores(tx, cfg, buy_w=None, short_w=None):
 # ============================================================================
 # Explanations
 # ============================================================================
+def _size_text(r):
+    """A big trade, as the member reported it: the form gives a dollar range, not the exact amount."""
+    lo, hi = r.get("amt_lo"), r.get("amt_hi")
+    if hi is not None and pd.notna(hi) and hi > (lo or 0):
+        return f"large trade: reported as ${lo:,.0f}-${hi:,.0f}"
+    return f"large trade: reported as over ${lo:,.0f}"
+
+
 def _why_buy(r):
     b = []
     if r["track_n"] >= 3:
@@ -4141,7 +4149,7 @@ def _why_buy(r):
         if r.get(k):
             b.append(r[k])
     if r["f_size"] >= 0.4:
-        b.append(f"large (${r['amt_lo']:,.0f}+)")
+        b.append(_size_text(r))
     if r["f_freshness"] >= 0.7:
         b.append(f"disclosed in {int(r['lag_days'])}d")
     if r["n_sellers"] >= 2:
@@ -4162,7 +4170,7 @@ def _why_short(r):
     if r["insider_sellers"] > 0:
         b.append(f"{int(r['insider_sellers'])} company insider(s) sold")
     if r["f_size"] >= 0.4:
-        b.append(f"large (${r['amt_lo']:,.0f}+)")
+        b.append(_size_text(r))
     if r["momentum_3m"] < -0.05:
         b.append(f"already lagging SPY {r['momentum_3m']*100:.0f}% over 3m")
     for f, txt in (("f_option", "bought puts" if str(r.get("tx_raw")) == "put purchase" else "options trade"),
@@ -8365,11 +8373,11 @@ def _fd_norm(ln):
     return re.sub(r"[^\x20-\x7e]", " ", ln)
 
 
-def _fd_kinds(text_lower, ck):
+def _fd_kinds(text_lower, ck, lines=None):
     """Where a company appears in a yearly disclosure: spouse's job, the member's income, an outside position,
-    a gift, sponsored travel, or elsewhere."""
+    a gift, sponsored travel, or elsewhere. `lines`, when given, collects (kind, line number) for each hit."""
     kinds, sched = set(), ""
-    for ln in text_lower.splitlines():
+    for no, ln in enumerate(text_lower.splitlines()):
         m = FD_SCHEDULE.search(_fd_norm(ln))
         if m:
             sched = m.group(1)
@@ -8387,7 +8395,38 @@ def _fd_kinds(text_lower, ck):
             kinds.add("gift")
         else:
             kinds.add("other")
+        if lines is not None:
+            lines.append((_fd_line_kind(ln, sched), no))
     return kinds
+
+
+def _fd_line_kind(ln, sched):
+    spouse = re.search(r"\bspouse\b|\bsp\b", ln) is not None
+    if sched == "c" and spouse or (spouse and re.search(r"salary|income|employ|compensation|wages|bonus|pension|fees|"
+                                                         r"honorari|consult|commission|stipend|retainer|director|board", ln)):
+        return "spouse_job"
+    if sched == "e" or re.search(r"\b(director|board|trustee|officer|partner|advisor)\b", ln) and sched not in ("a", "b"):
+        return "position"
+    if sched == "h" or re.search(r"\btravel|\btrip\b|lodging|airfare|itinerary", ln):
+        return "travel"
+    if sched == "g" or re.search(r"\bgift", ln):
+        return "gift"
+    return "other"
+
+
+FD_TIE_EV = {}      # who -> [{t, kind, doc, filed, chamber, line, link}]: the yearly-report lines behind each tie (member pages)
+
+
+def fd_link(doc, filed, chamber):
+    """Where the owner can open a yearly report: the House clerk's PDF, or the Senate filing page."""
+    doc = str(doc or "")
+    if doc.startswith("/search/"):
+        return "https://efdsearch.senate.gov" + doc
+    try:
+        y = pd.Timestamp(filed).year
+    except Exception:
+        return None
+    return f"https://disclosures-clerk.house.gov/public_disc/financial-pdfs/{y}/{doc}.pdf" if doc.isdigit() else None
 
 
 def trading_pairs(tx, window_days=7, popular_top=60):
@@ -8675,9 +8714,11 @@ def relationship_features(tx, data, cfg, mems):
             g = g.sort_values("filed")
             g = g[g["filed"].notna()]
             fdg[k] = (g["filed"].values, list(g["doc"]), list(g["text"]))
-        memo, texts = {}, {}
+        memo, texts, raw = {}, {}, {}
+        FD_TIE_EV.clear()
+        ev_seen = set()
         sj, tr, po = np.zeros(n), np.zeros(n), np.zeros(n)
-        for i, (wk, f, ck) in enumerate(zip(tx["who"], fdt, tx["_ck"])):
+        for i, (wk, f, ck, tk) in enumerate(zip(tx["who"], fdt, tx["_ck"], tx["ticker"])):
             if not ck or len(ck) < 4:
                 continue
             G = fdg.get(wk)
@@ -8686,13 +8727,25 @@ def relationship_features(tx, data, cfg, mems):
             lo = np.searchsorted(G[0], np.datetime64(f - D(days=1100)), side="right")
             hi = np.searchsorted(G[0], np.datetime64(f), side="right")
             kinds = set()
-            for doc, blob in zip(G[1][lo:hi], G[2][lo:hi]):
+            for doc, blob, fl in zip(G[1][lo:hi], G[2][lo:hi], G[0][lo:hi]):
                 key = (doc, ck)
                 if key not in memo:
                     if doc not in texts:
-                        texts[doc] = _unz(blob).lower()
-                    memo[key] = _fd_kinds(texts[doc], ck) if _name_hit(texts[doc], ck) else set()
-                kinds |= memo[key]
+                        raw[doc] = _unz(blob)
+                        texts[doc] = raw[doc].lower()
+                    hits = []
+                    memo[key] = (_fd_kinds(texts[doc], ck, hits) if _name_hit(texts[doc], ck) else set(), hits)
+                kinds |= memo[key][0]
+                # the lines behind a spouse-job, outside-position or travel tie, for the member's page
+                for kind, no in memo[key][1]:
+                    if kind in ("spouse_job", "position", "travel") and (wk, doc, tk, kind) not in ev_seen:
+                        ev_seen.add((wk, doc, tk, kind))
+                        rl = raw[doc].splitlines()
+                        line = " ".join(x.strip() for x in rl[no:no + 2] if x.strip())[:300]
+                        ch = str(tx.at[tx.index[i], "chamber"]) if "chamber" in tx else ""
+                        FD_TIE_EV.setdefault(wk, []).append({"t": tk, "kind": kind, "doc": str(doc),
+                            "filed": pd.Timestamp(fl).strftime("%Y-%m-%d"), "chamber": ch, "line": line,
+                            "link": fd_link(doc, fl, ch)})
             sj[i], tr[i], po[i] = float("spouse_job" in kinds), float("travel" in kinds), float("position" in kinds)
         tx["f_spouse_employer"], tx["f_paid_travel"], tx["f_outside_position"] = sj, tr, po
 

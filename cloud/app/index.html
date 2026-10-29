@@ -1033,6 +1033,10 @@ function confirmBox(r) {
 
 // ---------- shorthand tags: a short word on the card, the full reason in a popup ----------
 const TAG_RULES = [
+  [/^large trade: reported as (?:over )?\$([\d,]+)(?:-\$([\d,]+))?/i, m => "Big trade " + kfmt(+m[1].replace(/,/g, "")) + (m[2] ? "–" + kfmt(+m[2].replace(/,/g, "")) : "+"),
+    "A large trade. Members report a dollar range, not the exact amount; this is the range they checked. Bigger trades count a little more in the score."],
+  [/^large \(\$([\d,]+)\+\)/i, m => "Big trade " + kfmt(+m[1].replace(/,/g, "")) + "+",
+    "A large trade: the member reported at least this much (the form gives a dollar range, not the exact amount). Bigger trades count a little more in the score."],
   [/past buys ([+\-]?[\d.]+%) vs SPY avg \((\d+)\)/i, m => `Track ${m[1]} (${m[2]})`, "", "", "plain"],
   [/past buys beat the market consistently/i, () => "Proven buyer", "This member's purchases have beaten the market consistently over many trades."],
   [/stocks this member sold lagged SPY by ([\d.]+%)/i, m => `Sales lag ${m[1]}`, "Stocks this member sold went on to lag the S&P 500 by this much on average."],
@@ -2232,19 +2236,23 @@ function statusFor(t) {
   const isNew = side => (w.new || []).some(n => n.t === t && (side === "sell" ? n.action === "SHORT" : n.action === "BUY"));
   const sc = r => r.s != null ? ` · score ${Number(r.s).toFixed(0)}` : "";
   for (const r of (w.buys || []).filter(r => r.t === t)) {
-    if (r.action === "BUY") out.push({ c: "BUY", l: "Buy", x: ((r.sm ?? 0) >= 1 ? "small-company " : "") + "buy candidate" + (isNew("buy") ? ", new since the last run" : "") + sc(r), go: "#worth/" + t });
+    if (r.action === "BUY") out.push({ c: "BUY", l: "Buy", x: ((r.sm ?? 0) >= 1 ? "small-company " : "") + "buy candidate" + (isNew("buy") ? ", new since the last run" : "") + sc(r), go: "#pick/" + t });
     else if (r.action === "mixed") out.push({ c: "mixed", l: "Mixed", x: "members buying and selling, so not a buy" + sc(r), go: "#today-also" });
     else out.push({ c: "watch", l: "Watch", x: "also bought recently, below the buy bar" + sc(r), go: "#today-also" });
     if (r.def) out.push({ c: "watch", l: "Defense", x: "defense company", go: "#defense" });
-    if (r.ags) out.push({ c: "avoid", l: "Contrarian", x: "bought while most analysts rated it hold or worse", go: "#worth/" + t });
+    if (r.ags) out.push({ c: "avoid", l: "Contrarian", x: "bought while most analysts rated it hold or worse", go: "#pick/" + t });
   }
   for (const r of (w.sells || []).filter(r => r.t === t)) {
-    if (r.action === "SHORT") out.push({ c: "SHORT", l: "Short", x: "short candidate" + (isNew("sell") ? ", new since the last run" : "") + sc(r), go: "#worth/" + t });
-    else if (r.action === "avoid") out.push({ c: "avoid", l: "Avoid", x: "sales like the ones followed by drops", go: "#worth/" + t });
+    if (r.action === "SHORT") out.push({ c: "SHORT", l: "Short", x: "short candidate" + (isNew("sell") ? ", new since the last run" : "") + sc(r), go: "#pick/" + t });
+    else if (r.action === "avoid") out.push({ c: "avoid", l: "Avoid", x: "sales like the ones followed by drops", go: "#pick/" + t });
   }
   const wl = (d.worth || []).find(r => r.t === t);
   if (wl) { const rs = (Array.isArray(wl.why) ? wl.why : String(wl.why || "").split(/;\s*/)).filter(Boolean);
-    out.push({ c: "avoid", l: "Worth a look", x: rs.length ? "red flag: " + reasonTag(String(rs[0])).label.toLowerCase() : "a rare red flag", go: "#worth/" + t }); }
+    // a flag from the member's yearly disclosure (spouse's job, a position, travel) opens the member's company ties
+    const fdFlag = rs.some(x => /yearly disclosure|spouse works for|holds a position|paid for travel/i.test(String(x)));
+    const w0 = (wl.who || [])[0];
+    out.push({ c: "avoid", l: "Worth a look", x: (rs.length ? "red flag: " + reasonTag(String(rs[0])).label.toLowerCase() : "a rare red flag") + (fdFlag && w0 ? " · see the member's disclosure" : ""),
+      go: "#worth/" + t, mem: fdFlag && w0 ? { n: w0.n, b: w0.b } : null }); }
   const un = (d.unusual || []).find(r => r.t === t);
   if (un) out.push({ c: "watch", l: "Unusual", x: un.ratio != null ? `volume ${un.ratio.toFixed(1)}× normal last week` : "", go: "#today-unusual" });
   const ps = (d.portfolio?.positions || []).find(x => x.t === t);
@@ -2284,7 +2292,10 @@ function drawPopup() {
       // day's low-to-high range and the share count is estimated from it, unless the member wrote the shares or price.
   }
   bg.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="${esc(t)} price chart">${head}${statusBar(t)}${pop.about ? aboutBox(t) : ""}${body}</div>`;
-  bg.querySelectorAll("[data-st]").forEach(b => b.addEventListener("click", () => { const x = statusFor(t)[+b.dataset.st]; if (x) { closeChart(); go(x.go); } }));
+  bg.querySelectorAll("[data-st]").forEach(b => b.addEventListener("click", () => { const x = statusFor(t)[+b.dataset.st]; if (!x) return;
+    closeChart();
+    if (x.mem) { openMember(x.mem.n, x.mem.b); TARGET = { sel: "#mties", until: Date.now() + 20000 }; MEM.tiesFor = t; }
+    else go(x.go); }));
   bg.querySelector("[data-about]")?.addEventListener("click", () => { pop.about = !pop.about; drawPopup(); });
   bg.querySelectorAll("[data-span]").forEach(b => b.addEventListener("click", () => { pop.span = b.dataset.span; pop.sel = null; drawPopup(); }));
   if (C && C.px && C.px[t]) drawTickerChart();
@@ -2586,6 +2597,20 @@ function postProfile(doc) {
     </div>`;
 }
 
+const TIE_KIND = { spouse_job: "Spouse's job or income", position: "Outside position", travel: "Travel paid by the company" };
+function tiesSection(doc) {
+  const ts = doc.ties || [];
+  if (!ts.length) return "";
+  const hot = MEM.tiesFor;
+  const rows = ts.slice().sort((a, b) => (b.t === hot) - (a.t === hot));
+  return `<div class="ph" id="mties"><h2>Ties to companies</h2><span class="sub">From their yearly financial disclosures</span></div>
+    <div class="mtrs">${rows.map(e => `<div class="tdet" style="display:block${e.t === hot ? ";outline:2px solid var(--accent)" : ""}">
+      <div><span class="chip watch">${esc(TIE_KIND[e.kind] || e.kind)}</span> ${tkBtn(e.t)} <span class="foot">· yearly report filed ${esc(fmtDate(e.filed))}</span></div>
+      <div class="mono" style="margin:6px 0;white-space:normal;overflow-wrap:anywhere">“${esc(e.line)}”</div>
+      <div class="foot">${e.amt ? `Amount on the report: <b>${esc(e.amt)}</b>` : e.kind === "spouse_job" ? "No amount: members only have to name the source of a spouse's earned income, not how much." : "No amount on this line."}
+        ${e.link ? ` · <a href="${esc(e.link)}" target="_blank" rel="noopener">Open the report</a>` : ""}</div></div>`).join("")}</div>
+    <p class="foot">${ts.some(e => e.chamber === "Senate") ? "Senate reports open on the Senate site (it may ask you to agree to its terms first). " : ""}The quoted line is the report's text as the app read it, so spacing may differ from the original.</p>`;
+}
 function renderMember(k) {
   memLoad(k);
   const doc = MEM.docs[k];
@@ -2604,6 +2629,7 @@ function renderMember(k) {
       <div class="tile"><span class="l">Buys vs S&amp;P, 1 yr</span><span class="v ${cls(S.bx1y)}">${pct(S.bx1y)}</span><span class="c">3 months: ${pct(S.bx3m)}${S.bhit1y != null ? ` · ${Math.round(S.bhit1y * 100)}% beat it` : ""}</span></div>
       <div class="tile"><span class="l">Sales, 1 yr</span><span class="v ${cls(S.sx1y)}">${pct(S.sx1y)}</span><span class="c">+ = sold before it lagged the S&amp;P</span></div>
     </div>
+    ${tiesSection(doc)}
     ${winControls()}
     <div class="ph"><h2>Best trades</h2>
       <div class="filters"><div class="seg" role="group" aria-label="Buys or sales">${[["buy", "Buys"], ["sell", "Sales"]].map(([v, l]) => `<button type="button" data-mbs="${v}" aria-pressed="${MEM.best.side === v}">${l}</button>`).join("")}</div>
@@ -2831,7 +2857,8 @@ function route(hash) {
   if (a === "post" && b) {
     tab("today"); POSTS.show = "all"; POSTS.n = 400; aim(`[data-hl="post:${CSS.escape(b)}"]`);
     if (POSTS.err) { POSTS.err = null; POSTS.feed = null; }
-  } else if (a === "worth" && b) { tab("today"); aim(`[data-hl="worth:${CSS.escape(b)}"],[data-hl="pick:${CSS.escape(b)}"]`); }
+  } else if (a === "worth" && b) { tab("today"); aim((state.data?.worth || []).some(r => r.t === b) ? `[data-hl="worth:${CSS.escape(b)}"]` : `[data-hl="pick:${CSS.escape(b)}"]`); }
+  else if (a === "pick" && b) { tab("today"); aim(`[data-hl="pick:${CSS.escape(b)}"]`); }
   else if (a === "port") { tab("port"); if (b) aim(`[data-hl="pos:${CSS.escape(b)}"]`); }
   else if (a === "t" && b) { tab("today"); render(); openChart(b); return; }
   else if (a === "alerts") { tab("alerts"); ALERTS.items = null; if (b) { ALERTS.open = b; aim(`[data-hl="alert:${CSS.escape(b)}"]`); } }
