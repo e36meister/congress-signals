@@ -4215,8 +4215,24 @@ def ticker_level(rows, score_col="score", short=False):
             if pd.notna(tn) and tn >= 3 and pd.notna(te):
                 e["tr"], e["tn"] = round(float(te) * 100, 1), int(tn)
             lst.append(e)
+    # each member's own reasons, from their best trade of the stock (owner, Oct 29: with 2+ members on a pick, the
+    # app shows which reasons belong to which member, e.g. whose spouse works there and whose trade was large)
+    whyf = _why_short if short else _why_buy
+    multi = rows.groupby("ticker")["member"].nunique()
+    multi = set(multi[multi >= 2].index)
+    if multi:
+        for t, g in rows[rows["ticker"].isin(multi)].groupby("ticker", sort=False):
+            mine = {}
+            for _, r in g.drop_duplicates("member").iterrows():
+                try:
+                    mine[str(r["member"])] = [w for w in whyf(r).split("; ") if w and w != "baseline signal"]
+                except Exception:
+                    pass
+            for e in ppl.get(t, []):
+                if e["n"] in mine:
+                    e["why"] = mine[e["n"]]
     best["people"] = best["ticker"].map(lambda t: ppl.get(t, [])[:6])
-    best["why"] = best.apply(_why_short if short else _why_buy, axis=1)
+    best["why"] = best.apply(whyf, axis=1)
     return best.reset_index(drop=True)
 
 

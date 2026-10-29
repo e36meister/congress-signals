@@ -62,6 +62,7 @@ section.panel{display:grid;gap:12px;align-content:start}
 .sellbox input{font:500 16px var(--mono);padding:8px 10px;width:140px;border:1px solid var(--rule);border-radius:8px;background:var(--surface);color:var(--ink)}
 .abtn{font:600 12px var(--body);padding:3px 10px;margin-left:6px;vertical-align:middle;border-radius:999px;border:1px solid var(--rule);background:var(--surface);color:var(--accent);cursor:pointer}.abtn[aria-expanded="true"]{background:var(--accent);color:var(--surface);border-color:var(--accent)}
 .sellcost{margin-top:4px;font-size:13.5px}
+.tags.pwhy{align-items:center;margin-top:4px}.pwhy .lbl{font:600 12px var(--body);color:var(--ink2);margin-right:2px}
 .sellin{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.sellin .u{font:500 16px var(--mono);color:var(--ink2)}.sellin .segs{display:inline-flex;gap:4px;margin-left:4px}
 .segs{display:flex;gap:6px;flex-wrap:wrap}
 .seg1{font:600 12.5px var(--body);padding:6px 12px;border-radius:999px;border:1px solid var(--rule);background:var(--surface);color:var(--ink2);cursor:pointer}
@@ -882,6 +883,17 @@ function peopleRow(r, side) {
   }).join("")}</div>`;
 }
 // with 2+ members the track is shown under each name, so the card's single Track tag (the top member's) is dropped
+// with 2+ members on a pick: reasons every member shares stay on the card; the rest show under each member's name
+function splitWhy(r) {
+  const trk = x => /past buys [+\-]?[\d.]+% vs SPY avg|stocks this member sold lagged SPY/i.test(x);   // shown next to each name already
+  const ps = peopleOf(r).filter(p => Array.isArray(p.why)).map(p => ({ ...p, why: p.why.filter(x => !trk(x)) }));
+  if (ps.length < 2) return null;
+  const key = x => reasonTag(x).label;
+  const sets = ps.map(p => new Set(p.why.map(key)));
+  const shared = ps[0].why.filter(x => sets.every(st => st.has(key(x))));
+  const sk = new Set(shared.map(key));
+  return { shared, per: ps.map(p => ({ p, own: p.why.filter(x => !sk.has(key(x))) })).filter(x => x.own.length) };
+}
 function whyFor(r) {
   const ps = peopleOf(r);
   if (ps.length < 2 || !ps.some(p => p.tr != null)) return r.why;
@@ -931,9 +943,9 @@ function confirmBox(r) {
 // ---------- shorthand tags: a short word on the card, the full reason in a popup ----------
 const TAG_RULES = [
   [/^large trade: reported as (?:over )?\$([\d,]+)(?:-\$([\d,]+))?/i, m => "Big trade " + kfmt(+m[1].replace(/,/g, "")) + (m[2] ? "–" + kfmt(+m[2].replace(/,/g, "")) : "+"),
-    "A large trade. Members report a dollar range, not the exact amount; this is the range they checked. Bigger trades count a little more in the score."],
+    "", "", true],
   [/^large \(\$([\d,]+)\+\)/i, m => "Big trade " + kfmt(+m[1].replace(/,/g, "")) + "+",
-    "A large trade: the member reported at least this much (the form gives a dollar range, not the exact amount). Bigger trades count a little more in the score."],
+    "", "", true],
   [/past buys ([+\-]?[\d.]+%) vs SPY avg \((\d+)\)/i, m => `Track ${m[1]} (${m[2]})`, "", "", "plain"],
   [/past buys beat the market consistently/i, () => "Proven buyer", "This member's purchases have beaten the market consistently over many trades."],
   [/stocks this member sold lagged SPY by ([\d.]+%)/i, m => `Sales lag ${m[1]}`, "Stocks this member sold went on to lag the S&P 500 by this much on average."],
@@ -1055,7 +1067,9 @@ function pickRow(r, side) {
       <div class="who">${tradeLine(r)}</div>
       ${moverChip(r.t)}
       ${peopleRow(r, side)}
-      ${tagsHtml(whyFor(r), 6, `Why ${r.t} is on the list`)}
+      ${(() => { const sp = splitWhy(r);
+        if (!sp) return tagsHtml(whyFor(r), 6, `Why ${r.t} is on the list`);
+        return tagsHtml(sp.shared, 6, `Why ${r.t} is on the list`) + sp.per.map(x => tagsHtml(x.own, 5, `${x.p.n}: why`).replace('<div class="tags">', `<div class="tags pwhy"><span class="lbl">${esc(String(x.p.n).replace(/^(Hon\.?\s+)/i, ""))}</span>`)).join(""); })()}
       ${ctx.length ? `<div class="tags">${ctx.join("")}</div>` : ""}
     </div>
     <div class="side">
