@@ -960,8 +960,11 @@ def _meta_ig_user(token):
 
 
 IG_STATUS_KEY = "posts/ig_status.json"     # kept in Cloudflare R2: the hourly job doesn't keep its own state
-IG_GUESS_PER_RUN = 25                      # Business Discovery calls spent per run looking for missing accounts
-IG_EXTRA_PER_RUN = 60                      # calls per run looking for members' second (official/personal) accounts
+# Owner, Oct 29: no more username guessing. Meta blocked the app's API access that afternoon (lifted after the owner
+# verified his phone and email); hourly lookups of made-up usernames can look like scraping. Members with no
+# account on file go straight to the Data health check list and the owner sends the handle.
+IG_GUESS_PER_RUN = 0                       # Business Discovery calls spent per run guessing missing accounts (off)
+IG_EXTRA_PER_RUN = 0                       # calls per run guessing members' second accounts (off)
 IG_RECHECK_DAYS = 7                        # an unreadable account is tried again after this many days
 IG_GUESS_AGAIN_DAYS = 30                   # a member with no account found is searched again after this many days
 
@@ -1042,9 +1045,8 @@ def ig_unreadable(leg):
             why = "; ".join(f"@{h}: Meta can't find it (a personal account, which Meta doesn't let apps read, "
                             "or the username changed)" for h, w in per[b])
             lines.append(f"Instagram: can't read {who}. {why}. Please check their Instagram and send me the right handle")
-        elif b in (igs.get("none") or {}) and b not in all_h:
-            lines.append(f"Instagram: no account found for {who} (none on file, and {len(tried.get(b, {}).get('c', []))} "
-                         "likely usernames didn't match). Please check their Instagram and send me the handle")
+        elif b not in all_h:
+            lines.append(f"Instagram: no account on file for {who}. Please check their Instagram and send me the handle")
     return lines
 
 
