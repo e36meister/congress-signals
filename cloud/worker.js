@@ -962,7 +962,9 @@ async function senateImport(req, env) {
   const link = m[1].endsWith("/") ? m[1] : m[1] + "/";
   if (m[2] === "paper") return txt("This is a scanned paper filing. The app can't read scanned filings from the Shortcut yet; nothing was saved.", 400);
   if (!/Transaction Date/i.test(html) || !/<table/i.test(html)) return txt("Not sent: no trade table on this page. If the page shows a Senate agreement or 'Access Denied', tap through to the filing and try again.", 400);
-  const who = deTag((html.match(/The Honorable[\s\S]{0,200}?<\/h2>/i) || [""])[0]).replace(/^The Honorable\s*/i, "").replace(/\s*\(.*$/, "") || "the senator";
+  // the filing page says "The Honorable Jane Doe (Doe, Jane)"; its Print view says "Mr. David H McCormick (McCormick, David H.)"
+  const head = deTag((html.match(/<h2[^>]*>[\s\S]{0,300}?<\/h2>/i) || [""])[0]);
+  const who = head.replace(/^(The Honorable|Hon\.?|Mr\.?|Mrs\.?|Ms\.?|Miss|Dr\.?)\s*/i, "").replace(/\s*\(.*$/, "").trim() || "the senator";
   const filed = (deTag(html).match(/Filed\s+(\d{1,2}\/\d{1,2}\/\d{4})/i) || [])[1] || null;
   const body = (html.match(/<tbody[\s\S]*?<\/tbody>/i) || [""])[0];
   const n = (body.match(/<tr[\s>]/gi) || []).length;

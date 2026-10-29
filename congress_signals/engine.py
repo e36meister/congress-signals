@@ -1006,8 +1006,17 @@ def parse_senate_ptr_html(html):
 def _ptr_filer(html):
     """(first, last, filed MM/DD/YYYY) from a Senate filing page: 'The Honorable Jane Q Doe (Doe, Jane)', 'Filed 10/26/2026'."""
     from bs4 import BeautifulSoup
-    t = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
-    m = re.search(r"The Honorable\s+(.+?)\s*\(([^,()]+),\s*([^()]+)\)", t)
+    soup = BeautifulSoup(html, "lxml")
+    t = soup.get_text(" ", strip=True)
+    # Oct 29: the Print view of a filing (eFD: Print Periodic Transaction Report) writes "Mr. David H McCormick
+    # (McCormick, David H.)" instead of "The Honorable ...", so the title can be any of these.
+    title = r"(?:The Honorable|Hon\.?|Mr\.?|Mrs\.?|Ms\.?|Miss|Dr\.?)"
+    m = re.search(title + r"\s+([^()]{2,80}?)\s*\(([^,()]+),\s*([^()]+)\)", t)
+    if not m:       # the filer's heading itself: "<h2>Name (Last, First)</h2>"
+        for h in soup.find_all(["h2", "h1"]):
+            m = re.search(r"([^()]{2,80}?)\s*\(([^,()]+),\s*([^()]+)\)", h.get_text(" ", strip=True))
+            if m:
+                break
     first, last = (m.group(3).strip(), m.group(2).strip()) if m else (None, None)
     if not m:
         m2 = re.search(r"The Honorable\s+([A-Z][\w.'-]+(?:\s+[A-Z][\w.'-]+)*)", t)
@@ -1024,6 +1033,10 @@ def senate_imports(cfg, tx, done):
     was added, or why a filing couldn't be read (that one is kept under senate_import/failed/ and logged)."""
     import cloud_store
     keys = [k for k in cloud_store.list_keys("senate_import/pending/", log=log) if k.endswith(".json")]
+    # Oct 29: filings that couldn't be read are tried again every run, so a reader fix adds them without the
+    # owner sending them again. One that still can't be read stays in failed/ quietly (it was already reported).
+    retry = [k for k in cloud_store.list_keys("senate_import/failed/", log=log) if k.endswith(".json")]
+    keys += [k for k in retry if k.replace("/failed/", "/pending/") not in keys]
     if not keys:
         return []
     try:
@@ -1043,7 +1056,10 @@ def senate_imports(cfg, tx, done):
         first, last, filed = _ptr_filer(html) if html else (None, None, None)
         filed = filed or rec.get("filed")
         rid = k.rsplit("/", 1)[-1][:-5]
+        again = "/failed/" in k
         if not (link and items is not None and last and filed):
+            if again:
+                continue          # still unreadable: already reported when it came in
             why = "no trade table" if items is None else "no senator name" if not last else "no filing date" if not filed else "no page"
             log(f"Senate import: couldn't read {rid} ({why}); kept for a look")
             cloud_store.put(f"senate_import/failed/{rid}.json", json.dumps(rec), log=lambda m: None)
@@ -1059,13 +1075,13 @@ def senate_imports(cfg, tx, done):
                              "source": "senate_efd", "doc_id": link, "tx_raw": t["tx_raw"], "option": t["option"],
                              "note": t.get("note")})
             done.add(link)
-            cloud_store.delete(k, log=log)
+            cloud_store.delete(k, log=log)         # read now: the pending (or earlier failed) copy is done
             stocks = sorted({str(t["ticker"]) for t in new if t.get("ticker") and str(t["ticker"]).strip() not in ("--", "-")})
             msgs.append(("ok", rid, last, len(new), len(items), stocks, filed))
             status = f"added {len(new)} trade(s)" if new else "already on file"
             log(f"Senate import: {last} filed {filed}: {len(items)} row(s) read, {len(new)} new")
         for h in hist:
-            if h.get("id") == rid and h.get("status") == "received":
+            if h.get("id") == rid and (h.get("status") == "received" or (again and str(h.get("status", "")).startswith("couldn't"))):
                 h["status"], h["done"] = status, dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     cloud_store.put("senate_import/log.json", json.dumps(hist[:100]), log=lambda m: None)
     for m in msgs:

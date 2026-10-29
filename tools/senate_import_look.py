@@ -19,6 +19,8 @@ for pre in ("senate_import/pending/", "senate_import/failed/"):
         t = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
         print("---", k, "| who:", rec.get("who"), "| filed:", rec.get("filed"), "| at:", rec.get("at"), "| html bytes:", len(html))
         print("   parser:", E._ptr_filer(html) if html else None)
+        items = E.parse_senate_ptr_html(html) if html else None
+        print("   trade rows read:", None if items is None else len(items), [ (t.get("ticker"), t.get("tx_raw"), t.get("trade_date")) for t in (items or [])[:25]])
         i = t.lower().find("honorable")
         print("   text near 'Honorable':", repr(t[max(0, i - 200):i + 300]) if i >= 0 else "(no 'Honorable')")
         print("   page start:", repr(t[:500]))
