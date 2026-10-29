@@ -3,6 +3,7 @@
 #  Collects US politicians' disclosed stock trades from public sources, scores
 #  each purchase, backtests the picks, and builds a ranked watchlist.
 # =============================================================================
+import congress_signals.other_assets as OA
 import os, re, io, json, time, math, zipfile, base64, datetime as dt, unicodedata, smtplib, threading
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -447,8 +448,17 @@ def collect_house(cfg):
     def work(r):
         return r, _fetch_house_pdf(int(r["year"]), str(r["DocID"]))
 
+    other_rows, other_read = [], []        # bonds and other non-stock rows (congress_signals/other_assets.py)
+
     def flush():
-        nonlocal tx, rows, reread
+        nonlocal tx, rows, reread, other_rows, other_read
+        if other_read:
+            try:
+                OA.save_rows(cfg, other_rows, replace_docs=other_read, log=log)
+                OA.mark_house_done(cfg, other_read)
+            except Exception as e:
+                log(f"Bonds: saving House bond rows failed ({type(e).__name__}: {e})")
+            other_rows, other_read = [], []
         if reread and len(tx) and "doc_id" in tx.columns:
             tx = tx[~tx["doc_id"].astype(str).isin(reread)].reset_index(drop=True)
         reread = set()
@@ -469,7 +479,13 @@ def collect_house(cfg):
                 first = str(r.get("First") or "").strip()
                 last = str(r.get("Last") or "").strip()
                 st = str(r.get("StateDst") or "")[:2]
-                for t in parse_house_ptr_text(text):
+                items = parse_house_ptr_text(text)
+                try:
+                    other_rows += OA.house_rows(items, first, last, st, str(r["FilingDate"]), str(r["DocID"]))
+                    other_read.append(str(r["DocID"]))
+                except Exception as e:
+                    log(f"Bonds: House report {r['DocID']} bond rows not read ({type(e).__name__}: {e})")
+                for t in items:
                     if t["asset_type"] not in cfg["ASSET_TYPES"]:
                         continue
                     rows.append({"member": f"{first} {last}".strip(), "first": first, "last": last,
@@ -1110,6 +1126,11 @@ def senate_imports(cfg, tx, done):
                              "source": "senate_efd", "doc_id": link, "tx_raw": t["tx_raw"], "option": t["option"],
                              "note": t.get("note")})
             done.add(link)
+            try:
+                OA.save_rows(cfg, OA.senate_rows(parse_senate_other_html(html) or [], first, last, filed, link,
+                                                 source="senate_import"), replace_docs=[link], log=log)
+            except Exception as e:
+                log(f"Bonds: saving the imported filing's bond rows failed ({type(e).__name__}: {e})")
             cloud_store.delete(k, log=log)         # read now: the pending (or earlier failed) copy is done
             stocks = sorted({str(t["ticker"]) for t in new if t.get("ticker") and str(t["ticker"]).strip() not in ("--", "-")})
             msgs.append(("ok", rid, last, len(new), len(items), stocks, filed))
@@ -1195,6 +1216,7 @@ def collect_senate(cfg):
         json.dump(paper, open(_p(cfg, "cache", "senate_paper_index.json"), "w"))
 
     rows = []
+    senate_other = {}        # link -> bond and other non-stock rows (congress_signals/other_assets.py)
 
     def work(rep):
         for attempt in range(3):
@@ -1203,6 +1225,10 @@ def collect_senate(cfg):
                 if r.status_code == 200 and "<table" in r.text:
                     items = parse_senate_ptr_html(r.text)
                     if items is not None:
+                        try:
+                            senate_other[rep["link"]] = parse_senate_other_html(r.text) or []
+                        except Exception:
+                            pass
                         return rep, items
             except Exception:
                 pass
@@ -1232,6 +1258,16 @@ def collect_senate(cfg):
         tx = pd.concat([tx, pd.DataFrame(rows)], ignore_index=True)
     tx.to_pickle(cache_tx)
     json.dump(sorted(done), open(cache_done, "w"))
+    if senate_other:
+        try:
+            names = {r["link"]: r for r in todo}
+            orows = []
+            for link, its in senate_other.items():
+                rp = names.get(link) or {}
+                orows += OA.senate_rows(its, rp.get("first"), rp.get("last"), rp.get("filed"), link)
+            OA.save_rows(cfg, orows, replace_docs=list(senate_other), log=log)
+        except Exception as e:
+            log(f"Bonds: saving Senate bond rows failed ({type(e).__name__}: {e})")
     log(f"Senate: {len(tx)} stock transactions total")
     return tx
 

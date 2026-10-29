@@ -38,6 +38,14 @@ def done_count(fn):
         return 0
 
 
+# Oct 29: bonds and other non-stock rows of older House reports (read slowly; congress_signals/other_assets.py)
+try:
+    import congress_signals.other_assets as OA
+    OA.backfill_house(cfg, min(12.0, minutes * 0.2), log=E.log)
+except Exception as e:
+    E.log(f"Bonds history: failed ({type(e).__name__}: {e})")
+end = time.time() + max(5.0, (end - time.time()) / 60) * 60
+
 left_total = 0
 for name, fn, cache_file in steps:
     if time.time() > end:
