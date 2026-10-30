@@ -368,6 +368,17 @@ function firstSentences(t, n) {
   for (const p of parts.slice(0, n)) { if (out && out.length + p.length > 480) break; out += (out ? " " : "") + p; }
   return out;
 }
+// Wikidata's query service rate-limits bursts (HTTP 429, Oct 30 for ACN): wait as long as it asks (capped, since
+// the phone is waiting on this answer) and try again; same for brief 5xx outages.
+async function wikiGet(url, accept) {
+  let r;
+  for (let i = 0; i < 3; i++) {
+    r = await fetch(url, { headers: { "User-Agent": WIKI_UA, Accept: accept } });
+    if (r.status !== 429 && r.status < 500) return r;
+    if (i < 2) await new Promise(ok => setTimeout(ok, Math.min(5, Math.max(1, parseInt(r.headers.get("Retry-After") || "", 10) || 2 * (i + 1))) * 1000));
+  }
+  return r;
+}
 async function aboutWiki(t) {
   const sym = t.replace(/-/g, ".");
   const q = `SELECT ?item ?itemLabel ?ceoLabel ?article WHERE {
@@ -376,8 +387,7 @@ async function aboutWiki(t) {
     OPTIONAL { ?item p:P169 ?cs . ?cs ps:P169 ?ceo . FILTER NOT EXISTS { ?cs pq:P582 ?end } }
     OPTIONAL { ?article schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> }
     SERVICE wikibase:label { bd:serviceParam wikibase:language "en" } } LIMIT 10`;
-  const r = await fetch("https://query.wikidata.org/sparql?format=json&query=" + encodeURIComponent(q),
-    { headers: { "User-Agent": WIKI_UA, Accept: "application/sparql-results+json" } });
+  const r = await wikiGet("https://query.wikidata.org/sparql?format=json&query=" + encodeURIComponent(q), "application/sparql-results+json");
   if (!r.ok) throw new Error(`Wikidata HTTP ${r.status}`);
   const rows = ((await r.json()).results || {}).bindings || [];
   if (!rows.length) return null;
@@ -386,7 +396,7 @@ async function aboutWiki(t) {
   const out = { name: row.itemLabel && row.itemLabel.value, ceo: ceo.join(" and ") || null, wiki: row.article ? row.article.value : null };
   if (out.wiki) {
     const title = out.wiki.split("/wiki/")[1];
-    const s = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${title}`, { headers: { "User-Agent": WIKI_UA } });
+    const s = await wikiGet(`https://en.wikipedia.org/api/rest_v1/page/summary/${title}`, "application/json");
     if (!s.ok) throw new Error(`Wikipedia HTTP ${s.status}`);
     out.summary = firstSentences((await s.json()).extract, 3) || null;
   }
@@ -420,7 +430,8 @@ async function about(env, url) {
   const t = String(url.searchParams.get("t") || "").toUpperCase();
   if (!/^[A-Z][A-Z0-9-]{0,6}$/.test(t)) return json({ error: "bad-ticker" }, 400);
   const key = `cache/about/${t}.json`, cached = await r2json(env, key, null);
-  if (cached && Date.now() - Date.parse(cached.at) < (cached.summary || cached.ceo ? 14 : 1) * 864e5) return json(cached);
+  // a result a broken source left partial is only kept a day, so the missing part is filled in soon after the source recovers
+  if (cached && Date.now() - Date.parse(cached.at) < ((cached.summary || cached.ceo) && !cached.partial ? 14 : 1) * 864e5) return json(cached);
   const tryIt = async (src, label, fn) => { try { const v = await fn(); await wOk(env, src); return v; }
     catch (e) { await wProblem(env, src, `Company About: ${label} failed for ${t} (${String(e && e.message || e).slice(0, 80)})`); return { err: true }; } };
   const [w, y] = await Promise.all([tryIt("about-wiki", "Wikipedia/Wikidata", () => aboutWiki(t)), tryIt("about-yahoo", "Yahoo profile", () => aboutYahoo(t))]);
