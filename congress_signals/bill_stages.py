@@ -169,39 +169,27 @@ def _d(s):
 # ----------------------------------------------------------------------------
 # GovInfo BILLSTATUS
 # ----------------------------------------------------------------------------
-def download_billstatus(cache_dir, congresses, types=BILL_TYPES, log=print, problems=None):
-    """Zip per Congress and bill type, kept in cache_dir; the current Congress is refreshed after 3 days."""
-    os.makedirs(cache_dir, exist_ok=True)
-    problems = problems if problems is not None else []
-    cur = current_congress()
-    paths = []
-    for c in congresses:
-        for t in types:
-            p = os.path.join(cache_dir, f"BILLSTATUS-{c}-{t}.zip")
-            fresh = os.path.exists(p) and (c < cur or time.time() - os.path.getmtime(p) < 3 * 86400)
-            if not fresh:
-                base = f"https://www.govinfo.gov/bulkdata/BILLSTATUS/{c}/{t}"
-                err = None
-                for url in (f"{base}/BILLSTATUS-{c}-{t}.zip", f"{base}/BILLSTATUS-{c}{t}.zip"):
-                    try:
-                        r = _get(url)
-                        if r.content[:2] != b"PK":
-                            raise RuntimeError("not a zip")
-                        open(p + ".part", "wb").write(r.content)
-                        os.replace(p + ".part", p)
-                        log(f"Bills: downloaded {c}th Congress {t.upper()} ({len(r.content) / 1e6:.0f} MB)")
-                        err = None
-                        break
-                    except Exception as e:
-                        err = str(e)
-                if err:
-                    if os.path.exists(p):
-                        problems.append(f"BILLSTATUS {c}-{t}: refresh failed ({err}); used the older copy")
-                    else:
-                        problems.append(f"BILLSTATUS {c}-{t}: download failed ({err}); these bills are MISSING")
-                        continue
-            paths.append((c, t, p))
-    return paths
+def _fresh(path, c, days):
+    """A saved part is current when it was written well after its Congress ended, or recently."""
+    if not os.path.exists(path):
+        return False
+    m = os.path.getmtime(path)
+    ended = congress_span(c)[1].timestamp()
+    return m > ended + 60 * 86400 or time.time() - m < days * 86400
+
+
+def _download_zip(c, t):
+    base = f"https://www.govinfo.gov/bulkdata/BILLSTATUS/{c}/{t}"
+    err = None
+    for url in (f"{base}/BILLSTATUS-{c}-{t}.zip", f"{base}/BILLSTATUS-{c}{t}.zip"):
+        try:
+            r = _get(url)
+            if r.content[:2] != b"PK":
+                raise RuntimeError("not a zip")
+            return r.content, None
+        except Exception as e:
+            err = str(e)
+    return None, err
 
 
 def _parse_bill(root, c, t):
@@ -269,39 +257,52 @@ def _parse_bill(root, c, t):
 
 
 def build_bills(cache_dir, congresses, policy_map, log=print, problems=None, version="v1"):
-    """All bills of these Congresses as tables (cached as one pickle per Congress and type)."""
+    """All bills of these Congresses as tables. Each Congress and bill type is parsed once and saved small
+    (the raw download is not kept); the Congress in session is re-read after 3 days."""
+    import io
     problems = problems if problems is not None else []
+    os.makedirs(cache_dir, exist_ok=True)
     out = {k: [] for k in ("bills", "backers", "refs", "events", "failed")}
-    for c, t, p in download_billstatus(cache_dir, congresses, log=log, problems=problems):
-        pk = p.replace(".zip", f".{version}.pkl")
-        if os.path.exists(pk) and os.path.getmtime(pk) >= os.path.getmtime(p):
-            part = pd.read_pickle(pk)
-        else:
-            part = {k: [] for k in out}
-            try:
-                z = zipfile.ZipFile(p)
-            except Exception as e:
-                problems.append(f"BILLSTATUS {c}-{t}: zip unreadable ({e}); these bills are MISSING")
-                continue
-            bad = 0
-            for n in z.namelist():
-                if not n.lower().endswith(".xml"):
-                    continue
-                try:
-                    r = _parse_bill(ET.fromstring(z.read(n)), c, t)
-                except Exception:
-                    r, bad = None, bad + 1
-                if not r:
-                    continue
-                part["bills"].append(r["bill"])
-                for k in ("backers", "refs", "events", "failed"):
-                    part[k].extend(r[k])
-            if bad:
-                problems.append(f"BILLSTATUS {c}-{t}: {bad} bill files could not be read")
-            pd.to_pickle(part, pk)
-            log(f"Bills: {c}th Congress {t.upper()}: {len(part['bills']):,} bills, {len(part['events']):,} steps")
-        for k in out:
-            out[k].extend(part[k])
+    for c in congresses:
+        for t in BILL_TYPES:
+            pk = os.path.join(cache_dir, f"bills-{c}-{t}.{version}.pkl")
+            if _fresh(pk, c, 3):
+                part = pd.read_pickle(pk)
+            else:
+                raw, err = _download_zip(c, t)
+                part = None
+                if raw is not None:
+                    try:
+                        z = zipfile.ZipFile(io.BytesIO(raw))
+                        part, bad = {k: [] for k in out}, 0
+                        for n in z.namelist():
+                            if not n.lower().endswith(".xml"):
+                                continue
+                            try:
+                                r = _parse_bill(ET.fromstring(z.read(n)), c, t)
+                            except Exception:
+                                r, bad = None, bad + 1
+                            if not r:
+                                continue
+                            part["bills"].append(r["bill"])
+                            for k in ("backers", "refs", "events", "failed"):
+                                part[k].extend(r[k])
+                        if bad:
+                            problems.append(f"BILLSTATUS {c}-{t}: {bad} bill files could not be read")
+                        pd.to_pickle(part, pk + ".part")
+                        os.replace(pk + ".part", pk)
+                        log(f"Bills: {c}th Congress {t.upper()}: {len(part['bills']):,} bills, {len(part['events']):,} steps")
+                    except Exception as e:
+                        err, part = f"unreadable zip ({e})", None
+                if part is None:
+                    if os.path.exists(pk):
+                        problems.append(f"BILLSTATUS {c}-{t}: refresh failed ({err}); used the older copy")
+                        part = pd.read_pickle(pk)
+                    else:
+                        problems.append(f"BILLSTATUS {c}-{t}: download failed ({err}); these bills are MISSING")
+                        continue
+            for k in out:
+                out[k].extend(part[k])
     bills = pd.DataFrame(out["bills"], columns=["bill", "congress", "type", "title", "introduced", "policy", "subjects"])
     bills["sectors"] = [bill_sectors(p, s, policy_map) for p, s in zip(bills["policy"], bills["subjects"])]
     backers = pd.DataFrame(out["backers"], columns=["bill", "bioguide", "role", "joined", "withdrawn"])
@@ -349,47 +350,48 @@ def _vv_bill(raw, c):
 
 
 def build_votes(cache_dir, congresses, log=print, problems=None):
-    """One row per member per roll call on a bill: date, bill, side (+1 for the bill, -1 against), contested."""
+    """One row per member per roll call on a bill: date, bill, side (+1 for the bill, -1 against), contested.
+    Each chamber and Congress is saved small once read (Voteview updates monthly: re-read after 7 days)."""
+    import io
     os.makedirs(cache_dir, exist_ok=True)
     problems = problems if problems is not None else []
-    cur = current_congress()
     frames = []
     for c in congresses:
         for ch in ("H", "S"):
-            files = {}
-            for kind in ("rollcalls", "votes", "members"):
-                p = os.path.join(cache_dir, f"{ch}{c}_{kind}.csv")
-                fresh = os.path.exists(p) and (c < cur or time.time() - os.path.getmtime(p) < 7 * 86400)
-                if not fresh:
-                    try:
-                        r = _get(f"https://voteview.com/static/data/out/{kind}/{ch}{c}_{kind}.csv", timeout=300)
-                        open(p + ".part", "wb").write(r.content)
-                        os.replace(p + ".part", p)
-                    except Exception as e:
-                        if not os.path.exists(p):
-                            problems.append(f"Voteview {ch}{c} {kind}: download failed ({e}); these votes are MISSING")
-                            break
-                        problems.append(f"Voteview {ch}{c} {kind}: refresh failed ({e}); used the older copy")
-                files[kind] = p
-            if len(files) < 3:
+            pk = os.path.join(cache_dir, f"votes-{ch}{c}.pkl")
+            if _fresh(pk, c, 7):
+                frames.append(pd.read_pickle(pk))
                 continue
-            rc = pd.read_csv(files["rollcalls"], usecols=["rollnumber", "date", "bill_number", "vote_question",
-                                                          "yea_count", "nay_count"])
-            rc["bill"] = [_vv_bill(b, c) for b in rc["bill_number"]]
-            rc["side"] = rc["vote_question"].map(vote_side)
-            rc = rc[rc["bill"].notna() & (rc["side"] != 0)]
-            tot = (rc["yea_count"] + rc["nay_count"]).replace(0, np.nan)
-            rc["contested"] = (rc["yea_count"] / tot).between(0.35, 0.65)
-            mem = pd.read_csv(files["members"], usecols=["icpsr", "bioguide_id"]).dropna().drop_duplicates("icpsr")
-            vt = pd.read_csv(files["votes"], usecols=["rollnumber", "icpsr", "cast_code"])
-            vt = vt[vt["cast_code"].between(1, 6)]
-            vt["yea"] = vt["cast_code"] <= 3
-            vt = vt.merge(rc, on="rollnumber").merge(mem, on="icpsr")
-            vt["side"] = np.where(vt["yea"], vt["side"], -vt["side"])     # nay on passage = against the bill
-            vt["chamber"] = "House" if ch == "H" else "Senate"
-            frames.append(vt[["bioguide_id", "bill", "date", "side", "contested", "chamber", "vote_question"]]
-                          .rename(columns={"bioguide_id": "bioguide"}))
-            log(f"Votes: {ch}{c}: {len(rc):,} roll calls on bills, {len(vt):,} member votes")
+            try:
+                raw = {kind: _get(f"https://voteview.com/static/data/out/{kind}/{ch}{c}_{kind}.csv", timeout=300).content
+                       for kind in ("rollcalls", "votes", "members")}
+                rc = pd.read_csv(io.BytesIO(raw["rollcalls"]), usecols=["rollnumber", "date", "bill_number",
+                                                                       "vote_question", "yea_count", "nay_count"])
+                rc["bill"] = [_vv_bill(b, c) for b in rc["bill_number"]]
+                rc["side"] = rc["vote_question"].map(vote_side)
+                rc = rc[rc["bill"].notna() & (rc["side"] != 0)]
+                tot = (rc["yea_count"] + rc["nay_count"]).replace(0, np.nan)
+                rc["contested"] = (rc["yea_count"] / tot).between(0.35, 0.65)
+                mem = pd.read_csv(io.BytesIO(raw["members"]), usecols=["icpsr", "bioguide_id"]).dropna().drop_duplicates("icpsr")
+                vt = pd.read_csv(io.BytesIO(raw["votes"]), usecols=["rollnumber", "icpsr", "cast_code"])
+                vt = vt[vt["cast_code"].between(1, 6)]
+                vt["yea"] = vt["cast_code"] <= 3
+                vt = vt.merge(rc, on="rollnumber").merge(mem, on="icpsr")
+                vt["side"] = np.where(vt["yea"], vt["side"], -vt["side"])     # nay on passage = against the bill
+                vt["chamber"] = "House" if ch == "H" else "Senate"
+                f = vt[["bioguide_id", "bill", "date", "side", "contested", "chamber", "vote_question"]] \
+                    .rename(columns={"bioguide_id": "bioguide"})
+                f["side"] = f["side"].astype("int8")
+                pd.to_pickle(f, pk + ".part")
+                os.replace(pk + ".part", pk)
+                frames.append(f)
+                log(f"Votes: {ch}{c}: {len(rc):,} roll calls on bills, {len(f):,} member votes")
+            except Exception as e:
+                if os.path.exists(pk):
+                    problems.append(f"Voteview {ch}{c}: refresh failed ({str(e)[:120]}); used the older copy")
+                    frames.append(pd.read_pickle(pk))
+                else:
+                    problems.append(f"Voteview {ch}{c}: download failed ({str(e)[:120]}); these votes are MISSING")
     if not frames:
         return pd.DataFrame(columns=["bioguide", "bill", "date", "side", "contested", "chamber", "vote_question"])
     v = pd.concat(frames, ignore_index=True)

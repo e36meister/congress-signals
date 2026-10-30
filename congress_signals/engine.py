@@ -78,6 +78,7 @@ DEFAULT_CONFIG = {
     "USE_EMPLOYEE_DONATIONS": True, "USE_ANNUAL_DISCLOSURES": True, "USE_COMPANY_INFO": True,
     "USE_BILL_STATUS": True, "USE_SPOUSE_MATCHING": True, "USE_ANALYST_HISTORY": True, "USE_CAMPAIGN_SPENDING": True, "USE_ASSISTANCE": True,
     "USE_HEARINGS": True, "USE_VOTES": True, "USE_SPEECHES": True, "USE_BLUESKY": True, "USE_EVENTS": True,
+    "USE_BILL_STAGES": True,         # every bill's dated steps (GovInfo) and every member's vote on it (Voteview)
     "TIME_BUDGET_MIN": 0,            # 0 = no limit (Colab); the daily GitHub run sets this
     "MAX_ENRICH_TICKERS": 800,       # contracts/lobbying are looked up for the most-traded tickers
     "WORKERS": 8,
@@ -4032,6 +4033,7 @@ def compute_features(tx, px, data, cfg):
                      ("relationships", lambda x: relationship_features(x, data, cfg, mems)),
                      ("volume", lambda x: volume_features(x, data)), ("events", lambda x: event_features(x, data, mems)),
                      ("analysts", lambda x: analyst_features(x, data)), ("size and the rest", lambda x: extra_features(x, px, data, cfg, mems)),
+                     ("bills at the trade", lambda x: bill_stage_features(x, data, cfg, mems)),
                      ("institutions", lambda x: _inst().inst_features(x, cfg)),
                      ("posts", lambda x: _social().post_features(x, cfg))):
         tx = fn(tx)
@@ -4065,7 +4067,11 @@ TRIAL_SIGNALS = {"relative_tie": 0.5, "unusual_volume": 0.4, "reg_action": 0.3, 
                  "note_advisor": -0.2, "note_rebalance": -0.2, "note_automatic": -0.3, "note_account_move": -0.2,
                  "note_corporate": -0.2, "note_comp": -0.2, "note_inherit_gift": -0.3, "note_conflict": -0.3,
                  "note_error": -0.3, "note_required": -0.3, "note_plan": -0.2, "note_hedge": -0.2, "note_tax": -0.2,
-                 "note_self": 0.3}
+                 "note_self": 0.3,
+                 # bills at the time of the trade (congress_signals/bill_stages.py; owner, Oct 29). Study at 125 days:
+                 # lead sponsor +1.8% (t 3.2), voted against the industry's bills -2.1% (t -3.3); committee bill past
+                 # a chamber +2.0% (t 2.7) and +4.1% at 250 days
+                 "bill_lead_sponsor": 0.3, "bill_vote_against": -0.3, "bill_committee_passed": 0.2}
 TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "unusual_volume": "Signal: unusual trading volume before the trade",
                 "reg_action": "Signal: federal rule naming the company soon after the trade",
@@ -4085,7 +4091,10 @@ TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "post_crowd": "Signal: 3+ members named the company in posts in the 2 weeks before the filing",
                 "committee_staff_lobbyist": "Signal: a company lobbyist used to work for one of the member's committees",
                 "family_possible": "Signal: possible family tie to the company (SEC name match, not confirmed by state)",
-                "unusual_volume_low": "Signal: score lower when trading volume was unusual before the trade"}
+                "unusual_volume_low": "Signal: score lower when trading volume was unusual before the trade",
+                "bill_lead_sponsor": "Signal: the member is the lead sponsor of a bill in the company's industry that is still moving",
+                "bill_vote_against": "Signal: score lower when the member voted against the industry's bills around the trade",
+                "bill_committee_passed": "Signal: a bill on the industry from the member's committee had passed a chamber"}
 try:
     from congress_signals import notes as _NOTES
     TRIAL_LABELS.update({f"note_{k}": f"Signal: filing note says {l[0].lower() + l[1:]}" for k, l, _ in _NOTES.WHO})
@@ -4413,7 +4422,10 @@ def _select(rows, score_col, pct, per_week, blocked=None, short=False, per_membe
         if skip_late and "lag_days" in cand:
             cand = cand[cand["lag_days"] <= 45]
         if net_sell and not short:
-            cand = cand[cand["n_sellers"] <= cand["n_buyers"]]
+            # "n_sellers_eff": sellers that count, set by apply_hold_policy (the policy can leave out sales the bill
+            # data marks as weak signals); the plain count otherwise
+            sc_ = "n_sellers_eff" if "n_sellers_eff" in cand else "n_sellers"
+            cand = cand[cand[sc_] <= cand["n_buyers"]]
         for _, r in cand.iterrows():
             if taken >= per_week:
                 break
@@ -5699,6 +5711,8 @@ def prepare(cfg):
             log(f"Markups: bill subjects skipped ({e})")
     if step("USE_BILL_STATUS"):
         data["bill_actions"] = collect_bill_status(cfg)
+    if step("USE_BILL_STAGES"):
+        data["bill_tables"], data["vv_votes"] = collect_bill_stages(cfg)
     if step("USE_CAMPAIGN_SPENDING"):
         data["campaign_vendors"] = collect_campaign_vendors(cfg, fecs)
     if step("USE_ANALYST_HISTORY"):
@@ -5793,7 +5807,7 @@ def prepare(cfg):
     pol = load_adaptive(cfg)["policy"]
     if (int(pol["hold_small"]) != int(cfg["HOLD_DAYS"]) or int(pol["hold_other"]) != int(cfg["HOLD_DAYS"])
             or pol.get("exit_on_member_sell") or pol.get("price_exit", "none") != "none"
-            or pol.get("extend", "none") != "none"):
+            or pol.get("extend", "none") != "none" or pol.get("sale_discount")):
         scored = apply_hold_policy(scored, px, cfg, pol)
         log(f"Holding periods in use: {pol['hold_other']} trading days, {pol['hold_small']} for companies under $2B")
     scored.to_pickle(_p(cfg, "cache", "scored.pkl"))
@@ -8451,6 +8465,93 @@ def collect_bill_status(cfg):
     return df
 
 
+# ----------------------------------------------------------------------------
+# Bills at the time of the trade (owner, Oct 29): each bill's dated steps and each member's vote on it
+# ----------------------------------------------------------------------------
+BILL_DATA = {"problems": [], "missing": False, "votes_through": None}
+VOTES_STALE_DAYS = 75          # Voteview updates monthly; older than this means an update didn't come through
+
+
+def collect_bill_stages(cfg):
+    """GovInfo bill histories and Voteview roll calls from the Congress before START_DATE on (cached small; the
+    Congress in session is refreshed every few days). Any failure is logged as one (Data health shows it) and
+    recorded in BILL_DATA, so a setting that uses this data can pause new buys when it's incomplete."""
+    from . import bill_stages as B
+    probs = []
+    first = B.congress_of(pd.Timestamp(cfg["START_DATE"]) - pd.Timedelta(days=365))
+    cong = range(first, B.current_congress() + 1)
+    d = _p(cfg, "cache", "bill_stages", "x")
+    try:
+        tables = B.build_bills(os.path.dirname(d), cong, POLICY_SECTORS, log=log, problems=probs)
+        votes = B.build_votes(os.path.join(os.path.dirname(d), "voteview"), cong, log=log, problems=probs)
+    except Exception as e:
+        probs.append(f"stopped with an error ({type(e).__name__}: {str(e)[:150]}); bill data MISSING")
+        tables, votes = None, None
+    newest = votes["date"].max() if votes is not None and len(votes) else None
+    if newest is not None and (pd.Timestamp.today() - newest).days > VOTES_STALE_DAYS:
+        probs.append(f"newest roll-call vote is {(pd.Timestamp.today() - newest).days} days old (Voteview update "
+                     f"failed to come through); recent votes are missing from the vote signals")
+    for p_ in probs:
+        log(f"Bill and vote data: {p_}" + ("" if re.search(r"fail|error|MISSING", p_) else " (failed)"))
+    BILL_DATA.update(problems=probs, missing=tables is None or any("MISSING" in x for x in probs),
+                     votes_through=None if newest is None else str(newest.date()))
+    if tables is not None:
+        log(f"Bill and vote data: {len(tables['bills']):,} bills, {len(tables['events']):,} dated steps, "
+            f"{0 if votes is None else len(votes):,} member votes (through {BILL_DATA['votes_through']})")
+    return tables, votes
+
+
+BILL_FEATURES = ("f_bill_lead_sponsor", "f_bill_vote_against", "f_bill_committee_passed", "f_bill_hold", "f_sale_discount")
+
+
+def bill_stage_features(tx, data, cfg, mems):
+    """Where the trade's linked bills stood on the trade date and how the member voted on the industry's bills,
+    up to the filing (all known on the filing date). Feeds three trial signals, the hold-longer option
+    "ahead_daily_bill" and the weak-sale option of the net-sell filter."""
+    for c in BILL_FEATURES:
+        tx[c] = 0.0
+    tables, votes = data.get("bill_tables"), data.get("vv_votes")
+    if tables is None:
+        return tx
+    from . import bill_stages as B
+    inp = pd.DataFrame({"bioguide": tx["bioguide"], "sector": tx["sector"], "tx_type": tx["tx_type"],
+                        "trade_date": tx["trade_date"], "filed_date": tx["filed_date"],
+                        "cids": [list((m or {}).get("cids") or []) for m in mems]}, index=tx.index)
+    try:
+        f = B.trade_bill_features(inp, tables, votes, log=log)
+    except Exception as e:
+        log(f"Bills at the trade: failed ({type(e).__name__}: {e}); bill signals are 0 this run")
+        BILL_DATA["missing"] = True
+        return tx
+    col = lambda c: f[c].fillna(0) if c in f else pd.Series(0, index=f.index)
+    net = col("vote_pre_all_net") + col("vote_t2f_all_net")          # +1 per vote for an industry bill, -1 against
+    passed = col("committee_focused_s_t") >= 5
+    buy, sell = tx["tx_type"].eq("buy"), tx["tx_type"].eq("sell")
+    tx["f_bill_lead_sponsor"] = ((col("sponsor_n_own") > 0) & buy).astype(float)
+    tx["f_bill_vote_against"] = ((net < 0) & buy).astype(float)
+    tx["f_bill_committee_passed"] = (passed & buy).astype(float)
+    hold = ((net > 0) | passed) & buy
+    # one decision per stock and filing day (the backtest and the live tool keep one row per stock per day)
+    tx["f_bill_hold"] = hold.astype(float).groupby([tx["ticker"], tx["filed_date"]]).transform("max").fillna(0)
+    tx["f_sale_discount"] = (((net > 0) | passed) & sell).astype(float)
+    tx["bill_vote_net"] = net.astype(float)
+    # members selling the stock in the cluster window, leaving out the weak sales (for the net-sell filter)
+    win = np.timedelta64(cfg["CLUSTER_WINDOW_DAYS"], "D")
+    kept = np.zeros(len(tx), dtype=int)
+    pos = {ix: i for i, ix in enumerate(tx.index)}
+    strong_sell = sell & (tx["f_sale_discount"] == 0)
+    for t, g in tx.groupby("ticker"):
+        g = g.sort_values("filed_date")
+        d, who, ss = g["filed_date"].values, g["who"].values, strong_sell[g.index].values
+        for j, ix in enumerate(g.index):
+            lo = np.searchsorted(d, d[j] - win, side="right")
+            hi = np.searchsorted(d, d[j], side="right")
+            kept[pos[ix]] = len(set(who[lo:hi][ss[lo:hi]]))
+    tx["n_sellers_kept"] = kept
+    log("Bills at the trade: " + ", ".join(f"{c[2:]} {int((tx[c] > 0).sum()):,}" for c in BILL_FEATURES))
+    return tx
+
+
 FD_SCHEDULE = re.compile(r"^\s*s(?:chedule)?[^a-z0-9:]{1,40}([a-j])\s*:")
 
 
@@ -9258,6 +9359,56 @@ def check_exit_rule(scored, px, cfg, a, pol, rows, today):
     return c
 
 
+SALE_DISCOUNT_LABEL = ("Skip-a-buy-when-members-sell: leave out sales the bill data marks weak (the member voted "
+                       "for the industry's bills, or their committee's industry bill had passed a chamber)")
+
+
+def check_sale_discount(scored, px, cfg, a, pol, rows, today):
+    """Owner, Oct 29: sales by members who voted for the industry's bills (or whose committee's industry bill was
+    moving) were followed by the stock RISING (study at 250 days: -4.9% and -5.1% as avoid calls, t -3.1 / -3.5).
+    Test leaving those sales out of the net-sell filter, on and off; switch only when clearly better."""
+    if "n_sellers_kept" not in scored:
+        rows.append({"Setting": SALE_DISCOUNT_LABEL, "Option": "Off (current)", "Per year vs S&P": None,
+                     "Gain vs current": None, "Sureness": None, "Verdict": "Bill data not loaded this run"})
+        log("Adjustments: weak-sales check skipped (bill data not loaded this run)")
+        return None
+    base = dict(cfg, _nested=True)
+    run = lambda p: run_backtest(apply_hold_policy(scored, px, cfg, p), px, base)
+    vs = lambda b: float(b["perf"].loc["Per year vs S&P 500", "Long picks"])
+    on = bool(pol.get("sale_discount"))
+    cur, alt = run(pol), run(dict(pol, sale_discount=not on))
+    c = _compare(_long_daily(alt), _long_daily(cur))
+    rows[:] = [r for r in rows if r.get("Setting") != SALE_DISCOUNT_LABEL]
+    rows.append({"Setting": SALE_DISCOUNT_LABEL, "Option": ("On" if on else "Off") + " (current)", "Per year vs S&P": vs(cur),
+                 "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
+    rows.append({"Setting": SALE_DISCOUNT_LABEL, "Option": "Off" if on else "On", "Per year vs S&P": vs(alt),
+                 "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
+                 "Verdict": "Switched automatically" if clearly_better(c) else _verdict(c, True), **_sure_fields(c)})
+    if clearly_better(c):
+        a["history"].append({"date": today, "change": SALE_DISCOUNT_LABEL, "from": "on" if on else "off",
+                             "to": "off" if on else "on", "gain_per_year": c["gain"], "sureness": c["t"]})
+        log(f"Adjustments: weak sales left out of the net-sell filter -> {'off' if on else 'on'} "
+            f"(+{c['gain']*100:.1f}%/yr in the backtest)")
+        pol["sale_discount"] = not on
+    else:
+        log(f"Adjustments: weak sales in the net-sell filter: stays {'on' if on else 'off'}"
+            + (f" (switching: {c['gain']*100:+.1f}%/yr, t={c['t']:.2f})" if c else ""))
+    a["sale_discount_checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    return c
+
+
+def check_sale_discount_once(scored, px, cfg):
+    """First run with the bill data: test it right away instead of waiting for the weekly check."""
+    a = load_adaptive(cfg)
+    if a.get("sale_discount_checked_at") or "n_sellers_kept" not in scored:
+        return
+    pol = dict(a["policy"])
+    rows = list(a.get("evaluation") or [])
+    check_sale_discount(scored, px, cfg, a, pol, rows, dt.date.today().isoformat())
+    a["policy"], a["evaluation"] = pol, rows
+    save_adaptive(cfg, a)
+
+
 def check_trial_signals(scored, px, cfg, a, pol, rows, today, only=None):
     """Test each new signal on and off (rescoring every trade); switch only when clearly better."""
     base = dict(cfg, _nested=True)
@@ -9388,8 +9539,11 @@ EXTENDS = {"none": "Sell on the scheduled day",
            # Oct 7 study: main picks ahead of the S&P at day 60 added +4.4% vs the S&P over days 60-250 (t 2.2);
            # picks behind lost -1.4%. Before 2022 and since, the same direction. Tested here like every option.
            "ahead": "Keep a pick that's ahead of the S&P at the end of its hold, up to 1 year; sell the rest on schedule",
-           "ahead_daily": "Keep holding while ahead of the S&P, re-checked every day near and after the end (at most 1 year)"}
-AHEAD_RULES = ("ahead", "ahead_daily")
+           "ahead_daily": "Keep holding while ahead of the S&P, re-checked every day near and after the end (at most 1 year)",
+           # owner, Oct 29: hold longer when the industry's bills are moving and the member voted for them
+           "ahead_daily_bill": "Same, and keep a full year when the member voted for the industry's bills or their "
+                               "committee's industry bill had passed a chamber"}
+AHEAD_RULES = ("ahead", "ahead_daily", "ahead_daily_bill")
 AHEAD_MAX = 250            # trading days: the longest a pick is kept by the "ahead of the S&P" rules
 PRICE_EXIT_LABEL = "Sell early when a stock falls"
 EXTEND_LABEL = "Hold longer while a stock keeps rising"
@@ -9418,6 +9572,8 @@ def price_exit_positions(rows, px, hold, price_exit="none", extend="none"):
         price_exit_positions._ff = (px, px.ffill().values)
     arr = price_exit_positions._ff[1]
     buy = (rows["tx_type"] == "buy").values if "tx_type" in rows else np.ones(len(rows), bool)
+    bill_hold = (rows["f_bill_hold"].fillna(0).values > 0) if (extend == "ahead_daily_bill" and "f_bill_hold" in rows) \
+        else np.zeros(len(rows), bool)
     sx, ex = _rule_pct(price_exit), _rule_pct(extend)
     trail = price_exit.startswith("trail")
     for i, (t, e) in enumerate(zip(rows["ticker"].values, ent)):
@@ -9449,6 +9605,9 @@ def price_exit_positions(rows, px, hold, price_exit="none", extend="none"):
             j = base - 1
             ahead = np.isfinite(arr[j, c]) and arr[j, c] / p0 - arr[j, sc_] / s0 > 0
             cap = e + max(AHEAD_MAX, int(hold))
+            if bill_hold[i]:
+                out[i] = cap                                    # industry bills moving their way: kept a year
+                continue
             if not ahead:
                 out[i] = base                                   # sold on schedule
             elif extend == "ahead":
@@ -9772,6 +9931,7 @@ def load_adaptive(cfg):
     a["policy"].setdefault("hold_sleeve", 250)
     a["policy"].setdefault("sleeve_coverage", False)
     a["policy"].setdefault("exit_on_member_sell", False)
+    a["policy"].setdefault("sale_discount", False)         # net-sell filter leaves out sales the bill data marks weak
     a["policy"].setdefault("signals_on", [])
     a["policy"].setdefault("price_exit", "none")           # sell early when a stock falls (stop rules)
     a["policy"].setdefault("extend", "none")               # keep holding while a stock keeps rising
@@ -9819,6 +9979,8 @@ def apply_hold_policy(scored, px, cfg, policy):
         out[c] = out[c].astype(float)
     out["closed"] = out["closed"].astype(bool)
     out["hold_days_row"] = h
+    if "n_sellers_kept" in out and "n_sellers" in out:
+        out["n_sellers_eff"] = out["n_sellers_kept"] if policy.get("sale_discount") else out["n_sellers"]
     if "benchmark_etf" in out:          # industry fund over the same (new) holding window
         pf = _px_ffill(px)
         idx, colmap = pf.index, {c: i for i, c in enumerate(pf.columns)}
@@ -9948,13 +10110,13 @@ def recheck_past_switches(scored, px, cfg, a, pol, rows, today):
     """A setting the weekly check switched on its own (not one you chose) stays only while it still clearly beats
     the starting setting under today's test; otherwise it goes back to the start."""
     start = {"hold_other": int(cfg["HOLD_DAYS"]), "hold_small": int(cfg["HOLD_DAYS"]), "hold_sleeve": 250,
-             "sleeve_coverage": False, "exit_on_member_sell": False, "price_exit": "none", "extend": "none",
+             "sleeve_coverage": False, "exit_on_member_sell": False, "sale_discount": False, "price_exit": "none", "extend": "none",
              "sleeve_price_exit": "none", "sleeve_extend": "none", "sizing": "equal"}
     fam = {"hold_other": len(HOLD_CHOICES) - 1, "hold_small": len(HOLD_CHOICES) - 1, "hold_sleeve": len(SLEEVE_HOLDS) - 1,
            "price_exit": len(PRICE_EXITS) - 1, "extend": len(EXTENDS) - 1, "sleeve_price_exit": len(PRICE_EXITS) - 1,
            "sleeve_extend": len(SLEEVE_EXTENDS) - 1, "sizing": len(SIZING) - 1}
     labels = dict(HOLD_LABELS, sleeve_coverage="Small-company portfolio: skip companies no analyst covers",
-                  exit_on_member_sell=EXIT_LABEL, price_exit=PRICE_EXIT_LABEL, extend=EXTEND_LABEL,
+                  exit_on_member_sell=EXIT_LABEL, sale_discount=SALE_DISCOUNT_LABEL, price_exit=PRICE_EXIT_LABEL, extend=EXTEND_LABEL,
                   sleeve_price_exit="Small-company portfolio: " + PRICE_EXIT_LABEL.lower(),
                   sleeve_extend="Small-company portfolio: " + EXTEND_LABEL.lower(), sizing=SIZING_LABEL)
     # yours: any setting whose latest change was your choice is left alone
@@ -10130,6 +10292,10 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
         check_exit_rule(scored, px, cfg, a, pol, rows, today)
     except Exception as e:
         log(f"Adjustments: sell-when-member-sells check skipped ({e})")
+    try:
+        check_sale_discount(scored, px, cfg, a, pol, rows, today)
+    except Exception as e:
+        log(f"Adjustments: weak-sales check skipped ({e})")
     try:
         check_trial_signals(scored, px, cfg, a, pol, rows, today)
         a["trial_checked"] = sorted(TRIAL_SIGNALS)

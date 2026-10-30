@@ -159,7 +159,7 @@ def dividend_estimate(api):
             "received": round(received, 2), "items": items[:30], "by_year": by_year}
 
 
-AHEAD_RULES = ("ahead", "ahead_daily")
+AHEAD_RULES = ("ahead", "ahead_daily", "ahead_daily_bill")
 AHEAD_MAX = 250            # trading days: the longest the "ahead of the S&P" rules keep a pick (same as the backtest)
 NEAR_END_DAYS = 5          # a position this close to its sell date is re-checked against the current hold every run
 
@@ -306,6 +306,20 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             hi = high_since(sym, o["filled_at"][:10], now_px)
             if hi is None or (now_px > entry and now_px >= hi * (1 - pct(ext))):
                 continue
+        if ext == "ahead_daily_bill" and hold <= held < max(AHEAD_MAX, hold):
+            # owner, Oct 29: a pick whose member voted for the industry's bills (or whose committee's industry bill
+            # had passed a chamber) is kept a full year, like the backtest; the rest follow "ahead_daily"
+            bh = cfg.get("_bill_hold")
+            try:
+                if bh is None:
+                    raise RuntimeError("no bill data from this run")
+                if bh(from_alpaca(sym), o["filled_at"][:10]):
+                    continue
+            except Exception as e:
+                if not cfg.get("_bill_hold_warned"):
+                    cfg["_bill_hold_warned"] = True
+                    log(f"Broker: bill-based hold check failed ({type(e).__name__}: {e}); "
+                        f"positions follow the plain ahead-of-the-S&P rule this run")
         if ext in AHEAD_RULES and hold <= held < max(AHEAD_MAX, hold):
             # keep a pick that's ahead of the S&P (since the close of the day it was bought): "ahead" decides once,
             # on the close before its scheduled sale; "ahead_daily" re-checks every run and sells once it's behind

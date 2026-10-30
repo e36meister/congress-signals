@@ -291,6 +291,25 @@ def send_alerts(buys, sells, new):
 DRY_RUN = (env("DRY_RUN") or "").strip() == "1"      # test run: reads Alpaca but never trades
 
 
+def bill_hold_lookup(scored):
+    """(ticker, bought YYYY-MM-DD) -> was the purchase that triggered our buy flagged for the bill-based hold?
+    The pick is the stock's best purchase disclosure filed in the week before we bought (filings are bought the
+    next trading day; a few days' slack covers weekends and holidays). None when this run has no bill data."""
+    if "f_bill_hold" not in scored:
+        return None
+    b = scored[(scored["tx_type"] == "buy") & (scored["f_bill_hold"] > 0)]
+    by_t = {t: E.np.sort(g["filed_date"].values) for t, g in b.groupby("ticker")}
+
+    def f(t, bought):
+        d = by_t.get(t)
+        if d is None:
+            return False
+        hi = E.np.datetime64(E.pd.Timestamp(bought))
+        lo = hi - E.np.timedelta64(7, "D")
+        return bool(E.np.searchsorted(d, hi, side="right") > E.np.searchsorted(d, lo, side="left"))
+    return f
+
+
 def trade_now(scored, px):
     """Buy and sell right after scoring, before the slow parts of the update (backtests, weekly checks, watchlist
     context, charts). Uses the backtest's own pick rule on the newest filings (live_picks), so it doesn't need the
@@ -302,7 +321,7 @@ def trade_now(scored, px):
     phist = lambda t, since: pxf.loc[E.pd.Timestamp(since):, t].dropna().values if pxf is not None and t in pxf else None
     caps = scored.sort_values("filed_date").drop_duplicates("ticker", keep="last") \
         .set_index("ticker")["market_cap"].dropna().to_dict() if "market_cap" in scored else {}
-    helpers = {"last": last, "msales": msales, "phist": phist, "caps": caps}
+    helpers = {"last": last, "msales": msales, "phist": phist, "caps": caps, "bill_hold": bill_hold_lookup(scored)}
     try:
         live_p, small_f = E.live_picks(scored, px, cfg), E.fresh_small_rows(scored, cfg)
         E.log(f"Live picks: {len(live_p)} fresh main pick(s) {list(live_p['ticker'])[:8] if len(live_p) else ''}, "
@@ -315,7 +334,7 @@ def trade_now(scored, px):
     except Exception:
         slots = None
     snap = broker.sync(dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=slots, _pause_buys=PAUSE,
-                            _live_picks=live_p, _small_fresh=small_f, _caps=caps,
+                            _live_picks=live_p, _small_fresh=small_f, _caps=caps, _bill_hold=helpers["bill_hold"],
                             _member_sales=msales, _price_hist=phist), None, None, last, E.log, trade=not DRY_RUN)
     if snap is not None and not DRY_RUN:
         cloud_store.save_reasons(snap.get("this_run"), E.log)       # phone trade alerts say why
@@ -492,6 +511,10 @@ def main():
         E.check_exit_rule_once(scored, px, cfg)
     except Exception as e:
         E.log(f"Adjustments: sell-when-member-sells check skipped ({e})")
+    try:
+        E.check_sale_discount_once(scored, px, cfg)
+    except Exception as e:
+        E.log(f"Adjustments: weak-sales check skipped ({e})")
     try:        # one email when a full House re-read has finished
         rp = os.path.join(cfg["DATA_DIR"], "state", "house_reread.json")
         rr = json.load(open(rp)) if os.path.exists(rp) else {"version": E.HOUSE_PARSER_VERSION}
@@ -561,7 +584,8 @@ def main():
             phist = lambda t, since: pxf.loc[E.pd.Timestamp(since):, t].dropna().values if pxf is not None and t in pxf else None
         sm = (bt.get("small") or {}) if isinstance(bt, dict) else {}
         base = dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=sm.get("slots"), _pause_buys=PAUSE,
-                    _caps=h.get("caps") or {}, _member_sales=msales, _price_hist=phist)
+                    _caps=h.get("caps") or {}, _member_sales=msales, _price_hist=phist,
+                    _bill_hold=h.get("bill_hold") or bill_hold_lookup(scored))
         if early is not None:
             # already traded right after scoring: just refresh the account snapshot, keeping what that step did
             snap = broker.sync(base, None, None, last, E.log, trade=False) or early
