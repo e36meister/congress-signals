@@ -19,8 +19,9 @@ FILE = ("cache", "other_tx.pkl")
 HOUSE_DONE = ("cache", "other_house_done.json")     # House reports read again for these rows (history fill)
 KEY = ["doc_id", "trade_date", "asset", "tx_raw", "amt_lo", "owner"]
 
-TREASURY = re.compile(r"\b(u\.?\s?s\.?\s+treas\w*|treasury|t-?bills?|treas\s+bills?|t-?notes?|tips\b|"
-                      r"united states treas\w*)", re.I)
+TREASURY = re.compile(r"\b(u\.?\s?s\.?\s+treas\w*|us\s+tsy|treasury|t-?bills?|treas\s+bills?|t-?notes?|tips\b|"
+                      r"united states treas\w*|fannie\s+mae|freddie\s+mac|fnma|fhlmc|federal national mortgage|"
+                      r"federal home loan|fhlb|ginnie\s+mae|gnma)", re.I)      # Treasuries and US agency debt
 MUNI_WORDS = re.compile(r"\b(go|g\.o\.|gen(?:eral)?\s+oblig\w*|rev(?:enue)?|bds?|bonds?|auth(?:ority)?|sch(?:ool)?\s+dist|"
                         r"cnty|county|city|twp|township|util\w*|muni\w*|hosp\w*|tpk|turnpike|arpt|airport|"
                         r"dorm|fing|financ\w*\s+auth|water|sewer|swr|transit|port\s+auth|ref\b)", re.I)

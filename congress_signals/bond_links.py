@@ -110,19 +110,30 @@ def flag(row, committees, member_state):
     return "home", f"a {sec} bond from their own state ({st})"
 
 
+NOISE = r"(sr|senior|notes?|bonds?|bds?|debentures?|medium term|mtn|fixed|rate|var\w*|coupon|cpn|zero|mat|due|call|" \
+        r"make|whole|ser|series|new|ll|ctf|instl|dep|act|fin|llc|plc|ag|na|n\s?a|bk|financial|finl|holdings?|hldgs?)"
+
+
 def corp_ticker(asset, names):
-    """Ticker of a corporate bond's company: names is {company_key: ticker} (engine.company_key of each company)."""
+    """Ticker of a corporate bond's company: names is {company_key: ticker} (engine.company_key of each company).
+    Tries the cleaned name, then its first two words, then its first word, and takes a match only if it's unique."""
     import congress_signals.engine as E
-    a = re.sub(r"\b\d+(\.\d+)?\s*%|\b\d{1,2}/\d{1,2}/\d{2,4}\b|\bdue\b.*$|\b(sr|senior|notes?|bonds?|bds?|debentures?|"
-               r"medium term|mtn|fixed|rate|var\w*)\b", " ", str(asset or ""), flags=re.I)
+    a = re.sub(r"\(.*?\)|\b\d+(\.\d+)?\s*%|\d+(\.\d+)?%?mat|\b\d{1,2}/\d{1,2}/\d{2,4}\b|\bdue\b.*$", " ", str(asset or ""), flags=re.I)
+    a = re.sub(rf"\b{NOISE}\b", " ", a, flags=re.I)
     k = E.company_key(a)
     if not k:
         return None
     if k in names:
         return names[k]
-    k2 = " ".join(k.split()[:2])
-    hits = {t for kk, t in names.items() if kk == k2 or kk.startswith(k2 + " ")}
-    return next(iter(hits)) if len(hits) == 1 else None
+    words = k.split()
+    for n in (2, 1):
+        if len(words) < n or (n == 1 and len(words[0]) < 3):
+            continue
+        pre = " ".join(words[:n])
+        hits = {t for kk, t in names.items() if kk == pre or kk.startswith(pre + " ")}
+        if len(hits) == 1:
+            return next(iter(hits))
+    return None
 
 
 def link_all(other, scored, names=None):
