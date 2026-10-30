@@ -61,9 +61,12 @@ def _path(cfg, parts):
 def load(cfg):
     p = _path(cfg, FILE)
     try:
-        return pd.read_pickle(p) if os.path.exists(p) else pd.DataFrame()
+        df = pd.read_pickle(p) if os.path.exists(p) else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
+    if len(df) and "asset" in df:          # kinds re-read each load, so rule fixes apply to rows saved earlier
+        df["kind"] = [classify(t, a) for t, a in zip(df.get("asset_type"), df["asset"])]
+    return df
 
 
 def save_rows(cfg, rows, replace_docs=(), log=print):
