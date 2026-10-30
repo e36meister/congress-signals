@@ -681,10 +681,10 @@ function renderBonds() {
   const testLine = T.verdict ? `<b>Tested against the S&P 500</b> (${T.months || 0} months): ${esc(T.verdict)}.${T.r3 ? ` Months leaning hardest to safety were followed by ${(T.r3.top_fifth * 100).toFixed(1)}% over 3 months, vs ${(T.r3.bottom_fifth * 100).toFixed(1)}% after the most stock-heavy months.` : ""}` : "";
   const groups = (J.groups || []).filter(g => g.kind !== "all" && g.tilt != null).slice(0, 10);
   const gname = g => g.kind === "partners" ? "Trading partners: " + g.name : g.name.replace(/^(House|Senate) Committee on (the )?/, (m, c) => c + ": ");
-  const flags = (J.bonds || []).filter(b => b.flag).sort((a, b) => (a.flag === "strong" ? 0 : 1) - (b.flag === "strong" ? 0 : 1)), corp = (J.bonds || []).filter(b => b.kind === "corp_bond");
+  const rank = { earmark: 0, strong: 1, home: 2 }, flags = (J.bonds || []).filter(b => b.flag).sort((a, b) => (rank[a.flag] ?? 3) - (rank[b.flag] ?? 3)), corp = (J.bonds || []).filter(b => b.kind === "corp_bond");
   const amt = b => b.lo != null ? `${money(b.lo)}${b.hi ? "–" + money(b.hi) : "+"}` : "";
   const txw = t => /^p/i.test(t || "") ? "Bought" : /^s/i.test(t || "") ? "Sold" : esc(t || "");
-  const row = b => `<li style="display:grid;gap:2px;padding:8px 0;border-top:1px solid var(--rule)"><span><b>${mlink(b.member)}</b> · ${txw(b.tx)} ${esc(amt(b))} · <span class="foot">${esc(fmtDate(b.date))}</span>${b.ticker ? ` · ${tkBtn(b.ticker)}` : ""}</span><span>${esc(b.asset || "")}</span>${b.why ? `<span class="foot">${b.flag === "strong" ? "<b>Worth a look:</b> " : ""}${esc(b.why)}</span>` : ""}</li>`;
+  const row = b => `<li style="display:grid;gap:2px;padding:8px 0;border-top:1px solid var(--rule)"><span><b>${mlink(b.member)}</b> · ${txw(b.tx)} ${esc(amt(b))} · <span class="foot">${esc(fmtDate(b.date))}</span>${b.ticker ? ` · ${tkBtn(b.ticker)}` : ""}</span><span>${esc(b.asset || "")}</span>${b.why ? `<span class="foot">${b.flag === "earmark" ? "<b>Their own earmark:</b> " : b.flag === "strong" ? "<b>Worth a look:</b> " : ""}${esc(b.why)}</span>` : ""}${(b.others_earmarks || []).length ? `<span class="foot">Other members got money for this place: ${b.others_earmarks.map(e => `${esc(e.by)}, ${money(e.amount)} FY${e.fy}`).join("; ")}</span>` : ""}</li>`;
   return `<section class="panel"><div class="ph"><h2>Is Congress moving to safety?</h2><span class="sub">updated ${esc(ago(J.at))}</span></div>
     <div class="tiles"><div class="tile"><span class="v">${pct(all.tilt)}</span><span class="l">Last 90 days: ${esc(lean(all.tilt))}</span><span class="c">${all.members || 0} members traded; scale −100 (all into stocks) to +100 (all into bonds and Treasuries)</span></div></div>
     ${chart}
@@ -695,9 +695,9 @@ function renderBonds() {
       <span class="foot"> · ${pct(g.tilt)} ${g.tilt > 0 ? "toward safety" : "toward stocks"} · ${g.members} members · ${money(g.usd)} traded</span>
       ${BONDS.open === i ? `<div class="foot" style="margin-top:4px">${(g.who || []).length} members: ${(g.who || []).map(w => esc(w)).join(", ")}</div>` : ""}</li>`).join("")}</ul>` : `<div class="empty">Not enough trades in the last 90 days.</div>`}
   </section>
-  <section class="panel"><div class="ph"><h2>Bond buys worth a look</h2><span class="sub">bonds from their own state; strongest when their committee covers that kind of project</span></div>
+  <section class="panel"><div class="ph"><h2>Bond buys worth a look</h2><span class="sub">first: places they got earmarks for; then their own state where their committee covers that kind of project</span></div>
     ${flags.length ? `<ul style="list-style:none;margin:0;padding:0">${flags.slice(0, BONDS.showFlags).map(row).join("")}</ul>${flags.length > BONDS.showFlags ? `<button type="button" class="link" data-bondmore="flags">Show more (${flags.length - BONDS.showFlags} left)</button>` : ""}` : `<div class="empty">None yet.</div>`}
-    <p class="foot">Not used in picks. Next: matching each bond against the projects the member requested federal money for.</p>
+    <p class="foot">Not used in picks. Earmarks: GAO's list of projects members requested money for, fiscal years 2022–2024.</p>
   </section>
   ${corp.length ? `<section class="panel"><div class="ph"><h2>Company bonds</h2><span class="sub">a bond is a bet the company pays its debts</span></div><ul style="list-style:none;margin:0;padding:0">${corp.slice(0, 15).map(row).join("")}</ul></section>` : ""}
   <section class="panel"><div class="ph"><h2>All bond and Treasury trades</h2><span class="sub">${Object.entries(J.counts || {}).map(([k, v]) => `${v.toLocaleString()} ${({ muni: "municipal", treasury: "Treasury", corp_bond: "company", fund: "fund", other: "other" })[k] || k}`).join(" · ")}</span></div>

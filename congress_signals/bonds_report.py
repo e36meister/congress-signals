@@ -95,7 +95,8 @@ def build(cfg, scored, log=print):
                           "filed": (_s(r.get("filed_date")) or "")[:10], "tx": _s(r.get("tx_raw")), "lo": _f(r.get("amt_lo"), 0),
                           "hi": _f(r.get("amt_hi"), 0), "owner": _s(r.get("owner")), "asset": _s(r.get("asset")), "kind": r["kind"],
                           "state": _s(r.get("muni_state")), "sector": _s(r.get("sector")), "flag": _s(r.get("flag")),
-                          "why": _s(r.get("why")), "ticker": _s(r.get("ticker"))})
+                          "why": _s(r.get("why")), "ticker": _s(r.get("ticker")),
+                          "earmarks": r.get("earmarks") or [], "others_earmarks": (r.get("others_earmarks") or [])[:2]})
     s36 = series.tail(36)
     out = {"at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
            "gauge": {"series": [{"month": m.strftime("%Y-%m"), "tilt": _f(r.tilt), "members": int(r.members),
@@ -107,6 +108,6 @@ def build(cfg, scored, log=print):
            "groups": grows[:60],
            "bonds": bonds[:600],
            "counts": {k: int(v) for k, v in (other["kind"].value_counts().items() if len(other) else [])}}
-    log(f"Bonds: {len(other):,} bond and other non-stock trades on file; {sum(1 for b in bonds if b['flag'] == 'strong')} "
-        f"flagged; gauge {len(series)} months; market test: {out['gauge']['test'].get('verdict')}")
+    log(f"Bonds: {len(other):,} bond and other non-stock trades on file; {sum(1 for b in bonds if b['flag'] == 'earmark')} "
+        f"match the member's own earmark projects, {sum(1 for b in bonds if b['flag'] == 'strong')} flagged own-state + committee; gauge {len(series)} months; market test: {out['gauge']['test'].get('verdict')}")
     return out

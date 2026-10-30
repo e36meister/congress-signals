@@ -146,7 +146,94 @@ def link_all(other, scored, names=None):
             comm, who = x.get("committees") or "", x.get("who")
             st = st if isinstance(st, str) and len(st) == 2 else x.get("state")
         lvl, why = flag(r, comm, st if isinstance(st, str) else None)
+        own, oth = [], []
+        if r["kind"] == "muni":
+            ms = muni_state(r["asset"])
+            own, oth = earmark_match(r["asset"], ms, r["chamber"], G._last(r["member"]), st if isinstance(st, str) else ms)
+            if own:
+                e = own[0]
+                lvl = "earmark"
+                why = (f"they requested ${e['amount']:,.0f} in federal money (FY{e['fy']}) for {e['recipient']}, "
+                       f"the same place ({e['place']}) as this bond" + (f"; {why}" if why else ""))
         out.append({**r.to_dict(), "who": who, "member_state": st, "muni_state": muni_state(r["asset"]) if r["kind"] == "muni" else None,
-                    "sector": muni_sector(r["asset"]) if r["kind"] == "muni" else None, "flag": lvl, "why": why,
+                    "sector": muni_sector(r["asset"]) if r["kind"] == "muni" else None, "flag": lvl, "why": why, "earmarks": own, "others_earmarks": oth,
                     "ticker": corp_ticker(r["asset"], names or {}) if r["kind"] == "corp_bond" else None})
     return pd.DataFrame(out)
+
+
+# ---------- earmarks (owner, Oct 30): GAO's list of projects members requested money for, FY2022-2024 ----------
+# reference/earmarks_gao_fy2022_2024.csv.gz, from GAO "Tracking the Funds" (GAO-26-107944), one row per
+# project and requesting member. A bond matches when it names the same place (city, county, district,
+# authority) as a project the member asked money for, in the same state.
+import os
+EARMARK_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "reference",
+                            "earmarks_gao_fy2022_2024.csv.gz")
+ABBR = {"cnty": "county", "cntys": "county", "co": "county", "sch": "school", "schs": "school", "dist": "district",
+        "arpt": "airport", "hosp": "hospital", "univ": "university", "mem": "memorial", "mun": "municipal",
+        "util": "utility", "utils": "utility", "auth": "authority", "auh": "authority", "tpk": "turnpike",
+        "pub": "public", "facs": "facilities", "impt": "improvement", "met": "metropolitan", "metro": "metropolitan",
+        "edl": "educational", "educ": "educational", "transn": "transportation", "trans": "transportation",
+        "dept": "department", "twp": "township", "boro": "borough", "wtr": "water", "swr": "sewer", "pwr": "power",
+        "cmnty": "community", "cmty": "community", "redev": "redevelopment", "hsg": "housing", "vy": "valley",
+        "mtn": "mountain", "ft": "fort", "pt": "port", "st": "saint", "lk": "lake", "spgs": "springs", "hts": "heights"}
+GENERIC = set("""a an and the of for in at to on by with city town township borough village county parish state school
+district schools unified independent isd authority authorities hospital hospitals university college community public
+facilities facility improvement improvements metropolitan educational transportation department water sewer power
+utility utilities energy gas electric airport airports turnpike port transit housing redevelopment financing finance fing
+revenue rev bonds bond bds go general obligation gen oblig ref refunding ser series tax sales exempt project projects
+proj lien jr sr capital center medical health system systems services service program programs construction new
+repair repairs replacement upgrade upgrades road roads bridge street infrastructure plant treatment wastewater stormwater
+drinking line lines main mains area regional region north south east west central upper lower greater memorial
+saint valley mountain lake springs heights fort river creek island beach park development economic
+due mat inc corp corporation association foundation council commission board trust nation tribe indian""".split())
+STATE_WORDS = {w for names in STATES.values() for n in names for w in n.split()}
+
+
+def _tokens(s):
+    w = re.sub(r"[^a-z ]", " ", str(s or "").lower()).split()
+    return [ABBR.get(x, x) for x in w if len(x) > 1 or x in ABBR]
+
+
+def _distinct(s):
+    return {w for w in _tokens(s) if w not in GENERIC and w not in STATE_WORDS and len(w) > 2}
+
+
+_EAR = None
+
+
+def earmarks():
+    """The earmark table with a matching key (chamber|last name|state) and each project's distinctive words."""
+    global _EAR
+    if _EAR is None:
+        try:
+            e = pd.read_csv(EARMARK_FILE)
+            e["last"] = e["name"].map(lambda n: re.sub(r"[^a-z ]", "", str(n).lower().replace(", jr", "")
+                                                       .replace(" jr.", "")).split()[-1])
+            e["key"] = e["chamber"] + "|" + e["last"] + "|" + e["member_state"]
+            e["words"] = e["recipient"].map(_distinct)
+            _EAR = e
+        except Exception:
+            _EAR = pd.DataFrame()
+    return _EAR
+
+
+def earmark_match(asset, state, chamber, last, member_state):
+    """(own, others): the member's own earmark projects naming the same place as this bond, and other members'."""
+    E_ = earmarks()
+    if not len(E_) or not state:
+        return [], []
+    bw = _distinct(asset)
+    if not bw:
+        return [], []
+    cand = E_[E_["location"] == state]
+    hit = cand[cand["words"].map(lambda w: len(w & bw) >= 1)]
+    if not len(hit):
+        return [], []
+    key = f"{chamber}|{str(last or '').lower()}|{member_state}"
+    pick = lambda d: [{"fy": int(r.fy), "amount": float(r.amount) if pd.notna(r.amount) else None,
+                       "recipient": str(r.recipient)[:160], "by": f"{r['name']} ({r.member_state})",
+                       "place": ", ".join(sorted(r.words & bw))} for _, r in d.sort_values("amount", ascending=False).head(3).iterrows()]
+    own = hit[hit["key"] == key]
+    sec = muni_sector(asset)       # other members' projects count only for the same kind of project
+    oth = hit[(hit["key"] != key) & (hit["recipient"].map(muni_sector) == sec)].drop_duplicates("id")
+    return pick(own), pick(oth)

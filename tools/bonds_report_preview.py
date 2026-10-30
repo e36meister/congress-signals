@@ -14,8 +14,8 @@ print("\ngroups:")
 for g in out["groups"][:25]:
     print("  ", g["kind"], "|", g["name"], g["tilt"], g["members"], g["safety_trades"], g["usd"])
 print("\nflagged:")
-for b in [b for b in out["bonds"] if b["flag"]][:40]:
-    print("  ", b["flag"], b["date"], b["member"], b["tx"], b["lo"], "|", b["asset"], "|", b["why"])
+for b in [b for b in out["bonds"] if b["flag"]][:60]:
+    print("  ", b["flag"], b.get("earmarks")[:1], b["date"], b["member"], b["tx"], b["lo"], "|", b["asset"], "|", b["why"])
 print("\ncorporate bonds with a ticker:", [(b["member"], b["asset"], b["ticker"]) for b in out["bonds"] if b["ticker"]][:20])
 print("unmatched corporate:", [b["asset"] for b in out["bonds"] if b["kind"] == "corp_bond" and not b["ticker"]][:20])
 print("munis with no state:", [b["asset"] for b in out["bonds"] if b["kind"] == "muni" and not b["state"]][:25])
