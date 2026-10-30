@@ -121,8 +121,9 @@ def groups(d, pairs=None):
     return gs
 
 
-def partner_groups(ev, names, min_shared=3):
-    """Trading-partner groups: members linked by pairs with min_shared+ same trades within a week (connected sets)."""
+def partner_groups(ev, names, min_shared=5, max_size=8):
+    """Trading-partner groups: members linked by pairs with min_shared+ same trades within a week (connected sets).
+    A set bigger than max_size (pairs chained through a few very active traders) is split back into its pairs."""
     if ev is None or not len(ev):
         return {}
     cnt = ev.groupby("pair")["ticker"].nunique()
@@ -141,7 +142,11 @@ def partner_groups(ev, names, min_shared=3):
         for x in (a, b):
             sets.setdefault(find(x), set()).add(x)
     out = {}
-    for s in sorted(sets.values(), key=len, reverse=True):
+    big = [s for s in sets.values() if len(s) > max_size]
+    sets = [s for s in sets.values() if len(s) <= max_size]
+    for s in big:
+        sets += [set(e) for e in edges if e[0] in s]
+    for s in sorted(sets, key=len, reverse=True):
         lead = sorted(s, key=lambda w: names.get(w, w))
         label = ", ".join(names.get(w, w) for w in lead[:3]) + (f" +{len(s) - 3}" if len(s) > 3 else "")
         out[label] = s
