@@ -17,7 +17,7 @@
 :root{
   --ground:#F3F5F8; --surface:#FFFFFF; --sunken:#EEF1F5; --ink:#152033; --ink2:#46536A; --muted:#6B778A; --rule:#DCE1E8;
   --accent:#1D4F91; --accent-soft:#E3ECF8;
-  --good:#0B7A4B; --good-soft:#E2F3EA; --bad:#B42318; --bad-soft:#FBE7E5; --warn:#95590A; --warn-soft:#FBF0DC;
+  --good:#0B7A4B; --good-soft:#E2F3EA; --bad:#B42318; --bad-soft:#FBE7E5; --warn:#95590A; --warn-soft:#FBF0DC; --orange:#C2410C; --purple:#6D28D9;
   --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#c98500; --spy:#8A93A3; --grid:#E6E9EE;
   --body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
   --head:"IBM Plex Sans Condensed","IBM Plex Sans",system-ui,sans-serif;
@@ -28,7 +28,7 @@
     color-scheme:dark;
     --ground:#0E131A; --surface:#151C26; --sunken:#1B2330; --ink:#E6EBF2; --ink2:#B4BECC; --muted:#8B97A8; --rule:#27303D;
     --accent:#7FAEEA; --accent-soft:#1C2B40;
-    --good:#4CC38A; --good-soft:#12291E; --bad:#F2877B; --bad-soft:#331816; --warn:#E3A857; --warn-soft:#2E2210;
+    --good:#4CC38A; --good-soft:#12291E; --bad:#F2877B; --bad-soft:#331816; --warn:#E3A857; --warn-soft:#2E2210; --orange:#F59E5B; --purple:#B79CF5;
     --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --spy:#7C8696; --grid:#222B37;
   }
 }
@@ -36,7 +36,7 @@
   color-scheme:dark;
   --ground:#0E131A; --surface:#151C26; --sunken:#1B2330; --ink:#E6EBF2; --ink2:#B4BECC; --muted:#8B97A8; --rule:#27303D;
   --accent:#7FAEEA; --accent-soft:#1C2B40;
-  --good:#4CC38A; --good-soft:#12291E; --bad:#F2877B; --bad-soft:#331816; --warn:#E3A857; --warn-soft:#2E2210;
+  --good:#4CC38A; --good-soft:#12291E; --bad:#F2877B; --bad-soft:#331816; --warn:#E3A857; --warn-soft:#2E2210; --orange:#F59E5B; --purple:#B79CF5;
   --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --spy:#7C8696; --grid:#222B37;
 }
 *{box-sizing:border-box}
@@ -139,6 +139,13 @@ td .why{display:block;width:max-content}
 .chip.avoid,.chip.mixed{background:var(--warn-soft);color:var(--warn)}
 .chip.watch{background:var(--sunken);color:var(--ink2)}
 .chip.new{background:var(--accent-soft);color:var(--accent)}
+/* alert tags (owner, Oct 30): data health orange, posts purple, moves and fills green up / red down, worth a look yellow */
+.chip.k-health{background:color-mix(in srgb,var(--orange) 15%,transparent);color:var(--orange)}
+.chip.k-post{background:color-mix(in srgb,var(--purple) 15%,transparent);color:var(--purple)}
+.chip.k-up{background:var(--good-soft);color:var(--good)}
+.chip.k-down{background:var(--bad-soft);color:var(--bad)}
+.chip.k-worth{background:var(--warn-soft);color:var(--warn)}
+.chip.k-check{background:var(--accent-soft);color:var(--accent)}
 .mstat{display:flex;flex-wrap:wrap;gap:6px 8px;margin:2px 0 10px}
 .mstat{flex-direction:column;flex-wrap:nowrap;gap:4px}
 .mst{display:flex;align-items:baseline;gap:8px;background:var(--sunken);border:1px solid var(--rule);border-radius:8px;padding:6px 10px;cursor:pointer;font:inherit;color:inherit;text-align:left;width:100%}
@@ -867,7 +874,9 @@ document.addEventListener("click", ev => {
   const bk = ev.target.closest("[data-whyback]");
   if (bk) {                   // back to exactly where you were (tab and scroll position)
     ev.preventDefault();
-    const f = MOVERS.from; MOVERS.focus = null; MOVERS.from = null;
+    const f = MOVERS.from;
+    if (f && f.pushed && history.length > 1) { history.back(); return; }   // restores that page and where you'd scrolled
+    MOVERS.focus = null; MOVERS.from = null;
     if (!f) { render(); scrollTo(0, 0); return; }
     state.tab = f.tab; try { localStorage.setItem("ctd-tab", f.tab); } catch (e) {}
     render(); requestAnimationFrame(() => scrollTo(0, f.y));
@@ -2844,7 +2853,28 @@ document.addEventListener("click", ev => {
 const ALERTS = { items: null, err: null, loading: false, open: null };
 let SEEN = 0;
 try { SEEN = Date.parse(localStorage.getItem("cc-alerts-seen") || "") || 0; } catch (e) {}
-const ALERT_KIND = { posts: "Posts", worth: "Worth a look", fills: "Trades", fill: "Trade", close: "Market close", rare: "Signals", welcome: "Alerts" };
+const ALERT_KIND = { posts: "Post", worth: "Worth a look", fills: "Trades", fill: "Trade", close: "Market close", rare: "Signals", welcome: "Alerts",
+  movers: "Move", stop: "Stop", manual: "Your stock", "senate-import": "Senate filing" };
+// the colored tag(s) on an alert: [label, class]
+function alertTags(a) {
+  const k = String(a.kind || ""), t = String(a.title || "");
+  const side = x => /^(tool )?bought\b/i.test(x) ? "buy" : /^sold\b/i.test(x) ? "sell" : null;
+  const filled = s => s === "buy" ? ["Buy filled", "k-up"] : ["Sell filled", "k-down"];
+  if (/^health|^senate-back/.test(k)) return [["Data Health", "k-health"]];
+  if (k === "posts") return [["Post", "k-post"]];
+  if (k === "worth") return [["Worth a look", "k-worth"]];
+  if (/^senate-reminder/.test(k)) return [["Check", "k-check"]];
+  if (k === "movers") {          // first move in the title sets the color: "NVDA −6.2% today", "3 stocks moved: NVDA +5.1%, …"
+    const m = t.match(/([+−-])\d/);
+    return [["Move", m && m[1] === "+" ? "k-up" : "k-down"]];
+  }
+  if (/^fill-/.test(k) && side(t)) return [filled(side(t))];
+  if (k === "fills") {
+    const sides = [...new Set((a.items || []).map(x => side(x.l)).filter(Boolean))];
+    if (sides.length) return sides.sort().map(filled);
+  }
+  return [[ALERT_KIND[k] || ALERT_KIND[k.split("-")[0]] || "Alert", "watch"]];
+}
 function refreshAlerts() {
   if (ALERTS.loading) return;
   ALERTS.loading = true;
@@ -2871,7 +2901,7 @@ function renderAlerts() {
   const row = a => {
     const isOpen = ALERTS.open === a.id, many = (a.items || []).length > 1;
     return `<div class="alw" data-alw="${esc(a.id)}"><div class="alx" aria-hidden="true">Clear</div><div class="al ${Date.parse(a.at) > before ? "unread" : ""} ${isOpen ? "open" : ""}" data-hl="alert:${esc(a.id)}" data-alert="${esc(a.id)}" role="button" tabindex="0">
-      <div class="at"><span class="chip watch">${esc(ALERT_KIND[a.kind] || ALERT_KIND[String(a.kind).split("-")[0]] || "Alert")}</span>${esc(ago(a.at))} · ${esc(fmtET(a.at))}</div>
+      <div class="at">${alertTags(a).map(([l, c]) => `<span class="chip ${c}">${esc(l)}</span>`).join("")}${esc(ago(a.at))} · ${esc(fmtET(a.at))}</div>
       <div class="tt">${esc(a.title)}</div>${a.body ? `<div class="bd">${esc(a.body)}</div>` : ""}
       ${many && isOpen ? `<ul>${a.items.map(x => `<li>${x.u ? `<button type="button" data-go="${esc(x.u)}">${esc(x.l)}</button>` : esc(x.l)}${x.x ? ` · <a href="${esc(x.x)}" target="_blank" rel="noopener">Go to post</a>` : ""}</li>`).join("")}</ul>` :
         many ? `<div class="foot">${a.items.length} items · tap to see them</div>` : ""}
@@ -2942,9 +2972,19 @@ function postId(u) {      // same as cloud_store.post_id (FNV-1a, base 36)
   for (const b of new TextEncoder().encode(String(u || ""))) { h ^= b; h = Math.imul(h, 0x01000193) >>> 0; }
   return h.toString(36);
 }
+// Owner, Oct 30: anything tappable brings you back to what you were looking at. go() saves the current page (tab
+// and scroll) in the history entry it leaves, so Back (the app's ‹ Back, the phone's back gesture) returns there.
+let NAV_FROM = null, RESTORE_Y = null;
+function viewHash() {
+  if (state.tab === "movers" && MOVERS.focus) return "#movers/" + encodeURIComponent(MOVERS.focus);
+  if (state.tab === "members" && typeof MEM !== "undefined" && MEM.key) return "#members/" + MEM.key;
+  return "#" + state.tab;
+}
 function go(link) {
   const u = new URL(link, location.href);
-  try { history.pushState({}, "", u.hash || "#"); } catch (e) {}
+  if (u.origin !== location.origin) { window.open(u.href, "_blank", "noopener"); return; }   // e.g. the Senate filings site
+  NAV_FROM = { tab: state.tab, y: scrollY, pushed: true };
+  try { history.replaceState({ y: scrollY }, "", viewHash()); history.pushState({}, "", u.hash || "#"); } catch (e) { NAV_FROM.pushed = false; }
   route(u.hash);
 }
 function route(hash) {
@@ -2959,17 +2999,21 @@ function route(hash) {
   else if (a === "pick" && b) { tab("today"); aim(`[data-hl="pick:${CSS.escape(b)}"]`); }
   else if (a === "port") { tab("port"); if (b) aim(`[data-hl="pos:${CSS.escape(b)}"]`); }
   else if (a === "t" && b) { tab("today"); render(); openChart(b); return; }
-  else if (a === "alerts") { tab("alerts"); ALERTS.items = null; if (b) { ALERTS.open = b; aim(`[data-hl="alert:${CSS.escape(b)}"]`); } }
+  else if (a === "alerts") { tab("alerts"); if (RESTORE_Y == null) ALERTS.items = null; if (b) { ALERTS.open = b; aim(`[data-hl="alert:${CSS.escape(b)}"]`); } }
   else if (a === "posts") { tab("today"); aim("#posts"); }
   else if (a === "works") { tab("works"); }
   else if (/^today-/.test(a)) { tab("today"); aim("#" + a); }
   else if (a === "members") { tab("members"); MEM.key = b || null; MEM.open = null; MEM.tq = ""; MEM.tshow = 40; }
   else if (a === "health") { tab("health"); HEALTH.js = null; }
   else if (a === "me") { tab("me"); }
-  else if (a === "movers") { tab("movers"); MOVERS.focus = b || null; MOVERS.from = b ? { tab: "movers", y: 0 } : null; MOVERS.at = 0; }
+  else if (a === "movers") { tab("movers"); MOVERS.focus = b || null; MOVERS.from = b ? (NAV_FROM || { tab: "movers", y: 0 }) : null; MOVERS.at = 0; }
   else if (["today", "record", "defense", "small", "works", "real", "port", "alerts"].includes(a)) tab(a);
-  else return;
-  render(); scrollTo(0, 0);
+  else if (MORE_TABS.some(m => m.k === a) || SUB_TABS[a] || a === "more") tab(a);
+  else { NAV_FROM = null; return; }
+  NAV_FROM = null;
+  const y = RESTORE_Y; RESTORE_Y = null;
+  render();
+  if (y != null) requestAnimationFrame(() => scrollTo(0, y)); else scrollTo(0, 0);
 }
 function focusTarget() {
   if (!TARGET) return;
@@ -2981,15 +3025,22 @@ function focusTarget() {
   el.classList.remove("hl"); void el.offsetWidth; el.classList.add("hl");
 }
 addEventListener("hashchange", () => route(location.hash));
-addEventListener("popstate", () => {
-  if (MEM.from && state.tab === "members" && MEM.key && !/^#members\/./.test(location.hash)) memBack(true);
+addEventListener("popstate", ev => {
+  if (MEM.from && state.tab === "members" && MEM.key && !/^#members\/./.test(location.hash)) { memBack(true); return; }
+  RESTORE_Y = ev.state && ev.state.y != null ? ev.state.y : null;     // the hashchange that follows re-opens the page here
 });
 // a tapped phone alert, when the app is already open: the service worker says where to go
 try { navigator.serviceWorker && navigator.serviceWorker.addEventListener("message", ev => { if (ev.data && ev.data.type === "open") { go(ev.data.url); refreshAlerts(); } }); } catch (e) {}
 // opened from an alert: "?n=<id>" marks it read; then go to what it's about
 { const q = new URLSearchParams(location.search);
-  if (q.get("n")) { try { history.replaceState({}, "", location.pathname + location.hash); } catch (e) {} }
-  if (/^#(post|worth|port|t|alerts|posts|works|today-)/.test(location.hash)) setTimeout(() => route(location.hash), 0); }
+  if (q.get("n")) {
+    try { history.replaceState({}, "", location.pathname + location.hash); } catch (e) {}
+    if (!/^#alerts/.test(location.hash)) {      // put the Alerts list behind it so Back lands there
+      try { const h = location.hash; history.replaceState({ y: 0 }, "", "#alerts"); history.pushState({}, "", h); } catch (e) {}
+      NAV_FROM = { tab: "alerts", y: 0, pushed: true };
+    }
+  }
+  if (/^#(post|worth|port|t|alerts|posts|works|movers|health|members|today-)/.test(location.hash)) setTimeout(() => route(location.hash), 0); }
 
 // phones: the bottom tab bar sits directly under <body>. Inside the sticky header, iPhone Safari let the "fixed" bar
 // scroll with the page.

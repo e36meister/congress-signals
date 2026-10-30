@@ -24,7 +24,14 @@ self.addEventListener("push", e => {
 
 self.addEventListener("notificationclick", e => {
   e.notification.close();
-  const url = new URL((e.notification.data && e.notification.data.url) || "/", self.location.origin).href;
+  const u = new URL((e.notification.data && e.notification.data.url) || "/", self.location.origin);
+  // an outside website (e.g. the Senate filings search for "Check" alerts): open it directly, not inside the app
+  if (u.origin !== self.location.origin) {
+    u.searchParams.delete("n");
+    e.waitUntil(self.clients.openWindow(u.href));
+    return;
+  }
+  const url = u.href;
   // app already open (or in the background): tell it what to show; otherwise open it at that link
   e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(list => {
     for (const c of list) { if ("focus" in c) { c.postMessage({ type: "open", url }); return c.focus().catch(() => {}); } }
