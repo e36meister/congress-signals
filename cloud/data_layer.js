@@ -116,6 +116,10 @@ async function loadLive() {
   clearTimeout(liveTimer);
   if (document.visibilityState === "visible" && state.data && !window.__CTD_SAMPLE) {
     try {
+      try {                                       // flagged positions of yours (Keep); redraw when they change
+        const m = (await api("/api/manual")).js, was = JSON.stringify(state.manual || null);
+        state.manual = m; if (JSON.stringify(m) !== was && !typing()) render();
+      } catch (e) {}
       lastLive = (await api("/api/live")).js; applyLive(lastLive); ST.live = lastLive.at || new Date().toISOString();
       paintStatus(); moversLoad(true); if (!typing()) render();
     } catch (e) { if (ST.upd) setStatus("stale", "Couldn't get live prices · showing prices from " + (ST.live ? ago(ST.live) : "the last update"), true); }
@@ -160,7 +164,20 @@ async function sendSell(t) {
         "amount-too-small": "the amount is less than one share", "bad-amount": "the amount couldn't be read" }[e.why] || (e.why || "").replace(/-/g, " ") || e.message || "unknown reason") + "." };
   } finally { state.selling = false; render(); }
 }
+// owner, Oct 30: Keep a position of yours the tool flagged to sell at the next open
+async function sendKeep(t) {
+  state.keeping = t; render();
+  try {
+    await api("/api/manual/keep", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t }) });
+    try { state.manual = (await api("/api/manual")).js; } catch (e) {}
+    state.keepMsg = { t, ok: true, text: "Kept. The tool won't sell it for these reasons; a new reason sends a new alert." };
+  } catch (e) {
+    state.keepMsg = { t, ok: false, text: e.code === "offline" ? "You're offline; nothing was saved." : e.why === "not-flagged" ? "It isn't flagged any more." : "Couldn't save Keep: " + (e.why || e.message || "unknown") + "." };
+  } finally { state.keeping = null; render(); }
+}
 document.getElementById("main").addEventListener("click", ev => {
+  const k = ev.target.closest("[data-keep]");
+  if (k) { if (!state.keeping) sendKeep(k.dataset.keep); return; }
   const s = ev.target.closest("[data-sell],[data-sellsend],[data-sellcancel],[data-sellmode],[data-sellall]");
   if (!s) return;
   if (s.dataset.sell) { state.sellOpen = s.dataset.sell; delete state.sellMsg[s.dataset.sell]; render(); }

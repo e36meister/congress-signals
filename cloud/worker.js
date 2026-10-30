@@ -136,6 +136,8 @@ async function api(req, env, url) {
   if (p === "/api/live" && req.method === "GET") return live(env);
   if (p === "/api/buy" && req.method === "POST") return buy(req, env);
   if (p === "/api/sell" && req.method === "POST") return sell(req, env);
+  if (p === "/api/manual" && req.method === "GET") return manualState(env);
+  if (p === "/api/manual/keep" && req.method === "POST") return manualKeep(req, env);
   if (p === "/api/senate-import/setup" && req.method === "GET") return json({ url: url.origin + "/api/senate-import", key: await importKey(env, false), recent: await importLog(env) });
   if (p === "/api/senate-import/setup" && req.method === "POST") return json({ url: url.origin + "/api/senate-import", key: await importKey(env, true), recent: await importLog(env) });
   if (p === "/api/widget/script" && req.method === "GET") return widgetScript(env, url, false);
@@ -319,6 +321,28 @@ async function buy(req, env) {
 
 // ---------- Sell button (Account tab): all of a position, a number of shares, or a dollar amount ----------
 // Orders are marked tap-sell-…, so the tool won't buy the stock back for the same pick (broker.py).
+// ---------- your own buys under the tool's sell rules (owner, Oct 30; manual_rules.py) ----------
+// manual/state.json (written by the daily run): positions flagged to sell at the next open and why. Keep stores the
+// flag's reason set in manual/keep.json; the next run leaves the position alone until a different reason comes up.
+async function r2json(env, key) { try { const o = await env.DATA.get(key); return o ? JSON.parse(await o.text()) : {}; } catch (e) { return {}; } }
+async function manualState(env) {
+  const [st, keep] = await Promise.all([r2json(env, "manual/state.json"), r2json(env, "manual/keep.json")]);
+  return json({ pending: st.pending || {}, keep, ruled: st.ruled || [], updated: st.updated || null });
+}
+async function manualKeep(req, env) {
+  let body = {};
+  try { body = await req.json(); } catch (e) {}
+  const t = String(body.t || "").toUpperCase();
+  if (!/^[A-Z][A-Z0-9-]{0,6}$/.test(t)) return json({ ok: false, why: "bad-request" }, 400);
+  const sym = t.replace(/-/g, ".");
+  const st = await r2json(env, "manual/state.json"), p = (st.pending || {})[sym];
+  if (!p) return json({ ok: false, why: "not-flagged" }, 400);
+  const keep = await r2json(env, "manual/keep.json");
+  keep[sym] = { key: p.key, at: new Date().toISOString() };
+  await env.DATA.put("manual/keep.json", JSON.stringify(keep));
+  return json({ ok: true });
+}
+
 async function sell(req, env) {
   const a = alpaca(env);
   if (!a.ready) return json({ ok: false, why: "no-keys" }, 503);

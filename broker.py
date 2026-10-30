@@ -421,6 +421,19 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             positions.pop(sym, None)
             sold.add(sym)                            # don't buy it back in the same run
 
+    # 1c. owner, Oct 30: your own buys from then on follow the tool's sell rules. A reason to sell sends a phone alert
+    #     and an email; the position is sold at the next morning's open unless you tap Keep (manual_rules.py).
+    if trade and not cfg.get("_manual_done"):
+        cfg["_manual_done"] = True
+        try:
+            import manual_rules
+            acts, al, mst = manual_rules.review(api, cfg, positions, manual_rules.all_orders(api, cfg), clock, log)
+            actions += acts
+            sold |= {x["symbol"] for x in acts if x.get("ok")}
+            cfg["_manual_alerts"], cfg["_manual_state"] = al, mst
+        except Exception as e:
+            log(f"Manual positions: sell checks failed ({type(e).__name__}: {str(e)[:120]}); nothing was sold or flagged")
+
     # 2. buy new picks: the main strategy (BUY picks) and the separate small-company portfolio
     #    (paused while the data the picks are built from is broken: congress_signals/health.py critical())
     if s["auto"] and trade and cfg.get("_pause_buys"):
@@ -609,6 +622,13 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         yours_first = _bot_buys(api, owner=True)
     except Exception:
         yours_first = {}
+    try:      # which positions you opened ("manual") and which of them follow the tool's sell rules
+        import manual_rules
+        man = manual_rules.holdings(manual_rules.all_orders(api, cfg))
+        mstate = cfg.get("_manual_state") or manual_rules.state_for_app()
+    except Exception as e:
+        log(f"Broker: manual-position tags failed ({type(e).__name__})")
+        man, mstate = {}, None
     for p in positions:
         # a stock you also bought counts as yours (the tool never sells it), dated from your first buy
         o = None if p["symbol"] in yours_first else bot.get(p["symbol"])
@@ -621,7 +641,10 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                     "sleeve": ("small" if o and (o.get("client_order_id") or "").startswith(PREFIX + "sm-")
                                else "park" if o and (o.get("client_order_id") or "").startswith(PARK_PREFIX) else None),
                     "hold": (None if (o.get("client_order_id") or "").startswith(PARK_PREFIX) else _hold_of(o, s["hold_days"])) if o else None,
-                    "held": int(np.busday_count(dt.date.fromisoformat(bought), today)) if bought else None})
+                    "held": int(np.busday_count(dt.date.fromisoformat(bought), today)) if bought else None,
+                    "manual": bool((man.get(p["symbol"]) or {}).get("manual")) or (p["symbol"] in others),
+                    "ruled": bool((man.get(p["symbol"]) or {}).get("ruled")),
+                    "rule_start": (man.get(p["symbol"]) or {}).get("start")})
     eq, last = float(acct.get("equity") or 0), float(acct.get("last_equity") or 0)
     try:    # the standard amount per main pick (before sizing), for the dashboard's suggested amounts
         sp_ = max(0.0, min(0.9, float(env("SMALL_SLEEVE_PCT") or 30) / 100))
@@ -654,7 +677,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                         or (o["side"] == "sell" and o["symbol"] in bot and not o.get("client_order_id", "").startswith("tap-")
                             and o["symbol"] not in others)
                         else ("tap" if (o.get("client_order_id") or "").startswith("tap-") else "you")} for o in recent],
-            "fills": fills, "this_run": actions, "dividends": _safe(lambda: dividend_estimate(api))}
+            "fills": fills, "this_run": actions, "dividends": _safe(lambda: dividend_estimate(api)),
+            "manual": mstate}
 
 
 def _safe(fn):

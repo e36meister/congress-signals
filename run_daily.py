@@ -291,6 +291,30 @@ def send_alerts(buys, sells, new):
 DRY_RUN = (env("DRY_RUN") or "").strip() == "1"      # test run: reads Alpaca but never trades
 
 
+def manual_eval(scored, px):
+    """Sell reasons for your own positions (manual_rules.py), or None when this run can't compute them."""
+    try:
+        import manual_rules
+        return manual_rules.make_eval(E, scored, px, cfg)
+    except Exception as e:
+        E.log(f"Manual positions: sell reasons failed to load ({type(e).__name__}: {e})")
+        return None
+
+
+def send_manual_emails(alerts):
+    """Owner, Oct 30: an email as well as the phone alert whenever the tool wants to sell (or sold) one of your stocks."""
+    for a in alerts or []:
+        t = a["sym"].replace(".", "-")
+        items = "".join(f"<li>{x['t']}</li>" for x in a["reasons"])
+        if a["sold"]:
+            subj, top = f"Sold your {t} at the open", "You didn't tap Keep, so the tool sold it at the open."
+        else:
+            subj = f"The tool wants to sell your {t} at the open {a.get('sell_on', '')}"
+            top = ("Open the app (Account) and tap <b>Keep</b> if you want to hold it; otherwise it's sold at the next "
+                   "open. Keep holds it until a different reason comes up.")
+        _send_email(subj, f"<p>{top}</p><p>Why:</p><ul>{items}</ul>", "Email: sent a manual-position notice")
+
+
 def bill_hold_lookup(scored):
     """(ticker, bought YYYY-MM-DD) -> was the purchase that triggered our buy flagged for the bill-based hold?
     The pick is the stock's best purchase disclosure filed in the week before we bought (filings are bought the
@@ -321,7 +345,8 @@ def trade_now(scored, px):
     phist = lambda t, since: pxf.loc[E.pd.Timestamp(since):, t].dropna().values if pxf is not None and t in pxf else None
     caps = scored.sort_values("filed_date").drop_duplicates("ticker", keep="last") \
         .set_index("ticker")["market_cap"].dropna().to_dict() if "market_cap" in scored else {}
-    helpers = {"last": last, "msales": msales, "phist": phist, "caps": caps, "bill_hold": bill_hold_lookup(scored)}
+    helpers = {"last": last, "msales": msales, "phist": phist, "caps": caps, "bill_hold": bill_hold_lookup(scored),
+               "manual_eval": manual_eval(scored, px)}
     try:
         live_p, small_f = E.live_picks(scored, px, cfg), E.fresh_small_rows(scored, cfg)
         E.log(f"Live picks: {len(live_p)} fresh main pick(s) {list(live_p['ticker'])[:8] if len(live_p) else ''}, "
@@ -333,11 +358,13 @@ def trade_now(scored, px):
         slots = (json.load(open(os.path.join(cfg["DATA_DIR"], "dashboard_data.json"))).get("small") or {}).get("slots")
     except Exception:
         slots = None
-    snap = broker.sync(dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=slots, _pause_buys=PAUSE,
-                            _live_picks=live_p, _small_fresh=small_f, _caps=caps, _bill_hold=helpers["bill_hold"],
-                            _member_sales=msales, _price_hist=phist), None, None, last, E.log, trade=not DRY_RUN)
+    bc = dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=slots, _pause_buys=PAUSE,
+              _live_picks=live_p, _small_fresh=small_f, _caps=caps, _bill_hold=helpers["bill_hold"],
+              _member_sales=msales, _price_hist=phist, _manual_eval=helpers["manual_eval"])
+    snap = broker.sync(bc, None, None, last, E.log, trade=not DRY_RUN)
     if snap is not None and not DRY_RUN:
         cloud_store.save_reasons(snap.get("this_run"), E.log)       # phone trade alerts say why
+        send_manual_emails(bc.get("_manual_alerts"))
     mins = (E.time.time() - E._RUN_START) / 60
     E.log(f"Trading done {mins:.0f} min after the update started" + (" (test run: no orders)" if DRY_RUN else ""))
     return snap, helpers
@@ -591,15 +618,18 @@ def main():
         sm = (bt.get("small") or {}) if isinstance(bt, dict) else {}
         base = dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=sm.get("slots"), _pause_buys=PAUSE,
                     _caps=h.get("caps") or {}, _member_sales=msales, _price_hist=phist,
-                    _bill_hold=h.get("bill_hold") or bill_hold_lookup(scored))
+                    _bill_hold=h.get("bill_hold") or bill_hold_lookup(scored),
+                    _manual_eval=h.get("manual_eval") or manual_eval(scored, px))
         if early is not None:
             # already traded right after scoring: just refresh the account snapshot, keeping what that step did
             snap = broker.sync(base, None, None, last, E.log, trade=False) or early
             snap["this_run"] = early.get("this_run") or []
         else:      # live picks failed earlier: the old way, from the BUY list
-            snap = broker.sync(dict(base, _live_picks=None, _small_fresh=None), buys, new, last, E.log, trade=not DRY_RUN)
+            bl = dict(base, _live_picks=None, _small_fresh=None)
+            snap = broker.sync(bl, buys, new, last, E.log, trade=not DRY_RUN)
             if snap is not None and not DRY_RUN:
                 cloud_store.save_reasons(snap.get("this_run"), E.log)
+                send_manual_emails(bl.get("_manual_alerts"))
         path = os.path.join(cfg["DATA_DIR"], "dashboard_data.json")
         d = json.load(open(path))
         if snap is not None:

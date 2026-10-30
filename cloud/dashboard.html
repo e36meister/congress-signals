@@ -121,6 +121,8 @@ td .why{display:block;width:max-content}
 .pick{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:12px 14px;display:grid;grid-template-columns:92px 1fr auto;gap:4px 16px;align-items:start}
 .pick .tk{display:grid;gap:4px}
 .pick .tk b{font:600 19px var(--mono);letter-spacing:.3px}
+.mtag{display:inline-block;font:600 9.5px var(--body);letter-spacing:.6px;text-transform:uppercase;color:var(--ink3,var(--ink2));border:1px solid var(--rule);border-radius:4px;padding:0 4px;margin-left:5px;vertical-align:1px;opacity:.85}
+.keepbtn{font:600 12px var(--body);padding:5px 12px;border-radius:999px;border:1px solid var(--accent);background:var(--accent-soft);color:var(--accent);cursor:pointer}
 .chip{display:inline-block;font:600 11px var(--body);letter-spacing:.8px;text-transform:uppercase;padding:2px 8px;border-radius:999px;justify-self:start}
 .chip.BUY{background:var(--good-soft);color:var(--good)}
 .chip.SHORT{background:var(--bad-soft);color:var(--bad)}
@@ -526,7 +528,7 @@ function renderMe(d) {
   for (const [t, fs] of Object.entries(P.fills || {})) for (const f of fs || []) if (f && f[0]) fills.push({ t, td: String(f[0]).slice(0, 10), side: f[1], qty: f[2], px: f[3], by: f[4], own: true });
   fills.sort((a, b) => b.td.localeCompare(a.td) || a.t.localeCompare(b.t));
   const BY = { you: "You", tap: "Buy button", tool: "The tool" };
-  const shown = fills.filter(f => ME.who === "all" || (ME.who === "you" ? f.by !== "tool" : f.by === "tool"));
+  const shown = fills;
   const pos = Object.fromEntries((P.positions || []).map(x => [x.t, x]));
   const v = liveVsSpy(d);
   const sinceBuy = f => { const x = pos[f.t]; return f.side === "buy" && x && x.px && f.px ? x.px / f.px - 1 : null; };
@@ -540,13 +542,12 @@ function renderMe(d) {
     <div class="tile"><span class="v">${(P.positions || []).length}</span><span class="l">Open positions</span></div>
   </div>
   ${c.series?.dates?.length ? `<section class="panel"><div class="ph"><h2>You vs the S&amp;P</h2></div><div class="chart" id="mechart"></div></section>` : ""}
-  <section class="panel"><div class="ph"><h2>Your trades</h2><span class="sub">Tap one for its context</span></div>
-    <div class="daypick">${[["all", "All"], ["you", "Yours + Buy button"], ["tool", "The tool's"]].map(([k, l]) => `<button type="button" data-mewho="${k}" aria-pressed="${ME.who === k}">${l}</button>`).join("")}</div>
+  <section class="panel"><div class="ph"><h2>Trades</h2><span class="sub">Tap one for its context · <span class="mtag" style="margin:0">manual</span> = you placed it</span></div>
     ${shown.length ? shown.slice(0, 200).map((f, i) => {
       const k = f.t + "|" + f.td + "|" + f.side + "|" + i, g = sinceBuy(f);
       return `<div class="metr"><div class="top" data-meopen="${esc(k)}" style="cursor:pointer">${tkBtn(f.t)}<span class="bs ${f.side}">${f.side === "buy" ? "Bought" : "Sold"}</span>
         <span>${esc(fmtDate(f.td))}</span><span class="mono">${Number(f.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at ${money2(f.px)}</span>
-        ${g != null ? `<span class="${cls(g)}">${pct(g)} since</span>` : ""}<span class="foot">${esc((f.by === "tap" && f.side === "sell" ? "Sell button" : BY[f.by]) || f.by || "")}</span></div>
+        ${g != null ? `<span class="${cls(g)}">${pct(g)} since</span>` : ""}${f.by === "tool" ? "" : `<span class="mtag">manual</span>`}</div>
         ${ME.open === k ? ctxBlock(f) : ""}</div>`;
     }).join("") : `<div class="empty">No trades in your account yet.</div>`}
   </section>`;
@@ -1482,6 +1483,11 @@ function addTradingDays(iso, n) {
   while (left > 0) { d.setDate(d.getDate() + 1); const w = d.getDay(); if (w !== 0 && w !== 6) left--; }
   return d.toISOString().slice(0, 10);
 }
+function busDays(iso) {          // trading days (Mon-Fri) from a YYYY-MM-DD date to today
+  const d = new Date(iso + "T12:00:00"), now = new Date(); let n = 0;
+  for (d.setDate(d.getDate() + 1); d <= now; d.setDate(d.getDate() + 1)) if (d.getDay() % 6) n++;
+  return n;
+}
 function suggestedHold(t) {
   const d = state.data, pol = d.adaptive?.policy || {}, L = d.portfolio?.limits || {};
   const row = [...(d.watchlist?.buys || []), ...(d.watchlist?.sells || [])].find(r => r.t === t);
@@ -1503,9 +1509,21 @@ function heldCell(x, L) {
     return `${x.sleeve === "small" ? "Small-co. portfolio · " : ""}${x.held ?? 0} of ${h} days${x.bought ? `<div class="foot">Tool sells ~${esc(fmtDate(addTradingDays(x.bought, h)))}</div>` : ""}`;
   }
   const s = suggestedHold(x.t);
-  if (!x.bought) return `Yours<div class="foot">Suggested hold ${s.days} days${s.small ? " (small company)" : ""}</div>`;
+  if (x.ruled) {                 // your buy from Oct 30 on: the tool's sell rules, with an alert and Keep first
+    const M = state.manual || state.data?.portfolio?.manual || {}, sym = x.t.replace(/-/g, "."), pd = (M.pending || {})[sym], kp = (M.keep || {})[sym];
+    const start = x.rule_start || x.bought, held = start ? busDays(start) : (x.held ?? 0);
+    const head = `${held} of ${s.days} days`;
+    if (pd && !(kp && kp.key === pd.key)) {
+      const km = state.keepMsg && state.keepMsg.t === x.t ? state.keepMsg : null;
+      return `${head}<div class="foot neg" style="white-space:normal;min-width:170px"><b>Tool sells at the open ${esc(pd.sell_on || "")}</b>: ${(pd.reasons || []).map(r => esc(r.t)).join("; ")}</div>
+        <div style="margin-top:6px"><button type="button" class="keepbtn" data-keep="${esc(x.t)}"${state.keeping ? " disabled" : ""}>${state.keeping === x.t ? "Saving…" : "Keep"}</button></div>${km ? `<div class="tapmsg ${km.ok ? "pos" : "neg"}">${esc(km.text)}</div>` : ""}`;
+    }
+    if (kp && pd) return `${head}<div class="foot" style="white-space:normal;min-width:170px">You chose Keep: ${(pd.reasons || []).map(r => esc(r.t)).join("; ")}. A new reason sends a new alert.</div>`;
+    return `${head}<div class="foot">Same sell rules as the tool's picks · you get an alert first</div>`;
+  }
+  if (!x.bought) return `${s.days}-day hold suggested${s.small ? " (small company)" : ""}`;
   const when = addTradingDays(x.bought, s.days), due = (x.held ?? 0) >= s.days;
-  return `Yours · ${x.held ?? 0} of ${s.days} days<div class="foot ${due ? "neg" : ""}">${due ? "Past the suggested hold: consider selling" : "Suggested sell ~" + esc(fmtDate(when))}</div>`;
+  return `${x.held ?? 0} of ${s.days} days<div class="foot ${due ? "neg" : ""}">${due ? "Past the suggested hold" : "Suggested sell ~" + esc(fmtDate(when))} · bought before Oct 30, the tool doesn't sell it</div>`;
 }
 function closeSection(d) {
   const c = d.close_report;
@@ -1614,7 +1632,7 @@ function sellRow(x) {
   const m = state.sellMsg[t], v = state.sellAmt[t] ?? "";
   return `<tr class="sellrow"><td colspan="7" class="full" data-l=""><div class="sellbox">
     <div><b>Sell ${esc(t)}</b> · you hold ${sh} sh (${money(x.mv)})${x.avg != null && x.qty ? (() => { const cost = +x.avg * +x.qty, gain = (+x.mv || 0) - cost;
-      return `<div class="sellcost">Initial investment <b>${money(cost, 2)}</b> <span class="foot">(${sh} sh at ${money(+x.avg, 2)} avg)</span> · now ${money(x.mv, 2)} · <span class="${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain, 2)} (${pct(cost ? gain / cost : 0)})</span></div>`; })() : ""}${x.bot ? `<div class="foot">The tool bought this one; it won't buy it back for the same pick.</div>` : ""}</div>
+      return `<div class="sellcost">Initial investment <b>${money(cost, 2)}</b> <span class="foot">(${sh} sh at ${money(+x.avg, 2)} avg)</span> · now ${money(x.mv, 2)} · <span class="${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain, 2)} (${pct(cost ? gain / cost : 0)})</span></div>`; })() : ""}${x.bot && !x.manual ? `<div class="foot">It won't be bought back for the same pick.</div>` : ""}</div>
     <div class="sellin"><span class="u">${mode === "dollars" ? "$" : ""}</span><input type="number" inputmode="decimal" min="0" step="any" id="samt-${esc(t)}" value="${esc(v)}"
       placeholder="${mode === "dollars" ? "Dollar amount" : "Shares"}" aria-label="${mode === "dollars" ? "Dollars to sell" : "Shares to sell"}"><span class="u">${mode === "dollars" ? "" : "sh"}</span>
       <span class="segs">${opt("shares", "Shares")}${opt("dollars", "$")}</span></div>
@@ -1647,15 +1665,15 @@ function renderPortfolio(d) {
   ${closeSection(d)}
   <section class="panel"><div class="ph"><h2>Positions</h2>${alpLink}</div>
     ${pos.length ? `<div class="tbl"><table><thead><tr><th>Ticker</th><th class="n">Shares</th><th class="n">Avg cost</th><th class="n">Price</th><th class="n">Value</th><th class="n">Gain</th><th>Held</th></tr></thead><tbody>
-    ${pos.map(x => `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${moverChip(x.t)}${soldNote(x)}${soldLine(x)}</td><td class="n">${Number(x.qty).toLocaleString()}</td><td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.px, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${heldCell(x, L)}${sellBtn(x)}</td></tr>${sellRow(x)}`).join("")}
+    ${pos.map(x => `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${x.manual || (!x.bot && x.sleeve !== "park") ? `<span class="mtag">manual</span>` : ""}${moverChip(x.t)}${soldNote(x)}${soldLine(x)}</td><td class="n">${Number(x.qty).toLocaleString()}</td><td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.px, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${heldCell(x, L)}${sellBtn(x)}</td></tr>${sellRow(x)}`).join("")}
     </tbody></table></div>
-    <p class="foot">Suggested sell dates for your own positions use the current best holding period from the weekly check (What works → Automatic adjustments): ${(state.data.adaptive?.policy?.hold_other) ?? L.hold_days ?? 60} trading days for most stocks, ${(state.data.adaptive?.policy?.hold_small) ?? L.hold_small ?? L.hold_days ?? 60} for companies under $2B. They update if the check changes. The tool never sells your own positions.</p>` : `<div class="empty">No open positions yet. New BUY picks are bought at the next market open.</div>`}</section>
+    <p class="foot">Suggested sell dates for your own positions use the current best holding period from the weekly check (What works → Automatic adjustments): ${(state.data.adaptive?.policy?.hold_other) ?? L.hold_days ?? 60} trading days for most stocks, ${(state.data.adaptive?.policy?.hold_small) ?? L.hold_small ?? L.hold_days ?? 60} for companies under $2B. They update if the check changes. Positions tagged <span class="mtag">manual</span> are ones you bought; from Oct 30 on, they follow the same sell rules as the tool's picks (a member who bought sells, it becomes an avoid, its hold is over and it's behind the S&amp;P, or it no longer scores as a pick), but you get a phone alert and an email first and it's only sold at the next open if you don't tap Keep.</p>` : `<div class="empty">No open positions yet. New BUY picks are bought at the next market open.</div>`}</section>
   ${stopSection(d)}
   ${divSection(p)}
   ${reqSection()}
   <section class="panel"><div class="ph"><h2>Recent orders</h2></div>
-    ${ords.length ? `<div class="tbl scroll"><table><thead><tr><th>When</th><th>Ticker</th><th>Side</th><th class="n">Shares</th><th class="n">Fill price</th><th>Status</th><th>Placed by</th></tr></thead><tbody>
-    ${ords.map(o => `<tr><td class="nw">${esc(fmtET(o.at))}</td><td class="mono">${tkBtn(o.t)}</td><td>${esc(o.side)}</td><td class="n">${shQty(o)}</td><td class="n">${o.filled_px ? money(+o.filled_px, 2) : "–"}</td><td>${esc(String(o.status).replace(/_/g, " "))}</td><td>${o.by === "tool" || (o.by == null && o.bot) ? "This tool" : o.by === "tap" ? (o.side === "sell" ? "Sell button" : "Buy button") : "You"}</td></tr>`).join("")}
+    ${ords.length ? `<div class="tbl scroll"><table><thead><tr><th>When</th><th>Ticker</th><th>Side</th><th class="n">Shares</th><th class="n">Fill price</th><th>Status</th></tr></thead><tbody>
+    ${ords.map(o => `<tr><td class="nw">${esc(fmtET(o.at))}</td><td class="mono">${tkBtn(o.t)}${o.by === "tool" || (o.by == null && o.bot) ? "" : `<span class="mtag">manual</span>`}</td><td>${esc(o.side)}</td><td class="n">${shQty(o)}</td><td class="n">${o.filled_px ? money(+o.filled_px, 2) : "–"}</td><td>${esc(String(o.status).replace(/_/g, " "))}</td></tr>`).join("")}
     </tbody></table></div>` : `<div class="empty">No orders yet.</div>`}</section>`;
   return h;
 }
@@ -2226,7 +2244,7 @@ function statusFor(t) {
   if (un) out.push({ c: "watch", l: "Unusual", x: un.ratio != null ? `volume ${un.ratio.toFixed(1)}× normal last week` : "", go: "#today-unusual" });
   const ps = (d.portfolio?.positions || []).find(x => x.t === t);
   if (ps) out.push({ c: "new", l: "Held",
-    x: `${ps.sleeve === "park" ? "parked cash, " : ps.bot ? "the tool holds " : "you hold "}${Number(ps.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} shares · ${pct(ps.plpc)}`, go: "#port/" + t });
+    x: `${ps.sleeve === "park" ? "parked cash, " : "holding "}${Number(ps.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} shares · ${pct(ps.plpc)}`, go: "#port/" + t });
   const ms = d.member_sold?.[t];
   if (ps && ms && (ms.sales || []).length) out.push({ c: "avoid", l: "Member sold", x: "a member behind this buy disclosed a sale", go: "#port/" + t });
   return out;
@@ -2367,12 +2385,12 @@ function drawTickerChart() {
     el.classList.add("on");
     const f = myF[+el.dataset.mf];
     det.innerHTML = `<div class="tdet"><img src="/me.jpg" alt="" style="width:34px;height:34px;border-radius:50%;object-fit:cover;border:2px solid var(--${f[1] === "sell" ? "bad" : "good"})" onerror="this.style.display='none'">
-      <div><span class="bs ${f[1] === "sell" ? "sell" : "buy"}">${f[1] === "sell" ? "Sell" : "Buy"}</span> ${Number(f[2]).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at <b>${money2(f[3])}</b> on ${esc(fmtDate(f[0]))}<div class="foot">${esc(f[4] === "tap" ? (f[1] === "sell" ? "Sell button" : "Buy button") : ({ you: "Placed by you", tool: "Placed by the tool" }[f[4]] || ""))}</div></div></div>`;
+      <div><span class="bs ${f[1] === "sell" ? "sell" : "buy"}">${f[1] === "sell" ? "Sell" : "Buy"}</span> ${Number(f[2]).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at <b>${money2(f[3])}</b> on ${esc(fmtDate(f[0]))}${f[4] === "tool" ? "" : `<span class="mtag">manual</span>`}</div></div>`;
   }));
   // your own trades of this stock in this span
   const myRows = myF.slice().sort((a, b) => b[0].localeCompare(a[0]));
   const myHtml = myRows.length || held ? `<div class="tdet" style="display:block"><b>Your trades</b>${held ? ` · holding ${Number(held.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh, cost ${money2(held.avg)}, ${pct(held.plpc)}` : ""}
-    ${myRows.map(f => `<div class="foot" style="color:var(--ink2)"><span class="bs ${f[1]}">${f[1] === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(f[0]))} · ${Number(f[2]).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at ${money2(f[3])} · ${esc((f[4] === "tap" && f[1] === "sell" ? "Sell button" : BY[f[4]] || f[4]))}</div>`).join("")}
+    ${myRows.map(f => `<div class="foot" style="color:var(--ink2)"><span class="bs ${f[1]}">${f[1] === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(f[0]))} · ${Number(f[2]).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at ${money2(f[3])}${f[4] === "tool" ? "" : `<span class="mtag">manual</span>`}</div>`).join("")}
     ${!myRows.length && held ? `<div class="foot">Bought before this timespan; try a longer one.</div>` : ""}</div>` : "";
   // trades in this span, newest first
   const rows = trades.slice().sort((a, b) => b.td.localeCompare(a.td));
