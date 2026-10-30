@@ -5792,7 +5792,7 @@ def prepare(cfg):
                              if r.get("owner_cik") else ""})
         dj = feats[feats.get("f_spouse_employer", 0) > 0] if "f_spouse_employer" in feats else feats.iloc[0:0]
         for r in dj.drop_duplicates(["member", "ticker"]).to_dict("records"):
-            ties.append({"Member": r["member"], "Spouse": "", "Company": f"{(data['meta'].get(r['ticker']) or {}).get('name') or r['ticker']} ({r['ticker']})",
+            ties.append({"Member": r["member"], "b": r.get("bioguide") or "", "Spouse": "", "Company": f"{(data['meta'].get(r['ticker']) or {}).get('name') or r['ticker']} ({r['ticker']})",
                          "Role": "Spouse income source", "Since": "", "Confidence": "Stated by the member",
                          "Source": "Yearly financial disclosure", "link": ""})
         json.dump(ties, open(_p(cfg, "state", "spouse_ties.json"), "w"), default=str)

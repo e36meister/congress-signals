@@ -211,7 +211,7 @@ def export_members(cfg, scored, px, data, log=print, put=None, photos=None, post
     notec = [c for c in ("spouse_note", "relative_note", "family_note", "post_note", "volume_note", "event_note", "buddy_note",
                          "bill_adv_note") if c in scored]
     cols = [c for c in ("member", "bioguide", "ticker", "company", "tx_type", "trade_date", "filed_date", "owner", "amt_lo",
-                        "amt_hi", "sector", "chamber", "state", "party", "cids", "option", "score") if c in scored] + sigc + notec
+                        "amt_hi", "sector", "chamber", "state", "party", "cids", "option", "score", "who") if c in scored] + sigc + notec
     tr = scored[cols].copy()
     tr = tr[tr["tx_type"].isin(["buy", "sell"])].reset_index(drop=True)
     tr["key"] = [member_key(b, m) for b, m in zip(tr.get("bioguide", [None] * len(tr)), tr["member"])]

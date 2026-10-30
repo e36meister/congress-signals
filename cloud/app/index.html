@@ -2377,7 +2377,7 @@ function drawPopup() {
   bg.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="${esc(t)} price chart">${head}${statusBar(t)}${pop.about ? aboutBox(t) : ""}${body}</div>`;
   bg.querySelectorAll("[data-st]").forEach(b => b.addEventListener("click", () => { const x = statusFor(t)[+b.dataset.st]; if (!x) return;
     closeChart();
-    if (x.mem) { openMember(x.mem.n, x.mem.b); TARGET = { sel: "#mties", until: Date.now() + 20000 }; MEM.tiesFor = t; }
+    if (x.mem) { openMember(x.mem.n, x.mem.b); TARGET = { sel: "#mties,#mfam", until: Date.now() + 20000 }; MEM.tiesFor = t; }
     else go(x.go); }));
   bg.querySelector("[data-about]")?.addEventListener("click", () => { pop.about = !pop.about; drawPopup(); });
   bg.querySelectorAll("[data-span]").forEach(b => b.addEventListener("click", () => { pop.span = b.dataset.span; pop.sel = null; drawPopup(); }));
@@ -2694,6 +2694,18 @@ function tiesSection(doc) {
         ${e.link ? ` · <a href="${esc(e.link)}" target="_blank" rel="noopener">Open the report</a>` : ""}</div></div>`).join("")}</div>
     <p class="foot">${ts.some(e => e.chamber === "Senate") ? "Senate reports open on the Senate site (it may ask you to agree to its terms first). " : ""}The quoted line is the report's text as the app read it, so spacing may differ from the original.</p>`;
 }
+// owner, Oct 30: the member's family ties on their own page (spouse's employer from the yearly disclosure, spouse or
+// relative insiders from SEC filings), the same rows as What works → Family ties to companies
+function familySection(doc) {
+  const all = state.data?.backtest?.spouse_ties || [];
+  const rows = all.filter(r => (r.b && r.b === doc.b) || (!r.b && r.Member === doc.n));
+  if (!rows.length) return "";
+  const tk = c => (String(c || "").match(/\(([^)]+)\)$/) || [])[1];
+  return `<div class="ph" id="mfam"><h2>Family ties</h2><span class="sub">Spouse and relatives tied to companies</span></div>
+    <div class="mtrs">${rows.map(r => `<div class="tdet" style="display:block">
+      <div><span class="chip watch">${esc(r.Role || "Tie")}</span> ${tk(r.Company) ? tkBtn(tk(r.Company)) : ""} <span class="foot">${esc(String(r.Company || "").replace(/\s*\([^)]*\)$/, ""))}</span></div>
+      <div class="foot" style="margin-top:4px">${r.Spouse ? `${esc(r.Spouse)} · ` : ""}${esc(r.Source || "")}${r.Since ? ` · since ${esc(fmtDate(r.Since))}` : ""}${r.Confidence ? ` · ${esc(r.Confidence)}` : ""}${r.link ? ` · <a href="${esc(r.link)}" target="_blank" rel="noopener">SEC filings</a>` : ""}</div></div>`).join("")}</div>`;
+}
 function renderMember(k) {
   memLoad(k);
   const doc = MEM.docs[k];
@@ -2713,6 +2725,7 @@ function renderMember(k) {
       <div class="tile"><span class="l">Sales, 1 yr</span><span class="v ${cls(S.sx1y)}">${pct(S.sx1y)}</span><span class="c">+ = sold before it lagged the S&amp;P</span></div>
     </div>
     ${tiesSection(doc)}
+    ${familySection(doc)}
     ${winControls()}
     <div class="ph"><h2>Best trades</h2>
       <div class="filters"><div class="seg" role="group" aria-label="Buys or sales">${[["buy", "Buys"], ["sell", "Sales"]].map(([v, l]) => `<button type="button" data-mbs="${v}" aria-pressed="${MEM.best.side === v}">${l}</button>`).join("")}</div>
