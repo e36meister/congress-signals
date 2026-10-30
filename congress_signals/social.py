@@ -1027,7 +1027,7 @@ def ig_unreadable(leg):
     is not listed."""
     igs = _ig_status()
     bad, found, ok, tried = igs.get("bad") or {}, igs.get("found") or {}, igs.get("ok") or {}, igs.get("guessed") or {}
-    per, all_h = {}, {}
+    per, all_h, manual = {}, {}, ig_manual(leg)
     for h, b in (igs.get("handles") or {}).items():
         all_h.setdefault(b, set()).add(h)
     for h, x in bad.items():
@@ -1044,6 +1044,12 @@ def ig_unreadable(leg):
             # username that doesn't exist, so the line can't say which it is
             why = "; ".join(f"@{h}: Meta can't find it (a personal account, which Meta doesn't let apps read, "
                             "or the username changed)" for h, w in per[b])
+            if all_h[b] <= set(manual.get(b) or []):
+                # Oct 30: the owner already checked these handles by hand, so asking again doesn't help; still listed
+                lines.append(f"Instagram: can't read {who}. You confirmed {', '.join('@' + h for h, _ in per[b])}, but Meta "
+                             "won't share it with apps (most likely a personal account, not a Business or Creator one). "
+                             "Nothing to fix on our side unless they switch it or you find another account of theirs")
+                continue
             lines.append(f"Instagram: can't read {who}. {why}. Please check their Instagram and send me the right handle")
         elif b not in all_h:
             lines.append(f"Instagram: no account on file for {who}. Please check their Instagram and send me the handle")
