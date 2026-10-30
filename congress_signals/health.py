@@ -334,6 +334,18 @@ def critical(cfg, part_sizes, px, prev=None):
             h = _HTTP.get(host)
             if h and h["n"] >= 2 and h["ok"] == 0:
                 out.append(f"The {'House' if 'house' in host else 'Senate'} filings site refused every request ({h['last']})")
+        # owner, Oct 29: a setting in use that relies on the bill and vote data pauses new buys when that data is
+        # incomplete (otherwise its signals would quietly read as "no bill" for every trade)
+        try:
+            pol = _E.load_adaptive(cfg)["policy"]
+            uses = [k for k in pol.get("signals_on", []) if k.startswith("bill_")]
+            uses += ["weak-sales filter"] if pol.get("sale_discount") else []
+            uses += ["bill-based hold"] if pol.get("extend") == "ahead_daily_bill" else []
+            if uses and cfg.get("USE_BILL_STAGES", True) and _E.BILL_DATA.get("missing"):
+                out.append("Bill and vote data incomplete this run, and these settings use it: " + ", ".join(uses)
+                           + (" (" + "; ".join(_E.BILL_DATA.get("problems") or [])[:200] + ")" if _E.BILL_DATA.get("problems") else ""))
+        except Exception as e:
+            out.append(f"Couldn't check the bill and vote data ({type(e).__name__})")
         if px is not None and len(px):
             spy = px["SPY"].dropna() if "SPY" in px else px.dropna(how="all")
             if len(spy):
