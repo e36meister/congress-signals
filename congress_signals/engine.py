@@ -7034,7 +7034,9 @@ def meetings_frame(cache):
 # 11. Floor votes and the industry of each bill (House Clerk, Senate, congress.gov)
 # ----------------------------------------------------------------------------
 _BILL_TYPES = {"H R": "hr", "HR": "hr", "H RES": "hres", "H J RES": "hjres", "H CON RES": "hconres", "S": "s",
-               "S RES": "sres", "S J RES": "sjres", "S CON RES": "sconres"}
+               "S RES": "sres", "S J RES": "sjres", "S CON RES": "sconres",
+               # Voteview writes them run together (HR7008, SJRES12)
+               "HRES": "hres", "HJRES": "hjres", "HCONRES": "hconres", "SRES": "sres", "SJRES": "sjres", "SCONRES": "sconres"}
 
 
 def _bill_id(raw, congress):
@@ -7124,12 +7126,60 @@ def collect_votes(cfg, lis_map):
                     misses += 1
                 n += 1
                 time.sleep(0.15)
+    # Oct 30 (owner: "why can't you get the votes elsewhere? that's public too"): when senate.gov refuses (its firewall,
+    # since Oct 26), read the Senate roll calls from Voteview (UCLA), which republishes every roll call with each
+    # senator's vote and their bioguide ID. Probe tools/senate_votes_probe.py: Voteview had every saved vote through
+    # 119-2-256 (Sep 30); congress.gov's API has House votes only, and GovTrack refuses automated reads.
+    if refused.get("Senate"):
+        try:
+            n_vv, newest = _senate_votes_voteview(cfg, votes)
+            added += n_vv
+            log(f"Votes: Senate site refused requests ({refused.pop('Senate')}); read the Senate roll calls from the "
+                f"Voteview backup instead: {n_vv} new, newest {newest}")
+        except Exception as e:
+            log(f"Votes: Voteview backup for the Senate failed too ({type(e).__name__}: {str(e)[:100]})")
     for ch, why in refused.items():
         log(f"Votes: {ch} site refused requests ({why}); new {ch} roll calls not read this run")
     if added:
         pd.to_pickle(votes, cache_p)
         log(f"Votes: {added:,} new roll calls ({len(votes):,} total)")
     return votes
+
+
+def _senate_votes_voteview(cfg, votes):
+    """Senate roll calls from Voteview's CSVs, saved in the same shape as senate.gov's (S|congress|session|number,
+    Yea/Nay senators by bioguide ID). Adds only roll calls not already saved; returns (added, newest key and date)."""
+    import io
+    added, newest = 0, None
+    for cong in _congresses(cfg):
+        raw = {}
+        for kind in ("rollcalls", "votes", "members"):
+            r = None
+            for i in range(3):
+                try:
+                    r = requests.get(f"https://voteview.com/static/data/out/{kind}/S{cong}_{kind}.csv", headers=UA, timeout=120)
+                    if r.status_code == 200:
+                        break
+                except requests.RequestException:
+                    r = None
+                time.sleep(5 * (i + 1))
+            if r is None or r.status_code != 200:
+                raise RuntimeError(f"Voteview S{cong} {kind}: {'no answer' if r is None else 'HTTP %d' % r.status_code}")
+            raw[kind] = pd.read_csv(io.BytesIO(r.content))
+        rc, vt, mem = raw["rollcalls"], raw["votes"], raw["members"]
+        bio = mem.dropna(subset=["bioguide_id"]).drop_duplicates("icpsr").set_index("icpsr")["bioguide_id"]
+        vt = vt[vt["cast_code"].between(1, 6)]
+        who = vt.assign(b=vt["icpsr"].map(bio)).dropna(subset=["b"]).groupby("rollnumber")["b"].apply(list)
+        for x in rc.itertuples():
+            k = f"S|{cong}|{int(x.session)}|{int(x.clerk_rollnumber)}"
+            d = pd.to_datetime(x.date, errors="coerce")
+            if newest is None or (pd.notna(d) and d >= newest[1]):
+                newest = (k, d)
+            if k in votes:
+                continue
+            votes[k] = {"date": d, "bill": _bill_id(x.bill_number, cong), "ids": who.get(x.rollnumber, [])}
+            added += 1
+    return added, (f"{newest[0]} on {newest[1]:%Y-%m-%d}" if newest else "none")
 
 
 def collect_bill_policy(cfg, bill_ids):
