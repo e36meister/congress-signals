@@ -150,11 +150,16 @@ def link_all(other, scored, names=None):
         if r["kind"] == "muni":
             ms = muni_state(r["asset"])
             own, oth = earmark_match(r["asset"], ms, r["chamber"], G._last(r["member"]), st if isinstance(st, str) else ms)
-            if own:
+            if own and own[0]["same_kind"]:
                 e = own[0]
                 lvl = "earmark"
-                why = (f"they requested ${e['amount']:,.0f} in federal money (FY{e['fy']}) for {e['recipient']}, "
-                       f"the same place ({e['place']}) as this bond" + (f"; {why}" if why else ""))
+                why = (f"they requested ${e['amount']:,.0f} in federal money (FY{e['fy']}) for {e['recipient']}: "
+                       f"the same place ({e['place']}) and kind of project as this bond" + (f"; {why}" if why else ""))
+            elif own:
+                e = own[0]
+                lvl = lvl or "home"
+                why = ((why + "; ") if why else "") + (f"they also requested ${e['amount']:,.0f} (FY{e['fy']}) for another "
+                                                       f"project in {e['place']}: {e['recipient']}")
         out.append({**r.to_dict(), "who": who, "member_state": st, "muni_state": muni_state(r["asset"]) if r["kind"] == "muni" else None,
                     "sector": muni_sector(r["asset"]) if r["kind"] == "muni" else None, "flag": lvl, "why": why, "earmarks": own, "others_earmarks": oth,
                     "ticker": corp_ticker(r["asset"], names or {}) if r["kind"] == "corp_bond" else None})
@@ -194,8 +199,28 @@ def _tokens(s):
     return [ABBR.get(x, x) for x in w if len(x) > 1 or x in ABBR]
 
 
+JOIN = {"san", "santa", "los", "las", "el", "la", "saint", "fort", "mount", "mt", "new", "east", "west", "north",
+        "south", "lake", "port", "palm", "grand", "big", "little", "upper", "lower", "great", "sioux", "baton", "des",
+        "st", "de", "del", "red", "white", "black", "glen", "long", "twin", "cedar", "bay", "eau", "le", "pine", "rock"}
+GENERIC |= {"municipal", "unified", "unif", "uni", "usd", "imp", "infrastructure", "bay", "bays", "excise", "trans",
+            "trust", "leasing", "lease", "building", "bldg", "governmental", "safety", "anticipation", "notes", "note",
+            "cap", "commn", "commission", "comm", "funding", "fund", "variable", "var", "call", "make", "whole",
+            "partners", "group", "office", "offices", "center", "centers", "station", "stations", "parks", "library"}
+
+
 def _distinct(s):
-    return {w for w in _tokens(s) if w not in GENERIC and w not in STATE_WORDS and len(w) > 2}
+    """Place words: single distinctive words ("arbuckle", "tulsa") and two-word names joined ("san_diego")."""
+    t = _tokens(s)
+    out, i = set(), 0
+    while i < len(t):
+        if t[i] in JOIN and i + 1 < len(t) and t[i + 1] not in GENERIC:
+            out.add(t[i] + "_" + t[i + 1])
+            i += 2
+            continue
+        if t[i] not in GENERIC and t[i] not in STATE_WORDS and t[i] not in JOIN and len(t[i]) > 3:
+            out.add(t[i])
+        i += 1
+    return out
 
 
 _EAR = None
@@ -230,10 +255,12 @@ def earmark_match(asset, state, chamber, last, member_state):
     if not len(hit):
         return [], []
     key = f"{chamber}|{str(last or '').lower()}|{member_state}"
-    pick = lambda d: [{"fy": int(r.fy), "amount": float(r.amount) if pd.notna(r.amount) else None,
+    sec = muni_sector(asset)
+    pick = lambda d: [{"same_kind": muni_sector(r.recipient) == sec, "fy": int(r.fy), "amount": float(r.amount) if pd.notna(r.amount) else None,
                        "recipient": str(r.recipient)[:160], "by": f"{r['name']} ({r.member_state})",
-                       "place": ", ".join(sorted(r.words & bw))} for _, r in d.sort_values("amount", ascending=False).head(3).iterrows()]
+                       "place": ", ".join(sorted(w.replace("_", " ") for w in (r.words & bw)))} for _, r in d.sort_values("amount", ascending=False).head(3).iterrows()]
     own = hit[hit["key"] == key]
-    sec = muni_sector(asset)       # other members' projects count only for the same kind of project
+    own = own.assign(_k=(own["recipient"].map(muni_sector) == sec).astype(int)).sort_values(["_k", "amount"], ascending=False)
+    # other members' projects count only for the same kind of project
     oth = hit[(hit["key"] != key) & (hit["recipient"].map(muni_sector) == sec)].drop_duplicates("id")
     return pick(own), pick(oth)
