@@ -398,6 +398,12 @@ def main():
     except Exception as e:
         fr = None
         E.log(f"Foreign companies: report skipped ({type(e).__name__}: {e})")
+    try:     # bonds and moving-to-safety view (owner, Oct 29; congress_signals/bonds_report.py)
+        import congress_signals.bonds_report as BR
+        if not cloud_store.put("bonds/latest.json", json.dumps(BR.build(cfg, scored, log=E.log)), log=lambda m: None):
+            E.log("Bonds: upload to Cloudflare failed; the app keeps the previous Bonds view")
+    except Exception as e:
+        E.log(f"Bonds: view failed, not updated this run ({type(e).__name__}: {e})")
     pages_proc = None
     try:      # member pages build on a second process while the rest of the update goes on
         import multiprocessing as mp

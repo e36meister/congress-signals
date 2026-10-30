@@ -18,6 +18,14 @@ def _f(x, nd=3):
         return None
 
 
+def _s(x):
+    """A text field, or None for blanks and NaN."""
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return None
+    x = str(x).strip()
+    return x or None
+
+
 def market_test(series, spy):
     """Does the tilt known at a month's end line up with the S&P 500 over the next 1 and 3 months?"""
     if spy is None or not len(series):
@@ -65,9 +73,11 @@ def build(cfg, scored, log=print):
         tilt = (g3.loc[g3.side == "safety", "signed"].sum() - g3.loc[g3.side == "stock", "signed"].sum()) / gross if gross else None
         kind = name.split(":")[0] if ":" in name else ("party" if name in ("Democrats", "Republicans", "Independents")
                                                        else "chamber" if name in ("House", "Senate") else "all")
+        if name == "?":
+            name = "Party not on file"
         grows.append({"name": name.split(": ", 1)[-1], "kind": kind.lower(), "tilt": _f(tilt), "members": int(g3["who"].nunique()),
                       "safety_trades": int((g3.side == "safety").sum()), "usd": _f(gross, 0),
-                      "who": sorted(set(g3["who"].dropna().astype(str)))[:40]})
+                      "who": sorted(set(g3["member"].dropna().astype(str)))[:40]})
     grows.sort(key=lambda r: (r["kind"] != "all", -(abs(r["tilt"] or 0))))
     # bond trades, flagged ones first
     try:
@@ -80,12 +90,12 @@ def build(cfg, scored, log=print):
     if len(links):
         links = links.sort_values("trade_date", ascending=False)
         for _, r in links.iterrows():
-            bonds.append({"who": r.get("who"), "member": r["member"], "chamber": r["chamber"],
+            bonds.append({"who": _s(r.get("who")), "member": _s(r["member"]), "chamber": _s(r["chamber"]),
                           "date": r["trade_date"].strftime("%Y-%m-%d") if pd.notna(r["trade_date"]) else None,
-                          "filed": str(r.get("filed_date") or "")[:10], "tx": r.get("tx_raw"), "lo": _f(r.get("amt_lo"), 0),
-                          "hi": _f(r.get("amt_hi"), 0), "owner": r.get("owner"), "asset": r.get("asset"), "kind": r["kind"],
-                          "state": r.get("muni_state"), "sector": r.get("sector"), "flag": r.get("flag"),
-                          "why": r.get("why") or None, "ticker": r.get("ticker")})
+                          "filed": (_s(r.get("filed_date")) or "")[:10], "tx": _s(r.get("tx_raw")), "lo": _f(r.get("amt_lo"), 0),
+                          "hi": _f(r.get("amt_hi"), 0), "owner": _s(r.get("owner")), "asset": _s(r.get("asset")), "kind": r["kind"],
+                          "state": _s(r.get("muni_state")), "sector": _s(r.get("sector")), "flag": _s(r.get("flag")),
+                          "why": _s(r.get("why")), "ticker": _s(r.get("ticker"))})
     s36 = series.tail(36)
     out = {"at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
            "gauge": {"series": [{"month": m.strftime("%Y-%m"), "tilt": _f(r.tilt), "members": int(r.members),

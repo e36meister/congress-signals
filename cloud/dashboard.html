@@ -464,6 +464,7 @@ const MORE_TABS = [
   { k: "defense", l: "Defense", d: "Defense stocks members bought or sold" },
   { k: "works", l: "What works", d: "Which signals hold up, and the weekly automatic adjustments" },
   { k: "real", l: "Reality check", d: "Walk-forward test: the strategy on years it never saw" },
+  { k: "bonds", l: "Bonds and safety", d: "Is Congress moving money from stocks into bonds? Who, which committees, and bond buys worth a look" },
   { k: "movers", l: "Why it moved", d: "Big moves in what you hold and the Buy candidates, explained" },
   { k: "notes", l: "Filing notes", d: "What members write on their trades, sorted into categories, and the notes to check by hand" },
   { k: "health", l: "Data health", d: "Every data source: what's broken right now and what was fixed" },
@@ -555,6 +556,55 @@ document.addEventListener("click", ev => {
   if (w) { ME.who = w.dataset.mewho; ME.open = null; render(); return; }
   const o = ev.target.closest("[data-meopen]");
   if (o && !ev.target.closest("[data-chart]")) { ME.open = ME.open === o.dataset.meopen ? null : o.dataset.meopen; const y = scrollY; render(); scrollTo(0, y); }
+});
+
+// ---------- Bonds and safety (owner, Oct 29): stocks vs bonds across Congress, groups, bond buys worth a look ----------
+const BONDS = { js: null, err: null, loading: false, open: null, showFlags: 12, showAll: 20 };
+function renderBonds() {
+  if (!BONDS.js && !BONDS.loading && !BONDS.err) {
+    BONDS.loading = true;
+    loadBonds().then(js => { BONDS.js = js; }).catch(e => { BONDS.err = e; }).finally(() => { BONDS.loading = false; if (state.tab === "bonds") render(); });
+  }
+  if (BONDS.err) return `<div class="note ${BONDS.err.code === "no_file" ? "warn" : "err"}">${BONDS.err.code === "app_only" ? "Bonds and safety is in the phone app." : BONDS.err.code === "no_file" ? "This page is built by the next daily update." : esc(errorText(BONDS.err))}</div>`;
+  if (!BONDS.js) return `<div class="empty">Loading…</div>`;
+  const J = BONDS.js, G = J.gauge || {}, ser = G.series || [], T = G.test || {};
+  const all = (J.groups || []).find(g => g.kind === "all") || {};
+  const lean = t => t == null ? "no clear direction" : t > 0.15 ? "toward safety (bonds, Treasuries)" : t < -0.15 ? "toward stocks" : "no clear direction";
+  const pct = t => t == null ? "–" : (t > 0 ? "+" : "") + Math.round(t * 100);
+  const last = ser.slice(-24), mx = 1;
+  const bars = last.map((r, i) => { const v = r.tilt || 0, h = Math.round(Math.abs(v) / mx * 38), x = i * 12 + 2;
+    return `<rect x="${x}" y="${v >= 0 ? 40 - h : 40}" width="9" height="${Math.max(h, 1)}" rx="1.5" fill="var(${v >= 0 ? "--warn" : "--accent"})"><title>${esc(r.month)}: ${pct(r.tilt)} · ${r.toward_safety} members toward safety, ${r.toward_stocks} toward stocks</title></rect>`; }).join("");
+  const chart = last.length ? `<svg viewBox="0 0 ${last.length * 12 + 4} 80" width="100%" height="90" role="img" aria-label="Monthly lean, last ${last.length} months"><line x1="0" x2="${last.length * 12 + 4}" y1="40" y2="40" stroke="var(--rule)"/>${bars}</svg>
+    <div class="foot" style="display:flex;justify-content:space-between"><span>${esc(last[0].month)}</span><span>bars up: toward safety · down: toward stocks</span><span>${esc(last[last.length - 1].month)}</span></div>` : "";
+  const testLine = T.verdict ? `<b>Tested against the S&P 500</b> (${T.months || 0} months): ${esc(T.verdict)}.${T.r3 ? ` Months leaning hardest to safety were followed by ${(T.r3.top_fifth * 100).toFixed(1)}% over 3 months, vs ${(T.r3.bottom_fifth * 100).toFixed(1)}% after the most stock-heavy months.` : ""}` : "";
+  const groups = (J.groups || []).filter(g => g.kind !== "all" && g.tilt != null).slice(0, 10);
+  const gname = g => g.kind === "partners" ? "Trading partners: " + g.name : g.name.replace(/^(House|Senate) Committee on (the )?/, (m, c) => c + ": ");
+  const flags = (J.bonds || []).filter(b => b.flag).sort((a, b) => (a.flag === "strong" ? 0 : 1) - (b.flag === "strong" ? 0 : 1)), corp = (J.bonds || []).filter(b => b.kind === "corp_bond");
+  const amt = b => b.lo != null ? `${money(b.lo)}${b.hi ? "–" + money(b.hi) : "+"}` : "";
+  const txw = t => /^p/i.test(t || "") ? "Bought" : /^s/i.test(t || "") ? "Sold" : esc(t || "");
+  const row = b => `<li style="display:grid;gap:2px;padding:8px 0;border-top:1px solid var(--rule)"><span><b>${mlink(b.member)}</b> · ${txw(b.tx)} ${esc(amt(b))} · <span class="foot">${esc(fmtDate(b.date))}</span>${b.ticker ? ` · ${tkBtn(b.ticker)}` : ""}</span><span>${esc(b.asset || "")}</span>${b.why ? `<span class="foot">${b.flag === "strong" ? "<b>Worth a look:</b> " : ""}${esc(b.why)}</span>` : ""}</li>`;
+  return `<section class="panel"><div class="ph"><h2>Is Congress moving to safety?</h2><span class="sub">updated ${esc(ago(J.at))}</span></div>
+    <div class="tiles"><div class="tile"><span class="v">${pct(all.tilt)}</span><span class="l">Last 90 days: ${esc(lean(all.tilt))}</span><span class="c">${all.members || 0} members traded; scale −100 (all into stocks) to +100 (all into bonds and Treasuries)</span></div></div>
+    ${chart}
+    <p class="foot">${testLine} Dated by when the trades became public. Bond trades before ${esc(G.bond_history_from || "this month")} are still being filled in from older filings, so earlier months mostly reflect stock buying and selling.</p>
+  </section>
+  <section class="panel"><div class="ph"><h2>Groups leaning hardest</h2><span class="sub">last 90 days · 3+ members</span></div>
+    ${groups.length ? `<ul style="list-style:none;margin:0;padding:0">${groups.map((g, i) => `<li style="padding:8px 0;border-top:1px solid var(--rule)"><button type="button" class="link" data-bondgrp="${i}" style="text-align:left">${esc(gname(g))}</button>
+      <span class="foot"> · ${pct(g.tilt)} ${g.tilt > 0 ? "toward safety" : "toward stocks"} · ${g.members} members · ${money(g.usd)} traded</span>
+      ${BONDS.open === i ? `<div class="foot" style="margin-top:4px">${(g.who || []).length} members: ${(g.who || []).map(w => esc(w)).join(", ")}</div>` : ""}</li>`).join("")}</ul>` : `<div class="empty">Not enough trades in the last 90 days.</div>`}
+  </section>
+  <section class="panel"><div class="ph"><h2>Bond buys worth a look</h2><span class="sub">bonds from their own state; strongest when their committee covers that kind of project</span></div>
+    ${flags.length ? `<ul style="list-style:none;margin:0;padding:0">${flags.slice(0, BONDS.showFlags).map(row).join("")}</ul>${flags.length > BONDS.showFlags ? `<button type="button" class="link" data-bondmore="flags">Show more (${flags.length - BONDS.showFlags} left)</button>` : ""}` : `<div class="empty">None yet.</div>`}
+    <p class="foot">Not used in picks. Next: matching each bond against the projects the member requested federal money for.</p>
+  </section>
+  ${corp.length ? `<section class="panel"><div class="ph"><h2>Company bonds</h2><span class="sub">a bond is a bet the company pays its debts</span></div><ul style="list-style:none;margin:0;padding:0">${corp.slice(0, 15).map(row).join("")}</ul></section>` : ""}
+  <section class="panel"><div class="ph"><h2>All bond and Treasury trades</h2><span class="sub">${Object.entries(J.counts || {}).map(([k, v]) => `${v.toLocaleString()} ${({ muni: "municipal", treasury: "Treasury", corp_bond: "company", fund: "fund", other: "other" })[k] || k}`).join(" · ")}</span></div>
+    <ul style="list-style:none;margin:0;padding:0">${(J.bonds || []).slice(0, BONDS.showAll).map(row).join("")}</ul>${(J.bonds || []).length > BONDS.showAll ? `<button type="button" class="link" data-bondmore="all">Show more</button>` : ""}
+  </section>`;
+}
+document.addEventListener("click", ev => {
+  const g = ev.target.closest("[data-bondgrp]"); if (g) { const i = +g.dataset.bondgrp; BONDS.open = BONDS.open === i ? null : i; const y = scrollY; render(); scrollTo(0, y); return; }
+  const m = ev.target.closest("[data-bondmore]"); if (m) { if (m.dataset.bondmore === "flags") BONDS.showFlags += 20; else BONDS.showAll += 40; const y = scrollY; render(); scrollTo(0, y); }
 });
 
 // ---------- Taxes: written by tax_report.py after each market close (paper now; the live account once it's on) ----------
@@ -826,6 +876,7 @@ function render() {
   if (state.tab === "senate") html += renderSenate();
   if (state.tab === "notes") html += renderNotes();
   if (state.tab === "movers") html += renderMovers();
+  if (state.tab === "bonds") html += renderBonds();
   if (state.tab === "me") html += renderMe(d);
   if (d.data_warning && (d.data_warning.problems || []).length && ["today", "port"].includes(state.tab)) html += dataWarning(d.data_warning);
   if (state.tab === "today") html += renderToday(d);
@@ -2825,6 +2876,7 @@ function loadNotes() { return Promise.reject({ code: "app_only" }); }
 function loadAbout() { return Promise.reject({ code: "app_only" }); }
 function loadOneChart() { return Promise.reject({ code: "app_only" }); }
 function loadTax() { return Promise.reject({ code: "app_only" }); }
+function loadBonds() { return Promise.reject({ code: "app_only" }); }
 function loadTaxSales() { return Promise.reject({ code: "app_only" }); }
 function searchTickers() { return Promise.reject({ code: "app_only" }); }
 function clearAlert() { return Promise.reject({ code: "app_only" }); }
