@@ -18,6 +18,98 @@ def _spy_closes(api, start):
     return {b["t"][:10]: float(b["c"]) for b in bars}
 
 
+def _closes(api, sym, start, adjustment):
+    r = requests.get(f"https://data.alpaca.markets/v2/stocks/{sym}/bars", headers=api.h, timeout=30,
+                     params={"timeframe": "1Day", "start": start, "feed": "iex", "limit": 1000, "adjustment": adjustment})
+    r.raise_for_status()
+    return {b["t"][:10]: float(b["c"]) for b in r.json().get("bars") or []}
+
+
+def _on_or_before(series, d):
+    prior = [k for k in series if k <= d]
+    return series[max(prior)] if prior else None
+
+
+def _park_fills(api):
+    """Every filled order the tool placed to park money in an S&P fund (oldest first)."""
+    out, until = [], None
+    after = (dt.datetime.utcnow() - dt.timedelta(days=500)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for _ in range(20):
+        params = {"status": "closed", "limit": 500, "direction": "desc", "after": after}
+        if until:
+            params["until"] = until
+        page = api.get("/v2/orders", **params)
+        if not page:
+            break
+        for o in page:
+            if ((o.get("client_order_id") or "").startswith(broker.PARK_PREFIX) and o["symbol"] in broker.PARK_SP500
+                    and float(o.get("filled_qty") or 0)):
+                out.append((o["filled_at"][:10], o["symbol"], float(o["filled_qty"]) * (1 if o["side"] == "buy" else -1),
+                            float(o["filled_avg_price"])))
+        if len(page) < 500:
+            break
+        until = page[-1]["submitted_at"]
+    return sorted(out)
+
+
+def park_adjustment(api, days):
+    """Owner, Oct 30 2026: parking was always meant to be a T-bill fund, so the stats count every past S&P parking
+    trade as if the same dollars had gone into SGOV on the same days. Returns {day: dollars to add to the account's
+    value} (0 before any S&P parking). Same dollars in and out on the same days, so cash is identical; the only
+    difference is what the parked shares were worth (and the S&P fund's dividends, which SGOV's price already
+    includes). Raises if a price is missing, so a broken adjustment is reported instead of quietly skipped."""
+    fills = _park_fills(api)
+    if not fills or not days:
+        return {d: 0.0 for d in days}
+    start = (dt.date.fromisoformat(fills[0][0]) - dt.timedelta(days=7)).isoformat()
+    sgov = _closes(api, "SGOV", start, "all")                         # dividends folded into the price
+    raw = {sym: _closes(api, sym, start, "raw") for sym in {f[1] for f in fills}}
+    divs = []
+    try:
+        for a in api.get("/v2/account/activities/DIV", direction="asc", after=start, page_size=100):
+            if a.get("symbol") in raw:
+                divs.append((str(a.get("date") or a.get("transaction_time") or "")[:10], float(a.get("net_amount") or 0)))
+    except Exception as e:
+        E.log(f"Close report: S&P-parking dividends not read ({type(e).__name__}); couldn't be read; the re-count may be off by a few dollars")
+    out, i = {}, 0
+    qty, units = {}, 0.0
+    for d in sorted(days):
+        while i < len(fills) and fills[i][0] <= d:
+            fd, sym, q, px = fills[i]
+            g = _on_or_before(sgov, fd)
+            if not g:
+                raise ValueError(f"no SGOV price for {fd}")
+            qty[sym] = qty.get(sym, 0.0) + q
+            units += q * px / g                     # the same dollars bought/sold in SGOV
+            i += 1
+        held = 0.0
+        for sym, q in qty.items():
+            if abs(q) > 1e-9:
+                p = _on_or_before(raw[sym], d)
+                if not p:
+                    raise ValueError(f"no {sym} price for {d}")
+                held += q * p
+        g = _on_or_before(sgov, d)
+        if units and not g:
+            raise ValueError(f"no SGOV price for {d}")
+        out[d] = units * (g or 0) - held - sum(a for dd, a in divs if dd <= d)
+    return out
+
+
+def _cash_flows(api, start):
+    """Money you put in or took out after the start (deposits, withdrawals, transfers), {day: dollars}."""
+    out = {}
+    for kind in ("CSD", "CSW", "JNLC"):
+        try:
+            for a in api.get(f"/v2/account/activities/{kind}", direction="asc", after=start, page_size=100):
+                d = str(a.get("date") or a.get("transaction_time") or "")[:10]
+                if d > start:
+                    out[d] = out.get(d, 0.0) + float(a.get("net_amount") or 0)
+        except Exception as e:
+            E.log(f"Close report: {kind} transfers couldn't be read ({type(e).__name__}); the shadow S&P assumes none")
+    return out
+
+
 def _spy_now(api):
     try:
         r = requests.get("https://data.alpaca.markets/v2/stocks/SPY/trades/latest", headers=api.h,
@@ -85,6 +177,17 @@ def main():
     if spy_last:
         spy[today] = spy_last
     series = {"dates": [], "account": [], "spy": []}
+    # past S&P parking re-counted as SGOV (see park_adjustment); if that breaks, the raw numbers are used and
+    # Data health says so
+    adj, adj_err = {}, None
+    try:
+        adj = park_adjustment(api, [d for d, _ in pts])
+    except Exception as e:
+        adj_err = f"{type(e).__name__}: {str(e)[:120]}"
+        E.log(f"Close report: re-counting the old S&P parking as SGOV FAILED ({adj_err}); "
+              "today's numbers include the S&P parking as it actually happened")
+    pts = [(d, e + adj.get(d, 0.0)) for d, e in pts]
+    shadow_now = None
     if pts:
         e0 = pts[0][1]
         before = [k for k in spy if k <= pts[0][0]]           # the last S&P close on or before the start (weekends)
@@ -109,12 +212,22 @@ def main():
                 t0 = None
         except Exception:
             t0 = None
-        last_s = s0
+        # Shadow S&P account (owner, Oct 30 2026): the same money on the same days, all of it in SPY with dividends
+        # reinvested (Alpaca's "all"-adjusted prices). Every deposit or withdrawal goes into / comes out of the
+        # shadow at that day's SPY price. Both sides are measured against the money put in.
+        flows = _cash_flows(api, pts[0][0])
+        units = e0 / s0 if s0 else 0.0
+        put_in, last_s = e0, s0
         for d, e in pts:
             last_s = s0 if (t0 and d < t0[:10]) else spy.get(d, last_s)
+            if flows.get(d) and last_s:
+                units += flows[d] / last_s
+                put_in += flows[d]
+            shadow = units * last_s if last_s else None
             series["dates"].append(d)
-            series["account"].append(round((e / e0 - 1) * 100, 3))
-            series["spy"].append(round((last_s / s0 - 1) * 100, 3) if s0 and last_s else None)
+            series["account"].append(round((e / put_in - 1) * 100, 3))
+            series["spy"].append(round((shadow / put_in - 1) * 100, 3) if shadow else None)
+        shadow_now = units * last_s if last_s else None
 
     # each strategy's open positions: return since bought vs the S&P over the same days, vs the backtest
     snap = broker.sync({"HOLD_DAYS": 60, "_hold_policy": (data.get("adaptive") or {}).get("policy")},
@@ -151,16 +264,25 @@ def main():
     spyc = series["spy"][-1] if series["spy"] else None
     report = {"date": today, "equity": snap["equity"], "day_pl": snap.get("day_pl"), "since_start": acct,
               "spy_since_start": spyc, "start": series["dates"][0] if series["dates"] else today,
-              "series": series, "sleeves": sleeves}
+              "series": series, "sleeves": sleeves,
+              # account value as counted (real value + the SGOV re-count of old S&P parking), the shadow S&P
+              # account's value, and the money put in (what both percentages are measured against)
+              "park_adjust": round(adj.get(today, 0.0), 2) if adj else 0.0, "park_adjust_error": adj_err,
+              "counted_equity": pts[-1][1] if pts else None, "shadow_spy": shadow_now,
+              "vs_spy_dollars": (pts[-1][1] - shadow_now) if (pts and shadow_now) else None,
+              "put_in": (pts[-1][1] / (1 + series["account"][-1] / 100)) if pts and series["account"] else None}
     data["close_report"] = report
     data["portfolio"] = {**snap, "limits": (data.get("portfolio") or {}).get("limits") or snap["limits"]}
     hist_list = [h for h in data.get("close_history", []) if h.get("date") != today]
     hist_list.append({k: report[k] for k in ("date", "equity", "day_pl", "since_start", "spy_since_start")})
     # keep past days on the same S&P starting point as today's series
     by_day = dict(zip(series["dates"], series["spy"]))
+    acct_day = dict(zip(series["dates"], series["account"]))     # same SGOV re-count and money-put-in basis
     for h in hist_list:
         if by_day.get(h.get("date")) is not None:
             h["spy_since_start"] = by_day[h["date"]]
+        if acct_day.get(h.get("date")) is not None:
+            h["since_start"] = acct_day[h["date"]]
     data["close_history"] = hist_list[-2000:]          # keep the start: "since start" must not roll forward
     from googleapiclient.http import MediaIoBaseUpload
     drive.files().update(fileId=fid, media_body=MediaIoBaseUpload(io.BytesIO(json.dumps(data).encode()),
@@ -213,7 +335,8 @@ def build_email(rep, mode, snap, data):
     tiles = ("<table width='100%' cellspacing='6' cellpadding='0' style='border-collapse:separate'><tr>"
              + tile(_fmt_money(eq), "account value", f"{'Paper' if mode == 'paper' else 'Real money'}", ink)
              + tile(_fmt_money(day, True), "today", pct(day_pct), col(day))
-             + tile(pct(gap), "vs the S&amp;P 500", f"since {start_txt} (S&amp;P {pct(spy)})", col(gap))
+             + tile(pct(gap), "vs the S&amp;P 500", f"since {start_txt} (S&amp;P {pct(spy)}"
+                    + (f", {_fmt_money(rep['vs_spy_dollars'], True)}" if rep.get("vs_spy_dollars") is not None else "") + ")", col(gap))
              + "</tr></table>")
 
     # where the account sits in the 95% luck range around the S&P

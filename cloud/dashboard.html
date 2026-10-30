@@ -1503,7 +1503,7 @@ function soldNote(x) {
     <div class="foot" style="font-family:var(--body);white-space:normal;min-width:160px">${list.map(s => `${mlink(s.n, s.b)}${tagHtml({ n: s.n, b: s.b })} sold ${esc(fmtDate(s.td))}, disclosed ${esc(fmtDate(s.d))}`).join("<br>")}${auto ? "<br>The tool sells it at the next update." : ""}</div>`;
 }
 function heldCell(x, L) {
-  if (x.sleeve === "park") return `Tool's unused money<div class="foot">Parked in ${["SGOV", "BIL", "SHV"].includes(x.t) ? "a Treasury-bill fund" : "the S&amp;P 500"} until picks need it</div>`;
+  if (x.sleeve === "park") return `Tool's unused money<div class="foot">Parked in ${["SGOV", "BIL", "SHV"].includes(x.t) ? "a Treasury-bill fund" : "the S&amp;P 500 (moving to a Treasury-bill fund at the next open)"} until picks need it</div>`;
   if (x.bot) {
     const h = x.hold ?? L.hold_days ?? 60;
     return `${x.sleeve === "small" ? "Small-co. portfolio · " : ""}${x.held ?? 0} of ${h} days${x.bought ? `<div class="foot">Tool sells ~${esc(fmtDate(addTradingDays(x.bought, h)))}</div>` : ""}`;
@@ -1532,7 +1532,7 @@ function closeSection(d) {
   return `<section class="panel"><div class="ph"><h2>Paper account vs the backtest</h2><span class="sub">Market close ${esc(fmtDate(c.date))} · since ${esc(fmtDate(c.start))}</span></div>
   <div class="tiles">
     <div class="tile"><span class="v ${cls(c.since_start)}">${pnum(c.since_start, 2)}</span><span class="l">Paper account since start</span><span class="c">S&amp;P 500: ${pnum(c.spy_since_start, 2)}</span></div>
-    <div class="tile"><span class="v ${cls((c.since_start ?? 0) - (c.spy_since_start ?? 0))}">${c.spy_since_start == null ? "–" : pnum(c.since_start - c.spy_since_start, 2)}</span><span class="l">Ahead of or behind the S&amp;P</span></div>
+    <div class="tile"><span class="v ${cls((c.since_start ?? 0) - (c.spy_since_start ?? 0))}">${c.spy_since_start == null ? "–" : pnum(c.since_start - c.spy_since_start, 2)}</span><span class="l">Ahead of or behind the S&amp;P</span>${c.vs_spy_dollars == null ? "" : `<span class="c">${(c.vs_spy_dollars > 0 ? "+" : "") + money(c.vs_spy_dollars)} vs the same money in SPY</span>`}</div>
     <div class="tile"><span class="v ${cls(c.day_pl)}">${c.day_pl == null ? "–" : (c.day_pl > 0 ? "+" : "") + money(c.day_pl)}</span><span class="l">Change on ${esc(fmtDate(c.date))}</span></div>
   </div>
   <div class="chart" id="pchart"></div>
@@ -1581,7 +1581,9 @@ document.addEventListener("click", ev => {
 function liveVsSpy(d) {
   const c = d.close_report, p = d.portfolio;
   if (!c || c.since_start == null || c.spy_since_start == null || !c.equity || !p?.equity) return null;
-  const e0 = c.equity / (1 + c.since_start / 100), acct = (p.equity / e0 - 1) * 100;
+  // since_start counts old S&P parking as if it had been in SGOV (park_adjust) and is measured against the money put in
+  const base = c.put_in || ((c.counted_equity || c.equity) / (1 + c.since_start / 100));
+  const acct = ((p.equity + (c.park_adjust || 0)) / base - 1) * 100;
   let spy = c.spy_since_start, live = false;
   const S = p.spy;
   if (S && S.px) {

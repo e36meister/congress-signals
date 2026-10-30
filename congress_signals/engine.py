@@ -4329,9 +4329,32 @@ def _perf(daily):
             "Worst drawdown": (eq / eq.cummax() - 1).min()}, eq
 
 
+# Where the backtest keeps money that isn't in a pick. Owner, Oct 30 2026: a Treasury-bill fund, same as the live
+# account (SGOV, with BIL for the years before SGOV existed); the S&P 500 is only the yardstick, never the parking spot.
+# BACKTEST_IDLE=spy brings back the old S&P parking, =cash leaves it at 0%.
+TBILL_FUNDS = ("SGOV", "BIL")
+IDLE = (os.environ.get("BACKTEST_IDLE") or "tbill").strip().lower()
+
+
+def _tbill_returns(rets):
+    """Daily return of the T-bill parking fund: SGOV where it has prices, BIL before that. Missing both → 0%
+    (plain cash) and a loud log line, never a silent skip."""
+    have = [c for c in TBILL_FUNDS if c in rets.columns]
+    if not have:
+        log("Backtest: T-bill fund prices (SGOV/BIL) failed to download - idle money counted as 0% cash this run")
+        return np.zeros(len(rets))
+    r = rets[have[0]]
+    for c in have[1:]:
+        r = r.fillna(rets[c])
+    gap = int(r.isna().sum())
+    if gap > 5:
+        log(f"Backtest: couldn't get T-bill fund prices for {gap} days - those days count idle money as 0% cash")
+    return r.fillna(0).values
+
+
 def _portfolio_slots(picks, px, idx, slots, idle="spy", sign=1, cost=0.0):
-    """Each pick gets 1/slots of the money; money not in a pick sits in SPY (or cash). Trading costs are
-    charged when a pick is bought and sold."""
+    """Each pick gets 1/slots of the money; money not in a pick sits in a T-bill fund ("tbill"), SPY ("spy")
+    or cash. Trading costs are charged when a pick is bought and sold."""
     rets = _px_ffill(px).pct_change(fill_method=None).reindex(idx)
     spy = rets["SPY"].fillna(0).values
     col = {c: i for i, c in enumerate(px.columns)}
@@ -4365,7 +4388,7 @@ def _portfolio_slots(picks, px, idx, slots, idle="spy", sign=1, cost=0.0):
     over = cnt > slots                      # more money wanted than there is: scale every pick down
     w = np.where(over, 1 / np.maximum(cnt, 1), 1 / slots)
     invested = np.minimum(cnt, slots) / slots
-    fill = spy if idle == "spy" else 0.0
+    fill = spy if idle == "spy" else _tbill_returns(rets) if idle == "tbill" else 0.0
     return pd.Series(acc * w + (1 - invested) * fill, index=idx), pd.Series(cnt, index=idx)
 
 
@@ -4676,7 +4699,7 @@ def run_backtest(scored, px, cfg, since=None):
     scheme = cfg.get("_sizing") or load_adaptive(cfg)["policy"].get("sizing", "equal")
     if len(longs) and "prank" in longs and scheme != "equal":
         longs = longs.assign(size_mult=size_mult(longs["prank"], cfg, scheme))
-    ld, n_long = _portfolio_slots(longs, px, idx, slots_l, "spy", cost=cst) if len(longs) else (px["SPY"].pct_change(fill_method=None).reindex(idx), empty)
+    ld, n_long = _portfolio_slots(longs, px, idx, slots_l, IDLE, cost=cst) if len(longs) else (px["SPY"].pct_change(fill_method=None).reindex(idx), empty)
     sd, _ = _portfolio_slots(shorts, px, idx, slots_s, "cash", sign=-1, cost=cst) if len(shorts) else (empty, empty)
     a = cfg["SHORT_ALLOCATION"]
     series = {"Long picks": ld, "Short picks": sd,
@@ -4920,7 +4943,7 @@ def walk_forward(scored, px, cfg, min_train=500):
     slots_y = (per * longs["hold_days_row"].astype(float) / 5).clip(lower=1)
     base_k = longs["size_mult"].astype(float).fillna(1.0) if "size_mult" in longs else 1.0
     longs = longs.assign(size_mult=base_k * slots / slots_y)
-    ld, _ = _portfolio_slots(longs, px, idx, slots, "spy", cost=cost)
+    ld, _ = _portfolio_slots(longs, px, idx, slots, IDLE, cost=cost)
     spy = px["SPY"].pct_change(fill_method=None).reindex(idx)
     # the regular (full-history) strategy over exactly the same years, for comparison
     # always with the hand-set weights, so the weekly check compares the two methods whichever one is in use
@@ -7670,7 +7693,7 @@ SECTOR_ETF = {"Technology": "XLK", "Industrials": "XLI", "Financial Services": "
               "Energy": "XLE", "Utilities": "XLU", "Basic Materials": "XLB", "Consumer Cyclical": "XLY",
               "Consumer Defensive": "XLP", "Real Estate": "XLRE", "Communication Services": "XLC"}
 DEFENSE_ETF = "ITA"
-BENCHMARK_ETFS = sorted(set(SECTOR_ETF.values()) | {DEFENSE_ETF, "IWM"})
+BENCHMARK_ETFS = sorted(set(SECTOR_ETF.values()) | {DEFENSE_ETF, "IWM"} | set(TBILL_FUNDS))
 # committees and subcommittees that oversee the military, its budget and intelligence
 DEFENSE_CIDS = {"HSAS", "SSAS", "HSAP02", "SSAP02", "HLIG", "SLIN", "HSHM", "SSGA"}
 DEFENSE_EXTRA = {"PLTR", "BAH", "SAIC", "CACI", "LDOS", "KTOS", "AVAV", "MRCY", "BWXT", "HII", "GD", "LMT", "NOC",
@@ -10546,7 +10569,7 @@ def small_cap_backtest(scored, px, cfg, hold=None, coverage=None, price_exit=Non
     idx = px.index[px.index >= picks["entry_date"].min()]
     weeks = max(1.0, (picks["filed_date"].max() - picks["filed_date"].min()).days / 7)
     slots = max(5, int(round(len(picks) / weeks * hold / 5)))          # positions open at once, on average
-    ld, n_open = _portfolio_slots(picks, px, idx, slots, "spy", cost=cost)
+    ld, n_open = _portfolio_slots(picks, px, idx, slots, IDLE, cost=cost)
     spy = px["SPY"].pct_change(fill_method=None).reindex(idx)
     series = {"Small-company picks": ld, "S&P 500 (SPY)": spy}
     if SMALL_ETF in px.columns:

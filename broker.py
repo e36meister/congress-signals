@@ -15,8 +15,8 @@ PREFIX = "cs-"
 PARK_PREFIX = PREFIX + "park-"          # unused tool money parked in a Treasury-bill fund
 # where the tool parks unused money (first one you don't hold yourself): a Treasury-bill fund (steady price,
 # ~short-term interest rates, almost no taxable gains when sold), on paper and with real money. Owner, Oct 22: parked
-# S&P money was swamping the daily numbers; the backtest still parks idle money in the S&P 500 because the goal is to
-# beat the S&P. PARK_FUND (comma-separated symbols) overrides.
+# S&P money was swamping the daily numbers. Owner, Oct 30: the backtest parks idle money in T-bills too; the S&P 500 is
+# only the yardstick (close_report's shadow-S&P account). PARK_FUND (comma-separated symbols) overrides.
 PARK_SP500 = ("SPY", "VOO", "IVV")
 PARK_TBILL = ("SGOV", "BIL", "SHV")
 PARK_ALL = PARK_SP500 + PARK_TBILL
@@ -546,17 +546,12 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                     inv_sleeve += amount
 
         # 3. park the tool's unused money in a Treasury-bill fund, keeping a little cash for your own Buy-button orders. Sold down as picks need the money.
-        #    Money parked in a fund that's no longer the choice (e.g. after PARK_FUND changes) is sold first;
-        #    it's re-parked in the right fund on the next run. Owner, Oct 22: the move out of a fund waits until it's
-        #    back at or above what was paid for it (the S&P was ~$825 down when parking switched to SGOV); until then
-        #    new spare cash goes to the new fund, and picks that need money take it from the new fund first.
+        #    Money parked in a fund that's no longer the choice (e.g. old S&P parking) is sold right away, whatever
+        #    its price, and re-parked in the T-bill fund on the next run. Owner, Oct 30 2026: no more waiting for the
+        #    S&P parking to get back to cost; the stats re-count all past parking as if it had been in SGOV
+        #    (close_report.park_adjustment), so the move doesn't show up as a loss in the account's numbers.
         old_park = [p for p in positions if p in bot and p not in others and is_park(p) and p != park and p not in pending]
-        below = lambda p: float(positions[p].get("current_price") or 0) < float(positions[p].get("avg_entry_price") or 0)
-        waiting = [p for p in old_park if below(p)]
-        stale = [p for p in old_park if not below(p)]
-        for p in waiting:
-            log(f"Broker: parked {p} stays until it's back to its cost (${float(positions[p]['avg_entry_price']):,.2f}; "
-                f"now ${float(positions[p]['current_price']):,.2f}) before moving to {park_label(park)}")
+        waiting, stale = [], old_park
         for p in stale:
             r = api.post("/v2/orders", {"symbol": p, "side": "sell", "qty": positions[p].get("qty"), "type": "market",
                                         "time_in_force": "day",
@@ -606,7 +601,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                 continue
             cid = o.get("client_order_id") or ""
             if cid.startswith(PARK_PREFIX):
-                continue                      # spare cash parked in the S&P fund
+                continue                      # spare cash parked in the T-bill fund
             fills.setdefault(from_alpaca(o["symbol"]), []).append(
                 [str(o.get("filled_at") or "")[:10], o["side"], float(o.get("filled_qty") or 0), float(o.get("filled_avg_price") or 0),
                  "tool" if cid.startswith(PREFIX) else "tap" if cid.startswith("tap-") else "you"])
