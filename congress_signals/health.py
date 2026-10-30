@@ -239,6 +239,7 @@ def finish(job, problems=(), failures=(), log=None, extra=None):
                 for k, r in wold.items() if k not in {x["k"] for x in wopen}]
         _save(JOB_KEY.format("watchdog"), {"job": "watchdog", "at": now.isoformat(timespec="seconds"), "since": since, "open": wopen,
                                            "fixed": ((wj.get("fixed") or []) + wfix)[-50:]})
+        senate_watch(log)
         if new:
             _alert(job, new, log)
         _log(f"DATA HEALTH ({job}): {len(open_)} open problem(s), {len(new)} new" +
@@ -260,6 +261,67 @@ URGENT_JOBS = ("Daily update", "Filings and orders check")
 QUIET = re.compile(r"^Instagram: (?:can't read|no account found for) ")
 
 
+# owner, Oct 30: "don't give me alerts for the senate site blocking things anymore, you can keep trying but just alert
+# me when it works". Lines about the Senate firewall stay open on the Data health page but send no alert; a backup
+# failing (Voteview, FMP) or new buys pausing still alerts. senate_watch() sends one alert when the Senate answers again.
+SENATE_BLOCK = re.compile(r"Senate firewall|^(?:[\w-]+\.)*senate\.gov: .*HTTP 403|\bSenate site refused requests|"
+                          r"Senate listing failed \(HTTP (?:403|503)", re.I)
+
+
+def _senate_blocked(x):
+    return x.get("kind") not in ALERT_AT_ONCE and bool(SENATE_BLOCK.search(str(x.get("text") or "")))
+
+
+SENATE_KEY = "health/senate_access.json"
+SENATE_GROUPS = (("efd", "the Senate trade filings site (efdsearch.senate.gov), so Senate trades and yearly reports read directly again"),
+                 ("votes", "senate.gov, so Senate roll call votes read directly again"),
+                 ("senators", "the senators' own websites, so their press releases read directly again"))
+SENATE_BACK_RUNS = 3       # runs in a row with no refusal before saying it works (the block came and went on Oct 29-30)
+
+
+def _senate_group(host):
+    if not (host == "senate.gov" or host.endswith(".senate.gov")):
+        return None
+    return "efd" if host.startswith("efdsearch.") else "votes" if host == "senate.gov" else "senators"
+
+
+def senate_watch(log=None):
+    """Track the Senate firewall per area across runs; alert once when an area that was blocked answers again."""
+    try:
+        runs = {}
+        for host, h in _HTTP.items():
+            g = _senate_group(host)
+            if g:
+                r = runs.setdefault(g, {"answered": 0, "refused": 0})
+                r["answered"] += h["ok"] + h["nf"]
+                r["refused"] += h["bad"] + h["exc"]
+        if not runs:
+            return
+        st = _load(SENATE_KEY)
+        blocked, streak = st.setdefault("blocked", {}), st.setdefault("streak", {})
+        now = _now().isoformat(timespec="seconds")
+        back = []
+        for g, r in runs.items():
+            if r["refused"]:
+                blocked.setdefault(g, now)
+                streak[g] = 0
+            elif r["answered"] >= 2 and g in blocked:
+                streak[g] = streak.get(g, 0) + 1
+                if streak[g] >= SENATE_BACK_RUNS or r["answered"] >= 20:
+                    back.append((g, blocked.pop(g)))
+                    streak.pop(g, None)
+        _save(SENATE_KEY, st)
+        if back:
+            import cloud_store
+            what = dict(SENATE_GROUPS)
+            body = "\n".join(f"• {what[g]} (blocked since {since[:10]})" for g, since in back)
+            cloud_store.notify("The Senate website is working again", body, tag="senate-back", url="/#health",
+                               items=[{"l": what[g], "u": "/#health"} for g, _ in back], log=lambda m: None)
+            _log("Senate access: working again for " + ", ".join(g for g, _ in back), log)
+    except Exception as e:
+        _log(f"Senate access check failed ({type(e).__name__})", log)
+
+
 def _quiet(x):
     return bool(QUIET.match(str(x.get("text") or "")))
 
@@ -273,6 +335,7 @@ def _alert(job, new, log):
     try:
         import cloud_store
         jn = JOB_NAMES.get(job, job)
+        new = [x for x in new if not _senate_blocked(x)]        # on the Data health page only (owner, Oct 30)
         quiet = [x for x in new if _quiet(x)]
         loud = [x for x in new if not _quiet(x)]
         for group, tag in (([x for x in loud if _urgent(x)], "health-urgent"), ([x for x in loud if not _urgent(x)], "health"),

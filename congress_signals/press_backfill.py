@@ -295,7 +295,8 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
         late = [n for n in again if n in second and second[n][2] is not None]
         if late:
             _log(f"Latest press releases: {len(late)} site(s) answered on a second, slower try")
-    fails.extend(fw_blocked)
+    # Oct 30 (owner): the firewall line above is the Senate problem; this list is for sites that failed on their own
+    # (so a House site that breaks still alerts while the Senate block is muted)
     for name, b, out in results:
         if out is None:
             fails.append(name)
