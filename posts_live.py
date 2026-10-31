@@ -292,6 +292,11 @@ for k in counts:
         # not a quiet source: it can't run until the owner adds the token, so say exactly that (still reported)
         problems.append("Instagram: not set up yet; waiting for the owner to add the META_ACCESS_TOKEN GitHub secret")
         continue
+    if k == "Mastodon" and S.masto_quiet_ok():
+        # Oct 31: every account read and already up to date, so "nothing new" means members aren't posting there
+        E.log(f"Live posts: Mastodon quiet but working: all {S.MASTO_STATUS['accounts']} accounts read and up to date; "
+              f"newest post of any of them {S.MASTO_STATUS.get('newest') or 'none'}")
+        continue
     if k in last_new:
         days = (now - dt.datetime.fromisoformat(last_new[k])).total_seconds() / 86400
         if days > mx:

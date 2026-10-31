@@ -205,6 +205,13 @@ def check_social(cfg, log=print, youtube_key=None):
         if src == "youtube" and not youtube_key:
             continue
         n, fp = dir_snapshot(os.path.join(root, src))
+        if src == "masto":
+            # Oct 31: when this run read every Mastodon account and each was already up to date, a long gap means
+            # members aren't posting there, not a broken reader (see social.MASTO_STATUS); accounts that fail are
+            # logged as failure lines by collect_mastodon and keep the normal check
+            from . import social as _S
+            if _S.masto_quiet_ok():
+                mx = None
         items[src] = (n, fp, mx)
     return report("social", cfg.get("SOCIAL_DIR") or "social", items, log, SOCIAL_LABELS)
 

@@ -822,7 +822,22 @@ def collect_bluesky(cfg, st, tg, hmap, deadline, ocr_days=120, max_ocr=300):
     return True
 
 
+# Oct 31: the "nothing new for N days" checks flagged Mastodon although the reader worked: the 13 accounts members
+# list all answer, and our saved copy matched each server (newest post of any of them: 2026-03-06). collect_mastodon
+# now records, per run, whether every account was read and whether our copy already holds each account's newest post,
+# so the checks can tell "members aren't posting there" from "the reader is broken" (failed accounts are reported).
+MASTO_STATUS = {}
+
+
+def masto_quiet_ok():
+    """True when this run read every Mastodon account and each one's newest post is already saved: a quiet source,
+    not a broken one."""
+    s = MASTO_STATUS
+    return bool(s) and s.get("complete") and not s.get("failed") and s.get("current") == s.get("accounts")
+
+
 def collect_mastodon(cfg, st, tg, leg, acc, deadline):
+    MASTO_STATUS.clear()
     out_dir = _dir(cfg, "posts", "masto")
     handles = {}
     for b, m in leg.items():
@@ -832,10 +847,11 @@ def collect_mastodon(cfg, st, tg, leg, acc, deadline):
     for b, a in acc.items():
         for v in a.get("masto") or []:
             handles.setdefault(v.lower(), b)
-    added, dead = 0, []
+    added, dead, checked, current, newest = 0, [], 0, 0, ""
     for h, b in handles.items():
         if time.time() > deadline:
             break
+        checked += 1
         user, host = h.split("@", 1)
         a = _get(f"https://{host}/api/v1/accounts/lookup", params={"acct": user}, tries=2)
         if not a or not a.get("id"):
@@ -844,11 +860,18 @@ def collect_mastodon(cfg, st, tg, leg, acc, deadline):
         path = os.path.join(out_dir, re.sub(r"[^a-z0-9.@-]", "_", h) + ".jsonl.gz")
         old = read_jsonl(path) if os.path.exists(path) else []
         seen = {r[4] for r in old}
-        rows, max_id = [], None
+        rows, max_id, page, done = [], None, 0, False
         for _ in range(30):
             js = _get(f"https://{host}/api/v1/accounts/{a['id']}/statuses",
                       params={"limit": 40, "exclude_replies": "true", **({"max_id": max_id} if max_id else {})}, tries=2)
+            page += 1
+            if js is None and page == 1 and (a.get("statuses_count") or 0) > 0:
+                dead.append(h)              # the account answered but its posts didn't load
+                break
+            if js and page == 1:
+                newest = max(newest, (js[0].get("created_at") or "")[:10])
             if not js:
+                done = js is not None or page == 1    # an empty page is the end; a failed later page is not
                 break
             stop = False
             for s in js:
@@ -865,11 +888,17 @@ def collect_mastodon(cfg, st, tg, leg, acc, deadline):
                                 rp=("@" + (rb.get("account") or {}).get("acct", "")) if rb else "", full=txt + " " + alts))
             max_id = js[-1].get("id")
             if stop or len(js) < 40:
+                done = True                 # reached a post already saved, or the account's oldest post
                 break
+        if done and h not in dead:
+            current += 1
         if rows:
             write_jsonl(path, sorted(old + rows, key=lambda r: r[0]))
             added += len(rows)
-    _log(f"Mastodon: {len(handles)} accounts, +{added:,} posts" + (f"; no answer from {len(dead)}: {', '.join(dead[:8])}" if dead else ""))
+    MASTO_STATUS.update(accounts=len(handles), checked=checked, complete=checked == len(handles), failed=dead,
+                        current=current, newest=newest)
+    _log(f"Mastodon: {len(handles)} accounts, +{added:,} posts" + (f"; no answer from {len(dead)}: {', '.join(dead[:8])}" if dead else "")
+         + (f"; out of time after {checked}" if checked < len(handles) else "") + (f"; newest post of any account {newest}" if newest else ""))
 
 
 def collect_substack(cfg, st, tg, acc, deadline):
