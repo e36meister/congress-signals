@@ -57,7 +57,7 @@ jobs:
 
       - name: Deploy
         working-directory: cloud
-        run: npx --yes wrangler@4 deploy 2>&1 | sed -E 's#[A-Za-z0-9./:-]*workers\.dev#(address hidden; the run log is public)#g'
+        run: set -o pipefail; npx --yes wrangler@4 deploy 2>&1 | sed -E 's#[A-Za-z0-9./:-]*workers\.dev#(address hidden; the run log is public)#g'
 
       - name: Give the app its passcode and Alpaca keys
         working-directory: cloud

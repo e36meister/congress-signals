@@ -324,7 +324,6 @@ async function buy(req, env) {
 // ---------- your own buys under the tool's sell rules (owner, Oct 30; manual_rules.py) ----------
 // manual/state.json (written by the daily run): positions flagged to sell at the next open and why. Keep stores the
 // flag's reason set in manual/keep.json; the next run leaves the position alone until a different reason comes up.
-async function r2json(env, key) { try { const o = await env.DATA.get(key); return o ? JSON.parse(await o.text()) : {}; } catch (e) { return {}; } }
 async function manualState(env) {
   const [st, keep] = await Promise.all([r2json(env, "manual/state.json"), r2json(env, "manual/keep.json")]);
   return json({ pending: st.pending || {}, keep, ruled: st.ruled || [], updated: st.updated || null });
@@ -626,7 +625,7 @@ function substackRss(posts) {
   return `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>${items.join("")}</channel></rss>`;
 }
 
-async function r2json(env, key, dflt) { try { const o = await env.DATA.get(key); if (o) return await o.json(); } catch (e) {} return dflt; }
+async function r2json(env, key, dflt = {}) { try { const o = await env.DATA.get(key); if (o) return await o.json(); } catch (e) {} return dflt; }   // missing or unreadable → dflt ({} unless given)
 async function peopleReviewList(env) {
   return json({ items: await r2json(env, PEOPLE_QUEUE, []), verdicts: await r2json(env, PEOPLE_FILE, {}) });
 }
