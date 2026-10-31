@@ -10645,6 +10645,10 @@ def small_cap_backtest(scored, px, cfg, hold=None, coverage=None, price_exit=Non
 RARE_FILE = "rare_test.json"
 RARE_MAX_SHARE = 0.10          # "rare": on at most 10% of purchases
 RARE_MIN_N = 30
+# Owner, Oct 30 2026: a signal the test switches on is re-checked on trades filed AFTER that day (data it never saw).
+# Once enough of those trades have played out, it stays on only if they beat similar purchases too; if they don't,
+# it's switched off and stays off until its new-data result turns positive.
+RECHECK_MIN_N = 15
 
 
 RARE_W_SCALES = (10, 20, 30)     # weight per unit of per-trade gain: +2%/trade -> 0.2 / 0.4 / 0.6
@@ -10758,7 +10762,7 @@ def rare_signal_test(scored, px, cfg, hold=None):
     b["cell"] = b["m"] + "|" + b["sector"].fillna("?").astype(str)
     cut = (pd.Timestamp.today() - pd.DateOffset(years=3)).strftime("%Y-%m")
     fcols = [c for c in b.columns if c.startswith("f_") and pd.api.types.is_numeric_dtype(b[c])]
-    out = []
+    out, fls = [], {}
     for c in fcols:
         on = b[c].fillna(0).values > 0
         share = on.mean()
@@ -10771,6 +10775,7 @@ def rare_signal_test(scored, px, cfg, hold=None):
         fl["ctrl"] = fl["cell"].map(ctrl)
         fl = fl[fl["ctrl"].notna()]
         fl["lift"] = sign * (fl["x"] - fl["ctrl"])
+        fls[c[2:]] = fl
         early, late = fl[fl["m"] < cut], fl[fl["m"] >= cut]
         m_all, t_all, n_all = _quarter_t(fl["lift"], fl["filed_date"])
         m_e, t_e, n_e = _quarter_t(early["lift"], early["filed_date"])
@@ -10798,6 +10803,25 @@ def rare_signal_test(scored, px, cfg, hold=None):
         pol = a["policy"]
         sig = list(pol.get("signals_on", []))
         mine = set(a.get("rare_on") or [])
+        on_dates = dict(a.get("rare_on_dates") or {})      # when each signal was first switched on (kept after off)
+        today0 = dt.date.today().isoformat()
+        for k in mine:
+            on_dates.setdefault(k, today0)                 # switched on before re-checks existed: count from today
+        # results on trades filed since each signal was switched on
+        since = {}
+        for r in out:
+            d0 = on_dates.get(r["signal"])
+            if not d0:
+                continue
+            fl_k = fls.get(r["signal"])
+            nw = fl_k[pd.to_datetime(fl_k["filed_date"]) > pd.Timestamp(d0)] if fl_k is not None else fl_k
+            n_new = int(len(nw)) if nw is not None else 0
+            m_new = float(nw["lift"].mean()) if n_new else None
+            r.update({"on_since": d0, "n_since": n_new, "lift_since": m_new,
+                      "recheck": ("waiting" if n_new < RECHECK_MIN_N else "holds up" if (m_new or 0) > 0 else "failed")})
+            since[r["signal"]] = r["recheck"]
+            if r["recheck"] == "failed":
+                r["passes"] = False          # it didn't hold up on data it never saw: off, whatever the old years say
         passing = {r["signal"] for r in out if r["passes"]}
         tested = {r["signal"] for r in out}
         today = dt.date.today().isoformat()
@@ -10807,6 +10831,7 @@ def rare_signal_test(scored, px, cfg, hold=None):
                 sig.append(k)
                 mine.add(k)
                 on_now.append(k)
+                on_dates.setdefault(k, today)
                 a.setdefault("history", []).append({"date": today, "change": TRIAL_LABELS.get(k, k), "from": "off",
                                                     "to": "on", "why": f"per-trade test: {r['lift'] * 100:+.2f}% per trade "
                                                     f"vs similar purchases ({r['n']} trades)"})
@@ -10816,10 +10841,12 @@ def rare_signal_test(scored, px, cfg, hold=None):
                 mine.discard(k)
                 off_now.append(k)
                 a.setdefault("history", []).append({"date": today, "change": TRIAL_LABELS.get(k, k), "from": "on",
-                                                    "to": "off", "why": "no longer passes the per-trade test"})
-        if on_now or off_now:
+                                                    "to": "off", "why": ("trades filed since it was switched on didn't beat "
+                                                                         "similar purchases" if since.get(k) == "failed"
+                                                                         else "no longer passes the per-trade test")})
+        if on_now or off_now or on_dates != (a.get("rare_on_dates") or {}):
             pol["signals_on"] = sig
-            a["policy"], a["rare_on"] = pol, sorted(mine)
+            a["policy"], a["rare_on"], a["rare_on_dates"] = pol, sorted(mine), on_dates
             save_adaptive(cfg, a)
             log(f"Rare-signal test: switched on {on_now or 'none'}; switched off {off_now or 'none'}")
     except Exception as e:

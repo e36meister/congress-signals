@@ -526,7 +526,9 @@ def main():
         if fresh and not DRY_RUN:
             import html
             what = lambda r: ("Switched on automatically." if r.get("switched") == "on" else
-                              "Switched off again: it no longer passes." if r.get("switched") == "off" else
+                              ("Switched off: trades filed since it was switched on didn't beat similar purchases."
+                               if r.get("recheck") == "failed" else "Switched off again: it no longer passes.")
+                              if r.get("switched") == "off" else
                               "Already counts in the score." if r.get("in_score") else
                               "Not a score signal, shown for information.")
             body = "<p>Per-trade test results (flagged purchases vs similar purchases filed the same month in the same " \
