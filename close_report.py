@@ -215,7 +215,21 @@ def main():
         # Shadow S&P account (owner, Oct 30 2026): the same money on the same days, all of it in SPY with dividends
         # reinvested (Alpaca's "all"-adjusted prices). Every deposit or withdrawal goes into / comes out of the
         # shadow at that day's SPY price. Both sides are measured against the money put in.
-        flows = _cash_flows(api, pts[0][0])
+        # A transfer only counts as new money if it's after the first trade AND the account's value actually jumped
+        # by about that much that day (Oct 30: Alpaca logs the paper account's opening $100,000 as a transfer on
+        # Sep 28, after the account already showed it, which made the money put in look like $200,000).
+        flows, eq_by = {}, dict(pts)
+        first_trade = t0[:10] if t0 else pts[0][0]
+        for fd, amt in _cash_flows(api, pts[0][0]).items():
+            prev = [e for d, e in pts if d < fd]
+            jump = (eq_by.get(fd, prev[-1] if prev else 0) - prev[-1]) if prev else 0
+            if fd <= first_trade:
+                E.log(f"Close report: transfer of ${amt:,.0f} on {fd} not counted (the account's opening money)")
+            elif abs(jump - amt) > 0.5 * abs(amt):
+                E.log(f"Close report: transfer of ${amt:,.0f} on {fd} not counted: the account's value moved ${jump:,.0f} "
+                      "that day, so it isn't new money (e.g. the paper account's opening balance)")
+            else:
+                flows[fd] = amt
         units = e0 / s0 if s0 else 0.0
         put_in, last_s = e0, s0
         for d, e in pts:
