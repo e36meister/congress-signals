@@ -431,7 +431,7 @@ def build_email(rep, mode, snap, data, chart=False):
             f"{h('Today’s biggest moves')}<table cellspacing='0' cellpadding='0' style='font-size:14px'>{movers}</table>"
             f"{h('Each strategy') + strat if strat else ''}"
             f"{h('Coming up')}" + "".join(f"<div style='margin:3px 0'>{x}</div>" for x in nxt) +
-            f"<p style='margin-top:22px'><a href='{mail.app_url("/#port")}' style='display:inline-block;background:#1D4F91;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600'>Open Capitol Capital</a></p></div>")
+            f"<p style='margin-top:22px'><a href='{chart_link}' style='display:inline-block;background:#1D4F91;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600'>Open Capitol Capital</a></p></div>")
     subject = (f"Close: {_fmt_money(day, True)} today · {pct(gap)} vs S&P" if day is not None else f"Close: {pct(gap)} vs S&P")
     return subject, html
 
