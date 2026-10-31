@@ -4,7 +4,12 @@ on:
   schedule:
     - cron: "12 20 * * 1-5"    # 4:12 PM New York time in summer (EDT)
     - cron: "12 21 * * 1-5"    # 4:12 PM in winter (EST); the report runs once per day either way
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      email_only:
+        description: "Only re-send the last close email (no new report, no phone alert)"
+        type: boolean
+        default: false
 
 concurrency:
   group: close-report
@@ -46,10 +51,11 @@ jobs:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           ALERT_TO: ${{ secrets.ALERT_TO }}
+          CLOSE_EMAIL_ONLY: ${{ inputs.email_only && '1' || '' }}
         run: python close_report.py
 
       - name: Taxes page (every sale's gain or loss, Form 8949 statement, what to file)
-        if: always()
+        if: ${{ always() && !inputs.email_only }}
         continue-on-error: true      # reports its own problems to Data health
         env:
           ALPACA_PAPER_KEY_ID: ${{ secrets.ALPACA_PAPER_KEY_ID }}

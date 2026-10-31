@@ -151,6 +151,13 @@ def main():
     fid = found[0]["id"]
     data = json.loads(drive.files().get_media(fileId=fid, supportsAllDrives=True).execute())
     today = dt.date.today().isoformat()
+    if os.environ.get("CLOSE_EMAIL_ONLY") == "1":        # re-send the last close email; nothing else changes
+        rep = data.get("close_report")
+        if not rep:
+            E.log("Close report: no close report on file to re-send")
+            return
+        email(rep, (data.get("portfolio") or {}).get("mode", "paper"), data.get("portfolio") or {}, data)
+        return
     forced = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
     if (data.get("close_report") or {}).get("date") == today and not forced:
         E.log("Close report: already done today")
@@ -312,10 +319,9 @@ def main():
         pushed = cloud_store.has_phones() and cloud_store.notify(subject, body, "close", "/#port", E.log)
     except Exception as e:
         E.log(f"Close report: phone alert skipped ({type(e).__name__})")
-    if pushed:                 # the phone alert replaces the email
-        E.log("Close report: sent to your phone instead of email (phone alerts are on)")
-    else:
-        email(report, snap["mode"], snap, data)
+    if pushed:
+        E.log("Close report: sent to your phone")
+    email(report, snap["mode"], snap, data)        # owner, Oct 30: emailed every day too, phone alerts or not
 
 
 LUCK_TE, LUCK_Z = 0.15, 1.96          # same 95% luck range as the dashboard chart
@@ -328,7 +334,7 @@ def _fmt_money(v, sign=False):
     return (("+" if v >= 0 else "-") + s) if sign else (("-" if v < 0 else "") + s)
 
 
-def build_email(rep, mode, snap, data):
+def build_email(rep, mode, snap, data, chart=False):
     """The close email: three number tiles, the luck range, today's biggest movers, each strategy vs the S&P,
     and what happens next. Inline styles only (email apps ignore style sheets)."""
     pct = lambda v, d=2: "–" if v is None else f"{v:+.{d}f}%"
@@ -410,35 +416,35 @@ def build_email(rep, mode, snap, data):
            f"<b>Bought today:</b> " + (", ".join(bought) or "none"),
            f"<b>On the dashboard:</b> {n_buy} buy candidate{'s' if n_buy != 1 else ''}" + (f", {n_worth} worth a look" if n_worth else "")]
 
+    from congress_signals import mail
+    chart_link, has_chart = mail.app_url("/#port"), chart
     h = lambda t: f"<div style='font:600 12px Arial;letter-spacing:.8px;color:{grey};text-transform:uppercase;margin:22px 0 6px'>{t}</div>"
     d0 = dt.date.fromisoformat(rep["date"])
     html = (f"<div style='font-family:Arial,Helvetica,sans-serif;color:{ink};max-width:560px;font-size:14px;line-height:1.45'>"
             f"<div style='font:600 12px Arial;letter-spacing:1px;color:{grey};text-transform:uppercase'>Capitol Capital · close, {d0:%b} {d0.day}</div>"
-            f"{tiles}<p style='margin:10px 2px 0'>{luck}</p>"
+            f"{tiles}"
+            + (f"<a href='{chart_link}' style='display:block;margin:14px 0 2px;text-decoration:none'>"
+               f"<img src='cid:chart' width='560' alt='Your account vs the S&amp;P 500 since {start_txt}' "
+               f"style='display:block;width:100%;max-width:560px;height:auto;border:1px solid {line};border-radius:8px'></a>"
+               f"<div style='font-size:12px;color:{grey};margin:0 2px'>Tap the chart to open it in the app.</div>" if has_chart else "")
+            + f"<p style='margin:10px 2px 0'>{luck}</p>"
             f"{h('Today’s biggest moves')}<table cellspacing='0' cellpadding='0' style='font-size:14px'>{movers}</table>"
             f"{h('Each strategy') + strat if strat else ''}"
             f"{h('Coming up')}" + "".join(f"<div style='margin:3px 0'>{x}</div>" for x in nxt) +
-            f"<p style='margin-top:22px'><a href='https://claude.ai/artifact/Hkj8H6ZduZXcuvtgSaByru' style='color:#1D4F91'>Open Capitol Capital</a></p></div>")
+            f"<p style='margin-top:22px'><a href='{mail.app_url("/#port")}' style='display:inline-block;background:#1D4F91;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600'>Open Capitol Capital</a></p></div>")
     subject = (f"Close: {_fmt_money(day, True)} today · {pct(gap)} vs S&P" if day is not None else f"Close: {pct(gap)} vs S&P")
     return subject, html
 
 
 def email(rep, mode, snap=None, data=None):
-    addr, pw = os.environ.get("GMAIL_ADDRESS"), os.environ.get("GMAIL_APP_PASSWORD")
-    if not (addr and pw):
-        return
-    import smtplib
-    from email.mime.text import MIMEText
-    subject, html = build_email(rep, mode, snap or {}, data or {})
-    msg = MIMEText(html, "html")
-    msg["Subject"] = subject
-    msg["From"], msg["To"] = addr, os.environ.get("ALERT_TO") or addr
+    from congress_signals import mail
+    se, png = rep.get("series") or {}, None
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
-            srv.login(addr, pw.replace(" ", ""))
-            srv.send_message(msg)
+        png = mail.chart_png(se.get("dates") or [], se.get("account") or [], se.get("spy") or [])
     except Exception as e:
-        E.log(f"Close report: email failed ({type(e).__name__})")
+        E.log(f"Close report: email chart failed ({type(e).__name__}: {str(e)[:100]}); sent without it")
+    subject, html = build_email(rep, mode, snap or {}, data or {}, chart=bool(png))
+    mail.send(subject, html, E.log, {"chart": png} if png else None, ok_msg="Close report: emailed")
 
 
 if __name__ == "__main__":

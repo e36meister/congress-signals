@@ -5209,7 +5209,7 @@ def send_email_alert(new, to_addr, from_addr, app_password):
     html = (f"<h3>{len(new)} new congressional trade signal(s)</h3><table border=1 cellpadding=4 style='border-collapse:"
             f"collapse'><tr><th>Action</th><th>Ticker</th><th>Score</th><th>Members</th><th>Why</th></tr>{rows}</table>")
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = "Congress trade signals: " + ", ".join(f"{a} {t}" for a, t in zip(new["action"], new["ticker"]))[:120]
+    msg["Subject"] = ", ".join(f"{a} {t}" for a, t in zip(new["action"], new["ticker"]))[:120]
     msg["From"], msg["To"] = from_addr, to_addr
     msg.attach(MIMEText(html, "html"))
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:

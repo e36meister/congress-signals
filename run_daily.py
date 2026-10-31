@@ -257,35 +257,46 @@ def send_alerts(buys, sells, new):
     if new is None or new.empty:
         E.log("Email alerts: no new signals today")
         return
-    import smtplib, html
-    from email.mime.text import MIMEText
-    from email.mime.multipart import MIMEMultipart
+    import html
+    from congress_signals import mail
     allrows = __import__("pandas").concat([buys, sells]) if len(sells) else buys
     info = {r.ticker: r for r in allrows.itertuples()} if len(allrows) else {}
-    rows = []
+    green, red, grey, ink, line = mail.GREEN, mail.RED, mail.GREY, mail.INK, mail.LINE
+    cards = []
     for n in new.itertuples():
         r = info.get(n.ticker)
         company = html.escape(str(getattr(r, "company", "") or "")) if r is not None else ""
         defense = bool(getattr(r, "is_defense", False)) if r is not None else False
-        rows.append(f"<tr><td><b>{n.action}</b></td><td><b>{n.ticker}</b>{' 🛡 defense' if defense else ''}<br>"
-                    f"<span style='color:#666'>{company}</span></td><td>{html.escape(str(n.members))}</td>"
-                    f"<td style='font-size:13px'>{html.escape(str(n.why))}</td></tr>")
-    body = (f"<p>{len(new)} new signal(s) from today's congressional trade filings.</p>"
-            f"<table border=1 cellpadding=6 style='border-collapse:collapse;font-family:Arial'>"
-            f"<tr><th>Action</th><th>Stock</th><th>Members</th><th>Why</th></tr>{''.join(rows)}</table>"
-            f"<p><a href='{DASHBOARD_URL}'>Open Capitol Capital</a></p>")
-    msg = MIMEMultipart("alternative")
+        buy = str(n.action).upper() == "BUY"
+        c, soft = (green, "#E2F3EA") if buy else (red, "#FBE7E5")
+        why = [w.strip() for w in str(n.why or "").split(";") if w.strip()]
+        shown, more = why[:6], len(why) - 6
+        link = mail.app_url(f"/#t/{n.ticker}")
+        members = html.escape(str(n.members or "")).replace("), ", ")<br>")
+        cards.append(
+            f"<table width='100%' cellspacing='0' cellpadding='0' style='border:1px solid {line};border-left:4px solid {c};"
+            f"border-radius:8px;margin:12px 0;border-collapse:separate'><tr><td style='padding:14px 16px'>"
+            f"<span style='display:inline-block;background:{soft};color:{c};font:700 11px Arial;letter-spacing:.8px;"
+            f"padding:3px 8px;border-radius:999px'>{html.escape(str(n.action))}</span>"
+            + (f" <span style='color:{grey};font-size:12px'>defense</span>" if defense else "")
+            + f"<div style='margin:8px 0 2px'><a href='{link}' style='font:700 22px Arial;color:{ink};text-decoration:none'>{html.escape(n.ticker)}</a>"
+            f" <span style='color:{grey};font-size:14px'>{company}</span></div>"
+            f"<div style='font-size:13px;color:{grey};margin:10px 0 2px;text-transform:uppercase;letter-spacing:.6px'>Members</div>"
+            f"<div style='font-size:14px'>{members}</div>"
+            f"<div style='font-size:13px;color:{grey};margin:10px 0 2px;text-transform:uppercase;letter-spacing:.6px'>Why</div>"
+            f"<ul style='margin:0;padding-left:18px;font-size:14px;line-height:1.45'>"
+            + "".join(f"<li>{html.escape(w)}</li>" for w in shown)
+            + (f"<li style='color:{grey}'>and {more} more reason{'s' if more > 1 else ''} in the app</li>" if more > 0 else "")
+            + f"</ul><div style='margin-top:12px'><a href='{link}' style='display:inline-block;background:{mail.ACCENT};color:#fff;"
+            f"padding:9px 14px;border-radius:8px;text-decoration:none;font:600 14px Arial'>Open {html.escape(n.ticker)} in the app</a></div>"
+            f"</td></tr></table>")
+    body = (f"<div style='font-family:Arial,Helvetica,sans-serif;color:{ink};max-width:560px;font-size:14px'>"
+            f"<div style='font:600 12px Arial;letter-spacing:1px;color:{grey};text-transform:uppercase'>Capitol Capital · new signal{'s' if len(new) > 1 else ''}</div>"
+            f"<p style='margin:8px 2px 0'>{len(new)} new signal{'s' if len(new) > 1 else ''} from today's congressional trade filings.</p>"
+            + "".join(cards) + "</div>")
+    # owner, Oct 30: the subject is just the signals ("BUY GS"), no "Congress trade signals:" in front
     tick = ", ".join(f"{a} {t}" for a, t in zip(new["action"], new["ticker"]))
-    msg["Subject"] = f"Congress trade signals: {tick}"[:140]
-    msg["From"], msg["To"] = addr, to
-    msg.attach(MIMEText(body, "html"))
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
-            s.login(addr, pw.replace(" ", ""))
-            s.send_message(msg)
-        E.log(f"Email alerts: sent {len(new)} new signal(s) to {to}")
-    except Exception as e:
-        E.log(f"Email alerts: sending failed ({e}); check the Gmail app password secret")
+    mail.send(tick, body, E.log, ok_msg=f"Email alerts: sent {len(new)} new signal(s)")
 
 
 DRY_RUN = (env("DRY_RUN") or "").strip() == "1"      # test run: reads Alpaca but never trades
