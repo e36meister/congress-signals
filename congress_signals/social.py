@@ -579,14 +579,23 @@ def collect_press(cfg, st, tg, deadline, years=True):
         k = f"{today.year}-{m:02d}"
         if not os.path.exists(os.path.join(out_dir, f"{k}.jsonl.gz")) and ("m", k) not in jobs:
             jobs.append(("m", k))
+    read_ok = set()
     for kind, k in jobs:
         if time.time() > deadline:
             break
         if kind == "m":
             r = _get(PRESS + f"{k}.jsonl", as_json=False, timeout=180)
             if r is None:
-                _log(f"Press releases: {k}: Congress Press download failed")
+                if _press_month_not_posted_yet(k, today, read_ok):
+                    # Congress Press posts a month's file only once it has releases from that month, a day or two
+                    # after they come out (Nov 1 2026: 2026-11.jsonl was a 404 while 2026-10 read fine). A missing
+                    # file later in the month, or any other kind of failure, is still logged as a failure.
+                    _log(f"Press releases: {k}: Congress Press hasn't posted this month's file yet (normal in the "
+                         f"first {PRESS_NEW_MONTH_GRACE_DAYS} days of a month; last month read fine this run)")
+                else:
+                    _log(f"Press releases: {k}: Congress Press download failed")
                 continue
+            read_ok.add(k)
             lines = r.content.decode("utf-8", "ignore").splitlines()
             # releases already on file keep their tags and sorting (re-tagging and re-sorting ~6,000 releases every
             # run took the daily posts update past its 30-minute limit, so it never saved, Oct 17-21)
@@ -616,6 +625,22 @@ def collect_press(cfg, st, tg, deadline, years=True):
             _save_state(cfg, st)
             _log(f"Press releases: {k}: {len(rows):,}")
     return all(str(y) in done for y in range(START_YEAR, today.year))
+
+
+PRESS_NEW_MONTH_GRACE_DAYS = 4
+
+
+def _press_month_not_posted_yet(k, today, read_ok):
+    """True only when `k` is the current month, it's the first few days of it, last month's file was read fine in
+    this same run, and the server answers a plain 404 for this month's file (not a timeout, block or server error)."""
+    if k != today.strftime("%Y-%m") or today.day > PRESS_NEW_MONTH_GRACE_DAYS:
+        return False
+    if (today.replace(day=1) - dt.timedelta(days=1)).strftime("%Y-%m") not in read_ok:
+        return False
+    try:
+        return requests.head(PRESS + f"{k}.jsonl", timeout=30, headers=UA, allow_redirects=True).status_code == 404
+    except Exception:
+        return False
 
 
 def _press_rows(lines, tg, reuse=None):

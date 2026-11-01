@@ -36,7 +36,10 @@ def upload_to_drive(local_path, title, mimetype="application/json"):
         except Exception as e:
             code = getattr(getattr(e, "resp", None), "status", None)
             if attempt < 3 and (code is None or int(code) in (429, 500, 502, 503, 504)):
-                E.log(f"Drive: {title} upload failed ({code or type(e).__name__}); retrying in {30 * (attempt + 1)} s")
+                # not a failure line on its own: if every retry is refused, the "couldn't update" line below is the
+                # one the Data health check records (Nov 1 2026: a single 502 that the retry fixed stayed OPEN)
+                E.log(f"Drive: {title} upload got a temporary {code or type(e).__name__} from Google; "
+                      f"retrying in {30 * (attempt + 1)} s")
                 time.sleep(30 * (attempt + 1))
                 continue
             E.log(f"Drive: couldn't update {title} ({code or type(e).__name__}); the next update tries again")
