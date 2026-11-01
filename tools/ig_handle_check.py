@@ -8,7 +8,7 @@ ig = S._meta_ig_user(tok)
 cfg = {"SOCIAL_DIR": "social"}
 leg = S.legislators(cfg, S._state(cfg))
 man = S.ig_manual(leg)
-want = ['repcarolmiller', 'websterforcongress']
+want = ['repcarolmiller', 'websterforcongress', 'aoc', 'repannwagner']
 filed = {h: leg[b]["name"] for b, hs in man.items() for h in hs}
 for h in want:
     r = requests.get(f"{S.META_GRAPH}/{ig}", params={"fields": f"business_discovery.username({h}){{username,media_count,media.limit(1){{timestamp}}}}",
