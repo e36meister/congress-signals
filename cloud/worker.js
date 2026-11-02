@@ -1292,6 +1292,7 @@ const pct = (v, dp = 2) => v == null ? "–" : (v > 0 ? "+" : "") + v.toFixed(dp
 const col = v => v == null || v === 0 ? DIM : v > 0 ? GREEN : RED;
 function spark(a, b, w, h) {
   const dc = new DrawContext(); dc.size = new Size(w, h); dc.opaque = false; dc.respectScreenScale = true;
+  b = b || [];
   const all = a.concat(b).filter(x => x != null); if (all.length < 2) return dc.getImage();
   let lo = Math.min(...all, 0), hi = Math.max(...all, 0); if (hi - lo < 0.5) { hi += 0.25; lo -= 0.25; }
   const y = v => h - 4 - (v - lo) / (hi - lo) * (h - 8);
@@ -1319,11 +1320,16 @@ else {
   w.addSpacer(6);
   if (d.since) {
     const s = w.addStack(); s.centerAlignContent();
+    if (d.since.spy == null) {          // a family account's widget: their own gain since they started
+      const a = s.addText("Since start " + pct(d.since.acct)); a.font = Font.mediumMonospacedSystemFont(11); a.textColor = col(d.since.acct);
+      if (d.since.gain != null) { s.addSpacer(); const g = s.addText((d.since.gain >= 0 ? "+$" : "-$") + Math.round(Math.abs(d.since.gain)).toLocaleString()); g.font = Font.mediumMonospacedSystemFont(11); g.textColor = col(d.since.gain); }
+    } else {
     const a = s.addText("You " + pct(d.since.acct)); a.font = Font.mediumMonospacedSystemFont(11); a.textColor = GREEN;
     s.addSpacer(8);
     const b = s.addText("S&P " + pct(d.since.spy)); b.font = Font.mediumMonospacedSystemFont(11); b.textColor = DIM;
     s.addSpacer();
     const g = s.addText((d.since.gap >= 0 ? "ahead " : "behind ") + Math.abs(d.since.gap ?? 0).toFixed(2)); g.font = Font.mediumMonospacedSystemFont(11); g.textColor = col(d.since.gap);
+    }
   }
   w.addSpacer();
   const nb = w.addStack(); nb.centerAlignContent();

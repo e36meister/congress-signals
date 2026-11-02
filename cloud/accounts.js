@@ -653,12 +653,11 @@ export async function viewerWidget(env, given, safeEq) {
   }
   if (out.equity != null && out.day_pl != null && out.equity - out.day_pl) out.day_pct = out.day_pl / (out.equity - out.day_pl) * 100;
   out.day_label = out.market_open ? "Today" : "Since the close";
-  const hist = (doc.close_history || []).filter(h => h.equity && h.spy);
+  // their own gain since they started (deposits and withdrawals don't count as gains); no S&P line for them
+  const hist = (doc.close_history || []).filter(h => h.equity && h.idx);
   if (hist.length && cr.since_start != null) {
-    const e0 = hist[0].equity, s0 = hist[0].spy;
-    out.since = { date: cr.date, acct: cr.since_start * 100, spy: cr.spy_since_start != null ? cr.spy_since_start * 100 : null,
-      gap: cr.spy_since_start != null ? (cr.since_start - cr.spy_since_start) * 100 : null };
-    out.spark = { acct: hist.slice(-60).map(h => (h.equity / e0 - 1) * 100), spy: hist.slice(-60).map(h => (h.spy / s0 - 1) * 100) };
+    out.since = { date: cr.date, acct: cr.since_start * 100, spy: null, gain: cr.gain ?? null };
+    out.spark = { acct: hist.slice(-60).map(h => (h.idx - 1) * 100), spy: [] };
   }
   const park = new Set(PARK_CHOICES), seen = new Set();
   out.buys = (p.orders || []).filter(x => x.side === "buy" && x.status === "filled" && !park.has(x.t))

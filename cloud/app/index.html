@@ -681,7 +681,8 @@ function renderViewerAccount(d, opts = {}) {
     <div class="tile"><span class="v ${cls(p.day_pl)}">${p.day_pl == null ? "–" : (p.day_pl > 0 ? "+" : "") + money(p.day_pl)}</span><span class="l">${esc(dayLabel(p))}</span></div>
     <div class="tile"><span class="v ${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain)}</span><span class="l">Gain on the tool's picks</span><span class="c">${money(invested)} in ${picks.length} pick${picks.length === 1 ? "" : "s"}</span></div>
     <div class="tile"><span class="v">${money(parked)}</span><span class="l">Waiting for picks</span><span class="c">In a Treasury-bill fund</span></div>
-    ${C && C.since_start != null ? `<div class="tile"><span class="v ${cls(C.since_start - (C.spy_since_start ?? 0))}">${pct(C.since_start, 2)}</span><span class="l">Since ${esc(fmtDate(C.start))}</span><span class="c">S&amp;P 500 ${pct(C.spy_since_start, 2)} · last close ${esc(fmtDate(C.date))}</span></div>` : ""}
+    ${C && C.since_start != null ? `<div class="tile"><span class="v ${cls(C.gain ?? C.since_start)}">${C.gain != null ? (C.gain > 0 ? "+" : "") + money(C.gain) : pct(C.since_start, 2)}</span><span class="l">Gain since ${esc(fmtDate(C.start))}</span><span class="c">${pct(C.since_start, 2)}${C.net_in ? ` · deposits not counted` : ""} · last close ${esc(fmtDate(C.date))}</span></div>` : ""}
+    ${C && C.since_start != null && C.spy_since_start != null ? `<div class="tile"><span class="v ${cls(C.since_start - C.spy_since_start)}">${pnum((C.since_start - C.spy_since_start) * 100, 2)}</span><span class="l">${C.since_start >= C.spy_since_start ? "Ahead of" : "Behind"} the S&amp;P since start</span><span class="c">You ${pct(C.since_start, 2)} · S&amp;P ${pct(C.spy_since_start, 2)}</span></div>` : ""}
   </div>
   <section class="panel"><div class="ph"><h2>Positions</h2></div>
     ${pos.length ? `<div class="tbl"><table><thead><tr><th>Ticker</th><th class="n">Shares</th><th class="n">Avg cost</th><th class="n">Value</th><th class="n">Gain</th><th>Held</th></tr></thead><tbody>
@@ -800,7 +801,7 @@ function renderViewerPage() {
 }
 
 const KIND_L = { fills: ["Trades", "when the tool buys or sells in your account, or an order of yours fills"],
-  close: ["Market close", "a short summary after 4 PM: your value, the day's change, since you started vs the S&P 500"],
+  close: ["Market close", "a short summary after 4 PM: your value, the day's change and your gain since you started"],
   moves: ["Big moves", "a stock you hold moves 3%+ in a day or 7%+ in 5 days against the market, with why"],
   balance: ["Your account alerts", "the alerts you set up below"] };
 const BAL_L = { above: "Account value goes above $", below: "Account value drops below $", day_up: "Up in a day by %", day_down: "Down in a day by %" };

@@ -145,15 +145,10 @@ def close_all(log, send_email=None, notify=None):
             doc = json.loads(raw) if raw else {}
             hist = [h for h in (doc.get("close_history") or []) if h.get("date") != today]
             hist.append({"date": today, "equity": snap["equity"], "spy": spy})
-            hist = hist[-800:]
-            # since start: the first close with money in it, compared with SPY over the same days (deposits after
-            # the start would skew this; the report says "since your first close")
-            first = next((h for h in hist if (h.get("equity") or 0) > 0), None)
-            rep = {"date": today, "equity": snap["equity"], "day_pl": snap.get("day_pl"),
-                   "start": first["date"] if first else today,
-                   "since_start": (snap["equity"] / first["equity"] - 1) if first and first["equity"] else None,
-                   "spy_since_start": (spy / first["spy"] - 1) if first and first.get("spy") and spy else None,
-                   "positions": len([p for p in snap.get("positions") or [] if p.get("sleeve") != "park"])}
+            hist = [h for h in hist if (h.get("equity") or 0) > 0][-800:]
+            rep = _since_start(hist, _flows(api, hist[0]["date"]) if hist else {})
+            rep.update({"date": today, "equity": snap["equity"], "day_pl": snap.get("day_pl"),
+                        "positions": len([p for p in snap.get("positions") or [] if p.get("sleeve") != "park"])})
             doc.update({"portfolio": snap, "close_report": rep, "close_history": hist, "problem": None,
                         "saved": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")})
             cloud_store.put(key, json.dumps(doc, default=str), log=lambda m: None)
@@ -179,6 +174,41 @@ def _prefs(acct_id):
     return {"push": pick("push") is not False, "email": pick("email") is not False}
 
 
+def _flows(api, start):
+    """Money they put in or took out after `start` (deposits, withdrawals, transfers), {day: dollars}."""
+    out = {}
+    for kind in ("CSD", "CSW", "JNLC"):
+        try:
+            for a in api.get(f"/v2/account/activities/{kind}", direction="asc", after=start, page_size=100):
+                d = str(a.get("date") or a.get("transaction_time") or "")[:10]
+                if d > start:
+                    out[d] = out.get(d, 0.0) + float(a.get("net_amount") or 0)
+        except Exception:
+            pass
+    return out
+
+
+def _since_start(hist, flows):
+    """Their gain since the first close, not counting money put in or taken out: in dollars, and as a percent
+    chained day by day (each day's change with that day's deposits taken out first). Each close also gets its
+    running index ("idx", 1.0 at the start) for the widget's little chart. The S&P 500 over the same days is kept
+    for the "ahead of the S&P since start" box on their Account page."""
+    if not hist:
+        return {"since_start": None, "spy_since_start": None, "gain": None, "net_in": 0.0, "start": None}
+    idx, prev = 1.0, hist[0]
+    hist[0]["idx"] = 1.0
+    for h in hist[1:]:
+        f = sum(v for d, v in flows.items() if prev["date"] < d <= h["date"])
+        if prev["equity"]:
+            idx *= (h["equity"] - f) / prev["equity"]
+        h["idx"] = round(idx, 6)
+        prev = h
+    net_in = sum(v for d, v in flows.items() if d > hist[0]["date"])
+    last, s0 = hist[-1], hist[0].get("spy")
+    return {"start": hist[0]["date"], "since_start": idx - 1, "gain": last["equity"] - hist[0]["equity"] - net_in, "net_in": net_in,
+            "spy_since_start": (last["spy"] / s0 - 1) if s0 and last.get("spy") else None}
+
+
 def _spy_close(api):
     try:
         import requests
@@ -201,10 +231,9 @@ def _close_line(rep):
     s = f"Account {_money(rep['equity'])}"
     if rep.get("day_pl") is not None:
         s += f", {'+' if rep['day_pl'] >= 0 else ''}{_money(rep['day_pl'])} today"
-    if rep.get("since_start") is not None:
-        s += f". Since {rep['start']}: {_pct(rep['since_start'])}"
-        if rep.get("spy_since_start") is not None:
-            s += f" (S&P 500 {_pct(rep['spy_since_start'])})"
+    if rep.get("gain") is not None and rep.get("since_start") is not None:
+        d0 = dt.date.fromisoformat(rep["start"])
+        s += f". Since {d0:%b} {d0.day}: {'+' if rep['gain'] >= 0 else ''}{_money(rep['gain'])} ({_pct(rep['since_start'])})"
     return s + "."
 
 
@@ -216,5 +245,7 @@ def _close_html(rep, snap):
     from congress_signals import mail
     return (f"<div style='font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:#152033;max-width:520px'>"
             f"<h2 style='font-weight:600;margin:0 0 8px'>Market close</h2><p>{H.escape(_close_line(rep))}</p>"
+            + (f"<p style='color:#46536A;font-size:13px'>For reference, the S&amp;P 500 over the same time: {_pct(rep['spy_since_start'])}. "
+               "Deposits and withdrawals aren't counted as gains.</p>" if rep.get("spy_since_start") is not None else "")
             + (f"<table style='border-collapse:collapse;font-size:14px'><tr><th align=left>Stock</th><th align=right style='padding:0 10px'>Value</th><th align=right>Gain</th></tr>{rows}</table>" if rows else "")
             + f"<p style='margin-top:18px'><a href='{H.escape(mail.app_url('/#port'))}'>Open the app</a></p></div>")
