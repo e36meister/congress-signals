@@ -8,6 +8,8 @@ const MAX_FAILS = 10;            // wrong passcodes allowed per hour before lock
 const PREFIX = "cs-", PARK_PREFIX = "cs-park-", PARK_CHOICES = ["SPY", "VOO", "IVV", "SGOV", "BIL", "SHV"];
 const enc = new TextEncoder();
 import { vapid, saveSub, sendAll, getSubs } from "./push.js";
+import { readViewer, viewerAllowed, viewerApi, requestLink, redeemLink, SIGNIN_PAGE, ownerAccounts, ownerAccount, ownerAccountLive,
+         ownerAccountsPost, checkFillsAll, deliverTo } from "./accounts.js";
 
 export default {
   async fetch(req, env) {
@@ -26,6 +28,7 @@ export default {
     await step("outbox", "Sending phone alerts", () => drainOutbox(env));
     const min = new Date(ev.scheduledTime).getUTCMinutes();
     if (min % 2 === 0) await step("fills", "Checking for new fills", () => checkFills(env));
+    if (min % 2 === 1 && inMarketWindow()) await step("acct-fills", "Checking family accounts for new fills", () => checkFillsAll(env, sendAll, reasons));
     if (min % 3 === 0) await step("buy", "Managing pre-market and after-hours orders", () => extendedHours(env, new Date(ev.scheduledTime)));
     await step("quick", "Starting the filings check", () => startQuickCheck(env, min));
     await step("daily", "Starting the daily update", () => startDailyOnTime(env, new Date(ev.scheduledTime)));
@@ -40,9 +43,15 @@ export default {
 // Everything else (the app page, its code, the profile photo) needs the login cookie.
 // Without it, a page visit gets a small login page that holds nothing about the app.
 const PUBLIC_FILES = new Set(["/manifest.webmanifest", "/icon-180.png", "/icon-192.png", "/icon-512.png", "/icon.svg", "/sw.js", "/favicon.ico"]);
+const OWNER_ONLY_FILES = new Set(["/me.jpg"]);      // the owner's photo never goes to a family account
 async function page(req, env, url) {
   if (PUBLIC_FILES.has(url.pathname)) return env.ASSETS.fetch(req);
-  if (await validSession(req, env)) {
+  if (url.pathname === "/signin") return new Response(SIGNIN_PAGE, { status: 200, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
+    "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer" } });
+  const who = await whoIs(req, env);
+  if (who && who.role === "viewer" && OWNER_ONLY_FILES.has(url.pathname)) return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
+  if (who) {
     const r = await env.ASSETS.fetch(req);
     const h = new Headers(r.headers);
     h.set("Cache-Control", "private, no-store");   // never left in a shared or offline cache
@@ -70,20 +79,37 @@ img{width:84px;height:84px;border-radius:20px;justify-self:center;box-shadow:0 6
 h1{margin:0;font-weight:600;font-size:26px}p{margin:0;color:var(--ink2);font-size:14px}
 input{font:500 18px ui-monospace,Menlo,monospace;padding:12px 14px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);color:var(--ink);text-align:center;width:100%}
 button{font:600 16px inherit;padding:12px;border-radius:10px;border:0;background:var(--accent);color:var(--on);cursor:pointer}
-button:disabled{opacity:.6}.msg{min-height:1.2em;font-size:14px;color:#C0392B}
+button:disabled{opacity:.6}.msg{min-height:1.2em;font-size:14px;color:#C0392B}.msg.ok{color:var(--ink2)}
+button.alt{background:none;color:var(--accent);font-weight:500;font-size:14px;padding:4px}
 </style></head><body><main><form id="f" autocomplete="on">
 <img src="/icon-180.png" alt=""><h1>Capitol Capital</h1>
-<p>Enter your passcode. This phone stays logged in for 6 months.</p>
+<p id="hint">Enter your email and we'll send you a sign-in link. This phone stays logged in for 6 months.</p>
+<input type="email" id="em" name="email" autocomplete="email" placeholder="Email" aria-label="Email">
 <input type="text" name="username" value="Capitol Capital" autocomplete="username" hidden>
-<input type="password" id="pc" name="password" autocomplete="current-password" placeholder="Passcode" required aria-label="Passcode" autofocus>
-<button type="submit" id="go">Log in</button><div class="msg" id="msg" role="alert"></div>
+<input type="password" id="pc" name="password" autocomplete="current-password" placeholder="Passcode" aria-label="Passcode" hidden>
+<button type="submit" id="go">Email me a link</button><div class="msg" id="msg" role="alert"></div>
+<button type="button" class="alt" id="swap">Use a passcode instead</button>
 </form></main><script>
+const em = document.getElementById("em"), pc = document.getElementById("pc"), swap = document.getElementById("swap"), hint = document.getElementById("hint");
+let usePc = false;
+swap.addEventListener("click", () => { usePc = !usePc; em.hidden = usePc; pc.hidden = !usePc;
+  document.getElementById("go").textContent = usePc ? "Log in" : "Email me a link";
+  swap.textContent = usePc ? "Use an email link instead" : "Use a passcode instead";
+  hint.textContent = usePc ? "Enter your passcode. This phone stays logged in for 6 months." : "Enter your email and we'll send you a sign-in link. This phone stays logged in for 6 months.";
+  document.getElementById("msg").textContent = ""; (usePc ? pc : em).focus(); });
 document.getElementById("f").addEventListener("submit", async e => {
   e.preventDefault(); const go = document.getElementById("go"), msg = document.getElementById("msg");
-  go.disabled = true; msg.textContent = "";
+  go.disabled = true; msg.textContent = ""; msg.className = "msg";
   try {
+    if (!usePc) {
+      const r = await fetch("/api/login/email", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
+        body: JSON.stringify({ email: em.value }) });
+      let j = {}; try { j = await r.json(); } catch (x) {}
+      msg.textContent = j.message || (r.ok ? "Check your email." : "Couldn't send. Try again."); if (r.ok) msg.className = "msg ok";
+      go.disabled = false; return;
+    }
     const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
-      body: JSON.stringify({ passcode: document.getElementById("pc").value }) });
+      body: JSON.stringify({ passcode: pc.value }) });
     if (r.ok) { location.reload(); return; }
     let j = {}; try { j = await r.json(); } catch (x) {}
     msg.textContent = j.message || "Couldn't log in. Try again.";
@@ -101,12 +127,26 @@ async function api(req, env, url) {
     if (!(req.headers.get("Content-Type") || "").startsWith("application/json")) return json({ error: "content-type" }, 415);
   }
   if (p === "/api/login" && req.method === "POST") return login(req, env);
+  if (p === "/api/login/email" && req.method === "POST") return requestLink(req, env, url, dispatch);
+  if (p === "/api/login/link" && req.method === "POST") return redeemLink(req, env, m => sign(env, m), COOKIE);
   if (p === "/api/logout" && req.method === "POST") return json({ ok: true }, 200, { "Set-Cookie": `${COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict` });
   if (p === "/api/widget" && req.method === "GET") return widget(req, env, url);   // its own read-only key
   if (p === "/api/senate-import" && req.method === "POST") return senateImport(req, env);   // iPhone Shortcut, its own key
-  if (!(await validSession(req, env))) return json({ error: "login" }, 401);
+  const who = await whoIs(req, env);
+  if (!who) return json({ error: "login" }, 401);
+  // family accounts: only the routes on their allowlist; their own data is answered in accounts.js, the shared
+  // read-only data (members, posts, charts, company facts) by the handlers below
+  if (who.role === "viewer") {
+    if (!viewerAllowed(req.method, p)) return json({ error: "forbidden" }, 403);
+    const r = await viewerApi(req, env, url, who.a, { live, vapid, getSubs, saveSub, sendAll, maxTap: +(env.MAX_TAP_DOLLARS || 25000) || 25000 });
+    if (r) return r;
+  }
 
-  if (p === "/api/session") return json({ ok: true, mode: (env.TRADING_MODE || "paper") });
+  if (p === "/api/session") return json({ ok: true, role: "owner", mode: (env.TRADING_MODE || "paper") });
+  if (p === "/api/accounts" && req.method === "GET") return ownerAccounts(env);
+  if (p === "/api/accounts/view" && req.method === "GET") return ownerAccount(env, url);
+  if (p === "/api/accounts/live" && req.method === "GET") return ownerAccountLive(env, url, live);
+  if (p === "/api/accounts" && req.method === "POST") return ownerAccountsPost(req, env, url, dispatch);
   if (p === "/api/data" && req.method === "GET") return fromR2(req, env, "dashboard_data.json");
   if (p === "/api/charts" && req.method === "GET") return fromR2(req, env, "ticker_charts.json");
   if (p === "/api/members" && req.method === "GET") return fromR2(req, env, "members/index.json");
@@ -168,6 +208,17 @@ async function sign(env, msg) { return b64url(await crypto.subtle.sign("HMAC", a
 function getCookie(req, name) {
   const m = (req.headers.get("Cookie") || "").match(new RegExp("(?:^|;\\s*)" + name + "=([^;]+)"));
   return m ? m[1] : null;
+}
+// who is asking: the owner (passcode cookie "<expiry>.<signature>"), a family account ("<id>.<gen>.<expiry>.<signature>",
+// accounts.js), or nobody
+async function whoIs(req, env) {
+  const c = getCookie(req, COOKIE);
+  if (!c) return null;
+  if (c.split(".").length === 4) {
+    const a = await readViewer(env, m => sign(env, m), c, timingSafeEqual);
+    return a ? { role: "viewer", a } : null;
+  }
+  return (await validSession(req, env)) ? { role: "owner" } : null;
 }
 async function validSession(req, env) {
   const c = getCookie(req, COOKIE);
@@ -236,8 +287,9 @@ function alpaca(env) {
            patch: (p, b) => call("PATCH", p, b), del: p => call("DELETE", p) };
 }
 
-async function live(env) {
-  const a = alpaca(env);
+// a: whose account (the owner's by default; a family account's client from accounts.js). quiet: their problems
+// aren't the owner's Data health items
+async function live(env, a = alpaca(env), quiet = false) {
   if (!a.ready) return json({ error: "no-keys" }, 503);
   const after = new Date(Date.now() - 7 * 864e5).toISOString();
   const [acct, pos, clock, ords, spy] = await Promise.all([
@@ -245,12 +297,14 @@ async function live(env) {
     a.get(`/v2/orders?status=all&limit=200&direction=desc&after=${encodeURIComponent(after)}`),
     a.get("https://data.alpaca.markets/v2/stocks/SPY/snapshot?feed=iex")]);
   if (!acct.ok || !pos.ok) {
-    await wProblem(env, "alpaca-live", `Alpaca didn't answer the live account check (HTTP ${acct.status}/${pos.status})`);
+    if (!quiet) await wProblem(env, "alpaca-live", `Alpaca didn't answer the live account check (HTTP ${acct.status}/${pos.status})`);
     return json({ error: "alpaca", status: acct.status }, 502);
   }
-  await wOk(env, "alpaca-live");
-  if (!spy.ok || !spy.data?.latestTrade) await wProblem(env, "spy-live", `Live S&P price didn't load (HTTP ${spy.status}); the Account "vs the S&P" box is using the last close`);
-  else await wOk(env, "spy-live");
+  if (!quiet) {
+    await wOk(env, "alpaca-live");
+    if (!spy.ok || !spy.data?.latestTrade) await wProblem(env, "spy-live", `Live S&P price didn't load (HTTP ${spy.status}); the Account "vs the S&P" box is using the last close`);
+    else await wOk(env, "spy-live");
+  }
   const n = v => v == null ? null : +v;
   return json({
     at: new Date().toISOString(), mode: a.mode,
@@ -829,6 +883,7 @@ async function deliver(env, msg, quiet = false) {
 }
 
 const ET = () => new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+function inMarketWindow() { const et = ET(), h = et.getHours() + et.getMinutes() / 60, wd = et.getDay(); return wd > 0 && wd < 6 && h >= 9 && h <= 20.5; }
 const money0 = v => "$" + Math.round(v).toLocaleString("en-US");
 
 async function drainOutbox(env) {
@@ -838,7 +893,8 @@ async function drainOutbox(env) {
       const age = Date.now() - o.uploaded.getTime();
       if (age < 6 * 3600e3) {
         const msg = await (await env.DATA.get(o.key))?.json();
-        if (msg && msg.title && msg.tag === "health") await holdForDigest(env, msg);
+        if (msg && msg.title && msg.acct) await deliverTo(env, String(msg.acct).replace(/[^a-z0-9]/g, "").slice(0, 12), msg, sendAll);   // a family account's own alert
+        else if (msg && msg.title && msg.tag === "health") await holdForDigest(env, msg);
         else if (msg && msg.title && msg.tag === "health-quiet") await deliver(env, msg, true);
         else if (msg && msg.title) await deliver(env, msg);
       }

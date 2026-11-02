@@ -184,6 +184,55 @@ start = src.index("// ---------- data from Google Drive ----------")
 end = src.index("})();\n</script>")
 src = src[:start] + open(os.path.join(HERE, "data_layer.js"), encoding="utf-8").read() + src[end:]
 
+# ---- family accounts (owner, Nov 2 2026): one app, two roles (accounts_ui.js) ----
+# The family-account code goes first inside the app's script, so render() can use it from the start.
+src = sub("<script>\n(() => {\n", "<script>\n(() => {\n" + open(os.path.join(HERE, "accounts_ui.js"), encoding="utf-8").read() + "\n", src)
+# a family account only ever renders Today, Members, Alerts and its own Account
+src = sub("function render() {\n  setHeaderHeight();", "function render() {\n  guardTab();\n  setHeaderHeight();", src)
+src = sub('  if (state.tab === "port") html += renderPortfolio(d);',
+          '  if (state.tab === "port") html += isViewer() ? renderViewerAccount(d) : renderPortfolio(d);\n'
+          '  if (state.tab === "accounts") html += renderAccounts();', src)
+src = sub('  { k: "record", l: "Track record", d: "How past picks did against the S&P 500" },\n];',
+          '  { k: "record", l: "Track record", d: "How past picks did against the S&P 500" },\n'
+          '  { k: "accounts", l: "Accounts", d: "Family accounts: add people and see each one\'s portfolio" },\n];', src)
+# the posts list's "Needs review" (people review) is the owner's job
+src = sub('["all", "All new"], ["review", `Needs review${reviewCount() ? " " + reviewCount() : ""}`]]',
+          '["all", "All new"], ...(isViewer() ? [] : [["review", `Needs review${reviewCount() ? " " + reviewCount() : ""}`]])]', src)
+# live refresh: the Keep list and Why it moved are the owner's
+src = sub('        const m = (await api("/api/manual")).js, was = JSON.stringify(state.manual || null);',
+          '        if (isViewer()) throw 0;\n        const m = (await api("/api/manual")).js, was = JSON.stringify(state.manual || null);', src)
+src = sub("paintStatus(); moversLoad(true); if (!typing()) render();",
+          "paintStatus(); if (!isViewer()) moversLoad(true); if (!typing()) render();", src)
+# the Buy buttons on picks are the owner's (family accounts get Buy more on their Account page)
+src = sub('  const b = ev.target.closest("[data-buy],[data-send],[data-cancel]");\n  if (!b) return;',
+          '  const b = ev.target.closest("[data-buy],[data-send],[data-cancel]");\n  if (!b || isViewer()) return;', src)
+# who's signed in decides the app (owner or family account)
+src = sub('api("/api/session").then(() => { loadData();', 'api("/api/session").then(r => { applyRole(r.js); render(); loadData();', src)
+# signed out: the server's login page has both ways in (email link and passcode)
+src = sub('function showLogin(msg) {\n  $("#login").hidden = false;',
+          'function showLogin(msg) {\n  if (!window.__CTD_SAMPLE) { location.replace("/"); return; }\n  $("#login").hidden = false;', src)
+acct_css = """
+/* family accounts: nothing that leads outside Today, Members, Alerts and their Account */
+html.viewer nav.tabs button[data-tab="more"],html.viewer #mebtn,html.viewer [data-more],html.viewer [data-why],
+html.viewer [data-buy],html.viewer .sellbtn,html.viewer .keepbtn,html.viewer [data-tie],html.viewer [data-tiev]{display:none!important}
+.steps{margin:8px 0 12px;padding-left:20px;display:grid;gap:6px}
+.keysform{display:grid;gap:10px;max-width:420px;margin:6px 0}
+.keysform input{font:500 15px var(--mono);padding:10px 12px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);color:var(--ink);width:100%;box-sizing:border-box}
+.keysform input[type=email],.keysform input#accl{font-family:var(--body)}
+.accts{display:grid;gap:10px}
+.acct{border:1px solid var(--rule);border-radius:12px;padding:12px 14px;display:grid;gap:6px;background:var(--surface)}
+.acct-h{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.acct-h b{font-size:16px}
+.acct-s{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:14px}
+.acct-b{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px}
+.btn.sm{padding:6px 10px;font-size:13px}
+</style>"""
+src = sub("</style>", acct_css, src)
+# Today for a family account: no "Suggested $" amounts (the tool sizes their buys) and no owner phone-alert notes
+src = sub("function suggestLine(r) {\n  const g = suggestion(r); if (!g) return \"\";",
+          "function suggestLine(r) {\n  if (isViewer()) return \"\";\n  const g = suggestion(r); if (!g) return \"\";", src)
+src = sub('    <p class="foot">Sent to your phone: 3+ members', '    <p class="foot owner-only">Sent to your phone: 3+ members', src)
+src = sub("html.viewer [data-tiev]{display:none!important}", "html.viewer [data-tiev],html.viewer .owner-only{display:none!important}", src)
+
 # ---- no autocorrect, auto-capitals or spell-check in any text box (owner, Oct 29) ----
 # Boxes are drawn and redrawn by the page's code, so a watcher marks every box as it appears.
 nocorrect = """<script>

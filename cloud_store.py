@@ -86,7 +86,7 @@ def list_keys(prefix, log=print):
         log(f"Cloudflare: couldn't list {prefix} ({type(e).__name__})")
     return keys
 
-def notify(title, body="", tag="", url="/", log=print, items=None):
+def notify(title, body="", tag="", url="/", log=print, items=None, account=None):
     """Queue a phone alert; the Cloudflare Worker sends it within a minute to every phone that turned alerts on and
     keeps it in the app's Alerts tab. `url` is where tapping it goes in the app (e.g. "/#worth/NVDA", "/#post/<id>");
     `items` ([{"l": label, "u": app link, "x": outside link}]) lists each thing an alert covers. With several items
@@ -94,6 +94,8 @@ def notify(title, body="", tag="", url="/", log=print, items=None):
     import json, time, random
     key = f"push/outbox/{int(time.time() * 1000)}-{random.randint(0, 99999):05d}.json"
     msg = {"title": title[:120], "body": body[:600], "tag": tag, "url": url or ""}
+    if account:                    # a family account's own phones and Alerts list instead of the owner's
+        msg["acct"] = account
     if items:
         msg["items"] = [{k: str(v)[:500] for k, v in it.items() if v} for it in items[:20]]
     return put(key, json.dumps(msg), log=lambda m: log(m.replace(key, "a phone alert")))

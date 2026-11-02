@@ -15,16 +15,17 @@ export async function vapid(env) {
   return v;
 }
 
-export async function getSubs(env) {
-  const o = await env.DATA.get("push/subs.json");
+// key: where the phones are kept. The owner's are in push/subs.json; each family account has its own file.
+export async function getSubs(env, key = "push/subs.json") {
+  const o = await env.DATA.get(key);
   return o ? o.json() : [];
 }
-export async function saveSub(env, sub, origin) {
+export async function saveSub(env, sub, origin, key = "push/subs.json") {
   if (!sub || !/^https:\/\//.test(sub.endpoint || "") || !sub.keys?.p256dh || !sub.keys?.auth) throw new Error("bad subscription");
-  const subs = (await getSubs(env)).filter(s => s.endpoint !== sub.endpoint);
+  const subs = (await getSubs(env, key)).filter(s => s.endpoint !== sub.endpoint);
   subs.push({ endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth }, added: new Date().toISOString() });
-  await env.DATA.put("push/subs.json", JSON.stringify(subs.slice(-10)));
-  await env.DATA.put("push/origin.txt", origin);
+  await env.DATA.put(key, JSON.stringify(subs.slice(-10)));
+  if (key === "push/subs.json") await env.DATA.put("push/origin.txt", origin);
 }
 
 async function hkdf(salt, ikm, info, bits) {
@@ -59,8 +60,8 @@ async function vapidHeader(env, endpoint) {
 }
 
 // msg: {title, body, tag, url}. Sends to every saved phone; drops phones that unsubscribed.
-export async function sendAll(env, msg) {
-  const subs = await getSubs(env);
+export async function sendAll(env, msg, key = "push/subs.json") {
+  const subs = await getSubs(env, key);
   if (!subs.length) return { sent: 0, subs: 0 };
   const payload = JSON.stringify({ title: msg.title, body: msg.body || "", tag: msg.tag || "", url: msg.url || "/" }).slice(0, 3000);
   let sent = 0, gone = [];
@@ -73,6 +74,6 @@ export async function sendAll(env, msg) {
       else if (r.ok) sent++;
     } catch (e) {}
   }
-  if (gone.length) await env.DATA.put("push/subs.json", JSON.stringify(subs.filter(s => !gone.includes(s.endpoint))));
+  if (gone.length) await env.DATA.put(key, JSON.stringify(subs.filter(s => !gone.includes(s.endpoint))));
   return { sent, subs: subs.length };
 }

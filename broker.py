@@ -31,7 +31,33 @@ def park_label(sym):
     return "a Treasury-bill fund" if sym in PARK_TBILL else "the S&P 500" if sym in PARK_SP500 else sym
 
 
+# A family account being traded right now (congress_signals/accounts.py sets it with use_account()). While it's set,
+# every Alpaca call here goes to that person's real-money account: their keys, auto-buying as the owner set it on the
+# Accounts page, and sizing from their own balance (the owner's DOLLARS_PER_TRADE / MAX_POSITIONS don't apply).
+_ACCOUNT = None
+
+
+class use_account:
+    def __init__(self, acct):
+        self.acct = acct
+
+    def __enter__(self):
+        global _ACCOUNT
+        _ACCOUNT = self.acct
+        return self.acct
+
+    def __exit__(self, *exc):
+        global _ACCOUNT
+        _ACCOUNT = None
+        return False
+
+
 def settings(hold_days):
+    if _ACCOUNT is not None:
+        a = _ACCOUNT
+        return {"mode": "live", "key": a["key"], "secret": a["secret"], "auto": bool(a.get("auto", True)),
+                "dollars": None, "max_positions": None, "max_invested": float(env("MAX_INVESTED_PCT") or 90) / 100,
+                "hold_days": int(hold_days), "account": a["id"]}
     mode = (env("TRADING_MODE") or "paper").strip().lower()
     mode = mode if mode in BASE else "paper"
     up = mode.upper()
@@ -423,7 +449,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
 
     # 1c. owner, Oct 30: your own buys from then on follow the tool's sell rules. A reason to sell sends a phone alert
     #     and an email; the position is sold at the next morning's open unless you tap Keep (manual_rules.py).
-    if trade and not cfg.get("_manual_done"):
+    if trade and not cfg.get("_manual_done") and _ACCOUNT is None:     # the owner's own buys only
         cfg["_manual_done"] = True
         try:
             import manual_rules
@@ -618,9 +644,13 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
     except Exception:
         yours_first = {}
     try:      # which positions you opened ("manual") and which of them follow the tool's sell rules
+        if _ACCOUNT is not None:
+            raise LookupError("family account")          # the Keep/sell-rule flow is the owner's own
         import manual_rules
         man = manual_rules.holdings(manual_rules.all_orders(api, cfg))
         mstate = cfg.get("_manual_state") or manual_rules.state_for_app()
+    except LookupError:
+        man, mstate = {}, None
     except Exception as e:
         log(f"Broker: manual-position tags failed ({type(e).__name__})")
         man, mstate = {}, None
@@ -685,6 +715,8 @@ def _safe(fn):
 
 def place_tap_order(ticker, dollars, req_id, log):
     """One order you approved on the dashboard. Returns (ok, short_reason)."""
+    if _ACCOUNT is not None:
+        return False, "owner-only"
     s = settings(60)
     if not (s["key"] and s["secret"]):
         return False, "no-keys"

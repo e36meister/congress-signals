@@ -22,8 +22,9 @@ def app_url(path="/"):
     return (_ORIGIN["v"] + path) if _ORIGIN["v"] else FALLBACK_URL
 
 
-def send(subject, html, log, images=None, ok_msg="Email: sent"):
-    """Send an HTML email to ALERT_TO (or yourself). images: {content_id: png bytes}, shown with <img src='cid:id'>."""
+def send(subject, html, log, images=None, ok_msg="Email: sent", to=None):
+    """Send an HTML email to ALERT_TO (or yourself), or to `to` (a family account's own email or a sign-in link).
+    images: {content_id: png bytes}, shown with <img src='cid:id'>."""
     addr, pw = os.environ.get("GMAIL_ADDRESS"), os.environ.get("GMAIL_APP_PASSWORD")
     if not (addr and pw):
         log("Email: not set up (GMAIL_ADDRESS / GMAIL_APP_PASSWORD secrets missing)")
@@ -33,7 +34,7 @@ def send(subject, html, log, images=None, ok_msg="Email: sent"):
     from email.mime.text import MIMEText
     from email.mime.image import MIMEImage
     msg = MIMEMultipart("related")
-    msg["Subject"], msg["From"], msg["To"] = subject[:140], addr, os.environ.get("ALERT_TO") or addr
+    msg["Subject"], msg["From"], msg["To"] = subject[:140], addr, to or os.environ.get("ALERT_TO") or addr
     msg.attach(MIMEText(html, "html"))
     for cid, png in (images or {}).items():
         im = MIMEImage(png, "png")

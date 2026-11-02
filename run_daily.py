@@ -379,9 +379,19 @@ def trade_now(scored, px):
     if snap is not None and not DRY_RUN:
         cloud_store.save_reasons(snap.get("this_run"), E.log)       # phone trade alerts say why
         send_manual_emails(bc.get("_manual_alerts"))
+    trade_family(bc, None, None, last, msales)
     mins = (E.time.time() - E._RUN_START) / 60
     E.log(f"Trading done {mins:.0f} min after the update started" + (" (test run: no orders)" if DRY_RUN else ""))
     return snap, helpers
+
+
+def trade_family(bc, buys, new, last, msales):
+    """The same picks in each family account (their own Alpaca keys, sized from their own balance)."""
+    try:
+        from congress_signals import accounts
+        accounts.run(bc, buys, new, last, E.log, trade=not DRY_RUN, msales=msales)
+    except Exception as e:
+        E.log(f"Family accounts: skipped this run ({type(e).__name__})")
 
 
 def fetch_app_inputs():
@@ -640,12 +650,18 @@ def main():
             # already traded right after scoring: just refresh the account snapshot, keeping what that step did
             snap = broker.sync(base, None, None, last, E.log, trade=False) or early
             snap["this_run"] = early.get("this_run") or []
+            try:     # and the family accounts' snapshots (with members' sales on what they hold)
+                from congress_signals import accounts
+                accounts.run(base, None, None, last, E.log, trade=False, msales=msales)
+            except Exception as e:
+                E.log(f"Family accounts: snapshot skipped ({type(e).__name__})")
         else:      # live picks failed earlier: the old way, from the BUY list
             bl = dict(base, _live_picks=None, _small_fresh=None)
             snap = broker.sync(bl, buys, new, last, E.log, trade=not DRY_RUN)
             if snap is not None and not DRY_RUN:
                 cloud_store.save_reasons(snap.get("this_run"), E.log)
                 send_manual_emails(bl.get("_manual_alerts"))
+            trade_family(bl, buys, new, last, msales)
         path = os.path.join(cfg["DATA_DIR"], "dashboard_data.json")
         d = json.load(open(path))
         if snap is not None:

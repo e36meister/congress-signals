@@ -447,5 +447,22 @@ def email(rep, mode, snap=None, data=None):
     mail.send(subject, html, E.log, {"chart": png} if png else None, ok_msg="Close report: emailed")
 
 
+def family_close():
+    """Each family account's own short close report (their phones, their email, their Account page)."""
+    if os.environ.get("CLOSE_EMAIL_ONLY") == "1":
+        return
+    try:
+        import cloud_store
+        from congress_signals import accounts, mail
+        accounts.close_all(E.log,
+                           send_email=lambda to, subj, html: mail.send(subj, html, lambda m: None, to=to),
+                           notify=lambda acct, title, body: cloud_store.notify(title, body, "close", "/#port", lambda m: None, account=acct))
+    except Exception as e:
+        E.log(f"Family accounts: close reports skipped ({type(e).__name__})")
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        family_close()
