@@ -1081,7 +1081,8 @@ def ig_unreadable(leg):
     is not listed."""
     igs = _ig_status()
     bad, found, ok, tried = igs.get("bad") or {}, igs.get("found") or {}, igs.get("ok") or {}, igs.get("guessed") or {}
-    per, all_h, manual = {}, {}, ig_manual(leg)
+    per, all_h = {}, {}
+    manual, owner_none = ig_manual(leg, with_none=True)
     for h, b in (igs.get("handles") or {}).items():
         all_h.setdefault(b, set()).add(h)
     for h, x in bad.items():
@@ -1105,7 +1106,7 @@ def ig_unreadable(leg):
                              "Nothing to fix on our side unless they switch it or you find another account of theirs")
                 continue
             lines.append(f"Instagram: can't read {who}. {why}. Please check their Instagram and send me the right handle")
-        elif b not in all_h:
+        elif b not in all_h and b not in owner_none:   # owner checked: no Instagram, so nothing to ask for
             lines.append(f"Instagram: no account on file for {who}. Please check their Instagram and send me the handle")
     return lines
 
@@ -1113,10 +1114,11 @@ def ig_unreadable(leg):
 IG_MANUAL_FILE = "instagram_handles.json"
 
 
-def ig_manual(leg):
+def ig_manual(leg, with_none=False):
     """Owner-checked Instagram handles: {"Member name or bioguide ID": "handle" or ["handle", ...]} in
     instagram_handles.json at the repo root (owner, Oct 28: read both accounts when a member has an official and a
-    personal one). They win over the lists and guesses, and the member leaves the Data health check list once read."""
+    personal one). They win over the lists and guesses, and the member leaves the Data health check list once read.
+    with_none=True also returns the members the owner checked and found have no Instagram at all ([] in the file)."""
     try:
         raw = json.load(open(IG_MANUAL_FILE))
     except Exception:
@@ -1127,16 +1129,18 @@ def ig_manual(leg):
             for nm in (m.get("name"), f"{m.get('first') or ''} {m.get('last') or ''}", f"{m.get('nick') or ''} {m.get('last') or ''}"):
                 if nm and nm.strip():
                     by_name[_ig_plain(nm)] = b
-    out = {}
+    out, none = {}, set()
     for k, hs in raw.items():
         hs = [hs] if isinstance(hs, str) else hs
         if k.startswith("_") or not isinstance(hs, list):
             continue
         b = k if k in leg else by_name.get(_ig_plain(k))
+        if b and not hs:
+            none.add(b)             # Nov 2 (owner): an empty list means "checked, this member has no Instagram"
         for h in hs:
             if b and isinstance(h, str) and h.strip("@ "):
                 out.setdefault(b, []).append(h.strip("@ ").lower())
-    return out
+    return (out, none) if with_none else out
 
 
 def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
@@ -1274,7 +1278,8 @@ def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
     have_b = set(handles.values())
     for b in [b for b in none if b in have_b]:      # an account turned up (a list, or the owner's file)
         none.pop(b)
-    missing_b = [b for b, m in leg.items() if m.get("current") and b not in have_b]
+    owner_none = ig_manual(leg, with_none=True)[1]      # the owner checked: no Instagram, so don't guess usernames
+    missing_b = [b for b, m in leg.items() if m.get("current") and b not in have_b and b not in owner_none]
     for b in sorted(missing_b, key=lambda b: guessed.get(b, {}).get("at", 0)):
         if stop or calls >= IG_GUESS_PER_RUN or time.time() > deadline:
             break

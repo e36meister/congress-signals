@@ -1,5 +1,5 @@
 {
-  "_how": "Instagram handles checked by hand (owner, Oct 28). One line per member: \"Member name\": \"handle\", or a list [\"official\", \"personal\"] to read both. These win over the automatic lists.",
+  "_how": "Instagram handles checked by hand (owner, Oct 28). One line per member: \"Member name\": \"handle\", or a list [\"official\", \"personal\"] to read both. These win over the automatic lists. An empty list [] means the owner checked and the member has no Instagram (Nov 2).",
   "Alexandria Ocasio-Cortez": "aoc",
   "Nancy Pelosi": "speakerpelosi",
   "Bernard Sanders": [
@@ -74,5 +74,35 @@
   ],
   "Andy Biggs": "repandybiggs",
   "Betty McCollum": "repbettymccollum",
-  "R000575": "repmikerogersal"
+  "R000575": "repmikerogersal",
+  "Aisha Wahab": [
+    "aishabbwahab",
+    "senaishawahab"
+  ],
+  "Andy Harris": [
+    "rep.harris",
+    "harrisforcongress"
+  ],
+  "Ilhan Omar": [
+    "repilhan",
+    "ilhanmn"
+  ],
+  "Jake Ellzey": "commanderellzey",
+  "James R. Baird": "repjimbaird",
+  "Jason Smith": "repjasonsmith",
+  "Jerrold Nadler": "repjerrynadler",
+  "Jim Jordan": "jimjordanoh04",
+  "Kevin Kiley": "kevinpkiley",
+  "Mariannette Miller-Meeks": [
+    "repmmm",
+    "millermeeks"
+  ],
+  "Mark B. Messmer": [],
+  "Mike Bost": "houseveteransaffairsgop",
+  "Mike Flood": "usrepmikeflood",
+  "Nicole Malliotakis": "nmalliotakis",
+  "Nydia M. Velázquez": "rep_velazquez",
+  "Richard E. Neal": "nealforcongress",
+  "Shontel M. Brown": "repshontel",
+  "Tom Barrett": "tombarrettmi7"
 }
