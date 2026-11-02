@@ -158,13 +158,25 @@ def close_all(log, send_email=None, notify=None):
                         "saved": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")})
             cloud_store.put(key, json.dumps(doc, default=str), log=lambda m: None)
             line = _close_line(rep)
-            if notify:
+            prefs = _prefs(a["id"])
+            if notify and prefs["push"]:
                 notify(a["id"], "Market close", line)
-            if send_email and emails.get(a["id"]):
+            if send_email and prefs["email"] and emails.get(a["id"]):
                 send_email(emails[a["id"]], f"Capitol Capital: market close {dt.date.today():%b %-d}", _close_html(rep, snap))
         except Exception as e:
             log(f"Family account {i}: close report failed ({type(e).__name__})")
     log(f"Family accounts: close reports done for {len(accts)} account(s)")
+
+
+def _prefs(acct_id):
+    """Whether they want the daily close by push and by email (More → Settings in their app). Defaults: both on."""
+    try:
+        raw = cloud_store.get(f"accounts/{acct_id}/prefs.json", log=lambda m: None)
+        p = json.loads(raw) if raw else {}
+    except Exception:
+        p = {}
+    pick = lambda side: (p.get(side) or {}).get("close")
+    return {"push": pick("push") is not False, "email": pick("email") is not False}
 
 
 def _spy_close(api):

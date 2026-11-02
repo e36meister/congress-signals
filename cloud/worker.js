@@ -9,7 +9,7 @@ const PREFIX = "cs-", PARK_PREFIX = "cs-park-", PARK_CHOICES = ["SPY", "VOO", "I
 const enc = new TextEncoder();
 import { vapid, saveSub, sendAll, getSubs } from "./push.js";
 import { readViewer, viewerAllowed, viewerApi, requestLink, redeemLink, SIGNIN_PAGE, ownerAccounts, ownerAccount, ownerAccountLive,
-         ownerAccountsPost, checkFillsAll, deliverTo } from "./accounts.js";
+         ownerAccountsPost, checkFillsAll, deliverTo, viewerWidget } from "./accounts.js";
 
 export default {
   async fetch(req, env, ctx) {
@@ -28,7 +28,7 @@ export default {
     await step("outbox", "Sending phone alerts", () => drainOutbox(env));
     const min = new Date(ev.scheduledTime).getUTCMinutes();
     if (min % 2 === 0) await step("fills", "Checking for new fills", () => checkFills(env));
-    if (min % 2 === 1 && inMarketWindow()) await step("acct-fills", "Checking family accounts for new fills", () => checkFillsAll(env, sendAll, reasons));
+    if (min % 2 === 1 && inMarketWindow()) await step("acct-fills", "Checking family accounts for new fills", () => checkFillsAll(env, sendAll, reasons, dispatch));
     if (min % 3 === 0) await step("buy", "Managing pre-market and after-hours orders", () => extendedHours(env, new Date(ev.scheduledTime)));
     await step("quick", "Starting the filings check", () => startQuickCheck(env, min));
     await step("daily", "Starting the daily update", () => startDailyOnTime(env, new Date(ev.scheduledTime)));
@@ -139,7 +139,11 @@ async function api(req, env, url, ctx) {
   // read-only data (members, posts, charts, company facts) by the handlers below
   if (who.role === "viewer") {
     if (!viewerAllowed(req.method, p)) return json({ error: "forbidden" }, 403);
-    const r = await viewerApi(req, env, url, who.a, { live, vapid, getSubs, saveSub, sendAll, maxTap: +(env.MAX_TAP_DOLLARS || 25000) || 25000 });
+    const quiet = Object.assign(Object.create(env), { __quiet: true });
+    const r = await viewerApi(req, env, url, who.a, { live, vapid, getSubs, saveSub, sendAll, dispatch, fromR2,
+      sell: (rq, c) => sell(rq, quiet, c),
+      widgetScript: (u, key) => new Response(WIDGET_JS.replace("__URL__", u.origin).replace("__KEY__", key), { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } }),
+      maxTap: +(env.MAX_TAP_DOLLARS || 25000) || 25000 });
     if (r) return r;
     env = Object.assign(Object.create(env), { __quiet: true });   // the shared handlers below don't file Data health items for them
   }
@@ -398,8 +402,8 @@ async function manualKeep(req, env) {
   return json({ ok: true });
 }
 
-async function sell(req, env) {
-  const a = alpaca(env);
+// a: whose account (a family account's client from accounts.js, which also keeps them off the parked fund)
+async function sell(req, env, a = alpaca(env)) {
   if (!a.ready) return json({ ok: false, why: "no-keys" }, 503);
   let body = {};
   try { body = await req.json(); } catch (e) {}
@@ -632,6 +636,7 @@ async function health(env) {
   return json({ jobs: { jobs, fixed }, app: await r2json(env, WHEALTH, {}) });
 }
 async function wOk(env, src) {
+  if (env.__quiet) return;
   try {
     const st = await r2json(env, WHEALTH, null);
     if (st && st[src] && st[src].open) { st[src] = { ...st[src], open: false, fixed: new Date().toISOString() }; await env.DATA.put(WHEALTH, JSON.stringify(st)); }
@@ -1227,6 +1232,8 @@ async function widgetKey(env, renew) {
 
 async function widget(req, env, url) {
   const given = req.headers.get("X-Widget-Key") || url.searchParams.get("k") || "";
+  const fam = await viewerWidget(env, given, timingSafeEqual);      // a family account's own widget
+  if (fam) return fam;
   const o = await env.DATA.get("widget/key.txt");
   const key = o ? (await o.text()).trim() : "";
   if (!key || !timingSafeEqual(given, key)) return json({ error: "key" }, 401);

@@ -201,8 +201,6 @@ src = sub('["all", "All new"], ["review", `Needs review${reviewCount() ? " " + r
 # live refresh: the Keep list and Why it moved are the owner's
 src = sub('        const m = (await api("/api/manual")).js, was = JSON.stringify(state.manual || null);',
           '        if (isViewer()) throw 0;\n        const m = (await api("/api/manual")).js, was = JSON.stringify(state.manual || null);', src)
-src = sub("paintStatus(); moversLoad(true); if (!typing()) render();",
-          "paintStatus(); if (!isViewer()) moversLoad(true); if (!typing()) render();", src)
 # the Buy buttons on picks are the owner's (family accounts get Buy more on their Account page)
 src = sub('  const b = ev.target.closest("[data-buy],[data-send],[data-cancel]");\n  if (!b) return;',
           '  const b = ev.target.closest("[data-buy],[data-send],[data-cancel]");\n  if (!b || isViewer()) return;', src)
@@ -211,10 +209,43 @@ src = sub('api("/api/session").then(() => { loadData();', 'api("/api/session").t
 # signed out: the server's login page has both ways in (email link and passcode)
 src = sub('function showLogin(msg) {\n  $("#login").hidden = false;',
           'function showLogin(msg) {\n  if (!window.__CTD_SAMPLE) { location.replace("/"); return; }\n  $("#login").hidden = false;', src)
+# their More menu and pages, and the first-time profile picture step
+src = sub('  if (state.tab === "more") html += renderMore();',
+          '  if (isViewer() && needsPhotoStep()) { main.innerHTML = renderPhotoStep(); bind(); return; }\n'
+          '  if (isViewer() && (state.tab === "more" || VIEWER_SUB.has(state.tab) && state.tab !== "search")) html += renderViewerPage();\n'
+          '  else if (state.tab === "more") html += renderMore();', src)
+# Today for a family account: Buy candidates only, with their own Buy box
+src = sub("function postsSection() {", "function postsSection() {\n  if (isViewer()) return \"\";", src)
+src = sub("function worthSection(d) {", "function worthSection(d) {\n  if (isViewer()) return \"\";", src)
+src = sub("function unusualSection(d) {", "function unusualSection(d) {\n  if (isViewer()) return \"\";", src)
+src = sub("function buyArea(r) {", "function buyArea(r) {\n  if (isViewer()) return vBuyArea(r);", src)
+src = sub("function confirmBox(r) {", "function confirmBox(r) {\n  if (isViewer()) return vBuyBox(r.t, false);", src)
+src = sub('  if (state.tab === "today") html += renderToday(d);',
+          '  if (state.tab === "today" && isViewer()) html += tip("<b>Today.</b> These are the stocks members of Congress bought recently whose purchases score near the top of all past ones. The tool buys them for you automatically; you don\'t need to do anything. Tap a ticker for its chart and what\'s going on.");\n'
+          '  if (state.tab === "today") html += renderToday(d);', src)
+# your trades on a stock's chart show your own picture
+n = src.count('<img src="/me.jpg" alt="" onerror="this.style.display=\'none\'"></button>`).join("")}')
+assert n == 1, n
+src = src.replace('<img src="/me.jpg" alt="" onerror="this.style.display=\'none\'"></button>`).join("")}', '<img src="${myPhoto()}" alt="" onerror="this.style.display=\'none\'"></button>`).join("")}')
+src = sub('det.innerHTML = `<div class="tdet"><img src="/me.jpg" alt=""', 'det.innerHTML = `<div class="tdet"><img src="${myPhoto()}" alt=""', src)
+# the widget: their own account's
+src = sub('const r = await fetch("/api/widget/script",', 'const r = await fetch(isViewer() ? "/api/me/widget" : "/api/widget/script",', src)
 acct_css = """
 /* family accounts: nothing that leads outside Today, Members, Alerts and their Account */
-html.viewer nav.tabs button[data-tab="more"],html.viewer #mebtn,html.viewer [data-more],html.viewer [data-why],
-html.viewer [data-buy],html.viewer .sellbtn,html.viewer .keepbtn,html.viewer [data-tie],html.viewer [data-tiev]{display:none!important}
+html.viewer #mebtn,html.viewer [data-more]:not([data-vok]):not([data-more="more"]),html.viewer [data-why],
+html.viewer [data-buy],html.viewer .sellbtn,html.viewer .keepbtn,html.viewer [data-tie],html.viewer [data-tiev],
+html.viewer #today-avoid,html.viewer #today-also,html.viewer #today-unusual,html.viewer #today-worth,html.viewer #posts,
+html.viewer [data-jump="today-avoid"],html.viewer [data-jump="today-also"],html.viewer [data-jump="posts"],
+html.viewer [data-jump="today-worth"],html.viewer [data-jump="today-unusual"]{display:none!important}
+.vtip{display:none}html.tips .vtip{display:block;background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:12px}
+.vbtns{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
+.vsell{font:600 13px var(--body);padding:6px 12px;border-radius:8px;border:1px solid var(--bad);background:none;color:var(--bad);cursor:pointer}
+.vsell.go{background:var(--bad);color:#fff}.vsell:disabled{opacity:.6}
+.vme{width:64px;height:64px;border-radius:50%;object-fit:cover;border:1px solid var(--rule)}.vme.none{display:inline-block;background:var(--rule)}
+.vrules{list-style:none;margin:0 0 10px;padding:0;display:grid;gap:6px}.vrules li{display:flex;justify-content:space-between;gap:10px;align-items:center}
+.keysform select{min-width:0;width:100%;font:15px var(--body);padding:10px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);color:var(--ink)}
+.faq details{border-bottom:1px solid var(--rule);padding:10px 0}.faq summary{font-weight:600;cursor:pointer}.faq p{margin:8px 0 2px;color:var(--ink2)}
+.vswitch{display:flex;gap:10px;align-items:center;font-size:15px}
 .steps{margin:8px 0 12px;padding-left:20px;display:grid;gap:6px}
 .keysform{display:grid;gap:10px;max-width:420px;margin:6px 0}
 .keysform input{font:500 15px var(--mono);padding:10px 12px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);color:var(--ink);width:100%;box-sizing:border-box}
@@ -231,7 +262,7 @@ src = sub("</style>", acct_css, src)
 src = sub("function suggestLine(r) {\n  const g = suggestion(r); if (!g) return \"\";",
           "function suggestLine(r) {\n  if (isViewer()) return \"\";\n  const g = suggestion(r); if (!g) return \"\";", src)
 src = sub('    <p class="foot">Sent to your phone: 3+ members', '    <p class="foot owner-only">Sent to your phone: 3+ members', src)
-src = sub("html.viewer [data-tiev]{display:none!important}", "html.viewer [data-tiev],html.viewer .owner-only{display:none!important}", src)
+src = sub('html.viewer [data-jump="today-unusual"]{display:none!important}', 'html.viewer [data-jump="today-unusual"],html.viewer .owner-only{display:none!important}', src)
 
 # ---- no autocorrect, auto-capitals or spell-check in any text box (owner, Oct 29) ----
 # Boxes are drawn and redrawn by the page's code, so a watcher marks every box as it appears.

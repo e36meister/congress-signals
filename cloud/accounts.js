@@ -216,9 +216,11 @@ go.addEventListener("click", async () => {
 
 // ---------- what a viewer may call ----------
 // Anything not listed answers 403, whatever the page asks for.
-const VIEWER_GET = new Set(["/api/session", "/api/data", "/api/members", "/api/member", "/api/posts", "/api/chart", "/api/charts",
-  "/api/news", "/api/about", "/api/context", "/api/notifications", "/api/live", "/api/push/key"]);
-const VIEWER_POST = new Set(["/api/logout", "/api/notifications/clear", "/api/push/subscribe", "/api/buy-more", "/api/me/keys"]);
+const VIEWER_GET = new Set(["/api/session", "/api/data", "/api/members", "/api/member", "/api/chart", "/api/charts", "/api/search",
+  "/api/movers", "/api/news", "/api/about", "/api/context", "/api/notifications", "/api/live", "/api/push/key", "/api/me/photo",
+  "/api/me/prefs", "/api/me/widget"]);
+const VIEWER_POST = new Set(["/api/logout", "/api/notifications/clear", "/api/push/subscribe", "/api/buy-more", "/api/sell",
+  "/api/me/keys", "/api/me/photo", "/api/bug", "/api/me/prefs", "/api/me/widget"]);
 export function viewerAllowed(method, path) {
   return method === "GET" ? VIEWER_GET.has(path) : method === "POST" ? VIEWER_POST.has(path) : false;
 }
@@ -226,8 +228,24 @@ export function viewerAllowed(method, path) {
 // usual; these are answered here with the viewer's own data.
 export async function viewerApi(req, env, url, a, h) {
   const p = url.pathname;
-  if (p === "/api/session") return json({ ok: true, role: "viewer", connected: !!a.keys_set_at, auto: a.auto !== false, mode: "live" });
+  if (p === "/api/session") return json({ ok: true, role: "viewer", connected: !!a.keys_set_at, auto: a.auto !== false, mode: "live",
+    photo: a.photo_at || null, photo_prompted: !!(a.photo_at || a.photo_skipped) });
   if (p === "/api/data") return viewerData(env, a);
+  if (p === "/api/movers") return viewerMovers(env, a);
+  if (p === "/api/me/photo" && req.method === "GET") return getPhoto(env, a);
+  if (p === "/api/me/photo") return setPhoto(req, env, a);
+  if (p === "/api/bug") return bugReport(req, env, a, h.dispatch);
+  if (p === "/api/me/prefs" && req.method === "GET") return json(await getPrefs(env, a.id));
+  if (p === "/api/me/prefs") return setPrefs(req, env, a);
+  if (p === "/api/me/widget") return h.widgetScript(url, await widgetKey(env, a.id, req.method === "POST"));
+  if (p === "/api/sell") {
+    const c = await alpacaFor(env, a);
+    if (!c) return json({ ok: false, why: "no-keys" }, 503);
+    const b = await req.clone().json().catch(() => ({}));
+    if (["SGOV", "BIL", "SHV"].includes(String(b.t || "").toUpperCase()))
+      return json({ ok: false, why: "parked", message: "That's the cash the tool keeps for new picks; it sells it itself when it needs to." }, 400);
+    return h.sell(req, c);
+  }
   if (p === "/api/live") return viewerLive(env, a, h.live);
   if (p === "/api/notifications") return json({ items: await visibleAlerts(env, a.id) });
   if (p === "/api/notifications/clear") return clearAlerts(req, env, a.id);
@@ -246,12 +264,20 @@ export const subsKey = id => `accounts/${id}/subs.json`;
 
 // The dashboard file, cut down to what Today, Members and Account use, with the viewer's own account in it.
 // Allowlist: anything new the daily run adds stays out until it's added here on purpose.
-const VIEWER_DATA_KEYS = ["version", "updated", "watchlist", "worth", "unusual", "photos", "member_tags", "data_warning", "foreign"];
+// Today for them is the Buy candidates only (owner, Nov 2: no Worth a look, posts, avoid or also-bought).
+const VIEWER_DATA_KEYS = ["version", "updated", "photos", "member_tags", "data_warning"];
+async function buyList(env) {
+  const o = await env.DATA.get("dashboard_data.json");
+  const d = o ? await o.json() : {};
+  return { d, buys: ((d.watchlist || {}).buys || []).filter(r => r.action === "BUY") };
+}
 async function viewerData(env, a) {
-  const [o, port] = await Promise.all([env.DATA.get("dashboard_data.json"), r2json(env, `accounts/${a.id}/portfolio.json`, null)]);
-  if (!o) return json({ error: "no-file", message: "The daily update hasn't run yet" }, 404);
-  const d = await o.json(), out = {};
+  const [{ d, buys }, port] = await Promise.all([buyList(env), r2json(env, `accounts/${a.id}/portfolio.json`, null)]);
+  if (!d.updated) return json({ error: "no-file", message: "The daily update hasn't run yet" }, 404);
+  const out = {};
   for (const k of VIEWER_DATA_KEYS) if (k in d) out[k] = d[k];
+  const w = d.watchlist || {};
+  out.watchlist = { lookback: w.lookback, updated: w.updated, buys, sells: [], new: (w.new || []).filter(n => n.action === "BUY") };
   const pol = (d.adaptive && d.adaptive.policy) || {};
   out.adaptive = { policy: { hold_other: pol.hold_other, hold_small: pol.hold_small, sizing: pol.sizing } };
   out.viewer = { connected: !!a.keys_set_at, auto: a.auto !== false };
@@ -261,6 +287,19 @@ async function viewerData(env, a) {
     out.close_report = port.close_report || null;
   }
   return json(out, 200, { "Cache-Control": "private, no-cache" });
+}
+// Why it moved (shown as "What's going on" in a stock's chart): only the stocks on the Buy list and the ones they hold,
+// so the owner's own holdings never show up
+async function viewerMovers(env, a) {
+  const [o, { buys }, port] = await Promise.all([env.DATA.get("movers/latest.json"), buyList(env), r2json(env, `accounts/${a.id}/portfolio.json`, null)]);
+  if (!o) return json({ error: "no-file", message: "Not built yet" }, 404);
+  const m = await o.json();
+  const keep = new Set([...buys.map(r => r.t), ...(((port || {}).portfolio || {}).positions || []).map(x => x.t)]);
+  const items = {};
+  const mine = new Set((((port || {}).portfolio || {}).positions || []).map(x => x.t)), cand = new Set(buys.map(r => r.t));
+  // "held" in the owner's file means the owner holds it: replaced with theirs
+  for (const [t, v] of Object.entries(m.items || {})) if (keep.has(t)) items[t] = { ...v, held: mine.has(t), cand: cand.has(t) };
+  return json({ at: m.at, updated: m.updated, items }, 200, { "Cache-Control": "private, no-cache" });
 }
 async function viewerLive(env, a, live) {
   const c = await alpacaFor(env, a);
@@ -283,12 +322,13 @@ async function clearAlerts(req, env, id) {
   await put(env, key, c);
   return json({ ok: true });
 }
-export async function deliverTo(env, id, msg, sendAll) {
+export async function deliverTo(env, id, msg, sendAll, push = true) {
   const aid = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const entry = { id: aid, at: new Date().toISOString(), title: String(msg.title || "").slice(0, 120), body: String(msg.body || "").slice(0, 600),
                   kind: msg.tag || "", url: msg.url || "/#port", items: (msg.items || []).slice(0, 20) };
   const key = `accounts/${id}/alerts.json`, log = await r2json(env, key, []);
   await put(env, key, [entry, ...(Array.isArray(log) ? log : [])].slice(0, 300));
+  if (!push) return { sent: 0 };                // kept in their Alerts list only (they turned this kind of push off)
   const u = entry.url.includes("#") ? entry.url.replace("#", `?n=${aid}#`) : entry.url + `?n=${aid}`;
   return sendAll(env, { title: entry.title, body: entry.body, tag: msg.tag || "", url: u }, subsKey(id));
 }
@@ -323,11 +363,13 @@ async function buyMore(req, env, a, maxTap) {
   if (!(dollars >= 1 && dollars <= maxTap)) return json({ ok: false, why: "amount-over-limit", cap: maxTap }, 400);
   const sym = t.replace(/-/g, ".");
   const since = new Date(Date.now() - 500 * 864e5).toISOString();
-  const [asset, acct, pos, hist] = await Promise.all([c.get(`/v2/assets/${encodeURIComponent(sym)}`), c.get("/v2/account"),
-    c.get(`/v2/positions/${encodeURIComponent(sym)}`), c.get(`/v2/orders?status=closed&limit=500&direction=desc&symbols=${encodeURIComponent(sym)}&after=${encodeURIComponent(since)}`)]);
-  if (!pos.ok) return json({ ok: false, why: "not-held", message: "Buy more works on stocks the tool holds for you." }, 400);
-  const toolHeld = (hist.data || []).some(o => o.side === "buy" && o.filled_at && (o.client_order_id || "").startsWith(PREFIX) && !(o.client_order_id || "").startsWith(PARK_PREFIX));
-  if (!toolHeld) return json({ ok: false, why: "not-held", message: "Buy more works on stocks the tool holds for you." }, 400);
+  // owner, Nov 2: only stocks on the current Buy list. The order is marked as the tool's, so it follows the same hold
+  // and sell rules as the tool's own buy of that pick.
+  const { d, buys } = await buyList(env);
+  if (!buys.some(r => r.t === t)) return json({ ok: false, why: "not-a-pick", message: `${t} isn't on the Buy list right now` }, 400);
+  const pol = (d.adaptive && d.adaptive.policy) || {}, row = buys.find(r => r.t === t);
+  const hold = Math.max(5, Math.min(500, +((row && row.small) ? pol.hold_small : pol.hold_other) || 60));
+  const [asset, acct] = await Promise.all([c.get(`/v2/assets/${encodeURIComponent(sym)}`), c.get("/v2/account")]);
   if (!asset.ok || !asset.data?.tradable) return json({ ok: false, why: "not-tradable" }, 400);
   if (!acct.ok) return json({ ok: false, why: "not-found" }, 400);
   // own money only (never margin): cash plus the parked T-bill fund the tool can sell for it
@@ -352,7 +394,7 @@ async function buyMore(req, env, a, maxTap) {
       }
     }
   } catch (e) {}
-  const order = { symbol: sym, side: "buy", type: "market", time_in_force: "day", client_order_id: `${MORE_PREFIX}${t}-${reqId}`.slice(0, 48) };
+  const order = { symbol: sym, side: "buy", type: "market", time_in_force: "day", client_order_id: `${MORE_PREFIX}${t}-${reqId}`.slice(0, 40) + `-h${hold}` };
   if (asset.data.fractionable) order.notional = dollars.toFixed(2);
   else {
     const tr = await c.get(`${DATA}/v2/stocks/${encodeURIComponent(sym)}/trades/latest?feed=iex`);
@@ -452,44 +494,215 @@ export async function ownerAccountsPost(req, env, url, dispatch) {
   return json({ ok: false, message: "Unknown action." }, 400);
 }
 
-// ---------- every 2 minutes in market hours: alert each person on their own fills ----------
-export async function checkFillsAll(env, sendAll, reasons) {
+// ---------- every 2 minutes in market hours: each person's own alerts ----------
+// Trades that filled, big moves in what they hold, and their own account-value alerts, by push and/or email as
+// they chose in Settings. They never get the owner's alerts (posts, Senate filings, Data health, Worth a look).
+export async function checkFillsAll(env, sendAll, reasons, dispatch) {
   const list = (await listAccounts(env)).filter(a => a.status !== "disabled" && a.keys_set_at);
   if (!list.length) return;
-  let why = null;
+  let why = null, movers, mailed = false;
   const fails = [];
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   for (const a of list) {
     try {
       const c = await alpacaFor(env, a);
       if (!c) { fails.push(a.label + ": keys unreadable"); continue; }
+      const P = await getPrefs(env, a.id);
+      const out = [];          // {kind, title, body, url, items}
+      // 1. fills
       const key = `accounts/${a.id}/fills_state.json`, st = await r2json(env, key, null);
       const after = new Date(Date.now() - 4 * 864e5).toISOString();
-      const r = await c.get(`/v2/orders?status=closed&direction=desc&limit=200&after=${encodeURIComponent(after)}`);
+      const [r, acct] = await Promise.all([c.get(`/v2/orders?status=closed&direction=desc&limit=200&after=${encodeURIComponent(after)}`),
+        P.balance.length ? c.get("/v2/account") : Promise.resolve(null)]);
       if (!r.ok || !Array.isArray(r.data)) { fails.push(`${a.label}: Alpaca HTTP ${r.status}`); continue; }
       const filled = r.data.filter(o => o.status === "filled");
-      if (!st || st.fresh) { await put(env, key, { seen: filled.map(o => o.id) }); continue; }
-      const seen = new Set(st.seen || []), fresh = filled.filter(o => !seen.has(o.id)).reverse();
-      if (!fresh.length) continue;
-      why = why || await reasons(env);
-      const msgs = [];
-      for (const o of fresh) {
-        seen.add(o.id);
-        const cid = o.client_order_id || "";
-        if (cid.startsWith(PARK_PREFIX)) continue;
-        const t = o.symbol.replace(/\./g, "-"), q = +o.filled_qty, px = +o.filled_avg_price;
-        const sh = `${q % 1 ? q.toFixed(4).replace(/0+$/, "") : q} share${q === 1 ? "" : "s"} at $${px.toFixed(2)} ($${Math.round(q * px).toLocaleString("en-US")})`;
-        const w = why[`${t}|${o.side}`];
-        if (o.side === "buy" && cid.startsWith(MORE_PREFIX)) msgs.push({ t, s: `bought more ${t}`, title: `Bought more ${t}`, body: `Your Buy more order filled: ${sh}.` });
-        else if (o.side === "buy" && cid.startsWith(PREFIX)) msgs.push({ t, s: `bought ${t}`, title: `Bought ${t}`, body: sh + (w ? ` · ${w}` : "") + "." });
-        else if (o.side === "sell" && cid.startsWith(PREFIX)) msgs.push({ t, s: `sold ${t}`, title: `Sold ${t}`, body: sh + (w ? ` · ${w}` : "") + "." });
-        else if (o.side === "sell") msgs.push({ t, s: `sold ${t}`, title: `Sold ${t}`, body: sh + "." });
-        else msgs.push({ t, s: `bought ${t}`, title: `Bought ${t}`, body: sh + "." });
+      if (!st || st.fresh) await put(env, key, { seen: filled.map(o => o.id) });
+      else {
+        const seen = new Set(st.seen || []), fresh = filled.filter(o => !seen.has(o.id)).reverse();
+        if (fresh.length) {
+          why = why || await reasons(env);
+          const msgs = [];
+          for (const o of fresh) {
+            seen.add(o.id);
+            const cid = o.client_order_id || "";
+            if (cid.startsWith(PARK_PREFIX)) continue;
+            const t = o.symbol.replace(/\./g, "-"), q = +o.filled_qty, px = +o.filled_avg_price;
+            const sh = `${q % 1 ? q.toFixed(4).replace(/0+$/, "") : q} share${q === 1 ? "" : "s"} at $${px.toFixed(2)} ($${Math.round(q * px).toLocaleString("en-US")})`;
+            const w = why[`${t}|${o.side}`];
+            if (o.side === "buy" && cid.startsWith(MORE_PREFIX)) msgs.push({ t, s: `bought ${t}`, title: `Bought ${t}`, body: `Your Buy order filled: ${sh}.` });
+            else if (o.side === "buy" && cid.startsWith(PREFIX)) msgs.push({ t, s: `bought ${t}`, title: `Bought ${t}`, body: sh + (w ? ` · ${w}` : "") + "." });
+            else if (o.side === "sell" && cid.startsWith("tap-sell-")) msgs.push({ t, s: `sold ${t}`, title: `Sold ${t}`, body: `Your Sell order filled: ${sh}.` });
+            else if (o.side === "sell" && cid.startsWith(PREFIX)) msgs.push({ t, s: `sold ${t}`, title: `Sold ${t}`, body: sh + (w ? ` · ${w}` : "") + "." });
+            else msgs.push({ t, s: `${o.side === "sell" ? "sold" : "bought"} ${t}`, title: `${o.side === "sell" ? "Sold" : "Bought"} ${t}`, body: sh + "." });
+          }
+          await put(env, key, { seen: [...seen].slice(-1500) });
+          if (msgs.length > 3) out.push({ kind: "fills", title: `${msgs.length} trades filled`, body: msgs.map(m => m.s).join(", ").replace(/^./, x => x.toUpperCase()) + ".",
+            url: "/#port", items: msgs.map(m => ({ l: `${m.title}: ${m.body}`, u: `/#port/${m.t}` })) });
+          else for (const m of msgs) out.push({ kind: "fills", title: m.title, body: m.body, url: `/#port/${m.t}` });
+        }
       }
-      await put(env, key, { seen: [...seen].slice(-1500) });
-      if (msgs.length > 3) await deliverTo(env, a.id, { title: `${msgs.length} trades filled`, body: msgs.map(m => m.s).join(", ").replace(/^./, x => x.toUpperCase()) + ".",
-        tag: "fills", url: "/#port", items: msgs.map(m => ({ l: `${m.title}: ${m.body}`, u: `/#port/${m.t}` })) }, sendAll);
-      else for (const m of msgs) await deliverTo(env, a.id, { title: m.title, body: m.body, tag: "fill-" + m.title, url: `/#port/${m.t}` }, sendAll);
+      // 2. their account-value alerts, each at most once a day
+      if (acct && acct.ok && acct.data) {
+        const eq = +acct.data.equity, last = +acct.data.last_equity, dayPct = last ? (eq / last - 1) * 100 : null;
+        const bkey = `accounts/${a.id}/balance_state.json`, bst = await r2json(env, bkey, {});
+        let changed = false;
+        for (const rule of P.balance) {
+          const k = `${rule.id}|${today}`;
+          if (bst[k]) continue;
+          const v = +rule.value;
+          const hit = rule.kind === "above" ? eq >= v : rule.kind === "below" ? eq <= v
+            : rule.kind === "day_up" ? dayPct != null && dayPct >= v : rule.kind === "day_down" ? dayPct != null && dayPct <= -v : false;
+          if (!hit) continue;
+          bst[k] = true; changed = true;
+          const money = x => "$" + Math.round(x).toLocaleString("en-US");
+          out.push({ kind: "balance", title: rule.kind === "above" ? `Account is above ${money(v)}` : rule.kind === "below" ? `Account is below ${money(v)}`
+            : rule.kind === "day_up" ? `Account up ${dayPct.toFixed(1)}% today` : `Account down ${Math.abs(dayPct).toFixed(1)}% today`,
+            body: `Your account is at ${money(eq)}${dayPct != null ? ` (${dayPct >= 0 ? "+" : ""}${dayPct.toFixed(2)}% today)` : ""}.`, url: "/#port" });
+        }
+        if (changed) await put(env, bkey, Object.fromEntries(Object.entries(bst).filter(([k]) => k.endsWith(today))));
+      }
+      // 3. big moves in what they hold (from Why it moved)
+      if (P.push.moves || P.email.moves) {
+        if (movers === undefined) movers = await r2json(env, "movers/latest.json", null);
+        const port = await r2json(env, `accounts/${a.id}/portfolio.json`, null);
+        const held = new Set(((port && port.portfolio && port.portfolio.positions) || []).filter(x => x.sleeve !== "park").map(x => x.t));
+        const mkey = `accounts/${a.id}/moves_state.json`, mst = await r2json(env, mkey, { seen: [] }), seen = new Set(mst.seen || []);
+        const fresh = Object.values((movers && movers.items) || {}).filter(m => held.has(m.t) && !seen.has(`${m.t}|${m.date}|${m.kind}`));
+        for (const m of fresh) {
+          seen.add(`${m.t}|${m.date}|${m.kind}`);
+          const mv = m.move == null ? "" : ` ${m.move > 0 ? "up" : "down"} ${Math.abs(m.move).toFixed(1)}%${m.kind === "day" ? " today" : " in 5 days"}`;
+          out.push({ kind: "moves", title: `${m.t}${mv}`, body: String(((m.lines || [])[1] || (m.lines || [])[0] || "")).slice(0, 300), url: `/#t/${m.t}` });
+        }
+        if (fresh.length) await put(env, mkey, { seen: [...seen].slice(-300) });
+      }
+      // deliver as they chose: push and/or email; everything is kept in their Alerts list
+      for (const m of out) await deliverTo(env, a.id, { title: m.title, body: m.body, tag: m.kind === "fills" ? "fill-" + m.title : m.kind, url: m.url, items: m.items }, sendAll, !!P.push[m.kind]);
+      const mail = out.filter(m => P.email[m.kind]);
+      if (mail.length) {
+        const html = `<div style="font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:#152033;max-width:520px">${mail.map(m =>
+          `<p><b>${esc(m.title)}</b><br>${esc(m.body)}</p>`).join("")}<p style="color:#46536A;font-size:13px">Change which emails you get in the app: More → Settings.</p></div>`;
+        await put(env, `mail/outbox/${Date.now()}-${rand(6)}.json`, { to: a.email, subject: mail.length === 1 ? `Capitol Capital: ${mail[0].title}` : `Capitol Capital: ${mail.length} updates`, html });
+        mailed = true;
+      }
     } catch (e) { fails.push(`${a.label}: ${String(e && e.message || e).slice(0, 80)}`); }
   }
-  if (fails.length) throw new Error("family accounts' fill check: " + fails.join("; "));
+  if (mailed && dispatch) { try { await dispatch(env, "mail.yml", {}); } catch (e) { fails.push("couldn't start the email job"); } }
+  if (fails.length) throw new Error("family accounts' alerts: " + fails.join("; "));
+}
+
+// ---------- their notification settings (More → Settings) ----------
+// kinds: fills (the tool's or their trades filled), close (daily market-close summary), moves (a big move in a stock
+// they hold), balance (their own account-value alerts). Each can go by push, email, both or neither.
+const KINDS = ["fills", "close", "moves", "balance"];
+const DEF_PREFS = { push: { fills: true, close: true, moves: false, balance: true }, email: { fills: false, close: true, moves: false, balance: false }, balance: [] };
+export async function getPrefs(env, id) {
+  const p = await r2json(env, `accounts/${id}/prefs.json`, {});
+  const out = { push: { ...DEF_PREFS.push }, email: { ...DEF_PREFS.email }, balance: [] };
+  for (const k of KINDS) {
+    if (typeof (p.push || {})[k] === "boolean") out.push[k] = p.push[k];
+    if (typeof (p.email || {})[k] === "boolean") out.email[k] = p.email[k];
+  }
+  out.balance = Array.isArray(p.balance) ? p.balance : [];
+  return out;
+}
+async function setPrefs(req, env, a) {
+  const b = await body(req), cur = await getPrefs(env, a.id);
+  for (const k of KINDS) {
+    if (typeof (b.push || {})[k] === "boolean") cur.push[k] = b.push[k];
+    if (typeof (b.email || {})[k] === "boolean") cur.email[k] = b.email[k];
+  }
+  if (Array.isArray(b.balance)) {
+    const rules = [];
+    for (const r of b.balance.slice(0, 8)) {
+      const kind = String(r.kind || ""), v = +r.value;
+      if (!["above", "below", "day_up", "day_down"].includes(kind) || !(v > 0) || v > 1e9) continue;
+      if (kind.startsWith("day") && v > 50) continue;
+      rules.push({ id: /^[a-z0-9]{6,12}$/.test(r.id || "") ? r.id : rand(6).toLowerCase().replace(/[^a-z0-9]/g, "x"), kind, value: v });
+    }
+    cur.balance = rules;
+  }
+  await put(env, `accounts/${a.id}/prefs.json`, cur);
+  return json({ ok: true, prefs: cur });
+}
+
+// ---------- their own home-screen widget (same Scriptable widget as the owner's, showing their account) ----------
+// The widget's key is "v.<account id>.<secret>"; only that account's summary can be read with it.
+async function widgetKey(env, id, renew) {
+  const k = `accounts/${id}/widget_key.txt`, o = renew ? null : await env.DATA.get(k);
+  if (o) return (await o.text()).trim();
+  const key = `v.${id}.${rand(24)}`;
+  await env.DATA.put(k, key);
+  return key;
+}
+export async function viewerWidget(env, given, safeEq) {
+  const m = String(given || "").match(/^v\.([a-z0-9]{12})\.[A-Za-z0-9_-]{30,40}$/);
+  if (!m) return null;
+  const a = await getAccount(env, m[1]);
+  if (!a || a.status === "disabled") return json({ error: "key" }, 401);
+  const o = await env.DATA.get(`accounts/${a.id}/widget_key.txt`), key = o ? (await o.text()).trim() : "";
+  if (!key || !safeEq(given, key)) return json({ error: "key" }, 401);
+  const doc = await r2json(env, `accounts/${a.id}/portfolio.json`, {}), p = doc.portfolio || {}, cr = doc.close_report || {};
+  const out = { at: new Date().toISOString(), equity: p.equity ?? null, day_pl: p.day_pl ?? null, market_open: !!p.market_open, live: false };
+  const c = await alpacaFor(env, a);
+  if (c) {
+    try {
+      const [acct, clock] = await Promise.all([c.get("/v2/account"), c.get("/v2/clock")]);
+      if (acct.ok) { out.equity = +acct.data.equity; if (+acct.data.last_equity) out.day_pl = out.equity - +acct.data.last_equity; out.live = true; }
+      if (clock.ok) out.market_open = !!clock.data.is_open;
+    } catch (e) {}
+  }
+  if (out.equity != null && out.day_pl != null && out.equity - out.day_pl) out.day_pct = out.day_pl / (out.equity - out.day_pl) * 100;
+  out.day_label = out.market_open ? "Today" : "Since the close";
+  const hist = (doc.close_history || []).filter(h => h.equity && h.spy);
+  if (hist.length && cr.since_start != null) {
+    const e0 = hist[0].equity, s0 = hist[0].spy;
+    out.since = { date: cr.date, acct: cr.since_start * 100, spy: cr.spy_since_start != null ? cr.spy_since_start * 100 : null,
+      gap: cr.spy_since_start != null ? (cr.since_start - cr.spy_since_start) * 100 : null };
+    out.spark = { acct: hist.slice(-60).map(h => (h.equity / e0 - 1) * 100), spy: hist.slice(-60).map(h => (h.spy / s0 - 1) * 100) };
+  }
+  const park = new Set(PARK_CHOICES), seen = new Set();
+  out.buys = (p.orders || []).filter(x => x.side === "buy" && x.status === "filled" && !park.has(x.t))
+    .filter(x => !seen.has(x.t) && seen.add(x.t)).slice(0, 4).map(x => ({ t: x.t, at: x.at, by: x.by === "tool" ? "tool" : "tap" }));
+  return json(out);
+}
+
+// ---------- their profile picture (shown on stock charts where they bought or sold, like the owner's) ----------
+// The app shrinks it to a 256px JPEG before sending, so it's small.
+async function getPhoto(env, a) {
+  const o = await env.DATA.get(`accounts/${a.id}/photo.jpg`);
+  if (!o) return new Response("No photo", { status: 404, headers: { "Cache-Control": "no-store" } });
+  return new Response(o.body, { headers: { "Content-Type": "image/jpeg", "Cache-Control": "private, max-age=86400" } });
+}
+async function setPhoto(req, env, a) {
+  const b = await body(req);
+  if (b.skip === true) { await patchAccount(env, a.id, x => { x.photo_skipped = true; }); return json({ ok: true }); }
+  if (b.remove === true) {
+    await env.DATA.delete(`accounts/${a.id}/photo.jpg`);
+    await patchAccount(env, a.id, x => { delete x.photo_at; x.photo_skipped = true; });
+    return json({ ok: true });
+  }
+  const m = String(b.data || "").match(/^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/);
+  if (!m || m[1].length > 400000) return json({ ok: false, message: "That picture couldn't be used. Try another one." }, 400);
+  const bytes = Uint8Array.from(atob(m[1]), ch => ch.charCodeAt(0));
+  if (bytes[0] !== 0xFF || bytes[1] !== 0xD8) return json({ ok: false, message: "That picture couldn't be used. Try another one." }, 400);
+  await env.DATA.put(`accounts/${a.id}/photo.jpg`, bytes, { httpMetadata: { contentType: "image/jpeg" } });
+  const at = new Date().toISOString();
+  await patchAccount(env, a.id, x => { x.photo_at = at; });
+  return json({ ok: true, photo: at });
+}
+
+// ---------- bug reports: emailed to the owner (5 a day per account) ----------
+async function bugReport(req, env, a, dispatch) {
+  const b = await body(req);
+  const text = String(b.text || "").trim().slice(0, 4000), page = String(b.page || "").slice(0, 60), ua = String(req.headers.get("User-Agent") || "").slice(0, 200);
+  if (text.length < 5) return json({ ok: false, message: "Tell us a little about what happened." }, 400);
+  const day = new Date().toISOString().slice(0, 10);
+  if (await bump(env, `auth/rate/bug-${day}-${a.id}.json`) > 5) return json({ ok: false, message: "That's the most bug reports for today. Thanks! Try again tomorrow." }, 429);
+  const html = `<div style="font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:#152033;max-width:560px">
+<h2 style="font-weight:600;margin:0 0 8px">Bug report from ${esc(a.label)}</h2>
+<p style="white-space:pre-wrap;border-left:3px solid #DCE1E8;padding-left:12px">${esc(text)}</p>
+<p style="color:#46536A;font-size:13px">Page: ${esc(page || "unknown")}<br>Account: ${esc(a.email)}<br>Phone/browser: ${esc(ua)}<br>Sent ${esc(new Date().toISOString())}</p></div>`;
+  await put(env, `mail/outbox/${Date.now()}-${rand(6)}.json`, { to: "owner", subject: `Capitol Capital bug report from ${a.label}`.slice(0, 120), html });
+  try { await dispatch(env, "mail.yml", {}); } catch (e) {}
+  return json({ ok: true, message: "Sent. Thanks for letting us know." });
 }
