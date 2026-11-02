@@ -1,6 +1,7 @@
 """Read-only probe (Nov 2 2026): the backup reader on the Next.js House press pages whose library reader came back
 empty and whose /feed/ redirects to an unreachable '<member>-admin.house.gov' backend."""
-import time
+import os, sys, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from congress_signals import press_sites as PS
 
 for h in ["moskowitz", "owens", "gottheimer", "luna", "budzinski", "kiley", "cloud", "nikemawilliams",
