@@ -3228,6 +3228,27 @@ COMMITTEE_ISSUES = {
 }
 
 
+# Nov 2 (owner): the bills a company lobbied on, by number, from each lobbying activity's description ("H.R. 979",
+# "S.1234", "H.J.Res. 7"). Bill signals matched bills to stocks only by broad category (bill_link_study: about half
+# the links were unrelated, and neither signal beat ordinary buys); the company naming the bill in its own lobbying
+# report is direct evidence the bill matters to it. Congress is the one in session in the report's filing year.
+_LDA_BILL_RX = re.compile(r"(?<![A-Za-z.])(H\.?\s?R\.?|S\.?|H\.?\s?J\.?\s?Res\.?|S\.?\s?J\.?\s?Res\.?)\s?(\d{1,5})(?!\d|,\d)", re.I)
+
+
+def lda_bills(text, year):
+    """Bill ids (119-hr979 style, the same keys as bill_stages) named in a lobbying description."""
+    try:
+        cong = (int(year) - 1789) // 2 + 1
+    except Exception:
+        return []
+    out = set()
+    for typ, num in _LDA_BILL_RX.findall(text or ""):
+        t = {"hr": "hr", "s": "s", "hjres": "hjres", "sjres": "sjres"}.get(re.sub(r"[^a-z]", "", typ.lower()))
+        if t and 0 < int(num) < 20000:
+            out.add(f"{cong}-{t}{int(num)}")
+    return sorted(out)
+
+
 def collect_lobbying(cfg, meta, tickers, deep=False):
     """deep=True (the history fill after the update): every filing since START_DATE, all pages. Otherwise the
     newest 20 pages, added to what is on file."""
@@ -3239,7 +3260,10 @@ def collect_lobbying(cfg, meta, tickers, deep=False):
     max_pages = (400 if deep else 20) if key else 4
     start_year = pd.Timestamp(cfg["START_DATE"]).year - 1
     if deep:
-        todo = [t for t in tickers if not cache.get(t, {}).get("deep") and company_key((meta.get(t) or {}).get("name"))]
+        # "bills": the full history was re-read with the bill numbers kept (Nov 2); companies filled before that are
+        # read again once, so their older reports get bill numbers too
+        todo = [t for t in tickers if not (cache.get(t, {}).get("deep") and cache.get(t, {}).get("bills"))
+                and company_key((meta.get(t) or {}).get("name"))]
     else:
         todo = [t for t in tickers if (not _fresh(cache.get(t, {}).get("fetched", ""), 14) or cache.get(t, {}).get("v") != 3)
                 and company_key((meta.get(t) or {}).get("name"))]
@@ -3284,9 +3308,10 @@ def collect_lobbying(cfg, meta, tickers, deep=False):
                     who = sorted({" ".join(x for x in ((l.get("lobbyist") or {}).get("first_name"),
                                                            (l.get("lobbyist") or {}).get("last_name")) if x)
                                   for a in acts for l in (a.get("lobbyists") or [])} - {""})
+                    bills = sorted({b for a in acts for b in lda_bills(a.get("description"), f.get("filing_year"))})
                     rows.append([f.get("dt_posted"), float(amt or 0),
                                  sorted({a.get("general_issue_code") for a in acts if a.get("general_issue_code")}), cov[:2000],
-                                 who[:60]])
+                                 who[:60], bills])
                 url, params, pages = js.get("next"), None, pages + 1
                 if not key:
                     time.sleep(4)
@@ -3295,16 +3320,20 @@ def collect_lobbying(cfg, meta, tickers, deep=False):
         if ok:
             old = cache.get(t, {})
             keep = old.get("rows") if old.get("v") == 3 else []
+            # a report read again now carries its bill numbers: drop the older copy without them, so no report
+            # (and its amount) is counted twice
+            again = {json.dumps(r[:5], default=str) for r in rows}
+            keep = [r for r in keep or [] if len(r) > 5 or json.dumps(r[:5], default=str) not in again]
             cache[t] = {"fetched": dt.datetime.now().isoformat(), "rows": _merge_rows(keep, rows), "v": 3,
-                        "deep": bool(deep or old.get("deep"))}
+                        "deep": bool(deep or old.get("deep")), "bills": bool(deep or old.get("bills"))}
         if i % 50 == 0:
             json.dump(cache, open(path, "w"))
             log(f"Lobbying: {i}/{len(todo)}")
     json.dump(cache, open(path, "w"))
     out = [{"ticker": t, "posted": r[0], "amount": r[1], "issues": r[2], "covered": r[3] if len(r) > 3 else "",
-            "lobbyists": r[4] if len(r) > 4 else []}
+            "lobbyists": r[4] if len(r) > 4 else [], "bills": r[5] if len(r) > 5 else []}
            for t, v in cache.items() for r in v.get("rows", [])]
-    lb = pd.DataFrame(out, columns=["ticker", "posted", "amount", "issues", "covered", "lobbyists"])
+    lb = pd.DataFrame(out, columns=["ticker", "posted", "amount", "issues", "covered", "lobbyists", "bills"])
     lb["posted"] = pd.to_datetime(lb["posted"], errors="coerce", utc=True).dt.tz_localize(None)
     log(f"Lobbying: {lb['ticker'].nunique()} companies with lobbying filings")
     return lb
