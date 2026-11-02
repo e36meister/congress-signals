@@ -12,11 +12,11 @@ import { readViewer, viewerAllowed, viewerApi, requestLink, redeemLink, SIGNIN_P
          ownerAccountsPost, checkFillsAll, deliverTo } from "./accounts.js";
 
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const url = new URL(req.url);
     if (!url.pathname.startsWith("/api/")) return page(req, env, url);
     try {
-      return await api(req, env, url);
+      return await api(req, env, url, ctx);
     } catch (e) {
       return json({ error: "server", message: String(e && e.message || e).slice(0, 200) }, 500);
     }
@@ -43,14 +43,15 @@ export default {
 // Everything else (the app page, its code, the profile photo) needs the login cookie.
 // Without it, a page visit gets a small login page that holds nothing about the app.
 const PUBLIC_FILES = new Set(["/manifest.webmanifest", "/icon-180.png", "/icon-192.png", "/icon-512.png", "/icon.svg", "/sw.js", "/favicon.ico"]);
-const OWNER_ONLY_FILES = new Set(["/me.jpg"]);      // the owner's photo never goes to a family account
+// a family account gets the app page and its icons only (never the owner's photo or anything added later)
+const VIEWER_FILES = new Set(["/", "/index.html", ...PUBLIC_FILES]);
 async function page(req, env, url) {
   if (PUBLIC_FILES.has(url.pathname)) return env.ASSETS.fetch(req);
   if (url.pathname === "/signin") return new Response(SIGNIN_PAGE, { status: 200, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
     "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer" } });
   const who = await whoIs(req, env);
-  if (who && who.role === "viewer" && OWNER_ONLY_FILES.has(url.pathname)) return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
+  if (who && who.role === "viewer" && !VIEWER_FILES.has(url.pathname)) return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
   if (who) {
     const r = await env.ASSETS.fetch(req);
     const h = new Headers(r.headers);
@@ -118,7 +119,7 @@ document.getElementById("f").addEventListener("submit", async e => {
 });
 </script></body></html>`;
 
-async function api(req, env, url) {
+async function api(req, env, url, ctx) {
   const p = url.pathname;
   if (req.method === "POST") {
     // only the app itself may post (blocks other sites from using a logged-in browser)
@@ -127,7 +128,7 @@ async function api(req, env, url) {
     if (!(req.headers.get("Content-Type") || "").startsWith("application/json")) return json({ error: "content-type" }, 415);
   }
   if (p === "/api/login" && req.method === "POST") return login(req, env);
-  if (p === "/api/login/email" && req.method === "POST") return requestLink(req, env, url, dispatch);
+  if (p === "/api/login/email" && req.method === "POST") return requestLink(req, env, url, dispatch, ctx);
   if (p === "/api/login/link" && req.method === "POST") return redeemLink(req, env, m => sign(env, m), COOKIE);
   if (p === "/api/logout" && req.method === "POST") return json({ ok: true }, 200, { "Set-Cookie": `${COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict` });
   if (p === "/api/widget" && req.method === "GET") return widget(req, env, url);   // its own read-only key
@@ -140,6 +141,7 @@ async function api(req, env, url) {
     if (!viewerAllowed(req.method, p)) return json({ error: "forbidden" }, 403);
     const r = await viewerApi(req, env, url, who.a, { live, vapid, getSubs, saveSub, sendAll, maxTap: +(env.MAX_TAP_DOLLARS || 25000) || 25000 });
     if (r) return r;
+    env = Object.assign(Object.create(env), { __quiet: true });   // the shared handlers below don't file Data health items for them
   }
 
   if (p === "/api/session") return json({ ok: true, role: "owner", mode: (env.TRADING_MODE || "paper") });
@@ -598,6 +600,7 @@ const WHEALTH = "health/app.json";
 // themselves); everything else waits for the data-health summary every 2 hours
 const URGENT_SRC = new Set(["alpaca-live", "sell", "buy", "fills", "outbox", "quick", "daily", "senate-import"]);
 async function wProblem(env, src, text) {
+  if (env.__quiet) return;
   try {
     const st = await r2json(env, WHEALTH, {}), now = new Date().toISOString();
     const cur = st[src], isNew = !cur || !cur.open;

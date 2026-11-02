@@ -85,7 +85,7 @@ jobs:
                      "ALPACA_SECRET": os.environ.get(f"ALPACA_{m}_SECRET_KEY") or "",
                      "GH_DISPATCH_TOKEN": os.environ.get("GH_DISPATCH_TOKEN") or "",
                      "SEC_USER_AGENT": os.environ.get("SEC_USER_AGENT") or "",
-                     # optional: family accounts' saved Alpaca keys are encrypted with this (or the passcode if unset)
+                     # family accounts' saved Alpaca keys are encrypted with this (a long random GitHub secret)
                      **({"ACCOUNTS_KEY": os.environ["ACCOUNTS_KEY"]} if os.environ.get("ACCOUNTS_KEY") else {})},
                     open(os.path.join(os.environ["RUNNER_TEMP"], "s.json"), "w"))
           EOF

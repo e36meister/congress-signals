@@ -37,18 +37,28 @@ export async function listAccounts(env) {
   const a = await r2json(env, IDX, []);
   return Array.isArray(a) ? a : [];
 }
-async function saveAccounts(env, list) { await put(env, IDX, list); }
+// Every change to the list is read-modify-write with an etag check, retried on a clash, so a sign-in landing at the
+// same moment as Sign out everywhere can't undo it.
+async function editAccounts(env, fn) {
+  for (let i = 0; i < 6; i++) {
+    const o = await env.DATA.get(IDX);
+    const list = o ? await o.json() : [];
+    const out = await fn(Array.isArray(list) ? list : []);
+    if (out === undefined) return undefined;
+    const ok = await env.DATA.put(IDX, JSON.stringify(list), { httpMetadata: { contentType: "application/json" },
+      onlyIf: o ? { etagMatches: o.etag } : { uploadedBefore: new Date(0) } });
+    if (ok) return out;
+    await new Promise(r => setTimeout(r, 40 + Math.random() * 120));
+  }
+  throw new Error("the account list was busy; try again");
+}
 export async function getAccount(env, id) {
   if (!ID_RX.test(id || "")) return null;
   return (await listAccounts(env)).find(a => a.id === id) || null;
 }
 async function patchAccount(env, id, fn) {
-  const list = await listAccounts(env);
-  const a = list.find(x => x.id === id);
-  if (!a) return null;
-  fn(a);
-  await saveAccounts(env, list);
-  return a;
+  const r = await editAccounts(env, list => { const a = list.find(x => x.id === id); if (!a) return undefined; fn(a); return { ...a }; });
+  return r || null;
 }
 
 // ---------- sessions: "<id>.<generation>.<expiry>.<signature>" (the owner's passcode cookie is "<expiry>.<signature>") ----------
@@ -69,12 +79,11 @@ export async function readViewer(env, sign, cookie, safeEq) {
 }
 
 // ---------- Alpaca keys, encrypted at rest ----------
-// The key comes from ACCOUNTS_KEY when it's set, otherwise from the app passcode (so nothing new has to be set up).
-// The daily run (GitHub) derives the same key to trade the accounts. Changing the passcode without ACCOUNTS_KEY makes
-// saved keys unreadable: each person then re-enters theirs (the owner taps Reset keys).
+// The key comes from ACCOUNTS_KEY (a long random secret, set once as a GitHub secret; the deploy gives it to this
+// server and the daily run reads it too). It is never the passcode, so the passcode never has to sit in the trading jobs.
 async function aesKey(env) {
-  const src = env.ACCOUNTS_KEY || env.APP_PASSCODE;
-  if (!src) throw new Error("no key to encrypt with");
+  const src = env.ACCOUNTS_KEY;
+  if (!src || src.length < 32) throw new Error("ACCOUNTS_KEY isn't set up");
   return crypto.subtle.importKey("raw", await sha("cc-accounts-v1|" + src), "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 async function saveKeys(env, id, keyId, secret) {
@@ -116,7 +125,7 @@ function pub(a) {
 // ---------- sign-in links ----------
 async function queueLink(env, a, origin, dispatch) {
   const t = rand(32);
-  await put(env, `auth/links/${hex(await sha("link|" + t))}.json`, { id: a.id, exp: Date.now() + LINK_MIN * 60e3 });
+  await put(env, `auth/links/${hex(await sha("link|" + t))}.json`, { id: a.id, gen: a.gen || 1, exp: Date.now() + LINK_MIN * 60e3 });
   const link = `${origin}/signin#${t}`;
   const html = `<div style="font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:#152033;max-width:480px">
 <h2 style="font-weight:600;margin:0 0 12px">Sign in to Capitol Capital</h2>
@@ -130,19 +139,27 @@ Didn't ask for this? You can ignore it.</p></div>`;
 }
 
 // POST /api/login/email {email}: always the same answer, so the page doesn't reveal who has an account
-export async function requestLink(req, env, url, dispatch) {
+// The work happens after the answer (ctx.waitUntil), so a real account and a made-up one answer equally fast.
+// Limits: 10 requests an hour per network address, and 4 links an hour per real account (junk addresses can't use
+// up anyone's allowance). Counts are per hour bucket, one small file each.
+export async function requestLink(req, env, url, dispatch, ctx) {
   const b = await body(req);
   const email = String(b.email || "").trim().toLowerCase();
-  const ok = json({ ok: true, message: "If that email has an account, a sign-in link is on its way. It can take a minute or two." });
   if (!EMAIL_RX.test(email)) return json({ error: "bad-email", message: "That doesn't look like an email address." }, 400);
-  const now = Date.now(), rl = await r2json(env, "auth/link_rate.json", { start: now, n: 0, per: {} });
-  if (now - rl.start > 3600e3) { rl.start = now; rl.n = 0; rl.per = {}; }
-  rl.n += 1; rl.per[email] = (rl.per[email] || 0) + 1;
-  await put(env, "auth/link_rate.json", rl);
-  if (rl.n > 30 || rl.per[email] > 4) return ok;              // quietly ignore floods
-  const a = (await listAccounts(env)).find(x => x.email === email && x.status !== "disabled");
-  if (a) { try { await queueLink(env, a, url.origin, dispatch); } catch (e) {} }
-  return ok;
+  const ip = req.headers.get("CF-Connecting-IP") || "local", hour = Math.floor(Date.now() / 3600e3);
+  const work = (async () => {
+    if (await bump(env, `auth/rate/${hour}/ip-${hex(await sha("ip|" + ip)).slice(0, 24)}.json`) > 10) return;
+    const a = (await listAccounts(env)).find(x => x.email === email && x.status !== "disabled");
+    if (!a || await bump(env, `auth/rate/${hour}/acct-${a.id}.json`) > 4) return;
+    await queueLink(env, a, url.origin, dispatch);
+  })().catch(() => {});
+  if (ctx && ctx.waitUntil) ctx.waitUntil(work); else await work;
+  return json({ ok: true, message: "If that email has an account, a sign-in link is on its way. It can take a minute or two." });
+}
+async function bump(env, key) {
+  const n = ((await r2json(env, key, { n: 0 })).n || 0) + 1;
+  await put(env, key, { n });
+  return n;
 }
 
 // POST /api/login/link {t}: trade a one-time link for a session cookie
@@ -152,12 +169,16 @@ export async function redeemLink(req, env, sign, cookieName) {
   const bad = json({ error: "link", message: "That sign-in link has expired or was already used. Ask for a new one." }, 401);
   if (!/^[A-Za-z0-9_-]{40,50}$/.test(t)) return bad;
   const key = `auth/links/${hex(await sha("link|" + t))}.json`;
-  const L = await r2json(env, key, null);
-  if (!L) return bad;
-  await env.DATA.delete(key);
-  if (!(L.exp > Date.now())) return bad;
-  const a = await patchAccount(env, L.id, x => { if (x.status === "invited") x.status = "active"; x.last_login = new Date().toISOString(); });
-  if (!a || a.status === "disabled") return bad;
+  const o = await env.DATA.get(key);
+  if (!o) return bad;
+  const L = await o.json();
+  if (L.used) return bad;
+  // mark it used only if nobody else did in between (two taps at once: only one wins)
+  const won = await env.DATA.put(key, JSON.stringify({ used: true }), { onlyIf: { etagMatches: o.etag } });
+  if (!won || !(L.exp > Date.now())) return bad;
+  const a = await patchAccount(env, L.id, x => { if (String(x.gen || 1) !== String(L.gen || 1) || x.status === "disabled") return;
+    if (x.status === "invited") x.status = "active"; x.last_login = new Date().toISOString(); });
+  if (!a || a.status === "disabled" || String(a.gen || 1) !== String(L.gen || 1)) return bad;
   const c = await viewerCookie(sign, a);
   return json({ ok: true }, 200, { "Set-Cookie": `${cookieName}=${c.value}; Path=/; Max-Age=${c.maxAge}; HttpOnly; Secure; SameSite=Strict` });
 }
@@ -205,7 +226,7 @@ export function viewerAllowed(method, path) {
 // usual; these are answered here with the viewer's own data.
 export async function viewerApi(req, env, url, a, h) {
   const p = url.pathname;
-  if (p === "/api/session") return json({ ok: true, role: "viewer", label: a.label, connected: !!a.keys_set_at, auto: a.auto !== false, mode: "live" });
+  if (p === "/api/session") return json({ ok: true, role: "viewer", connected: !!a.keys_set_at, auto: a.auto !== false, mode: "live" });
   if (p === "/api/data") return viewerData(env, a);
   if (p === "/api/live") return viewerLive(env, a, h.live);
   if (p === "/api/notifications") return json({ items: await visibleAlerts(env, a.id) });
@@ -233,7 +254,7 @@ async function viewerData(env, a) {
   for (const k of VIEWER_DATA_KEYS) if (k in d) out[k] = d[k];
   const pol = (d.adaptive && d.adaptive.policy) || {};
   out.adaptive = { policy: { hold_other: pol.hold_other, hold_small: pol.hold_small, sizing: pol.sizing } };
-  out.viewer = { label: a.label, connected: !!a.keys_set_at, auto: a.auto !== false };
+  out.viewer = { connected: !!a.keys_set_at, auto: a.auto !== false };
   if (port) {
     out.portfolio = port.portfolio || null;
     out.member_sold = port.member_sold || {};
@@ -308,7 +329,15 @@ async function buyMore(req, env, a, maxTap) {
   const toolHeld = (hist.data || []).some(o => o.side === "buy" && o.filled_at && (o.client_order_id || "").startsWith(PREFIX) && !(o.client_order_id || "").startsWith(PARK_PREFIX));
   if (!toolHeld) return json({ ok: false, why: "not-held", message: "Buy more works on stocks the tool holds for you." }, 400);
   if (!asset.ok || !asset.data?.tradable) return json({ ok: false, why: "not-tradable" }, 400);
-  if (!acct.ok || dollars > +acct.data.buying_power) return json({ ok: false, why: "not-enough-cash" }, 400);
+  if (!acct.ok) return json({ ok: false, why: "not-found" }, 400);
+  // own money only (never margin): cash plus the parked T-bill fund the tool can sell for it
+  const today = new Date(Date.now() - 864e5).toISOString();
+  const [pk, recent] = await Promise.all([c.get("/v2/positions"), c.get(`/v2/orders?status=all&limit=200&direction=desc&after=${encodeURIComponent(today)}`)]);
+  const parkedVal = (pk.data || []).filter(x => ["SGOV", "BIL", "SHV"].includes(x.symbol)).reduce((s, x) => s + (+x.market_value || 0), 0);
+  if (dollars > Math.max(0, +acct.data.cash) + parkedVal - 25) return json({ ok: false, why: "not-enough-cash", message: "that's more than the cash and parked money in the account" }, 400);
+  const spent = (recent.data || []).filter(o => (o.client_order_id || "").startsWith(MORE_PREFIX) && !["canceled", "rejected", "expired"].includes(o.status))
+    .reduce((s, o) => s + (+o.notional || (+o.qty || 0) * (+o.filled_avg_price || 0)), 0);
+  if (spent + dollars > maxTap) return json({ ok: false, why: "daily-limit", message: `that's over the ${"$" + Math.round(maxTap).toLocaleString("en-US")} a day limit for Buy more` }, 400);
   const reqId = String(Date.now());
   try {
     const cash = +acct.data.cash;
@@ -371,13 +400,15 @@ export async function ownerAccountsPost(req, env, url, dispatch) {
     const label = String(b.label || "").trim().slice(0, 40), email = String(b.email || "").trim().toLowerCase();
     if (!label) return json({ ok: false, message: "Give the account a name, like Mom or Sam." }, 400);
     if (!EMAIL_RX.test(email)) return json({ ok: false, message: "That doesn't look like an email address." }, 400);
-    const list = await listAccounts(env);
-    if (list.some(x => x.email === email)) return json({ ok: false, message: "That email already has an account." }, 400);
-    if (list.length >= 25) return json({ ok: false, message: "That's the most accounts the app handles." }, 400);
+    if (!env.ACCOUNTS_KEY || env.ACCOUNTS_KEY.length < 32) return json({ ok: false, message: "Set up the ACCOUNTS_KEY secret first (it locks everyone's Alpaca keys), then redeploy." }, 400);
     const a = { id: [...crypto.getRandomValues(new Uint8Array(12))].map(x => "abcdefghijklmnopqrstuvwxyz0123456789"[x % 36]).join(""),
                 label, email, status: "invited", auto: true, gen: 1, created: new Date().toISOString() };
-    list.push(a);
-    await saveAccounts(env, list);
+    const why = await editAccounts(env, list => {
+      if (list.some(x => x.email === email)) return "That email already has an account.";
+      if (list.length >= 25) return "That's the most accounts the app handles.";
+      list.push(a); return "";
+    });
+    if (why) return json({ ok: false, message: why }, 400);
     let sent = true;
     try { await queueLink(env, a, url.origin, dispatch); } catch (e) { sent = false; }
     return json({ ok: true, account: pub(a), message: sent ? `Added. A sign-in link is on its way to ${email}.` : "Added, but the email couldn't be queued. Tap Send sign-in link to try again." });
@@ -409,8 +440,7 @@ export async function ownerAccountsPost(req, env, url, dispatch) {
   }
   if (act === "remove") {
     if (b.confirm !== a.email) return json({ ok: false, message: "Type the account's email to confirm." }, 400);
-    const list = (await listAccounts(env)).filter(x => x.id !== a.id);
-    await saveAccounts(env, list);
+    await editAccounts(env, list => { const i = list.findIndex(x => x.id === a.id); if (i >= 0) list.splice(i, 1); return true; });
     let cursor;
     do {
       const l = await env.DATA.list({ prefix: `accounts/${a.id}/`, cursor });

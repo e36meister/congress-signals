@@ -43,8 +43,7 @@ jobs:
           ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
           ALPACA_LIVE_KEY_ID: ${{ secrets.ALPACA_LIVE_KEY_ID }}
           ALPACA_LIVE_SECRET_KEY: ${{ secrets.ALPACA_LIVE_SECRET_KEY }}
-          # family accounts: their keys are stored encrypted in R2; this unlocks them (same rule as the app's server)
-          APP_PASSCODE: ${{ secrets.APP_PASSCODE }}
+          # family accounts: their keys are stored encrypted in R2; this unlocks them
           ACCOUNTS_KEY: ${{ secrets.ACCOUNTS_KEY }}
           TRADING_MODE: ${{ vars.TRADING_MODE }}
           GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}

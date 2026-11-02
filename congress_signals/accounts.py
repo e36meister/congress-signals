@@ -2,8 +2,7 @@
 trades the owner's, sized from that account's balance, and saves a snapshot of it for their app.
 
 The account list and each person's keys are kept in R2 by the app's server (cloud/accounts.js). The keys are
-encrypted there with AES-GCM; the key comes from ACCOUNTS_KEY if it's set, otherwise from APP_PASSCODE (same rule
-as the server). Nothing about an account (name, email, balances, positions) is ever written to the run log, which
+encrypted there with AES-GCM, with a key made from the ACCOUNTS_KEY secret (same rule as the server). Nothing about an account (name, email, balances, positions) is ever written to the run log, which
 can be public: accounts are numbered in the log, and the account's private id is only used in R2 file names.
 """
 import base64, hashlib, json, os, datetime as dt
@@ -18,8 +17,8 @@ def _unb64u(s):
 
 
 def _aes_key():
-    src = os.environ.get("ACCOUNTS_KEY") or os.environ.get("APP_PASSCODE")
-    return hashlib.sha256(("cc-accounts-v1|" + src).encode()).digest() if src else None
+    src = os.environ.get("ACCOUNTS_KEY") or ""
+    return hashlib.sha256(("cc-accounts-v1|" + src).encode()).digest() if len(src) >= 32 else None
 
 
 def _keys(acct_id, log):
@@ -59,8 +58,8 @@ def load(log):
             continue
         out.append({"id": a["id"], "auto": a.get("auto", True) is not False, "key": k["key"], "secret": k["secret"]})
     if missing:
-        log(f"Family accounts: {missing} account(s) have keys that couldn't be read (passcode changed? reset their keys "
-            "on the Accounts page); they're skipped")
+        log(f"Family accounts: {missing} account(s) have keys that couldn't be read (ACCOUNTS_KEY missing or changed? "
+            "reset their keys on the Accounts page); they're skipped")
     return out
 
 
