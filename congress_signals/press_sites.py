@@ -34,6 +34,7 @@ BACKUP = {
     "wicker": "https://www.wicker.senate.gov/",
     "yakym": "https://yakym.house.gov/media-center/press-releases",
     "dustyjohnson": "https://dustyjohnson.house.gov/media/press-releases",
+    "gimenez": "https://gimenez.house.gov/media/press-releases",   # Nov 2: library URL /press-releases is a 404
 }
 WP_TYPES = ("press_release", "press_releases", "press-releases", "press-release", "pressreleases", "news", "posts")
 
