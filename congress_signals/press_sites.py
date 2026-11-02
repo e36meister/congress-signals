@@ -6,9 +6,10 @@ How it reads a site:
    "Press Releases" / "News Releases" / "Press", else a few common paths.
 2. Take every link on that page that points at a single release: a page under the list's own path, a
    documentsingle.aspx page, or a /press|news|media/... page with a slug.
-3. WordPress sites: their built-in data feed (/wp-json), which gives each release's date, title and full text.
+3. Next.js House sites: the release list embedded in the page (__NEXT_DATA__), backend "-admin" links mapped back.
+4. WordPress sites: their built-in data feed (/wp-json), which gives each release's date, title and full text.
    This also works for Senate sites whose firewall refuses plain page reads from cloud servers.
-4. Otherwise its RSS feed.
+5. Otherwise its RSS feed.
 Elsewhere the release dates and text come from the release pages themselves (press_backfill._text).
 
 The hourly job uses this for sites in BACKUP (readers known to be blind) and for any reader that errors or
@@ -143,6 +144,56 @@ def wp_items(url, limit=20):
     return []
 
 
+def _public(u, host):
+    """Next.js House sites (Nov 2 2026) sometimes name their private WordPress backend '<member>-admin.house.gov',
+    which refuses outside connections; point such links back at the public host."""
+    return re.sub(r"^(https?://)[a-z0-9.-]+-admin\.house\.gov", lambda m: m.group(1) + host, u or "", flags=re.I)
+
+
+def next_items(url, limit=20):
+    """Next.js/React House sites (the library's 'react' pattern): the press list's embedded __NEXT_DATA__ JSON.
+    Searches every query for post edges instead of relying on a fixed position, so a page that gains or
+    loses a query still reads. [{'url','date','title','text'}] newest first, or []."""
+    import json
+    st, html, final = _get(url)
+    if st != 200:
+        return []
+    m = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)
+    if not m:
+        return []
+    try:
+        data = json.loads(m.group(1))
+    except Exception:
+        return []
+    host = urlparse(final).netloc
+    found = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            edges = (o.get("posts") or {}).get("edges") if isinstance(o.get("posts"), dict) else None
+            if isinstance(edges, list):
+                found.append(edges)
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(data)
+    items, seen = [], set()
+    for edges in found:
+        for e in edges:
+            n = (e or {}).get("node") or {}
+            link = _public(n.get("link") or "", host)
+            if not link and n.get("uri"):
+                link = f"https://{host}{n['uri']}"
+            if not link or link in seen:
+                continue
+            seen.add(link)
+            items.append({"url": link, "date": str(n.get("date") or "")[:10], "title": _strip(n.get("title")), "text": ""})
+    items.sort(key=lambda x: x["date"], reverse=True)
+    return items[:limit]
+
+
 def find_list(url):
     """(list page URL, its html, how found) or (None, '', why)."""
     st, html, final = _get(url) if url else (None, "", url)
@@ -170,6 +221,9 @@ def read_site(url):
     items = wp_items(url)
     if items:
         return {"list": url, "how": "WordPress feed", "links": [x["url"] for x in items], "items": items}
+    items = next_items(url)
+    if items:
+        return {"list": url, "how": "Next.js page data", "links": [x["url"] for x in items], "items": items}
     lst, html, how = find_list(url)
     if lst:
         return {"list": lst, "how": how, "links": release_links(html, lst)}
