@@ -1,5 +1,5 @@
 {
-  "_how": "Instagram handles checked by hand (owner, Oct 28). One line per member: \"Member name\": \"handle\", or a list [\"official\", \"personal\"] to read both. These win over the automatic lists. An empty list [] means the owner checked and the member has no Instagram (Nov 2).",
+  "_how": "Instagram handles checked by hand (owner, Oct 28). One line per member: \"Member name\": \"handle\", or a list [\"official\", \"personal\"] to read both. These win over the automatic lists. An empty list [] means the owner checked and the member has no Instagram (Nov 2). \"_shared\": committee or caucus accounts; each post is filed under every member it names (\"for\": members whose posts mostly come through it).",
   "Alexandria Ocasio-Cortez": "aoc",
   "Nancy Pelosi": "speakerpelosi",
   "Bernard Sanders": [
@@ -46,6 +46,7 @@
   ],
   "Elijah Crane": [
     "rep.elicrane",
+    "elicraneaz",
     "elicrane_ceo"
   ],
   "Jimmy Patronis": [
@@ -98,11 +99,18 @@
     "millermeeks"
   ],
   "Mark B. Messmer": [],
-  "Mike Bost": "houseveteransaffairsgop",
   "Mike Flood": "usrepmikeflood",
   "Nicole Malliotakis": "nmalliotakis",
   "Nydia M. Velázquez": "rep_velazquez",
   "Richard E. Neal": "nealforcongress",
   "Shontel M. Brown": "repshontel",
-  "Tom Barrett": "tombarrettmi7"
+  "Tom Barrett": "tombarrettmi7",
+  "_shared": {
+    "houseveteransaffairsgop": {
+      "name": "House Veterans' Affairs Committee Republicans",
+      "for": [
+        "Mike Bost"
+      ]
+    }
+  }
 }

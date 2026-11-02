@@ -1092,14 +1092,15 @@ def ig_unreadable(leg):
         if not m.get("current"):
             continue
         who = f"{m.get('name')} ({m.get('state')}, {m.get('chamber')})"
-        if any(x.get("b") == b for x in ok.values()):
-            continue
+        if any(x.get("b") == b or b in (x.get("for") or []) for x in ok.values()):
+            continue                # read through their own account, or a shared one the owner pointed them at
         if b in per and b in all_h and all_h[b] <= {h for h, _ in per[b]}:     # every account on file is unreadable
             # Oct 29 (probe): Meta answers the same "Cannot find User" (code 110) for a personal account and for a
             # username that doesn't exist, so the line can't say which it is
             why = "; ".join(f"@{h}: Meta can't find it (a personal account, which Meta doesn't let apps read, "
                             "or the username changed)" for h, w in per[b])
-            if all_h[b] <= set(manual.get(b) or []):
+            if manual.get(b) and set(manual[b]) <= {h for h, _ in per[b]}:
+                # Nov 2: every handle the owner gave is unreadable (an older guessed handle doesn't reopen the ask)
                 # Oct 30: the owner already checked these handles by hand, so asking again doesn't help; still listed
                 lines.append(f"Instagram: can't read {who}. You confirmed {', '.join('@' + h for h, _ in per[b])}, but Meta "
                              "won't share it with apps (most likely a personal account, not a Business or Creator one). "
@@ -1141,6 +1142,54 @@ def ig_manual(leg, with_none=False):
             if b and isinstance(h, str) and h.strip("@ "):
                 out.setdefault(b, []).append(h.strip("@ ").lower())
     return (out, none) if with_none else out
+
+
+def ig_shared(leg):
+    """Owner-listed shared accounts (instagram_handles.json "_shared", Nov 2): committee or caucus accounts that post
+    about several members. {handle: {"name": str, "for": {bioguide, ...}}}; "for" are the members the owner pointed
+    at this account (it stands in for their own on Data health while it reads)."""
+    try:
+        raw = json.load(open(IG_MANUAL_FILE)).get("_shared") or {}
+    except Exception:
+        return {}
+    by_name = {_ig_plain(m.get("name")): b for b, m in leg.items() if m.get("current")}
+    by_name.update({_ig_plain(f"{m.get('first') or ''} {m.get('last') or ''}"): b for b, m in leg.items() if m.get("current")})
+    out = {}
+    for h, x in raw.items():
+        x = x if isinstance(x, dict) else {"name": str(x)}
+        fb = {k if k in leg else by_name.get(_ig_plain(k)) for k in x.get("for") or []}
+        out[h.strip("@ ").lower()] = {"name": x.get("name") or h, "for": {b for b in fb if b}}
+    return out
+
+
+_TITLES = r"(?:rep\.?|representative|congressman|congresswoman|chairman|chairwoman|chair|ranking member|sen\.?|senator|leader|whip|speaker)"
+
+
+def ig_mentions(text, leg, handles):
+    """Current members a shared account's post is about: their Instagram handle (@...), their full name, or a title
+    with a last name no other current member has ("Chairman Bost"). A bare common last name is not enough."""
+    t = " " + (text or "") + " "
+    low = t.lower()
+    out = set()
+    for h, b in handles.items():
+        if re.search(r"@" + re.escape(h) + r"(?![a-z0-9._])", low):
+            out.add(b)
+    lasts = {}
+    for b, m in leg.items():
+        if m.get("current") and m.get("last"):
+            lasts.setdefault(_ig_plain(m["last"]), []).append(b)
+    for b, m in leg.items():
+        if not m.get("current"):
+            continue
+        last = m.get("last") or ""
+        names = {m.get("name") or ""} | {f"{f} {last}" for f in (m.get("first"), m.get("nick")) if f}
+        if any(n.strip() and re.search(r"(?<![a-z])" + re.escape(n.lower()) + r"(?![a-z])", low) for n in names):
+            out.add(b)
+            continue
+        if last and len(lasts.get(_ig_plain(last), [])) == 1 and \
+                re.search(_TITLES + r"\s+" + re.escape(last.lower()) + r"(?![a-z])", low):
+            out.add(b)
+    return out
 
 
 def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
@@ -1272,6 +1321,43 @@ def collect_instagram(cfg, st, tg, leg, acc, deadline, per_run=40, rotate=None):
         if rows or not os.path.exists(path):
             write_jsonl(path, sorted(old + rows, key=lambda x: x[0]))
         added += len(rows)
+
+    # Nov 2 (owner): shared accounts (a committee's) post about several members; each post is filed under every
+    # member it names, not under one owner. One call per account per run.
+    shared = ig_shared(leg)
+    for h, sx in shared.items():
+        if stop or time.time() > deadline:
+            break
+        js, why = ask(h, "media.limit(25){caption,timestamp,permalink,media_type}")
+        if why and why.split(":")[0] in ("app", "token", "limit"):
+            stop = why
+            break
+        if why:
+            failed.append(f"{h} ({why.split(':', 1)[-1]})")
+            bad[h] = {"b": None, "shared": True, "why": why, "at": time.time()}
+            ok.pop(h, None)
+            continue
+        bad.pop(h, None)
+        ok[h] = {"b": None, "shared": True, "for": sorted(sx["for"]), "at": time.time()}
+        path = os.path.join(out_dir, "_shared_" + re.sub(r"[^a-z0-9._-]", "_", h) + ".jsonl.gz")
+        old = read_jsonl(path) if os.path.exists(path) else []
+        have = {(x[4], x[1]) for x in old}
+        rows, tagged = [], 0
+        for mm in (js.get("media") or {}).get("data") or []:
+            url = mm.get("permalink") or ""
+            d = pd.to_datetime(mm.get("timestamp"), errors="coerce", utc=True)
+            cap = re.sub(r"\s+", " ", mm.get("caption") or "").strip()
+            if not url or not cap or pd.isna(d):
+                continue
+            who = ig_mentions(cap, leg, handles)
+            tagged += bool(who)
+            for b in sorted(who):
+                if (url, b) not in have:
+                    rows.append(rec(d.strftime("%Y-%m-%d"), b, "Instagram", f"{sx['name']}: {cap}", url, tg))
+        if rows or not os.path.exists(path):
+            write_jsonl(path, sorted(old + rows, key=lambda x: x[0]))
+        added += len(rows)
+        _log(f"Instagram: shared account @{h} ({sx['name']}): {tagged} recent posts name a member, +{len(rows)} new")
 
     # members with no account on file: try likely usernames, a few calls a run, accept only a clear match
     newly, gone_none, calls = [], 0, 0
