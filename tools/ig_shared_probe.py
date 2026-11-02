@@ -9,7 +9,7 @@ cfg = {"SOCIAL_DIR": "social"}
 leg = S.legislators(cfg, S._state(cfg))
 handles = {h: b for b, hs in S.ig_manual(leg).items() for h in hs}
 handles.update((S._ig_status().get("handles") or {}))
-for h in ['elicraneaz']:
+for h in []:
     js = requests.get(f"{S.META_GRAPH}/{ig}", params={"fields": f"business_discovery.username({h}){{media_count}}", "access_token": tok}, timeout=30).json()
     print(f"@{h}:", js.get('business_discovery') or (js.get('error') or {}).get('message'))
 print('Data health Instagram lines:'); [print('  ', l[:150]) for l in S.ig_unreadable(leg)]

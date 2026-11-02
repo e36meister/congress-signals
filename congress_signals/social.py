@@ -1172,7 +1172,10 @@ def ig_mentions(text, leg, handles):
     low = t.lower()
     out = set()
     for h, b in handles.items():
-        if re.search(r"@" + re.escape(h) + r"(?![a-z0-9._])", low):
+        # Nov 2 (probe): Business Discovery captions come back with the "@" stripped ("repvanorden's"), so the
+        # handle counts as a whole word too; only handles long enough not to be an ordinary word
+        if re.search(r"@" + re.escape(h) + r"(?![a-z0-9_])", low) or \
+                (len(h) >= 7 and re.search(r"(?<![a-z0-9._@])" + re.escape(h) + r"(?![a-z0-9_])", low)):
             out.add(b)
     lasts = {}
     for b, m in leg.items():
