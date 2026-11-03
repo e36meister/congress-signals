@@ -41,7 +41,7 @@ DEFAULT_CONFIG = {
     "BUY_WEIGHTS": {
         "track_record": 0.5, "cluster": 0.8, "committee": 0.6, "subcommittee": 0.4, "committee_leader": 0.4,
         "size": 0.3, "freshness": 0.4, "fast_filer": 0.6, "sell_pressure": -0.4, "insider_buying": 0.6,
-        "insider_selling": -0.2, "contracts": 0.4, "lobbying": 0.3, "donations": 0.4, "bills": 0.4, "momentum": 0.4,
+        "insider_selling": -0.2, "contracts": 0.4, "lobbying": 0.3, "donations": 0.4, "momentum": 0.4,
         "employee_donations": 0.3, "already_owned": 0.1, "disclosure_tie": 0.4, "revolving_door": 0.4,
         "testified": 0.4, "closed_briefing": 0.5, "vote_sector": 0.3, "home_state": 0.2, "contract_in_state": 0.3,
         "speech": 0.3, "social_post": 0.2, "pre_event": 0.4, "committee_cluster": 0.5, "option": 0.4,
@@ -49,8 +49,8 @@ DEFAULT_CONFIG = {
         "small_cap": 0.4, "proven_member": 0.8, "crowded": -0.3, "ex_member_lobbyist": 0.3,
         "defense_power": 0.5, "dod_award_after_trade": 0.6, "dod_momentum": 0.4,
         "grants": 0.2, "grant_after_trade": 0.4, "campaign_vendor": 0.3, "spouse_employer": 0.5,
-        "paid_travel": 0.3, "outside_position": 0.4, "buddy": 0.4, "leader": 0.3, "bill_advanced": 0.5,
-        "sector_bill_momentum": 0.2, "spouse_insider": 0.5,
+        "paid_travel": 0.3, "outside_position": 0.4, "buddy": 0.4, "leader": 0.3,
+        "spouse_insider": 0.5,
         "against_street": 0.3, "after_downgrade": 0.2, "no_coverage": 0.2,
     },
     "SHORT_WEIGHTS": {
@@ -4063,6 +4063,7 @@ def compute_features(tx, px, data, cfg):
                      ("volume", lambda x: volume_features(x, data)), ("events", lambda x: event_features(x, data, mems)),
                      ("analysts", lambda x: analyst_features(x, data)), ("size and the rest", lambda x: extra_features(x, px, data, cfg, mems)),
                      ("bills at the trade", lambda x: bill_stage_features(x, data, cfg, mems)),
+                     ("bills the company lobbied on", lambda x: lobbied_bill_features(x, data, mems)),
                      ("institutions", lambda x: _inst().inst_features(x, cfg)),
                      ("posts", lambda x: _social().post_features(x, cfg))):
         tx = fn(tx)
@@ -4100,7 +4101,16 @@ TRIAL_SIGNALS = {"relative_tie": 0.5, "unusual_volume": 0.4, "reg_action": 0.3, 
                  # bills at the time of the trade (congress_signals/bill_stages.py; owner, Oct 29). Study at 125 days:
                  # lead sponsor +1.8% (t 3.2), voted against the industry's bills -2.1% (t -3.3); committee bill past
                  # a chamber +2.0% (t 2.7) and +4.1% at 250 days
-                 "bill_lead_sponsor": 0.3, "bill_vote_against": -0.3, "bill_committee_passed": 0.2}
+                 "bill_lead_sponsor": 0.3, "bill_vote_against": -0.3, "bill_committee_passed": 0.2,
+                 # Owner, Nov 2: moved here from the main weights. They tie a bill to a stock only by broad category
+                 # (tools/bill_link_study.py: about half the links unrelated, e.g. a wipes-labelling bill counted for
+                 # NVDA; 60-day results no better than ordinary buys, sponsored bills with matching subjects -1.15%
+                 # vs -0.21%). Off until the weekly check finds they clearly help; tested every week.
+                 "bills": 0.4, "bill_advanced": 0.5, "sector_bill_momentum": 0.2,
+                 # the company named the bill in its own lobbying report (Nov 2). tools/lobbied_bill_study.py on the
+                 # 114 most-bought companies: the member backing such a bill -0.16% vs the same company's other buys
+                 # (n 1,993), so it starts off like every new signal and is tested weekly
+                 "lobbied_bill_backed": 0.3, "lobbied_bill_committee": 0.3}
 TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "unusual_volume": "Signal: unusual trading volume before the trade",
                 "reg_action": "Signal: federal rule naming the company soon after the trade",
@@ -4123,7 +4133,12 @@ TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "unusual_volume_low": "Signal: score lower when trading volume was unusual before the trade",
                 "bill_lead_sponsor": "Signal: the member is the lead sponsor of a bill in the company's industry that is still moving",
                 "bill_vote_against": "Signal: score lower when the member voted against the industry's bills around the trade",
-                "bill_committee_passed": "Signal: a bill on the industry from the member's committee had passed a chamber"}
+                "bill_committee_passed": "Signal: a bill on the industry from the member's committee had passed a chamber",
+                "bills": "Signal: member sponsored a bill in the same broad category (was in the main score until Nov 2)",
+                "bill_advanced": "Signal: a bill the member backs in the same broad category advanced after the trade (main score until Nov 2)",
+                "sector_bill_momentum": "Signal: a bill in the same broad category passed recently (main score until Nov 2)",
+                "lobbied_bill_backed": "Signal: the company lobbied on a bill the member sponsors or cosponsors",
+                "lobbied_bill_committee": "Signal: a bill the company lobbied on is before the member's committee"}
 try:
     from congress_signals import notes as _NOTES
     TRIAL_LABELS.update({f"note_{k}": f"Signal: filing note says {l[0].lower() + l[1:]}" for k, l, _ in _NOTES.WHO})
@@ -4175,8 +4190,15 @@ def active_weights(cfg, signals_on=None, rare_weights=None):
     return bw, sw
 
 
+# trial signals that don't count in the score right now: their notes are left out of a pick's reasons (Nov 2:
+# SNOW's card listed two unrelated bills that, after this change, add nothing)
+WHY_OFF = set()
+
+
 def apply_scores(tx, cfg, buy_w=None, short_w=None):
     bw, sw = active_weights(cfg)
+    WHY_OFF.clear()
+    WHY_OFF.update(k for k in TRIAL_SIGNALS if not (buy_w or bw).get(k))
     tx = tx.copy()
     tx["score"] = _score(tx, buy_w or bw)
     tx["short_score"] = _score(tx, short_w or sw)
@@ -4216,8 +4238,11 @@ def _why_buy(r):
         b.append("company lobbies this member's committees")
     if r["donations_4y"] > 0:
         b.append(f"company PAC gave member ${r['donations_4y']:,.0f}")
-    if r.get("bill_note"):
+    if r.get("bill_note") and "bills" not in WHY_OFF:
         b.append(r["bill_note"])
+    for k, sig in (("lobbied_note", "lobbied_bill_backed"), ("lobbied_cmte_note", "lobbied_bill_committee")):
+        if r.get(k) and sig not in WHY_OFF:
+            b.append(r[k])
     for f, txt in (("f_employee_donations", lambda: f"company employees gave ${r['employee_donations']:,.0f} to the campaign"),
                    ("f_already_owned", lambda: "already held it per yearly disclosure"),
                    ("f_disclosure_tie", lambda: "company named in their yearly disclosure (job, income, travel or gift)"),
@@ -4249,13 +4274,14 @@ def _why_buy(r):
                    ("f_paid_travel", lambda: "company paid for their travel (yearly disclosure)"),
                    ("f_outside_position", lambda: "holds a position with the company (yearly disclosure)"),
                    ("f_leader", lambda: "this member usually trades before their trading partners"),
-                   ("f_sector_bill_momentum", lambda: f"a {r['sector']} bill passed recently"),
+                   *((("f_sector_bill_momentum", lambda: f"a {r['sector']} bill passed recently"),)
+                     if "sector_bill_momentum" not in WHY_OFF else ()),
                    ("f_crowded", lambda: "but the stock already jumped on disclosure day")):
         if r.get(f, 0) and r.get(f, 0) >= 0.5:
             b.append(txt())
     for k in ("street_note", "spouse_note", "relative_note", "family_note", "committee_staff_note", "volume_note",
               "event_note", "buddy_note", "bill_adv_note"):
-        if r.get(k):
+        if r.get(k) and not (k == "bill_adv_note" and "bill_advanced" in WHY_OFF):
             b.append(r[k])
     if r["f_size"] >= 0.4:
         b.append(_size_text(r))
@@ -8651,6 +8677,66 @@ def bill_stage_features(tx, data, cfg, mems):
             kept[pos[ix]] = len(set(who[lo:hi][ss[lo:hi]]))
     tx["n_sellers_kept"] = kept
     log("Bills at the trade: " + ", ".join(f"{c[2:]} {int((tx[c] > 0).sum()):,}" for c in BILL_FEATURES))
+    return tx
+
+
+def lobbied_bill_features(tx, data, mems):
+    """Owner, Nov 2: a bill counts for a stock when the COMPANY named it in its own lobbying report (posted from two
+    years before the trade up to the filing), not when it only shares a broad category with the stock.
+      f_lobbied_bill_backed     the member sponsors or cosponsors it (joined by the filing, not withdrawn by the trade)
+      f_lobbied_bill_committee  it was referred, by the filing date, to a committee the member sat on at the trade
+    Reports read before Nov 2 have no bill numbers until the history fill reads them again, so this counts only
+    what's on file (trial signals: off until the weekly check finds they help)."""
+    for c in ("f_lobbied_bill_backed", "f_lobbied_bill_committee"):
+        tx[c] = 0.0
+    tx["lobbied_note"], tx["lobbied_cmte_note"] = "", ""
+    tables, lb = data.get("bill_tables"), data.get("lobbying")
+    if tables is None or lb is None or not len(lb) or "bills" not in lb:
+        return tx
+    lb = lb[lb["bills"].map(lambda x: bool(x) if isinstance(x, (list, tuple)) else False) & lb["posted"].notna()]
+    if not len(lb):
+        log("Bills the company lobbied on: no lobbying reports with bill numbers on file yet")
+        return tx
+    lob = {t: (g["posted"].values.astype("datetime64[ns]"), list(g["bills"]))
+           for t, g in lb.sort_values("posted").groupby("ticker")}
+    title = dict(zip(tables["bills"]["bill"], tables["bills"]["title"]))
+    bk = tables["backers"]
+    back = {}
+    for b_, who, role, j, w in zip(bk["bill"], bk["bioguide"], bk["role"], pd.to_datetime(bk["joined"], errors="coerce"),
+                                   pd.to_datetime(bk["withdrawn"], errors="coerce")):
+        back.setdefault((b_, who), []).append((role, j, w))
+    refs = {}
+    rf = tables["refs"]
+    for b_, cid, d in zip(rf["bill"], rf["cid"], pd.to_datetime(rf["date"], errors="coerce")):
+        refs.setdefault(b_, []).append((str(cid)[:4].upper(), d))
+    fa, fc, na, nc = (np.zeros(len(tx)), np.zeros(len(tx)), [""] * len(tx), [""] * len(tx))
+    td_, fd_ = pd.to_datetime(tx["trade_date"]), pd.to_datetime(tx["filed_date"])
+    for i, (t, b, ty, td, fd) in enumerate(zip(tx["ticker"], tx["bioguide"], tx["tx_type"], td_, fd_)):
+        g = lob.get(t)
+        if g is None or ty != "buy" or pd.isna(td) or pd.isna(fd):
+            continue
+        lo, hi = np.searchsorted(g[0], np.datetime64(td - pd.Timedelta(days=730)), side="right"), \
+            np.searchsorted(g[0], np.datetime64(fd), side="right")
+        L = sorted({x for bs in g[1][lo:hi] for x in bs})
+        if not L:
+            continue
+        for x in L:
+            for role, j, w in back.get((x, b), []):
+                if pd.notna(j) and j <= fd and (pd.isna(w) or w > td):
+                    fa[i] = 1.0
+                    na[i] = na[i] or f"company lobbied on {title.get(x, x)[:70]}, which they {role}"
+                    break
+        cids = {str(c)[:4].upper() for c in ((mems[i] or {}).get("cids") or [])} if i < len(mems) else set()
+        if cids:
+            for x in L:
+                if any(c in cids and pd.notna(d) and d <= fd for c, d in refs.get(x, [])):
+                    fc[i] = 1.0
+                    nc[i] = f"company lobbied on {title.get(x, x)[:70]}, before their committee"
+                    break
+    tx["f_lobbied_bill_backed"], tx["f_lobbied_bill_committee"] = fa, fc
+    tx["lobbied_note"], tx["lobbied_cmte_note"] = na, nc
+    log(f"Bills the company lobbied on: {lb['ticker'].nunique():,} companies' reports name bills; buys where the "
+        f"member backs one {int(fa.sum()):,}, where one is before their committee {int(fc.sum()):,}")
     return tx
 
 
