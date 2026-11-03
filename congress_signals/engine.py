@@ -10256,7 +10256,7 @@ def filter_rule_test(scored, px, cfg):
                         if o == cur_v:
                             continue
                         alt = series(with_opt(pol, key, o))
-                        c = _compare(alt[past], base[past])
+                        c = _compare(alt[past], base[past], holdout_start=None)
                         if _rule_passes(r, c, len(opts) - 1) and (best is None or _rank(c) > _rank(best[1])):
                             best = (o, c)
                     if best and r == "strict" and not confirmed(best[1]):
@@ -10404,7 +10404,16 @@ def _long_daily(bt):
     return bt["curves"]["Long picks"].pct_change().fillna(0)
 
 
-HOLDOUT_DAYS = 756          # the last 3 years: never used to pick a setting, only to confirm it
+HOLDOUT_DAYS = 756          # the rolling version (filter_rule_test's year-by-year walk-forward only)
+# Owner, Nov 3 (pipeline audit): a FIXED holdout. Every automatic decision picks using only data before this date
+# and then confirms on the data from it onward. Before, the holdout was "the last 756 days" of each comparison, so it
+# moved forward every week and slowly became data the checks had already chosen on. Be honest about one thing: the
+# Nov 3 signal audit (tools/signal_value_audit.py) used the data from 2023-11 on to decide which signals stay in the
+# main score, so for the main-score signal list this holdout is partly used. Settings the checks choose from here on
+# are judged on it cleanly.
+HOLDOUT_START = "2023-11-01"
+HOLDOUT_NOTE = ("Chosen on data before Nov 2023, confirmed on Nov 2023 onward. The Nov 3 2026 signal audit looked at "
+                "Nov 2023 onward to decide which signals stay in the score, so that period isn't fully unseen.")
 
 
 def _nw_se(d, lags=10):
@@ -10430,15 +10439,22 @@ def _nw_t(d, lags=10):
     return float(np.nanmean(x) / se) if se and np.isfinite(se) and se > 0 else 0.0
 
 
-def _compare(r_new, r_cur):
+def _compare(r_new, r_cur, holdout_start=HOLDOUT_START):
     """Yearly gain of switching and how sure it is (on daily differences, allowing for runs of days), measured
-    three ways: all years, the years before the last 3 (used to choose), and the last 3 (held back to confirm)."""
+    three ways: all years, the years before HOLDOUT_START (used to choose), and from HOLDOUT_START on (held back
+    to confirm). holdout_start=None: the last HOLDOUT_DAYS of the series (only filter_rule_test, whose own
+    year-by-year design keeps each year unseen)."""
     d = (r_new - r_cur).dropna()
     if len(d) < 250 or d.std() == 0:
         return None
-    tr, ho = d.iloc[:-HOLDOUT_DAYS], d.iloc[-HOLDOUT_DAYS:]
+    if holdout_start is None:
+        tr, ho = d.iloc[:-HOLDOUT_DAYS], d.iloc[-HOLDOUT_DAYS:]
+    else:
+        cut = pd.Timestamp(holdout_start)
+        idx = pd.to_datetime(d.index)
+        tr, ho = d[idx < cut], d[idx >= cut]
     ok = len(tr) >= 500 and tr.std() > 0
-    return {"gain": float(d.mean() * 252), "t": _nw_t(d), "recent": float(ho.mean() * 252),
+    return {"gain": float(d.mean() * 252), "t": _nw_t(d), "recent": float(ho.mean() * 252) if len(ho) else float("nan"),
             "train_gain": float(tr.mean() * 252) if ok else None, "train_t": _nw_t(tr) if ok else None}
 
 
@@ -10457,14 +10473,15 @@ def wins_earlier(c, k=1):
     """Won on the years before the last 3, by enough (+1%/yr) and surely enough for the number of options tried."""
     if not c:
         return False
-    if c.get("train_gain") is None:            # short history: all years, same bar
-        return c["gain"] >= 0.01 and c["t"] >= sure_bar(k)
+    if c.get("train_gain") is None:            # too little data before the holdout: nothing to choose on (Nov 3:
+        return False                           # before, the whole series was used, i.e. it chose on the holdout)
     return c["train_gain"] >= 0.01 and c["train_t"] >= sure_bar(k)
 
 
 def confirmed(c):
-    """Also better over the last 3 years, which played no part in choosing it."""
-    return bool(c) and c["recent"] > 0 and c["gain"] > 0
+    """Also better from HOLDOUT_START on, which played no part in choosing it (a pure check: it can only stop a
+    switch the earlier years chose, never pick one)."""
+    return bool(c) and np.isfinite(c.get("recent", float("nan"))) and c["recent"] > 0 and c["gain"] > 0
 
 
 def clearly_better(c, k=1):
@@ -10489,7 +10506,7 @@ def _verdict(c, auto, k=1):
         return "Switched automatically" if auto else "Clearly better: ask Claude to apply"
     tg, tt = (c["train_gain"], c["train_t"]) if c.get("train_gain") is not None else (c["gain"], c["t"])
     if tg >= 0.01 and tt >= sure_bar(k) and c["recent"] <= 0:
-        return "Better before, but not in the last 3 years"
+        return "Better before, but not since Nov 2023"
     if c["gain"] > 0:
         return "Slightly better, not sure enough to switch"
     return "Worse"
@@ -10547,7 +10564,7 @@ def recheck_past_switches(scored, px, cfg, a, pol, rows, today):
         k = fam.get(key, 1)
         s_now, s_start = series(pol, key in sleeve_keys), series(dict(pol, **{key: v0}), key in sleeve_keys)
         c = _compare(s_now, s_start) if s_now is not None and s_start is not None else None
-        keep = clearly_better(c, k) if c else True          # can't measure it: leave it as it is
+        keep = clearly_better(c, k) if (c and c.get("train_gain") is not None) else True   # can't measure: leave it
         rows.append({"Setting": RECHECK_LABEL, "Option": f"{labels[key]}: {pol[key]} (vs starting {v0})",
                      "Per year vs S&P": None, "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
                      "Verdict": ("Kept: still clearly better" if c else "Kept: not enough data to re-check") if keep
@@ -11076,8 +11093,8 @@ def _quarter_t(lifts, when):
 def rare_signal_test(scored, px, cfg, hold=None):
     """Every rare signal (any f_ column on <=10% of timely purchases, trial or not), tested per trade: lift = the
     flagged purchase's result vs the S&P minus the average of unflagged purchases filed the same month in the same
-    industry. Passes when: at least 30 flagged trades, lift > 0 with t >= 1.65 on the years before the last 3, and
-    lift > 0 on the last 3 years (which played no part in choosing). Saved to state/rare_test.json."""
+    industry. Passes when: at least 30 flagged trades, lift > 0 with t >= the bar on the years before HOLDOUT_START,
+    and lift > 0 from HOLDOUT_START on (which plays no part in choosing). Saved to state/rare_test.json."""
     pol = load_adaptive(cfg)["policy"]
     hold = int(hold or pol.get("hold_other") or cfg["HOLD_DAYS"])
     b = scored[(scored["tx_type"] == "buy") & (scored["lag_days"].fillna(999) <= 45)].copy()
@@ -11089,7 +11106,7 @@ def rare_signal_test(scored, px, cfg, hold=None):
     b["x"] = b["x"].clip(-1, 3)
     b["m"] = pd.to_datetime(b["filed_date"]).dt.to_period("M").astype(str)
     b["cell"] = b["m"] + "|" + b["sector"].fillna("?").astype(str)
-    cut = (pd.Timestamp.today() - pd.DateOffset(years=3)).strftime("%Y-%m")
+    cut = pd.Timestamp(HOLDOUT_START).strftime("%Y-%m")       # fixed holdout (Nov 3), not "the last 3 years"
     fcols = [c for c in b.columns if c.startswith("f_") and pd.api.types.is_numeric_dtype(b[c])]
     out, fls = [], {}
     for c in fcols:
