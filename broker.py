@@ -356,6 +356,7 @@ def recheck_queued_sells(caps, log, policy=None):
         log(f"Broker: cancelled {n} cleanup sell order(s) that no longer apply")
 
 
+_MANUAL_DONE = False                   # the owner's own-buy sell checks ran in this process (sync)
 EXT_KEY = "ext/intents.json"          # the worker's after-hours order state (cloud/worker.js extendedHours)
 
 
@@ -603,8 +604,10 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
 
     # 1c. owner, Oct 30: your own buys from then on follow the tool's sell rules. A reason to sell sends a phone alert
     #     and an email; the position is sold at the next morning's open unless you tap Keep (manual_rules.py).
-    if trade and not cfg.get("_manual_done") and _ACCOUNT is None:     # the owner's own buys only
-        cfg["_manual_done"] = True
+    global _MANUAL_DONE
+    if trade and not cfg.get("_manual_done") and not _MANUAL_DONE and _ACCOUNT is None:     # the owner's own buys only
+        # once per process: a second trading call in the same run (a copied cfg) used to run these checks again
+        cfg["_manual_done"] = _MANUAL_DONE = True
         try:
             import manual_rules
             acts, al, mst = manual_rules.review(api, cfg, positions, manual_rules.all_orders(api, cfg), clock, log)

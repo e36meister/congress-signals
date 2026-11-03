@@ -351,6 +351,9 @@ def bill_hold_lookup(scored):
     return f
 
 
+LIVE_TRADED = False
+
+
 def trade_now(scored, px):
     """Buy and sell right after scoring, before the slow parts of the update (backtests, weekly checks, watchlist
     context, charts). Uses the backtest's own pick rule on the newest filings (live_picks), so it doesn't need the
@@ -378,6 +381,8 @@ def trade_now(scored, px):
     bc = dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=slots, _pause_buys=PAUSE,
               _live_picks=live_p, _small_fresh=small_f, _caps=caps, _bill_hold=helpers["bill_hold"],
               _member_sales=msales, _price_hist=phist, _manual_eval=helpers["manual_eval"])
+    global LIVE_TRADED
+    LIVE_TRADED = True        # from here on, orders may have gone in: the BUY-list fallback must not trade again
     snap = broker.sync(bc, None, None, last, E.log, trade=not DRY_RUN)
     if snap is not None and not DRY_RUN:
         cloud_store.save_reasons(snap.get("this_run"), E.log)       # phone trade alerts say why
@@ -658,10 +663,14 @@ def main():
                     _caps=h.get("caps") or {}, _member_sales=msales, _price_hist=phist,
                     _bill_hold=h.get("bill_hold") or bill_hold_lookup(scored),
                     _manual_eval=h.get("manual_eval") or manual_eval(scored, px))
-        if early is not None:
-            # already traded right after scoring: just refresh the account snapshot, keeping what that step did
+        if early is not None or LIVE_TRADED:
+            # already traded right after scoring (or that step started trading and then failed: Nov 3 review, a
+            # second pass from the BUY list could buy twice): just refresh the account snapshot
+            if early is None:
+                E.log("Broker: early trading started but didn't finish; not trading again from the BUY list this run")
             snap = broker.sync(base, None, None, last, E.log, trade=False) or early
-            snap["this_run"] = early.get("this_run") or []
+            if snap is not None:
+                snap["this_run"] = (early or {}).get("this_run") or []
             try:     # and the family accounts' snapshots (with members' sales on what they hold)
                 from congress_signals import accounts
                 accounts.run(base, None, None, last, E.log, trade=False, msales=msales)
