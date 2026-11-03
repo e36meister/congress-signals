@@ -275,7 +275,8 @@ def sleeve_misfits(bot, caps):
 def recheck_queued_sells(caps, log, policy=None):
     """Cancel a waiting cleanup sell whose position no longer counts as a misfit (its size estimate moved
     back under the margin). Only touches sell orders the cleanup itself placed; never your orders.
-    Skipped while a small-company price rule is on, since its sales look the same."""
+    Skipped while a small-company price rule is on, since its sales look the same. Your Sell-button orders
+    ("tap-...") are never touched."""
     if (policy or {}).get("sleeve_price_exit", "none") != "none" or (policy or {}).get("sleeve_extend", "none") != "none":
         return
     s = settings(60)
@@ -289,7 +290,9 @@ def recheck_queued_sells(caps, log, policy=None):
         sym = o["symbol"]
         if (o.get("side") == "sell" and sym in bot and sym not in keep
                 and (bot[sym].get("client_order_id") or "").startswith(PREFIX + "sm-")
-                and sym in caps and not (o.get("client_order_id") or "").startswith(PREFIX)):
+                and sym in caps and not (o.get("client_order_id") or "").startswith((PREFIX, "tap-"))):
+            # the cleanup sells close the position (DELETE /v2/positions), so Alpaca names them; your Sell-button
+            # orders ("tap-...") look the same otherwise and must never be cancelled (Nov 3 review)
             held = int(np.busday_count(dt.date.fromisoformat(bot[sym]["filled_at"][:10]), dt.date.today()))
             if held < _hold_of(bot[sym], 250):       # not a normal end-of-hold sale
                 if api.delete(f"/v2/orders/{o['id']}").status_code in (200, 204):
