@@ -412,6 +412,19 @@ _EXEC_TITLE = re.compile(r"\b(ceo|chief executive|founder|co-founder|chair(?:man
 _ORG_SKIP = {"the", "a", "an", "u", "s", "us", "of", "for", "and", "inc", "corp", "co", "company", "group", "llc"}
 
 
+_SIGS = {}
+
+
+def _sig_of(text):
+    from congress_signals.post_sort import text_sig
+    k = hash(text or "")
+    if k not in _SIGS:
+        if len(_SIGS) > 200000:
+            _SIGS.clear()
+        _SIGS[k] = text_sig(text)
+    return _SIGS[k]
+
+
 def _other_affiliation(raw, start, end, co_words, ticker):
     """True when the words right around a person's name tie them to an organization that isn't the company."""
     orgs = []
@@ -1722,7 +1735,7 @@ def build_index(cfg, tg=None, sort_until=None, hard_until=None):
                     lst[j] = sorted(lst[j], key=lambda x: x[0])[-(600 if j == 0 else 120):]
                 for t in tk:
                     mentions.setdefault(key, {}).setdefault(t, []).append((d, tone, bool(rp)))
-                    crowd.setdefault(t, []).append((d, key))
+                    crowd.setdefault(t, []).append((d, key, _sig_of(text)))
                 for sc in secs:
                     sectors.setdefault(key, {}).setdefault(sc, []).append(d)
             if redone:
@@ -1851,7 +1864,8 @@ def post_features(tx, cfg, idx=None):
     fd = pd.to_datetime(tx["filed_date"])
     f1, f2, f3, f4 = (np.zeros(len(tx)) for _ in range(4))
     notes = [[] for _ in range(len(tx))]
-    crowd_np = {t: (np.array([pd.Timestamp(d) for d, _ in v], dtype="datetime64[ns]"), [k for _, k in v]) for t, v in crowd.items()}
+    from congress_signals.post_sort import crowd_count
+    crowd_np = {t: (np.array([pd.Timestamp(x[0]) for x in v], dtype="datetime64[ns]"), list(v)) for t, v in crowd.items()}
     for i, (b, t, d, f, typ, sec) in enumerate(zip(bio, tx["ticker"], td, fd, tx["tx_type"], tx.get("sector", [None] * len(tx)))):
         if pd.isna(d):
             continue
@@ -1881,10 +1895,10 @@ def post_features(tx, cfg, idx=None):
         if C is not None and pd.notna(f):
             x = np.datetime64(f)
             a, z = np.searchsorted(C[0], x - np.timedelta64(14, "D")), np.searchsorted(C[0], x)
-            who = {k for k in C[1][a:z] if not k.startswith("c:")}
-            if len(who) >= 3:
+            n_who = crowd_count(C[1][a:z], skip=lambda k: k.startswith("c:"))     # copies of one release count once
+            if n_who >= 3:
                 f4[i] = 1.0
-                notes[i].append(f"{len(who)} members named the company in posts in the 2 weeks before the filing")
+                notes[i].append(f"{n_who} members named the company in posts in the 2 weeks before the filing")
     tx["f_post_named_before"], tx["f_post_sector_burst"], tx["f_post_tone_clash"], tx["f_post_crowd"] = f1, f2, f3, f4
     tx["post_note"] = ["; ".join(n) for n in notes]
     return tx

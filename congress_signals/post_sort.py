@@ -221,6 +221,52 @@ def sort_record(r, names=None):
         return {"v": SORT_VERSION, "ty": ["other"], "tg": [], "ins": "", "meet": None, "strong": False, "m": "error"}
 
 
+def text_sig(text, k=10):
+    """A short fingerprint of a post's wording (min-hash of 6-word runs, k parts as one hex string, kept small because
+    one is stored per company mention), so copies of the same release or joint letter posted by several members can be
+    told apart from members each writing their own post. -> str ("" for very short posts)"""
+    import zlib
+    w = re.findall(r"[a-z0-9]+", (text or "").lower())
+    sh = {" ".join(w[i:i + 6]) for i in range(max(0, len(w) - 5))}
+    if len(sh) < 8:
+        return ""
+    return "".join(f"{min(zlib.crc32(f'{j}|{x}'.encode()) for x in sh):08x}" for j in range(k))
+
+
+def same_text(a, b, cut=0.3):
+    """True when two fingerprints share enough wording to be copies of one post (estimated overlap >= cut)."""
+    if not a or not b or len(a) != len(b):
+        return False
+    pa, pb = [a[i:i + 8] for i in range(0, len(a), 8)], [b[i:i + 8] for i in range(0, len(b), 8)]
+    return sum(1 for x, y in zip(pa, pb) if x == y) / len(pa) >= cut
+
+
+def crowd_count(entries, skip=None):
+    """How many members named a company, counting copies of the same text as one (owner, Nov 3: a 65-member letter
+    reposted by 4 members read as "4 members named AIG"). entries: [date, member, sig?]. A member's own separate post
+    still counts on its own; entries without a fingerprint count as their own text."""
+    groups = []                      # [(members, sigs)]
+    for e in entries:
+        key = e[1]
+        if skip and skip(key):
+            continue
+        sig = e[2] if len(e) > 2 else None
+        hit = None
+        if sig:
+            for g in groups:
+                if any(same_text(sig, s2) for s2 in g[1]):
+                    hit = g
+                    break
+        if hit is None:
+            hit = (set(), [])
+            groups.append(hit)
+        hit[0].add(key)
+        if sig:
+            hit[1].append(sig)
+    members = set().union(*(g[0] for g in groups)) if groups else set()
+    return min(len(members), len(groups))
+
+
 def significance(r, srt, traded_by=None, crowd=None, member_sectors=None):
     """Why this post matters. Levels (owner, Oct 19): 3 = push alert (3+ members naming the same company, an
     insider-style hint naming a company, a real meeting or visit with a company, its people or a lobbyist);

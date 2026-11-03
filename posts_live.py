@@ -131,9 +131,9 @@ except Exception as e:
 crowd = {t: [x for x in v if x[0] >= recent_from] for t, v in (state.get("crowd") or {}).items()}
 for src, r in fresh:
     for t in r[5] or []:
-        crowd.setdefault(t, []).append([str(r[0])[:10], r[1]])
+        crowd.setdefault(t, []).append([str(r[0])[:10], r[1], PS.text_sig(r[3])])
 crowd = {t: v for t, v in crowd.items() if v}
-crowd_n = {t: len({k for _, k in v}) for t, v in crowd.items()}
+crowd_n = {t: PS.crowd_count(v) for t, v in crowd.items()}       # copies of one release count once
 
 names = {b: m.get("name") or b for b, m in leg.items()}
 items = []
