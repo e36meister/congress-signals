@@ -235,15 +235,21 @@ document.addEventListener("submit", async ev => {
   if (ev.target.id !== "vkeys") return;
   ev.preventDefault();
   if (VA.keyBusy) return;
+  // Nov 3: the boxes were read after render() had redrawn the form, so they were always empty and every try came back
+  // "Neither box looks like an Alpaca key". Read them first; put them back if Alpaca says no, so they needn't re-paste.
+  const key = $("#vk").value, secret = $("#vs").value;
   VA.keyBusy = true; VA.keyMsg = null; render();
+  let ok = false;
   try {
     const { js } = await api("/api/me/keys", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: $("#vk").value, secret: $("#vs").value }) });
+      body: JSON.stringify({ key, secret }) });
+    ok = true;
     VA.keyMsg = { ok: true, text: js.message || "Connected." };
     if (state.data) state.data.viewer = { ...(state.data.viewer || {}), connected: true };
     if (SESSION_ME) SESSION_ME.connected = true;
   } catch (e) { VA.keyMsg = { ok: false, text: e.message || "Couldn't connect. Try again." }; }
   VA.keyBusy = false; render();
+  if (!ok) { const k = $("#vk"), s = $("#vs"); if (k) k.value = key; if (s) s.value = secret; }
 });
 
 const errText = e => e && e.message && !/^error \d+$/.test(e.message) ? e.message : (WHY_BUY[e && e.why] || (e && e.why) || "try again");
