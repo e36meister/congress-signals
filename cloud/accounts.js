@@ -9,7 +9,7 @@
 //   accounts/<id>/portfolio.json   the daily run's snapshot of their account (same shape as the owner's)
 //   accounts/<id>/alerts.json      their alert list; cleared.json, subs.json (their phones), fills_state.json
 //   auth/links/<hash>.json         one-time sign-in links (only a hash of the link is kept), 20 minutes
-//   mail/outbox/*.json             emails waiting for the GitHub mail job (it sends through the owner's Gmail)
+//   mail/outbox/*.json             emails waiting for the GitHub mail job (only when sending straight through Resend failed)
 
 const enc = new TextEncoder();
 const IDX = "accounts/index.json";
@@ -123,19 +123,36 @@ function pub(a) {
 }
 
 // ---------- sign-in links ----------
+// Emails go out straight away through Resend, from admin@capitolcapital.cc. If that fails (or the RESEND_API_KEY
+// secret isn't set), the email waits in R2 for the GitHub mail job, which tries again (Resend, then Gmail).
+// Returns true when it was sent here; false means it was queued and the mail job needs starting.
+const MAIL_FROM = "Capitol Capital <admin@capitolcapital.cc>";
+async function sendMail(env, msg) {
+  const to = msg.to === "owner" ? env.OWNER_EMAIL : msg.to;
+  if (env.RESEND_API_KEY && to) {
+    try {
+      const r = await fetch("https://api.resend.com/emails", { method: "POST",
+        headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ from: MAIL_FROM, to: [to], subject: String(msg.subject || "").slice(0, 140), html: msg.html, ...(msg.reply_to ? { reply_to: msg.reply_to } : {}) }) });
+      if (r.ok) return true;
+    } catch (e) {}
+  }
+  await put(env, `mail/outbox/${Date.now()}-${rand(6)}.json`, msg);
+  return false;
+}
 async function queueLink(env, a, origin, dispatch) {
   const t = rand(32);
   await put(env, `auth/links/${hex(await sha("link|" + t))}.json`, { id: a.id, gen: a.gen || 1, exp: Date.now() + LINK_MIN * 60e3 });
-  const link = `${origin}/signin#${t}`;
+  const link = `${env.APP_HOST ? "https://" + env.APP_HOST : origin}/signin#${t}`;
   const html = `<div style="font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:#152033;max-width:480px">
 <h2 style="font-weight:600;margin:0 0 12px">Sign in to Capitol Capital</h2>
 <p>Tap the button on the phone you want to use. It works once and expires in ${LINK_MIN} minutes.</p>
 <p style="margin:24px 0"><a href="${esc(link)}" style="background:#1D4F91;color:#fff;padding:12px 22px;border-radius:10px;text-decoration:none;font-weight:600">Sign in</a></p>
 <p style="color:#46536A;font-size:14px">After you sign in, use Share → Add to Home Screen to keep the app on your phone. It stays signed in for 6 months.<br>
 Didn't ask for this? You can ignore it.</p></div>`;
-  await put(env, `mail/outbox/${Date.now()}-${rand(6)}.json`, { to: a.email, subject: "Your Capitol Capital sign-in link", html });
+  const sent = await sendMail(env, { to: a.email, subject: "Your Capitol Capital sign-in link", html });
   await patchAccount(env, a.id, x => { x.link_sent = new Date().toISOString(); });
-  await dispatch(env, "mail.yml", {});
+  if (!sent) await dispatch(env, "mail.yml", {});
 }
 
 // POST /api/login/email {email}: always the same answer, so the page doesn't reveal who has an account
@@ -581,8 +598,7 @@ export async function checkFillsAll(env, sendAll, reasons, dispatch) {
       if (mail.length) {
         const html = `<div style="font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:#152033;max-width:520px">${mail.map(m =>
           `<p><b>${esc(m.title)}</b><br>${esc(m.body)}</p>`).join("")}<p style="color:#46536A;font-size:13px">Change which emails you get in the app: More → Settings.</p></div>`;
-        await put(env, `mail/outbox/${Date.now()}-${rand(6)}.json`, { to: a.email, subject: mail.length === 1 ? `Capitol Capital: ${mail[0].title}` : `Capitol Capital: ${mail.length} updates`, html });
-        mailed = true;
+        if (!await sendMail(env, { to: a.email, subject: mail.length === 1 ? `Capitol Capital: ${mail[0].title}` : `Capitol Capital: ${mail.length} updates`, html })) mailed = true;
       }
     } catch (e) { fails.push(`${a.label}: ${String(e && e.message || e).slice(0, 80)}`); }
   }
@@ -702,7 +718,8 @@ async function bugReport(req, env, a, dispatch) {
 <h2 style="font-weight:600;margin:0 0 8px">${what} from ${esc(a.label)}</h2>
 <p style="white-space:pre-wrap;border-left:3px solid #DCE1E8;padding-left:12px">${esc(text)}</p>
 <p style="color:#46536A;font-size:13px">Page: ${esc(page || "unknown")}<br>Account: ${esc(a.email)}<br>Phone/browser: ${esc(ua)}<br>Sent ${esc(new Date().toISOString())}</p></div>`;
-  await put(env, `mail/outbox/${Date.now()}-${rand(6)}.json`, { to: "owner", subject: `Capitol Capital ${what.toLowerCase()} from ${a.label}`.slice(0, 120), html });
-  try { await dispatch(env, "mail.yml", {}); } catch (e) {}
+  if (!await sendMail(env, { to: "owner", subject: `Capitol Capital ${what.toLowerCase()} from ${a.label}`.slice(0, 120), html, reply_to: a.email })) {
+    try { await dispatch(env, "mail.yml", {}); } catch (e) {}
+  }
   return json({ ok: true, message: idea ? "Sent. Thanks for the idea." : "Sent. Thanks for letting us know." });
 }

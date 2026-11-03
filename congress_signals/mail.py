@@ -1,40 +1,54 @@
-"""Shared email pieces: sending through Gmail (with inline images), the app's web address for links, and the
+"""Shared email pieces: sending (through Resend from admin@capitolcapital.cc, or Gmail if Resend isn't set up or fails;
+inline images either way), the app's web address for links, and the
 account-vs-S&P chart drawn as a picture (email apps don't run scripts or show SVG, so the chart is a PNG that links
 to the app)."""
 import os, io, datetime as dt
 
 GREEN, RED, GREY, INK, LINE, ACCENT, SPY_C = "#0B7A4B", "#B42318", "#6B778A", "#152033", "#DCE1E8", "#1D4F91", "#8A93A3"
-FALLBACK_URL = "https://claude.ai/artifact/Hkj8H6ZduZXcuvtgSaByru"
-_ORIGIN = {}
+APP_URL = "https://capitolcapital.cc"
 
 
 def app_url(path="/"):
-    """Link into the phone app (its address is saved by the app's server), or the dashboard if that isn't known."""
-    if "v" not in _ORIGIN:
-        o = ""
-        try:
-            import cloud_store
-            raw = cloud_store.get("push/origin.txt", log=lambda m: None)
-            o = (raw.decode() if isinstance(raw, bytes) else str(raw or "")).strip().rstrip("/")
-        except Exception:
-            o = ""
-        _ORIGIN["v"] = o if o.startswith("https://") else ""
-    return (_ORIGIN["v"] + path) if _ORIGIN["v"] else FALLBACK_URL
+    """Link into the app."""
+    return (os.environ.get("APP_URL") or APP_URL).rstrip("/") + path
 
 
-def send(subject, html, log, images=None, ok_msg="Email: sent", to=None):
-    """Send an HTML email to ALERT_TO (or yourself), or to `to` (a family account's own email or a sign-in link).
-    images: {content_id: png bytes}, shown with <img src='cid:id'>."""
+MAIL_FROM = "Capitol Capital <admin@capitolcapital.cc>"
+
+
+def owner_email():
+    return os.environ.get("ALERT_TO") or os.environ.get("GMAIL_ADDRESS")
+
+
+def _resend(subject, html, to, images, reply_to=None):
+    key = os.environ.get("RESEND_API_KEY")
+    if not (key and to):
+        return False
+    import base64, requests
+    body = {"from": os.environ.get("MAIL_FROM") or MAIL_FROM, "to": [to], "subject": subject[:140], "html": html}
+    if reply_to:
+        body["reply_to"] = reply_to
+    if images:
+        body["attachments"] = [{"filename": f"{cid}.png", "content": base64.b64encode(png).decode(), "content_id": cid,
+                                "content_type": "image/png"} for cid, png in images.items()]
+    try:
+        r = requests.post("https://api.resend.com/emails", json=body, timeout=30,
+                          headers={"Authorization": f"Bearer {key}"})
+        return r.ok
+    except Exception:
+        return False
+
+
+def _gmail(subject, html, to, images):
     addr, pw = os.environ.get("GMAIL_ADDRESS"), os.environ.get("GMAIL_APP_PASSWORD")
-    if not (addr and pw):
-        log("Email: not set up (GMAIL_ADDRESS / GMAIL_APP_PASSWORD secrets missing)")
+    if not (addr and pw and to):
         return False
     import smtplib
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
     from email.mime.image import MIMEImage
     msg = MIMEMultipart("related")
-    msg["Subject"], msg["From"], msg["To"] = subject[:140], addr, to or os.environ.get("ALERT_TO") or addr
+    msg["Subject"], msg["From"], msg["To"] = subject[:140], addr, to
     msg.attach(MIMEText(html, "html"))
     for cid, png in (images or {}).items():
         im = MIMEImage(png, "png")
@@ -45,11 +59,26 @@ def send(subject, html, log, images=None, ok_msg="Email: sent", to=None):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
             s.login(addr, pw.replace(" ", ""))
             s.send_message(msg)
+        return True
+    except Exception:
+        return False
+
+
+def send(subject, html, log, images=None, ok_msg="Email: sent", to=None, reply_to=None):
+    """Send an HTML email to the owner (ALERT_TO, or the Gmail address), or to `to` (a family account's own email).
+    images: {content_id: png bytes}, shown with <img src='cid:id'>. The log never shows an address."""
+    to = to or owner_email()
+    if not (os.environ.get("RESEND_API_KEY") or os.environ.get("GMAIL_APP_PASSWORD")):
+        log("Email: not set up (RESEND_API_KEY or the Gmail secrets are missing)")
+        return False
+    if _resend(subject, html, to, images, reply_to):
         log(ok_msg)
         return True
-    except Exception as e:
-        log(f"Email: sending failed ({type(e).__name__}); check the Gmail app password secret")
-        return False
+    if _gmail(subject, html, to, images):
+        log(ok_msg + (" (through Gmail; Resend didn't take it)" if os.environ.get("RESEND_API_KEY") else ""))
+        return True
+    log("Email: sending failed; check the RESEND_API_KEY secret (and that capitolcapital.cc shows Verified in Resend)")
+    return False
 
 
 def _font(size, bold=False):

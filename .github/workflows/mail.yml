@@ -1,7 +1,8 @@
 name: Send app emails
 
 # Started by the app's server when someone asks for a sign-in link (or the owner adds an account). Sends whatever is
-# waiting in R2 under mail/outbox/ through the owner's Gmail, then deletes it. The log never shows addresses.
+# waiting in R2 under mail/outbox/ through Resend (from admin@capitolcapital.cc; Gmail if that fails). The server normally sends
+# straight away itself; this job only picks up what it couldn't, then deletes it. The log never shows addresses.
 on:
   workflow_dispatch: {}
 
@@ -26,6 +27,7 @@ jobs:
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           ALERT_TO: ${{ secrets.ALERT_TO }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

@@ -20,7 +20,7 @@ for k in keys:
     if not msg or not msg.get("to") or time.time() - made > life:
         dropped += 1
     elif mail.send(str(msg.get("subject", ""))[:140], str(msg.get("html", "")), quiet,
-                   to=(os.environ.get("ALERT_TO") or os.environ.get("GMAIL_ADDRESS")) if msg["to"] == "owner" else str(msg["to"])):
+                   to=mail.owner_email() if msg["to"] == "owner" else str(msg["to"]), reply_to=msg.get("reply_to")):
         sent += 1
     else:
         failed += 1
@@ -28,4 +28,4 @@ for k in keys:
     cloud_store.delete(k, log=quiet)
 print(f"App emails: {sent} sent, {dropped} expired or empty, {failed} failed")
 if failed:
-    raise SystemExit("Some emails couldn't be sent (check the Gmail app password secret)")
+    raise SystemExit("Some emails couldn't be sent (check the RESEND_API_KEY secret)")

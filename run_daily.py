@@ -82,29 +82,12 @@ def _upload_to_drive(local_path, title, mimetype="application/json"):
         E.log(f"Drive: created {title}")
 
 
-DASHBOARD_URL = "https://claude.ai/artifact/Hkj8H6ZduZXcuvtgSaByru"
+DASHBOARD_URL = "https://capitolcapital.cc/"
 
 
 def _send_email(subject, body_html, log_ok):
-    addr, pw = env("GMAIL_ADDRESS"), env("GMAIL_APP_PASSWORD")
-    to = env("ALERT_TO") or addr
-    if not (addr and pw):
-        return False
-    import smtplib
-    from email.mime.text import MIMEText
-    from email.mime.multipart import MIMEMultipart
-    msg = MIMEMultipart("alternative")
-    msg["Subject"], msg["From"], msg["To"] = subject[:140], addr, to
-    msg.attach(MIMEText(body_html, "html"))
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
-            s.login(addr, pw.replace(" ", ""))
-            s.send_message(msg)
-        E.log(log_ok)
-        return True
-    except Exception as e:
-        E.log(f"Email: sending failed ({type(e).__name__}); check the Gmail app password secret")
-        return False
+    from congress_signals import mail
+    return mail.send(subject, body_html, E.log, ok_msg=log_ok)
 
 
 def send_worth_alerts(items):

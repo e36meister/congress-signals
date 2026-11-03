@@ -1,8 +1,12 @@
 name = "capitol-capital"
 main = "worker.js"
 compatibility_date = "2026-09-01"
-workers_dev = true
+workers_dev = true        # kept on so widgets and shortcuts set up with the old address still work
 preview_urls = false
+routes = [{ pattern = "capitolcapital.cc", custom_domain = true }]
+
+[vars]
+APP_HOST = "capitolcapital.cc"   # sign-in links point here; pages on the old address forward here
 
 [assets]
 directory = "./app"

@@ -14,6 +14,10 @@ import { readViewer, viewerAllowed, viewerApi, requestLink, redeemLink, SIGNIN_P
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
+    // the app lives at capitolcapital.cc; the old workers.dev address sends pages there (its /api/ still answers,
+    // so widgets and shortcuts set up with the old address keep working). A sign-in link's #token survives the hop.
+    if (env.APP_HOST && url.hostname.endsWith(".workers.dev") && !url.pathname.startsWith("/api/") && req.method === "GET")
+      return Response.redirect(`https://${env.APP_HOST}${url.pathname}${url.search}`, 302);
     if (!url.pathname.startsWith("/api/")) return page(req, env, url);
     try {
       return await api(req, env, url, ctx);

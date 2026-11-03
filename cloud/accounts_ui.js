@@ -460,7 +460,7 @@ function renderAccounts() {
       <input id="acce" type="email" placeholder="Their email" required aria-label="Email">
       <button type="submit" class="buybtn go"${ACC.busy ? " disabled" : ""}>Add and email a sign-in link</button>
     </form>
-    <p class="foot">They get a sign-in link by email (from your Gmail), then connect their own real-money Alpaca account once in the app. From then on the tool buys the same picks for them, sized from their own balance, and sends alerts only to them. Don't charge for this: trading other people's money for a fee would need an adviser registration.</p>
+    <p class="foot">They get a sign-in link by email (from admin@capitolcapital.cc), then connect their own real-money Alpaca account once in the app. From then on the tool buys the same picks for them, sized from their own balance, and sends alerts only to them. Don't charge for this: trading other people's money for a fee would need an adviser registration.</p>
   </section>`;
 }
 document.addEventListener("submit", ev => {

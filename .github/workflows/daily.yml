@@ -106,6 +106,7 @@ jobs:
           TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
           GMAIL_ADDRESS: ${{ github.event.inputs.dry_run != 'true' && secrets.GMAIL_ADDRESS || '' }}
           GMAIL_APP_PASSWORD: ${{ github.event.inputs.dry_run != 'true' && secrets.GMAIL_APP_PASSWORD || '' }}
+          RESEND_API_KEY: ${{ github.event.inputs.dry_run != 'true' && secrets.RESEND_API_KEY || '' }}
           ALERT_TO: ${{ secrets.ALERT_TO }}
           GDRIVE_SERVICE_ACCOUNT_JSON: ${{ github.event.inputs.dry_run != 'true' && secrets.GDRIVE_SERVICE_ACCOUNT_JSON || '' }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}

@@ -72,6 +72,8 @@ jobs:
           GH_DISPATCH_TOKEN: ${{ secrets.GH_DISPATCH_TOKEN }}
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
           ACCOUNTS_KEY: ${{ secrets.ACCOUNTS_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          OWNER_EMAIL: ${{ secrets.ALERT_TO || secrets.GMAIL_ADDRESS }}
         run: |
           umask 077
           python3 - <<'EOF'
@@ -86,7 +88,10 @@ jobs:
                      "GH_DISPATCH_TOKEN": os.environ.get("GH_DISPATCH_TOKEN") or "",
                      "SEC_USER_AGENT": os.environ.get("SEC_USER_AGENT") or "",
                      # family accounts' saved Alpaca keys are encrypted with this (a long random GitHub secret)
-                     **({"ACCOUNTS_KEY": os.environ["ACCOUNTS_KEY"]} if os.environ.get("ACCOUNTS_KEY") else {})},
+                     **({"ACCOUNTS_KEY": os.environ["ACCOUNTS_KEY"]} if os.environ.get("ACCOUNTS_KEY") else {}),
+                     # emails (sign-in links, alerts, bug reports) go straight out through Resend; bug reports go to you
+                     **({"RESEND_API_KEY": os.environ["RESEND_API_KEY"]} if os.environ.get("RESEND_API_KEY") else {}),
+                     **({"OWNER_EMAIL": os.environ["OWNER_EMAIL"]} if os.environ.get("OWNER_EMAIL") else {})},
                     open(os.path.join(os.environ["RUNNER_TEMP"], "s.json"), "w"))
           EOF
           npx --yes wrangler@4 secret bulk "$RUNNER_TEMP/s.json" 2>&1 | sed -E 's#[A-Za-z0-9./:-]*workers\.dev#(hidden)#g'
@@ -95,25 +100,17 @@ jobs:
       - name: Email the app's address
         if: github.event_name == 'workflow_dispatch'
         env:
-          APP_URL: ${{ steps.setup.outputs.url }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           ALERT_TO: ${{ secrets.ALERT_TO }}
         run: |
           python3 - <<'EOF'
-          import os, smtplib
-          from email.mime.text import MIMEText
-          addr, pw, url = os.environ.get("GMAIL_ADDRESS"), os.environ.get("GMAIL_APP_PASSWORD"), os.environ["APP_URL"]
-          if not (addr and pw):
-              raise SystemExit("Gmail isn't set up; find the address in Cloudflare under Workers & Pages → capitol-capital")
-          msg = MIMEText(f"""<p>Your Capitol Capital app is live.</p>
+          from congress_signals import mail
+          url = mail.app_url("/")
+          mail.send("Capitol Capital: your phone app", f"""<p>Your Capitol Capital app is live.</p>
           <p><a href="{url}">{url}</a></p>
-          <p>On your iPhone: open the link in <b>Safari</b>, log in with your passcode, then tap
+          <p>On your iPhone: open the link in <b>Safari</b>, log in, then tap
           <b>Share → Add to Home Screen</b>. Open it from the new icon and log in once more
-          (home-screen apps keep their own login).</p>""", "html")
-          msg["Subject"], msg["From"], msg["To"] = "Capitol Capital: your phone app", addr, os.environ.get("ALERT_TO") or addr
-          with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
-              s.login(addr, pw.replace(" ", ""))
-              s.send_message(msg)
-          print("Emailed the app's address")
+          (home-screen apps keep their own login).</p>""", print, ok_msg="Emailed the app's address")
           EOF
