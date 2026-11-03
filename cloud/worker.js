@@ -1065,6 +1065,12 @@ async function extendedHours(env, when) {
     if (!r.ok && extended && it.notional != null && r.status === 422) {          // no fractional orders out of hours for this stock: whole shares
       const q = Math.floor(it.notional / px);
       if (q >= 1) { delete body.notional; body.qty = String(q); r = await a.post("/v2/orders", body); }
+      else {                         // Nov 3 review: under one share out of hours: keep it a market order for the open
+        const mb = { symbol: it.sym, side: it.side, type: "market", time_in_force: "day", client_order_id: extCid(it.cid, "m"),
+                     notional: Math.max(1, it.notional).toFixed(2) };
+        r = await a.post("/v2/orders", mb);
+        if (r.ok) { it.oid = r.data.id; it.px = null; it.at = new Date().toISOString(); it.ext = false; it.wait_open = true; changed = true; return; }
+      }
     }
     if (!r.ok) throw new Error(`${it.side} ${it.sym}: Alpaca refused the ${extended ? "extended-hours" : "market"} order (HTTP ${r.status}: ${String(r.data && r.data.message || "").slice(0, 80)})`);
     it.oid = r.data.id; it.px = extended ? px : null; it.at = new Date().toISOString(); it.ext = extended;
@@ -1101,7 +1107,10 @@ async function extendedHours(env, when) {
       }
       const isLive = o && ["new", "accepted", "pending_new", "partially_filled", "held", "accepted_for_bidding", "calculated"].includes(o.status);
       if ((it.notional != null && it.notional < 1) || (it.qty != null && it.qty <= 0)) { if (isLive) await cancel(o.id); delete I[key]; changed = true; continue; }
-      if (o && ["canceled", "rejected"].includes(o.status)) { delete I[key]; changed = true; continue; }   // cancelled by you or the tool: drop it (an 8 PM expiry is "expired")
+      // cancelled by you or the tool: drop it (an 8 PM expiry is "expired"). One the worker cancelled itself to swap is
+      // placed again instead (Nov 3 review: a failed swap used to lose the order)
+      if (o && ["canceled", "rejected"].includes(o.status) && it.self_cancel !== o.id) { delete I[key]; changed = true; continue; }
+      if (it.wait_open && session !== "open") continue;                // a market order waiting for the 9:30 open
       if (session === "open") {
         if (isLive && it.ext) { if (await cancel(o.id)) await place(it, false); }
         else if (!isLive) await place(it, false);
@@ -1111,7 +1120,17 @@ async function extendedHours(env, when) {
       const last = await extLast(a, it.sym);
       if (!last) { failures.push(`${it.sym}: no last price`); continue; }
       const px = extPx(last, it.side);
-      if (isLive && !it.ext) { if (await cancel(o.id)) await place(it, true, px); else { delete I[key]; changed = true; } continue; }
+      if (isLive && !it.ext) {
+        it.self_cancel = o.id; changed = true;
+        if (await cancel(o.id)) {
+          try { await place(it, true, px); }
+          catch (e) {                     // the replacement was refused: put the market order back for the open
+            try { await place(it, false); it.wait_open = true; } catch (e2) { /* kept: the next pass tries again */ }
+            throw e;
+          }
+        } else { delete I[key]; changed = true; }
+        continue;
+      }
       if (!isLive) { await place(it, true, px); continue; }        // expired at 8 PM, or the first time this session
       const age = (Date.now() - Date.parse(it.at || 0)) / 60000;
       if (age >= EXT_REPRICE_MIN && Math.abs(px - (it.px || 0)) / px > 0.001) {
