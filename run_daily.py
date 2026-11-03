@@ -217,7 +217,10 @@ def send_weekly_summary():
         return None, None, None
     m_, ml, mh = vs(d.get("backtest"), "Long picks")
     s_, sl, sh = vs(d.get("small"), "Small-company picks")
-    parts.append(f"<h3>Backtest since 2014, per year vs the S&amp;P 500</h3><p>Main picks {pc(m_)} (likely {pc(ml)} to {pc(mh)})"
+    w_, wl, wh = vs(d.get("walk_forward"), "Never-seen-years picks")
+    parts.append(f"<h3>Backtest since 2014, per year vs the S&amp;P 500</h3><p>Honest result (each year picked only with "
+                 f"what was known before it): {pc(w_)} (likely {pc(wl)} to {pc(wh)})<br>"
+                 f"Main picks, in-sample (settings chosen with these years) {pc(m_)} (likely {pc(ml)} to {pc(mh)})"
                  f"<br>Small-company portfolio {pc(s_)} (likely {pc(sl)} to {pc(sh)})</p>")
     # data progress
     g = d.get("data_progress") or {}
@@ -331,6 +334,9 @@ def bill_hold_lookup(scored):
     return f
 
 
+LIVE_TRADED = False
+
+
 def trade_now(scored, px):
     """Buy and sell right after scoring, before the slow parts of the update (backtests, weekly checks, watchlist
     context, charts). Uses the backtest's own pick rule on the newest filings (live_picks), so it doesn't need the
@@ -358,6 +364,8 @@ def trade_now(scored, px):
     bc = dict(cfg, _hold_policy=E.load_adaptive(cfg)["policy"], _small_slots=slots, _pause_buys=PAUSE,
               _live_picks=live_p, _small_fresh=small_f, _caps=caps, _bill_hold=helpers["bill_hold"],
               _member_sales=msales, _price_hist=phist, _manual_eval=helpers["manual_eval"])
+    global LIVE_TRADED
+    LIVE_TRADED = True        # from here on, orders may have gone in: the BUY-list fallback must not trade again
     snap = broker.sync(bc, None, None, last, E.log, trade=not DRY_RUN)
     if snap is not None and not DRY_RUN:
         cloud_store.save_reasons(snap.get("this_run"), E.log)       # phone trade alerts say why
@@ -515,6 +523,15 @@ def main():
         E.check_trial_signals_once(scored, px, cfg)
     except Exception as e:
         E.log(f"Adjustments: new-signal check skipped ({e})")
+    try:      # owner, Nov 3: switched-off signals at the other hold periods, a slice each run (reports, never switches)
+        found = E.check_signals_other_holds(scored, px, cfg)
+        if found and not DRY_RUN:
+            cloud_store.notify("Signal helps with a different hold: " + found[0]["label"].replace("Signal: ", "")[:60],
+                               " ".join(f"{x['label'].replace('Signal: ', '')[:60]}: +{(x['gain'] or 0) * 100:.1f}%/yr with a "
+                                        f"{x['hold']}-day hold (sureness {(x['t'] or 0):.1f}); not switched on, because the "
+                                        f"strategy uses a different hold." for x in found[:3]), "rare", "/#works", E.log)
+    except Exception as e:
+        E.log(f"Adjustments: other-hold check skipped ({type(e).__name__}: {e})")
     try:      # rare signals judged per trade; a passing trial signal is switched on automatically
         rt = E.rare_signal_test(scored, px, cfg)
         fresh = [r for r in (rt or {}).get("rows", []) if (r["signal"] in (rt.get("newly_passing") or [])
@@ -629,10 +646,14 @@ def main():
                     _caps=h.get("caps") or {}, _member_sales=msales, _price_hist=phist,
                     _bill_hold=h.get("bill_hold") or bill_hold_lookup(scored),
                     _manual_eval=h.get("manual_eval") or manual_eval(scored, px))
-        if early is not None:
-            # already traded right after scoring: just refresh the account snapshot, keeping what that step did
+        if early is not None or LIVE_TRADED:
+            # already traded right after scoring (or that step started trading and then failed: Nov 3 review, a
+            # second pass from the BUY list could buy twice): just refresh the account snapshot
+            if early is None:
+                E.log("Broker: early trading started but didn't finish; not trading again from the BUY list this run")
             snap = broker.sync(base, None, None, last, E.log, trade=False) or early
-            snap["this_run"] = early.get("this_run") or []
+            if snap is not None:
+                snap["this_run"] = (early or {}).get("this_run") or []
             try:     # and the family accounts' snapshots (with members' sales on what they hold)
                 from congress_signals import accounts
                 accounts.run(base, None, None, last, E.log, trade=False, msales=msales)

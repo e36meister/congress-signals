@@ -27,7 +27,7 @@ SIG_LABELS = {"committee": "their committee oversees the industry", "contracts":
               "home_state": "company based in their state", "contract_in_state": "company has contracts in their state",
               "speech": "named the company in a floor speech", "pre_event": "traded before a company event",
               "option": "used options", "against_street": "bought against Wall Street ratings", "after_downgrade": "bought after a downgrade",
-              "no_coverage": "no analyst covers the company", "activist_13d": "an activist investor took a stake",
+              "no_coverage": "analyst coverage had lapsed", "activist_13d": "an activist investor took a stake",
               "new_5pct": "a new 5% holder", "funds_adding": "funds were adding the stock", "short_heavy": "heavy short selling",
               "post_named_before": "named the company in a post before", "post_sector_burst": "posting burst about the industry",
               "post_crowd": "3+ members posted about the company", "post_tone_clash": "post tone clashes with the trade",
@@ -35,7 +35,9 @@ SIG_LABELS = {"committee": "their committee oversees the industry", "contracts":
               "employee_donations": "company employees donated to them", "vote_sector": "voted on an industry bill near the trade",
               "bills": "sponsored a bill in the same broad category",
               "lobbied_bill_backed": "company lobbied on a bill they back",
-              "lobbied_bill_committee": "company lobbied on a bill before their committee", "first_time": "first time trading this stock",
+              "lobbied_bill_committee": "company lobbied on a bill before their committee",
+              "committee_oversees_co": "their committee handles the company", "committee_leader_co": "they lead a committee that handles the company",
+              "lobbying_targets_member": "company lobbied on a bill they back in their committee", "proven_big": "proven member, large trade", "first_time": "first time trading this stock",
               "defense_company": "defense company", "small_cap": "company under $2B", "full_sale": "sold the whole position"}
 SECTOR_ALL = "*"
 MAX_EVENTS = 6000      # per member file (keeps the busiest traders' pages under ~1 MB)

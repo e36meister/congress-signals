@@ -38,20 +38,12 @@ DEFAULT_CONFIG = {
     "WATCHLIST_LOOKBACK_DAYS": 30,
     "CLUSTER_WINDOW_DAYS": 30,
     "TRACK_PRIOR_TRADES": 5,
+    # Owner, Nov 3: signals with no edge in tools/signal_value_audit.py moved to TRIAL_SIGNALS (tested weekly)
     "BUY_WEIGHTS": {
-        "track_record": 0.5, "cluster": 0.8, "committee": 0.6, "subcommittee": 0.4, "committee_leader": 0.4,
-        "size": 0.3, "freshness": 0.4, "fast_filer": 0.6, "sell_pressure": -0.4, "insider_buying": 0.6,
-        "insider_selling": -0.2, "contracts": 0.4, "lobbying": 0.3, "donations": 0.4, "momentum": 0.4,
-        "employee_donations": 0.3, "already_owned": 0.1, "disclosure_tie": 0.4, "revolving_door": 0.4,
-        "testified": 0.4, "closed_briefing": 0.5, "vote_sector": 0.3, "home_state": 0.2, "contract_in_state": 0.3,
-        "speech": 0.3, "social_post": 0.2, "pre_event": 0.4, "committee_cluster": 0.5, "option": 0.4,
-        "spouse": 0.1, "first_time": 0.2, "unusual_size": 0.4, "new_sector": 0.1, "late": -0.5,
-        "small_cap": 0.4, "proven_member": 0.8, "crowded": -0.3, "ex_member_lobbyist": 0.3,
-        "defense_power": 0.5, "dod_award_after_trade": 0.6, "dod_momentum": 0.4,
-        "grants": 0.2, "grant_after_trade": 0.4, "campaign_vendor": 0.3, "spouse_employer": 0.5,
-        "paid_travel": 0.3, "outside_position": 0.4, "buddy": 0.4, "leader": 0.3,
-        "spouse_insider": 0.5,
-        "against_street": 0.3, "after_downgrade": 0.2, "no_coverage": 0.2,
+        "cluster": 0.8, "committee_leader": 0.4, "donations": 0.4, "revolving_door": 0.4, "testified": 0.4,
+        "closed_briefing": 0.5, "contract_in_state": 0.3, "committee_cluster": 0.5, "option": 0.4, "new_sector": 0.1,
+        "late": -0.5, "proven_member": 0.8, "crowded": -0.3, "defense_power": 0.5, "dod_award_after_trade": 0.6,
+        "dod_momentum": 0.4, "grant_after_trade": 0.4, "campaign_vendor": 0.3, "buddy": 0.4, "no_coverage": 0.2,
     },
     "SHORT_WEIGHTS": {
         "sell_track_record": 1.0, "sell_cluster": 0.8, "buy_pressure": -0.4, "committee": 0.5,
@@ -503,7 +495,36 @@ def collect_house(cfg):
     json.dump({"left": left, "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")},
               open(_p(cfg, "cache", "house_backlog.json"), "w"))
     log(f"House: {len(tx)} stock transactions total; {left} reports still to read")
+    try:
+        house_coverage(idx, done, tx)
+    except Exception as e:
+        log(f"House coverage: not computed ({type(e).__name__}: {e})")
     return tx
+
+
+def house_coverage(idx, done, tx, years=5, grace_days=7):
+    """Owner, Nov 3: per filing year, the trade reports in the Clerk's list, how many were read, how many had stock
+    trades, and trades per report with trades, so a real gap (reports listed but not read) can be told apart from a
+    quiet year (2024 looked like a hole: every report was read, members just traded fewer stocks). Only reports
+    listed more than `grace_days` ago and still unread are flagged (a failure line, so Data health shows it)."""
+    now = pd.Timestamp.today().normalize()
+    per_doc = tx.groupby(tx["doc_id"].astype(str)).size() if len(tx) and "doc_id" in tx else pd.Series(dtype=int)
+    parts, gaps = [], []
+    for y in sorted(idx["year"].unique())[-years:]:
+        d = idx[idx["year"] == y]
+        ids = d["DocID"].astype(str)
+        read = ids.isin(done)
+        with_tx = ids.isin(set(per_doc.index))
+        ntx = int(per_doc.reindex(ids[with_tx]).sum()) if with_tx.any() else 0
+        parts.append(f"{y}: {len(d)} listed, {int(read.sum())} read, {int(with_tx.sum())} with trades, "
+                     f"{(ntx / max(int(with_tx.sum()), 1)):.1f} trades each")
+        old = d["FilingDate"] < now - pd.Timedelta(days=grace_days)
+        miss = int((old & ~read).sum())
+        if miss:
+            gaps.append(f"{y}: {miss}")
+    log("House coverage (reports in the Clerk's list): " + "; ".join(parts))
+    if gaps:
+        log("House coverage: reports listed more than a week ago couldn't be read yet (" + ", ".join(gaps) + ")")
 
 
 PAPER_VERSION = 2      # 2: unmatched lines kept for re-matching; older reports re-read after the backlog
@@ -1555,6 +1576,57 @@ def attach_notes(cfg, tx):
 PART_SIZES = {}       # trades read from each source this run (checked before auto-buying)
 
 
+SEEN_LATE_DAYS = 3        # a trade first seen more than this many days after its filing date counts as found late
+
+
+def _seen_key(df):
+    return (df["who"].astype(str) + "|" + df["ticker"].astype(str) + "|" + pd.to_datetime(df["trade_date"]).dt.strftime("%Y-%m-%d")
+            + "|" + df["tx_type"].astype(str) + "|" + df["amt_lo"].astype(str))
+
+
+def stamp_seen_at(cfg, tx):
+    """Nov 3 (pipeline audit): the first day the app saw each trade. Scanned reports read later by the text reader,
+    lines matched to a stock later, phone imports and re-reads all kept their original filing date, so the
+    backtest bought them the morning after a filing the app hadn't seen yet. From now on each new trade gets the
+    day it first appeared (state/seen_at.json, keyed like the de-duplication: member, stock, trade date, buy/sell,
+    amount); forward_returns enters at the next open after that day when it's more than SEEN_LATE_DAYS after the
+    filing. Trades already on file when tracking began have no first-seen date and keep their filing date: for
+    them we can't tell (house live-search rows were already dated the day they were first seen)."""
+    path = _p(cfg, "state", "seen_at.json")
+    try:
+        st = json.load(open(path))
+    except Exception:
+        st = {}
+    today = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
+    keys = dict(st.get("keys") or {})
+    first_run = not st.get("started")
+    k = _seen_key(tx)
+    added = 0
+    for x in pd.unique(k.values):
+        if x not in keys:
+            keys[x] = "" if first_run else today        # "" = on file before tracking began
+            added += 0 if first_run else 1
+    st = {"started": st.get("started") or today, "keys": keys}
+    json.dump(st, open(path, "w"))
+    tx = tx.copy()
+    tx["seen_at"] = pd.to_datetime(k.map(keys).replace("", None), errors="coerce")
+    late = tx["seen_at"].notna() & (tx["seen_at"] > tx["filed_date"] + pd.Timedelta(days=SEEN_LATE_DAYS))
+    log(f"First-seen dates: tracking since {st['started']}; {added:,} new trades today; {int(late.sum()):,} trades on "
+        f"file were found more than {SEEN_LATE_DAYS} days after their filing (the backtest buys them after they were seen)")
+    return tx
+
+
+def entry_basis(tx):
+    """The day after which a trade could first be bought: its filing date, or the day the app first saw it when
+    that was more than SEEN_LATE_DAYS later (stamp_seen_at)."""
+    f = pd.to_datetime(tx["filed_date"])
+    if "seen_at" not in tx:
+        return f
+    s = pd.to_datetime(tx["seen_at"], errors="coerce")
+    late = s.notna() & (s > f + pd.Timedelta(days=SEEN_LATE_DAYS))
+    return f.where(~late, s)
+
+
 def collect_all(cfg):
     parts = []
     if cfg.get("USE_HOUSE", True):
@@ -1615,6 +1687,10 @@ def collect_all(cfg):
         tx = attach_notes(cfg, tx)
     except Exception as e:
         log(f"Filing notes: failed ({type(e).__name__}: {str(e)[:150]})")
+    try:
+        tx = stamp_seen_at(cfg, tx)
+    except Exception as e:
+        log(f"First-seen dates: failed ({type(e).__name__}: {str(e)[:150]}); entries use the filing date this run")
     tx.to_pickle(_p(cfg, "cache", "all_tx.pkl"))
     tx.to_csv(_p(cfg, "data", "all_transactions.csv"), index=False)
     log(f"All sources: {len(tx)} unique transactions, {tx['member'].nunique()} members, "
@@ -2951,8 +3027,11 @@ def classify_missing(cfg, tickers):
     return out
 
 
-def missing_price_scenarios(tx, px, cfg, horizons=None):
-    """How much the purchases we can't price could move the headline average, using why each stock vanished."""
+def missing_price_scenarios(tx, px, cfg, horizons=None, pick_avg=None):
+    """How much the purchases we can't price could move the headline average, using why each stock vanished.
+    Nov 3 (pipeline audit): also for the picks themselves (pick_avg = the long picks' average per trade vs the S&P):
+    the missing stocks put back at the same share, best and worst case, so the headline can be read with and
+    without the survivorship gap. The main case is unchanged."""
     buys = tx[(tx["tx_type"] == "buy") & tx["ticker"].notna()]
     if not len(buys):
         return None
@@ -2974,6 +3053,12 @@ def missing_price_scenarios(tx, px, cfg, horizons=None):
     if base is not None:
         res.update({"reported": base, "with_missing_best": base * (1 - share) + best * share,
                     "with_missing_worst": base * (1 - share) + worst * share})
+    if pick_avg is not None and np.isfinite(pick_avg):
+        res.update({"picks_reported": float(pick_avg), "picks_with_missing_best": float(pick_avg * (1 - share) + best * share),
+                    "picks_with_missing_worst": float(pick_avg * (1 - share) + worst * share)})
+        log(f"Missing prices: long picks' average per trade vs the S&P {pick_avg * 100:+.2f}% as reported; with the "
+            f"{share * 100:.1f}% of purchases we can't price put back {res['picks_with_missing_best'] * 100:+.2f}% (best case) "
+            f"to {res['picks_with_missing_worst'] * 100:+.2f}% (worst case)")
     return res
 
 
@@ -3674,7 +3759,7 @@ def forward_returns(tx, px, hold, cost=0.0, stop=None, exit_pos=None):
     also at its open (a rule broken by a day's close sells at the next open)."""
     idx = px.index
     n = len(idx)
-    ent = _entry_positions(idx, tx["filed_date"])
+    ent = _entry_positions(idx, entry_basis(tx))     # Nov 3: a trade found late is bought after it was seen
     ext = ent + hold
     if exit_pos is not None:
         exit_pos = np.asarray(exit_pos)
@@ -4064,6 +4149,7 @@ def compute_features(tx, px, data, cfg):
                      ("analysts", lambda x: analyst_features(x, data)), ("size and the rest", lambda x: extra_features(x, px, data, cfg, mems)),
                      ("bills at the trade", lambda x: bill_stage_features(x, data, cfg, mems)),
                      ("bills the company lobbied on", lambda x: lobbied_bill_features(x, data, mems)),
+                     ("company-specific committee links", lambda x: company_link_features(x, data, cfg, mems)),
                      ("institutions", lambda x: _inst().inst_features(x, cfg)),
                      ("posts", lambda x: _social().post_features(x, cfg))):
         tx = fn(tx)
@@ -4110,7 +4196,27 @@ TRIAL_SIGNALS = {"relative_tie": 0.5, "unusual_volume": 0.4, "reg_action": 0.3, 
                  # the company named the bill in its own lobbying report (Nov 2). tools/lobbied_bill_study.py on the
                  # 114 most-bought companies: the member backing such a bill -0.16% vs the same company's other buys
                  # (n 1,993), so it starts off like every new signal and is tested weekly
-                 "lobbied_bill_backed": 0.3, "lobbied_bill_committee": 0.3}
+                 "lobbied_bill_backed": 0.3, "lobbied_bill_committee": 0.3,
+                 # Owner, Nov 3 ("do all"): company-specific versions of the broad committee and lobbying signals,
+                 # next to the old ones (which stay on the weekly re-test, so a link the narrow rule misses isn't
+                 # lost). company_link_features; lobbying bill numbers are still being filled (about 10 days), so
+                 # these fire more over time. proven_big: tools/signal_ideas_study.py, +4.8%/+6.7%/+4.2% at
+                 # 60/125/250 days (weak: past the placebo bar at one hold), about 24 picks a year.
+                 "committee_oversees_co": 0.4, "committee_leader_co": 0.4, "lobbying_targets_member": 0.4,
+                 "proven_big": 0.4,
+                 # Owner, Nov 3 (tools/signal_value_audit.py, run 41570844319): moved here from the main weights.
+                 # Judged against random placebo signals with the same firing rates (bars |t| 1.97/2.19/2.56/2.85 at
+                 # 20/60/125/250 days), none of these beat buys filed the same month in the same sector at any hold;
+                 # vote_sector hurt once the other signals were counted (-1.44% at 60d, t -3.3; -1.90% at 250d, t -2.2)
+                 # and uses the broad bill-category map. Off until the weekly check finds one clearly helps.
+                 "vote_sector": 0.3, "spouse_insider": 0.5, "committee": 0.6, "fast_filer": 0.6,
+                 "insider_buying": 0.6, "home_state": 0.2, "track_record": 0.5, "contracts": 0.4,
+                 "disclosure_tie": 0.4, "freshness": 0.4, "momentum": 0.4, "pre_event": 0.4, "small_cap": 0.4,
+                 "subcommittee": 0.4, "unusual_size": 0.4, "ex_member_lobbyist": 0.3, "against_street": 0.3,
+                 "leader": 0.3, "lobbying": 0.3, "size": 0.3, "after_downgrade": 0.2, "first_time": 0.2,
+                 "grants": 0.2, "already_owned": 0.1, "spouse": 0.1, "spouse_employer": 0.5,
+                 "employee_donations": 0.3, "speech": 0.3, "insider_selling": -0.2, "sell_pressure": -0.4,
+                 "outside_position": 0.4, "paid_travel": 0.3, "social_post": 0.2}
 TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "unusual_volume": "Signal: unusual trading volume before the trade",
                 "reg_action": "Signal: federal rule naming the company soon after the trade",
@@ -4138,7 +4244,44 @@ TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "bill_advanced": "Signal: a bill the member backs in the same broad category advanced after the trade (main score until Nov 2)",
                 "sector_bill_momentum": "Signal: a bill in the same broad category passed recently (main score until Nov 2)",
                 "lobbied_bill_backed": "Signal: the company lobbied on a bill the member sponsors or cosponsors",
-                "lobbied_bill_committee": "Signal: a bill the company lobbied on is before the member's committee"}
+                "lobbied_bill_committee": "Signal: a bill the company lobbied on is before the member's committee",
+                "committee_oversees_co": "Signal: the member's committee handles this company (it lobbied on a bill there or testified there)",
+                "committee_leader_co": "Signal: the member chairs or leads a committee that handles this company",
+                "lobbying_targets_member": "Signal: the company lobbied, in the year before, on a bill the member backs and whose committee they sit on",
+                "proven_big": "Signal: a proven member making a large trade ($50,001 or more)",
+                "vote_sector": "Signal: voted on a bill in the industry near the trade (broad category) (main score until Nov 3)",
+                "spouse_insider": "Signal: spouse is a company insider (main score until Nov 3)",
+                "committee": "Signal: their committee oversees the industry (main score until Nov 3)",
+                "fast_filer": "Signal: member usually files quickly (main score until Nov 3)",
+                "insider_buying": "Signal: company insiders were buying (main score until Nov 3)",
+                "home_state": "Signal: company based in their state (main score until Nov 3)",
+                "track_record": "Signal: member's past buys beat the S&P (main score until Nov 3)",
+                "contracts": "Signal: company has big federal contracts (main score until Nov 3)",
+                "disclosure_tie": "Signal: company named in their yearly disclosure (main score until Nov 3)",
+                "freshness": "Signal: disclosed soon after the trade (main score until Nov 3)",
+                "momentum": "Signal: stock beat the S&P over the 3 months before (main score until Nov 3)",
+                "pre_event": "Signal: traded before a company event (main score until Nov 3)",
+                "small_cap": "Signal: company under $2B (main score until Nov 3)",
+                "subcommittee": "Signal: sits on the subcommittee for the industry (main score until Nov 3)",
+                "unusual_size": "Signal: 3x their usual trade size (main score until Nov 3)",
+                "ex_member_lobbyist": "Signal: a former member lobbies for the company (main score until Nov 3)",
+                "against_street": "Signal: bought against Wall Street ratings (main score until Nov 3)",
+                "leader": "Signal: member usually trades before their trading partners (main score until Nov 3)",
+                "lobbying": "Signal: company lobbies their committees (main score until Nov 3)",
+                "size": "Signal: large trade (main score until Nov 3)",
+                "after_downgrade": "Signal: bought after a downgrade (main score until Nov 3)",
+                "first_time": "Signal: first time trading this stock (main score until Nov 3)",
+                "grants": "Signal: company got federal grants or loans (main score until Nov 3)",
+                "already_owned": "Signal: already owned it (main score until Nov 3)",
+                "spouse": "Signal: spouse or family account (main score until Nov 3)",
+                "spouse_employer": "Signal: spouse works for the company (main score until Nov 3)",
+                "employee_donations": "Signal: company employees donated to them (main score until Nov 3)",
+                "speech": "Signal: named the company in a floor speech (main score until Nov 3)",
+                "insider_selling": "Signal: company insiders were selling (scored lower) (main score until Nov 3)",
+                "sell_pressure": "Signal: other members sold (scored lower) (main score until Nov 3)",
+                "outside_position": "Signal: holds a position with the company (main score until Nov 3)",
+                "paid_travel": "Signal: company paid for travel (main score until Nov 3)",
+                "social_post": "Signal: posted about the company (Bluesky) (main score until Nov 3)"}
 try:
     from congress_signals import notes as _NOTES
     TRIAL_LABELS.update({f"note_{k}": f"Signal: filing note says {l[0].lower() + l[1:]}" for k, l, _ in _NOTES.WHO})
@@ -4197,8 +4340,9 @@ WHY_OFF = set()
 
 def apply_scores(tx, cfg, buy_w=None, short_w=None):
     bw, sw = active_weights(cfg)
-    WHY_OFF.clear()
-    WHY_OFF.update(k for k in TRIAL_SIGNALS if not (buy_w or bw).get(k))
+    if buy_w is None:          # the live weights only (backtests rescore with other weights and must not change it)
+        WHY_OFF.clear()
+        WHY_OFF.update(k for k in TRIAL_SIGNALS if not bw.get(k))
     tx = tx.copy()
     tx["score"] = _score(tx, buy_w or bw)
     tx["short_score"] = _score(tx, short_w or sw)
@@ -4218,29 +4362,32 @@ def _size_text(r):
 
 def _why_buy(r):
     b = []
-    if r["track_n"] >= 3:
+    on = lambda k: k not in WHY_OFF        # Nov 3: a reason shows only while its signal counts in the score
+    if r["track_n"] >= 3 and on("track_record"):
         b.append(f"member's past buys {r['track_excess']*100:+.1f}% vs SPY avg ({int(r['track_n'])})")
     if r["n_buyers"] >= 2:
         b.append(f"{int(r['n_buyers'])} members bought within 30d")
     if r["f_committee_leader"] > 0:
         b.append(f"chairs or leads a committee over {r['sector']}")
-    elif r["f_committee"] > 0:
+    elif r["f_committee"] > 0 and on("committee"):
         b.append(f"committee oversees {r['sector']}")
-    if r["f_subcommittee"] > 0:
+    if r["f_subcommittee"] > 0 and on("subcommittee"):
         b.append("sits on the subcommittee for this industry")
-    if r["insider_buyers"] > 0:
+    if r["insider_buyers"] > 0 and on("insider_buying"):
         b.append(f"{int(r['insider_buyers'])} company insider(s) bought")
-    if r["f_contracts"] > 0:
+    if r["f_contracts"] > 0 and on("contracts"):
         b.append(f"${r['contracts_180d']/1e6:,.0f}M federal contracts")
     if r.get("contract_after_trade"):
         b.append("contract awarded after the trade")
-    if r["f_lobbying"] >= 1:
+    if r["f_lobbying"] >= 1 and on("lobbying"):
         b.append("company lobbies this member's committees")
     if r["donations_4y"] > 0:
         b.append(f"company PAC gave member ${r['donations_4y']:,.0f}")
     if r.get("bill_note") and "bills" not in WHY_OFF:
         b.append(r["bill_note"])
-    for k, sig in (("lobbied_note", "lobbied_bill_backed"), ("lobbied_cmte_note", "lobbied_bill_committee")):
+    for k, sig in (("lobbied_note", "lobbied_bill_backed"), ("lobbied_cmte_note", "lobbied_bill_committee"),
+                   ("co_cmte_note", "committee_oversees_co"), ("co_lead_note", "committee_leader_co"),
+                   ("lob_target_note", "lobbying_targets_member"), ("proven_big_note", "proven_big")):
         if r.get(k) and sig not in WHY_OFF:
             b.append(r[k])
     for f, txt in (("f_employee_donations", lambda: f"company employees gave ${r['employee_donations']:,.0f} to the campaign"),
@@ -4277,17 +4424,26 @@ def _why_buy(r):
                    *((("f_sector_bill_momentum", lambda: f"a {r['sector']} bill passed recently"),)
                      if "sector_bill_momentum" not in WHY_OFF else ()),
                    ("f_crowded", lambda: "but the stock already jumped on disclosure day")):
-        if r.get(f, 0) and r.get(f, 0) >= 0.5:
+        if r.get(f, 0) and r.get(f, 0) >= 0.5 and on(f[2:]):
             b.append(txt())
-    for k in ("street_note", "spouse_note", "relative_note", "family_note", "committee_staff_note", "volume_note",
-              "event_note", "buddy_note", "bill_adv_note"):
-        if r.get(k) and not (k == "bill_adv_note" and "bill_advanced" in WHY_OFF):
+    for k, sigs in (("street_note", ("against_street", "after_downgrade", "no_coverage")), ("spouse_note", ("spouse_insider",)),
+                    ("relative_note", ("relative_tie",)), ("family_note", ("family_possible",)),
+                    ("committee_staff_note", ("committee_staff_lobbyist",)),
+                    ("volume_note", ("unusual_volume", "unusual_volume_low")),
+                    ("event_note", ("reg_action", "witness_after", "markup_after", "major_8k_after")),
+                    ("buddy_note", ("buddy",)), ("bill_adv_note", ("bill_advanced",))):
+        if k == "street_note" and r.get(k):        # three signals share this note: keep only the parts that count
+            parts = [x for x in str(r[k]).split("; ") if on("against_street" if x.startswith("bought against") else
+                                                         "after_downgrade" if "downgrade" in x else "no_coverage")]
+            if parts:
+                b.append("; ".join(parts))
+        elif r.get(k) and any(on(x) for x in sigs):
             b.append(r[k])
-    if r["f_size"] >= 0.4:
+    if r["f_size"] >= 0.4 and on("size"):
         b.append(_size_text(r))
-    if r["f_freshness"] >= 0.7:
+    if r["f_freshness"] >= 0.7 and on("freshness"):
         b.append(f"disclosed in {int(r['lag_days'])}d")
-    if r["n_sellers"] >= 2:
+    if r["n_sellers"] >= 2 and on("sell_pressure"):
         b.append(f"but {int(r['n_sellers'])} members sold")
     return "; ".join(b) or "baseline signal"
 
@@ -4672,7 +4828,7 @@ BUY_FACTORS = [("f_track_record", "Member track record"), ("f_cluster", "Cluster
                ("f_reg_action", "Federal rule named the company after the trade"), ("f_witness_after", "Company testified to their committee after the trade"),
                ("f_markup_after", "Committee marked up an industry bill after the trade"), ("f_major_8k_after", "Major company announcement after the trade"),
                ("f_against_street", "Bought against Wall Street"), ("f_after_downgrade", "Bought after a downgrade"),
-               ("f_no_coverage", "No analyst coverage"),
+               ("f_no_coverage", "Analyst coverage lapsed (rated before, none in the last 18 months)"),
                ("f_testified", "Company testified to their committee"), ("f_closed_briefing", "Closed briefing before trade"),
                ("f_vote_sector", "Voted on industry bill near trade"), ("f_home_state", "Company based in their state"),
                ("f_contract_in_state", "Contracts in their state"), ("f_speech", "Named company in floor speech"),
@@ -4832,7 +4988,7 @@ def run_backtest(scored, px, cfg, since=None):
                     ("f_reg_action", "Federal rule after the trade"), ("f_witness_after", "Testimony after the trade"),
                     ("f_markup_after", "Industry markup after the trade"), ("f_major_8k_after", "Major 8-K after the trade"),
                     ("f_against_street", "Bought against Wall Street"), ("f_after_downgrade", "Bought after a downgrade"),
-                    ("f_no_coverage", "No analyst coverage")) if f in scored}}
+                    ("f_no_coverage", "Analyst coverage lapsed (rated before, none in the last 18 months)")) if f in scored}}
     extras = {}
     if not cfg.get("_nested") and since is None:
         pt, pv = persistence_table(scored)
@@ -4849,8 +5005,12 @@ def run_backtest(scored, px, cfg, since=None):
             log(f"Never-seen-years test skipped ({type(e).__name__}: {e})")
         try:
             hz = extras["horizons"]
-            extras["missing"] = missing_price_scenarios(_TX_ALL, px, cfg, hz.to_dict("records") if hz is not None else None) \
-                if _TX_ALL is not None else None
+            try:
+                pa = float(trade_stats.loc["Avg vs SPY per trade (%)", "Long picks"]) / 100
+            except Exception:
+                pa = None
+            extras["missing"] = missing_price_scenarios(_TX_ALL, px, cfg, hz.to_dict("records") if hz is not None else None,
+                                                        pick_avg=pa) if _TX_ALL is not None else None
         except Exception as e:
             log(f"Missing prices: scenarios skipped ({type(e).__name__})")
     return {**extras, "longs": fmt_trades(longs, False), "shorts": fmt_trades(shorts, True), "perf": pd.DataFrame(perf),
@@ -4887,8 +5047,15 @@ def _fit(rows, names, y, defaults, w=None):
     return {n: round(float(out[n]), 3) if n in out else defaults[n] for n in names}
 
 
+TUNE_INNER_YEARS = 3          # Nov 3: tuned weights are learned this long before HOLDOUT_START
+
+
 def tune_weights(scored, px, cfg):
-    split = pd.Timestamp(cfg["TRAIN_TEST_SPLIT"])
+    # Nov 3 (pipeline audit): the split was 2024-01-01, so the "unseen" test (~715 days) was too short for the
+    # weekly check's before/after split and decide_tuned fell back to judging on the whole test period, which is
+    # the holdout. Now the weights are learned on trades that finished before HOLDOUT_START - 3 years, the years
+    # from there to HOLDOUT_START decide, and HOLDOUT_START on only confirms (via _compare).
+    split = min(pd.Timestamp(cfg["TRAIN_TEST_SPLIT"]), pd.Timestamp(HOLDOUT_START) - pd.DateOffset(years=TUNE_INNER_YEARS))
     tr = scored[scored["closed"] & scored["excess"].notna() & (scored["exit_date"] < split)]
     trb, trs = tr[tr["tx_type"] == "buy"], tr[tr["tx_type"] == "sell"]
     if len(trb) < 200:
@@ -4935,9 +5102,17 @@ def walk_forward(scored, px, cfg, min_train=500):
     buys_all = scored[(scored["tx_type"] == "buy") & scored["entry_px"].notna()]
     if not len(buys_all):
         return None
-    names = list(cfg["BUY_WEIGHTS"])
+    # Nov 3 (pipeline audit): every signal on file, not just today's main list (that list was trimmed on Nov 3 using
+    # all years, so learning only from it would let hindsight pick the candidates), and the same sell rules as the
+    # regular side (stop / keep-holding / sell-when-member-sells from the current policy), so the comparison is fair.
+    names = [n for n in dict.fromkeys(list(cfg["BUY_WEIGHTS"]) + list(TRIAL_SIGNALS)) if f"f_{n}" in buys_all]
     zeros = {n: 0.0 for n in names}
-    by_hold = {h: apply_hold_policy(buys_all, px, cfg, {"hold_small": h, "hold_other": h}) for h in HOLD_CHOICES}
+    try:
+        pol0 = {k: v for k, v in (load_adaptive(cfg)["policy"] or {}).items()
+                if k in ("price_exit", "extend", "exit_on_member_sell")}
+    except Exception:
+        pol0 = {}
+    by_hold = {h: apply_hold_policy(buys_all, px, cfg, {**pol0, "hold_small": h, "hold_other": h}) for h in HOLD_CHOICES}
     base = by_hold[60] if 60 in by_hold else next(iter(by_hold.values()))
     years = sorted(base["filed_date"].dt.year.unique())
     picks, log_rows, held = [], [], {}
@@ -5004,6 +5179,7 @@ def walk_forward(scored, px, cfg, min_train=500):
     # always with the hand-set weights, so the weekly check compares the two methods whichever one is in use
     hand = apply_scores(scored, cfg, cfg["BUY_WEIGHTS"], cfg["SHORT_WEIGHTS"])
     reg = run_backtest(hand, px, dict(cfg, _nested=True), since=longs["filed_date"].min())
+    # (scored already carries the current policy's exits, the same pol0 rules the honest side now uses)
     series = {"Never-seen-years picks": ld, "Regular backtest, same years": _long_daily(reg).reindex(idx).fillna(0),
               "S&P 500 (SPY)": spy}
     perf, curves = {}, {}
@@ -6184,6 +6360,9 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
             "settings": {k: cfg[k] for k in ("HOLD_DAYS", "PICKS_PER_WEEK", "SHORTS_PER_WEEK", "PICK_PERCENTILE",
                                               "SHORT_PERCENTILE", "SHORT_ALLOCATION", "USE_TUNED_WEIGHTS")},
             "slots": bt.get("slots"),
+            # Nov 3 (pipeline audit): this backtest uses settings and a signal list chosen with these same years;
+            # the honest number is walk_forward ("Never-seen-years picks"), shown first in the app
+            "in_sample": True, "holdout_note": HOLDOUT_NOTE,
             "perf": [{"name": c, **{k: _j(perf.loc[k, c]) for k in perf.index}} for c in perf.columns],
             "curve": {"dates": [d.strftime("%Y-%m-%d") for d in wk.index],
                       "series": {c: [_j((v - 1) * 100) for v in wk[c].values] for c in wk.columns}},
@@ -6766,7 +6945,8 @@ def collect_employee_donations(cfg, fec_ids):
 # ----------------------------------------------------------------------------
 # 10, 12. Committee hearings: who testified, and closed briefings (congress.gov)
 # ----------------------------------------------------------------------------
-CLOSED_RE = re.compile(r"\b(closed|classified|executive session|members[- ]only|briefing)\b", re.I)
+# Nov 3: the bare word "briefing" made open briefings count as closed; only closed-door wording counts now
+CLOSED_RE = re.compile(r"\b(closed|classified|executive session|members?[- ]only|member briefing|secure briefing)\b", re.I)
 
 
 def _congresses(cfg):
@@ -7479,6 +7659,33 @@ def _within(dates, lo, hi):
     return bool(len(dates)) and bool(((dates > lo) & (dates <= hi)).any())
 
 
+def committee_cid_sectors(cfg):
+    """Committee id (HSAS, HSAS25, SSFI, ...) -> the stock sectors it oversees, from the congress-legislators
+    committee list (cached a week). Committee ids are stable over time. Nov 3: lets a closed briefing count only
+    when it was held by a committee tied to the stock's industry, not any committee the member sits on."""
+    cache, path = _cache_json(cfg, "committee_names.json", {})
+    if not _fresh(cache.get("_at", ""), 7):
+        try:
+            names = {}
+            for c in _gh_yaml("main", "committees-current.yaml") or []:
+                tid = c.get("thomas_id")
+                if not tid:
+                    continue
+                names[tid] = c["name"]
+                for sc in c.get("subcommittees") or []:
+                    names[tid + str(sc.get("thomas_id"))] = f"{c['name']}: {sc.get('name')}"
+            if names:
+                cache = {"_at": dt.datetime.now().isoformat(), "names": {**(cache.get("names") or {}), **names}}
+                json.dump(cache, open(path, "w"))
+        except Exception as e:
+            log(f"Committee names: couldn't refresh ({type(e).__name__}); using the saved list")
+    out = {}
+    for cid, nm in (cache.get("names") or {}).items():
+        top, _, sub_ = nm.partition(": ")
+        out[str(cid).upper()] = _sectors_for(top, COMMITTEE_SECTORS) | (_sectors_for(sub_, SUBCOMMITTEE_SECTORS) if sub_ else set())
+    return out
+
+
 def compute_connections(tx, data, cfg, mems):
     meta = data["meta"]
     n = len(tx)
@@ -7495,6 +7702,12 @@ def compute_connections(tx, data, cfg, mems):
     tx = tx.sort_values("filed_date")
     key = tx["who"]
     tx["f_first_time"] = (tx.groupby([key, tx["ticker"]]).cumcount() == 0).astype(float)
+    # Nov 3: in a member's first 12 months on file we can't tell a first trade from one we just don't have
+    # (the data starts in 2014, and a new member's earlier holdings were never disclosed), so "first time" and
+    # "new sector" are left unknown (0) there instead of firing on nearly every trade
+    warm = (pd.to_datetime(tx["filed_date"]) < pd.to_datetime(tx["filed_date"]).groupby(key).transform("min")
+            + pd.Timedelta(days=365)).values
+    tx["f_first_time"] = np.where(warm, 0.0, tx["f_first_time"].values)
     mid = (tx["amt_lo"].fillna(1001) + tx["amt_hi"].fillna(15000)) / 2
     med = mid.groupby(key).transform(lambda s: s.expanding().median().shift(1))
     tx["f_unusual_size"] = ((mid / med) >= 3).astype(float).where(med.notna(), 0.0)
@@ -7505,7 +7718,7 @@ def compute_connections(tx, data, cfg, mems):
         ns.append(1.0 if (sec and s_ and sec not in s_) else 0.0)
         if sec:
             s_.add(sec)
-    tx["f_new_sector"] = ns
+    tx["f_new_sector"] = np.where(warm, 0.0, np.asarray(ns, dtype=float))
     tx = tx.sort_index()
     own = tx["owner"].fillna("").astype(str).str.lower()
     tx["f_spouse"] = np.where(own.isin(["sp", "spouse", "dc", "child", "dependent child"]), 1.0,
@@ -7651,7 +7864,10 @@ def compute_connections(tx, data, cfg, mems):
     cr, crn = np.zeros(n), [""] * n
     if lb is not None and len(lb) and "covered" in lb:
         def core(nm):
-            c = re.sub(r"\b(committee|on|the|of|and|house|senate|joint|select|permanent|special|subcommittee)\b", " ", nm.lower())
+            # Nov 3: both sides go through this (it used to be applied to the committee name only, so "energy
+            # commerce" was searched for in "energy and commerce committee" and never found)
+            c = re.sub(r"[^a-z0-9]+", " ", str(nm).lower())
+            c = re.sub(r"\b(committee|on|the|of|and|house|senate|joint|select|permanent|special|subcommittee|us|u s)\b", " ", c)
             return " ".join(c.split())
         cmemo = {}
         for i, (t, f, ch, m) in enumerate(zip(tx["ticker"], fdt, tx["chamber"], mems)):
@@ -7672,7 +7888,8 @@ def compute_connections(tx, data, cfg, mems):
                 key = (c, cores, chw)
                 h = cmemo.get(key)
                 if h is None:
-                    h = cmemo[key] = next((k for k in cores if re.search(r"\b" + re.escape(k) + r"\b", c)), "")
+                    cc = core(c)
+                    h = cmemo[key] = next((k for k in cores if re.search(r"\b" + re.escape(k) + r"\b", cc)), "")
                 if h:
                     cr[i], crn[i] = 1.0, f"a company lobbyist used to work for the {chw.title()} {h.title()} committee, which the member sits on"
                     break
@@ -7685,6 +7902,7 @@ def compute_connections(tx, data, cfg, mems):
         mt = mt.sort_values("date")
         mt = mt[mt["date"].notna()]
         closed_m = mt[mt.closed]
+        cid_sec = committee_cid_sectors(cfg)
         MD, MO, MC = mt["date"].values, list(mt["orgs"]), list(mt["cids"])
         CD, CC = closed_m["date"].values, list(closed_m["cids"])
         for i, (c_, cs, f, td, fc) in enumerate(zip(tx["_ck"], cids, fdt, tdt, tx["f_committee"])):
@@ -7698,7 +7916,10 @@ def compute_connections(tx, data, cfg, mems):
             if fc > 0 and pd.notna(td):
                 lo = np.searchsorted(CD, np.datetime64(td - D(days=30)), side="right")
                 hi = np.searchsorted(CD, np.datetime64(td), side="right")
-                if any(cs & CC[j] for j in range(lo, hi)):
+                # the closed meeting must be held by one of the member's committees that oversees this stock's
+                # industry (a committee missing from the list keeps the old rule rather than being dropped)
+                sec_ = tx["sector"].iat[i]
+                if any(any(sec_ in cid_sec.get(str(c).upper(), {sec_}) for c in (cs & CC[j])) for j in range(lo, hi)):
                     closed[i] = 1.0
     tx["f_testified"], tx["f_closed_briefing"] = test, closed
 
@@ -7818,6 +8039,38 @@ def is_defense(t, meta, dod_share=None):
         return True
     return bool(dod_share is not None and dod_share.get(t, 0) >= 0.6 and m.get("sector") == "Industrials"
                 and (m.get("cap") or 0) < 1e11)
+
+
+def dod_share_at_filing(tx, con, meta):
+    """Nov 3: point-in-time version of is_defense for each trade. dod_share_by_ticker summed every contract on
+    file (later years included) and is_defense used today's market cap, so a company that became a defense
+    contractor later was already "defense" for its 2016 trades. Here the Defense Department's share counts only
+    contracts dated by the filing, and the size test uses the company's size at the time (market_cap) when known.
+    The fixed lists (aerospace & defense industry, DEFENSE_EXTRA) still apply to every year."""
+    out = np.array([is_defense(t, meta) for t in tx["ticker"]], dtype=bool)
+    if con is None or not len(con):
+        return out
+    c = con.dropna(subset=["action_date"]).copy()
+    c["action_date"] = pd.to_datetime(c["action_date"], errors="coerce")
+    c = c.dropna(subset=["action_date"]).sort_values("action_date", kind="stable")
+    c["dod_amt"] = np.where(c["agency"].str.contains("Defense", case=False, na=False), c["amount"].astype(float), 0.0)
+    G = {t: (g["action_date"].values, g["amount"].astype(float).cumsum().values, g["dod_amt"].cumsum().values)
+         for t, g in c.groupby("ticker")}
+    fd = pd.to_datetime(tx["filed_date"])
+    capv = tx["market_cap"].values if "market_cap" in tx else [np.nan] * len(tx)
+    for i, (t, f, cap) in enumerate(zip(tx["ticker"], fd, capv)):
+        if out[i] or t not in G or pd.isna(f):
+            continue
+        m = meta.get(t) or {}
+        if m.get("sector") != "Industrials":
+            continue
+        d_, tot, dod = G[t]
+        j = np.searchsorted(d_, np.datetime64(f), side="right") - 1
+        if j < 0 or tot[j] < 5e7:
+            continue
+        size = cap if cap is not None and np.isfinite(cap) else (m.get("cap") or 0)
+        out[i] = dod[j] / tot[j] >= 0.6 and size < 1e11
+    return out
 
 
 def dod_share_by_ticker(con):
@@ -7980,8 +8233,7 @@ def extra_features(tx, px, data, cfg, mems):
 
     # ---------------- defense ----------------
     con = data.get("contracts")
-    share = dod_share_by_ticker(con)
-    tx["is_defense"] = [is_defense(tk, meta, share) for tk in tx["ticker"]]
+    tx["is_defense"] = dod_share_at_filing(tx, con, meta)
     tx["f_defense_company"] = tx["is_defense"].astype(float)
     cids = [set(m.get("cids") or []) if m else set() for m in mems]
     tx["f_defense_power"] = [1.0 if (d and (c & DEFENSE_CIDS)) else 0.0 for d, c in zip(tx["is_defense"], cids)]
@@ -8677,6 +8929,111 @@ def bill_stage_features(tx, data, cfg, mems):
             kept[pos[ix]] = len(set(who[lo:hi][ss[lo:hi]]))
     tx["n_sellers_kept"] = kept
     log("Bills at the trade: " + ", ".join(f"{c[2:]} {int((tx[c] > 0).sum()):,}" for c in BILL_FEATURES))
+    return tx
+
+
+def company_link_features(tx, data, cfg, mems):
+    """Owner, Nov 3: company-specific versions of the broad committee / lobbying signals (trial signals). The old
+    ones match a stock to a committee by sector (Armed Services -> every tech stock) or count any lobbying at all;
+    these need evidence about THIS company, all known by the filing date:
+      f_committee_oversees_co   a committee the member sat on at the trade had, by the filing, a bill referred to
+                                it that the company named in a lobbying report (posted from 2 years before the
+                                trade to the filing), or heard the company testify in the year before the filing.
+                                The lobbied-bill half is the same rule as f_lobbied_bill_committee; this is the
+                                union with testimony.
+      f_committee_leader_co     the same, for a committee the member chairs or is ranking member of
+      f_lobbying_targets_member in the 12 months before the filing the company lobbied on a bill the member backs
+                                (sponsor or cosponsor by the filing) AND that was referred to one of the member's
+                                committees: the member is both a backer and a gatekeeper of a bill the company wants.
+      f_proven_big              a proven member (f_proven_member) making a trade reported at $50,001 or more
+    """
+    n = len(tx)
+    for c in ("f_committee_oversees_co", "f_committee_leader_co", "f_lobbying_targets_member", "f_proven_big"):
+        tx[c] = 0.0
+    tx["co_cmte_note"], tx["co_lead_note"], tx["lob_target_note"], tx["proven_big_note"] = "", "", "", ""
+    buy = tx["tx_type"].eq("buy").values
+    big = (pd.to_numeric(tx.get("amt_lo", pd.Series(0, index=tx.index)), errors="coerce").fillna(0) >= 50001).values
+    pb = buy & big & (tx.get("f_proven_member", pd.Series(0.0, index=tx.index)).fillna(0).values >= 1)
+    tx["f_proven_big"] = pb.astype(float)
+    tx.loc[pb, "proven_big_note"] = "a proven member put $50,001 or more in"
+    tables, lb, mt = data.get("bill_tables"), data.get("lobbying"), data.get("meetings")
+    td_, fd_ = pd.to_datetime(tx["trade_date"]), pd.to_datetime(tx["filed_date"])
+    # committee names by id, to tell which of the member's committees they lead (records keep lead names)
+    try:
+        committee_cid_sectors(cfg)
+        cnames = (json.load(open(_p(cfg, "cache", "committee_names.json"))).get("names") or {})
+    except Exception:
+        cnames = {}
+    top_of = lambda c: str(c)[:4].upper()
+    mine, lead = [], []
+    for m in mems:
+        cs = {top_of(c) for c in ((m or {}).get("cids") or [])}
+        ln = set((m or {}).get("lead") or [])
+        mine.append(cs)
+        lead.append({top_of(c) for c in ((m or {}).get("cids") or []) if cnames.get(str(c)) in ln})
+    # bills the company lobbied on, by date
+    lob = {}
+    if lb is not None and len(lb) and "bills" in lb:
+        l2 = lb[lb["bills"].map(lambda x: bool(x) if isinstance(x, (list, tuple)) else False) & lb["posted"].notna()]
+        lob = {t: (g["posted"].values.astype("datetime64[ns]"), list(g["bills"]))
+               for t, g in l2.sort_values("posted").groupby("ticker")}
+    refs, back, title = {}, {}, {}
+    if tables is not None:
+        title = dict(zip(tables["bills"]["bill"], tables["bills"]["title"]))
+        rf = tables["refs"]
+        for b_, cid, d in zip(rf["bill"], rf["cid"], pd.to_datetime(rf["date"], errors="coerce")):
+            refs.setdefault(b_, []).append((top_of(cid), d))
+        bk = tables["backers"]
+        for b_, who, j, w in zip(bk["bill"], bk["bioguide"], pd.to_datetime(bk["joined"], errors="coerce"),
+                                 pd.to_datetime(bk["withdrawn"], errors="coerce")):
+            back.setdefault((b_, who), []).append((j, w))
+    # testimony: company key -> [(date, committee ids)]
+    meta = data.get("meta") or {}
+    ck = {t: company_key((meta.get(t) or {}).get("name")) for t in tx["ticker"].unique()}
+    test = {}
+    if mt is not None and len(mt) and "orgs" in mt:
+        m2 = mt[mt["date"].notna()].sort_values("date")
+        want = {k for k in ck.values() if k}
+        for d, orgs, cids in zip(m2["date"], m2["orgs"], m2["cids"]):
+            for o in set(orgs or []) & want:
+                test.setdefault(o, []).append((pd.Timestamp(d), {top_of(c) for c in (cids or [])}))
+    fo, fl, ft = np.zeros(n), np.zeros(n), np.zeros(n)
+    no, nl, nt = [""] * n, [""] * n, [""] * n
+    for i, (t, b, td, fd) in enumerate(zip(tx["ticker"], tx["bioguide"], td_, fd_)):
+        if not buy[i] or pd.isna(td) or pd.isna(fd) or not mine[i]:
+            continue
+        via = {}                                        # committee id -> reason
+        g = lob.get(t)
+        L2y, L1y = [], []
+        if g is not None:
+            lo = np.searchsorted(g[0], np.datetime64(td - pd.Timedelta(days=730)), side="right")
+            lo1 = np.searchsorted(g[0], np.datetime64(fd - pd.Timedelta(days=365)), side="right")
+            hi = np.searchsorted(g[0], np.datetime64(fd), side="right")
+            L2y = sorted({x for bs in g[1][lo:hi] for x in bs})
+            L1y = sorted({x for bs in g[1][lo1:hi] for x in bs})
+        for x in L2y:
+            for c, d in refs.get(x, []):
+                if c in mine[i] and pd.notna(d) and d <= fd:
+                    via.setdefault(c, f"the company lobbied on {title.get(x, x)[:60]}, which went to their committee")
+        for d, cs in test.get(ck.get(t), []):
+            if fd - pd.Timedelta(days=365) < d <= fd:
+                for c in cs & mine[i]:
+                    via.setdefault(c, "the company testified before their committee")
+        if via:
+            fo[i], no[i] = 1.0, next(iter(via.values()))
+            hit = [c for c in via if c in lead[i]]
+            if hit:
+                fl[i], nl[i] = 1.0, "they lead the committee: " + via[hit[0]]
+        for x in L1y:
+            backed = any(pd.notna(j) and j <= fd and (pd.isna(w) or w > td) for j, w in back.get((x, b), []))
+            if backed and any(c in mine[i] and pd.notna(d) and d <= fd for c, d in refs.get(x, [])):
+                ft[i], nt[i] = 1.0, f"the company lobbied on {title.get(x, x)[:60]}, which they back and their committee handles"
+                break
+    tx["f_committee_oversees_co"], tx["f_committee_leader_co"], tx["f_lobbying_targets_member"] = fo, fl, ft
+    tx["co_cmte_note"], tx["co_lead_note"], tx["lob_target_note"] = no, nl, nt
+    log(f"Company-specific committee links: committee handles the company {int(fo.sum()):,}, member leads it "
+        f"{int(fl.sum()):,}, lobbying targets the member {int(ft.sum()):,}, proven member big trade {int(pb.sum()):,} "
+        f"(lobbying bill numbers still filling in)")
     return tx
 
 
@@ -9597,12 +9954,27 @@ def check_sale_discount_once(scored, px, cfg):
     save_adaptive(cfg, a)
 
 
-def check_trial_signals(scored, px, cfg, a, pol, rows, today, only=None):
-    """Test each new signal on and off (rescoring every trade); switch only when clearly better."""
+# Nov 3: ~80 trial signals now (33 moved from the main weights), each needing its own backtest. The checks are
+# time-capped and resume where they stopped, so one run isn't stretched by all of them at once.
+TRIAL_ONCE_MIN = 8          # per daily run: new trial signals, and the rest of an unfinished weekly pass
+TRIAL_WEEKLY_MIN = 25       # the weekly check's own slice
+
+
+def check_trial_signals(scored, px, cfg, a, pol, rows, today, only=None, deadline=None):
+    """Test each new signal on and off (rescoring every trade); switch only when clearly better.
+    Returns the signals tested (all of them unless `deadline`, a time.time() value, ran out first)."""
     base = dict(cfg, _nested=True)
     vs = lambda b: float(b["perf"].loc["Per year vs S&P 500", "Long picks"])
     _cur_cache = {}
+    done = []
+    # Nov 3 (pipeline audit): the same check runs on ~80 trial signals, so switching one ON must clear the bar for
+    # the best of all of them (sure_bar(k), k = trial signals with enough data in the full pass, not just this
+    # slice); otherwise chance alone switches some on. Switching an on-signal OFF tests one specific signal (k=1).
+    k_on = max(1, sum(1 for x in TRIAL_SIGNALS if int((scored.get(f"f_{x}", pd.Series(0, index=scored.index)) > 0).sum()) >= 30))
     for k in (only if only is not None else TRIAL_SIGNALS):
+        if deadline is not None and time.time() > deadline:
+            break
+        done.append(k)
         label = TRIAL_LABELS[k]
         rows[:] = [r for r in rows if r.get("Setting") != label]
         on = k in pol.get("signals_on", [])
@@ -9622,16 +9994,19 @@ def check_trial_signals(scored, px, cfg, a, pol, rows, today, only=None):
             _cur_cache[ck] = run(cur_sig)
         cur, alt = _cur_cache[ck], run(alt_sig)
         c = _compare(_long_daily(alt), _long_daily(cur))
+        kk = 1 if on else k_on
         rows.append({"Setting": label, "Option": ("On" if on else "Off") + " (current)", "Per year vs S&P": vs(cur),
                      "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
         rows.append({"Setting": label, "Option": "Off" if on else "On", "Per year vs S&P": vs(alt),
                      "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
-                     "Verdict": "Switched automatically" if clearly_better(c) else _verdict(c, True), **_sure_fields(c)})
-        if clearly_better(c):
+                     "Verdict": "Switched automatically" if clearly_better(c, kk) else _verdict(c, True, kk),
+                     **_sure_fields(c, kk)})
+        if clearly_better(c, kk):
             a["history"].append({"date": today, "change": label, "from": "on" if on else "off", "to": "off" if on else "on",
                                  "gain_per_year": c["gain"], "sureness": c["t"]})
             log(f"Adjustments: {label} -> {'off' if on else 'on'} (+{c['gain']*100:.1f}%/yr in the backtest)")
             pol["signals_on"] = alt_sig
+    return done
 
 
 def check_sizing(scored, px, cfg, a, pol, rows, today):
@@ -9685,19 +10060,98 @@ def check_sizing_once(scored, px, cfg):
     save_adaptive(cfg, a)
 
 
+# ---- switched-off signals at the other hold periods (owner, Nov 3) ---------------------------------------------
+# The weekly check judges a switched-off signal only at the hold the strategy uses, so a signal that helps only with a
+# longer (or shorter) hold would never show up. This tests each one at every other hold too. It never switches
+# anything (the live strategy only earns a signal at its own hold); it reports, so the owner can decide whether a
+# different hold is worth it. Split across runs (owner: "split the runs so it's not as long"): each run works
+# through the next (signal, hold) pairs for at most OTHER_HOLDS_MIN minutes and saves where it stopped, so one full
+# pass takes a few days of runs instead of one long weekly check.
+OTHER_HOLDS = (20, 60, 125, 250)
+OTHER_HOLDS_LABEL = "Switched-off signals at other hold periods"
+
+
+def check_signals_other_holds(scored, px, cfg, minutes=None):
+    """Returns the findings that are new this run: [{"signal", "label", "hold", "gain", "t", "recent"}]."""
+    a = load_adaptive(cfg)
+    pol = dict(a["policy"])
+    on = list(pol.get("signals_on", []))
+    cur_h = int(pol.get("hold_other", cfg["HOLD_DAYS"]))
+    have = [k for k in TRIAL_SIGNALS if k not in on
+            and int((scored.get(f"f_{k}", pd.Series(0, index=scored.index)) > 0).sum()) >= 30]
+    pairs = [(k, h) for k in have for h in OTHER_HOLDS if h != cur_h]
+    st = dict(a.get("other_holds") or {})
+    res = dict(st.get("results") or {})
+    if not pairs:
+        return []
+    i0 = int(st.get("next", 0)) % len(pairs)
+    budget = (float(minutes) if minutes else float(cfg.get("OTHER_HOLDS_MIN", 8))) * 60
+    t0, done, base, found = time.time(), 0, dict(cfg, _nested=True), []
+    held, cur_cache = {}, {}
+    for j in range(len(pairs)):
+        if time.time() - t0 > budget or out_of_time(cfg, 45):
+            break
+        k, h = pairs[(i0 + j) % len(pairs)]
+        pol_h = dict(pol, hold_other=h, hold_small=h, extend="none")      # the hold itself, no keep-holding rule
+        if h not in held:                   # exits depend only on the hold, not the score: computed once per hold
+            held[h] = apply_hold_policy(scored, px, cfg, pol_h)
+
+        def run(sig):
+            bw, sw = active_weights(cfg, signals_on=sig)
+            return run_backtest(apply_scores(held[h], cfg, buy_w=bw, short_w=sw), px, base)
+        if h not in cur_cache:
+            cur_cache[h] = _long_daily(run(on))
+        c = _compare(_long_daily(run(on + [k])), cur_cache[h])
+        key = f"{k}|{h}"
+        was = (res.get(key) or {}).get("verdict")
+        # k = every signal/hold pair in the full pass (Nov 3): the best of ~200 pairs is likely lucky at the 1-option bar
+        verdict = "Helps with this hold" if clearly_better(c, len(pairs)) else (_verdict(c, False, len(pairs)) if c else "Not enough data")
+        verdict = verdict.replace("Clearly better: ask Claude to apply", "Helps with this hold")
+        res[key] = {"signal": k, "hold": h, "gain": c["gain"] if c else None, "t": c["t"] if c else None,
+                    "recent": c["recent"] if c else None, "verdict": verdict, "at": dt.date.today().isoformat()}
+        if verdict == "Helps with this hold" and was != verdict:
+            found.append({"signal": k, "label": TRIAL_LABELS.get(k, k), "hold": h, "gain": c["gain"], "t": c["t"],
+                          "recent": c["recent"]})
+        done += 1
+    nxt = (i0 + done) % len(pairs)
+    passes = int(st.get("passes", 0)) + (1 if i0 + done >= len(pairs) else 0)
+    a = load_adaptive(cfg)                  # re-read: save only this check's part
+    a["other_holds"] = {"next": nxt, "passes": passes, "pairs": len(pairs), "results": res,
+                        "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
+    rows = [r for r in (a.get("evaluation") or []) if r.get("Setting") != OTHER_HOLDS_LABEL]
+    for r in sorted(res.values(), key=lambda r: (-(r.get("gain") or -9), r["signal"], r["hold"])):
+        if r["signal"] in have and r["hold"] != cur_h:
+            rows.append({"Setting": OTHER_HOLDS_LABEL, "Option": f"{TRIAL_LABELS.get(r['signal'], r['signal'])}, "
+                         f"{r['hold']}-day hold", "Per year vs S&P": None, "Gain vs current": r.get("gain"),
+                         "Sureness": r.get("t"), "Verdict": r["verdict"] + f" (the strategy holds {cur_h} days; not "
+                         "switched, shown so you can decide)" if r["verdict"] == "Helps with this hold" else r["verdict"]})
+    a["evaluation"] = rows
+    save_adaptive(cfg, a)
+    log(f"Other hold periods: tested {done} of {len(pairs)} signal/hold pairs in {(time.time() - t0) / 60:.1f} min "
+        f"(pass {passes + 1} continues next run)" + (f"; helps: " + ", ".join(f"{x['signal']} at {x['hold']}d" for x in found)
+                                                   if found else ""))
+    return found
+
+
 def check_trial_signals_once(scored, px, cfg):
     """A newly added trial signal is tested right away instead of waiting for the weekly check."""
     a = load_adaptive(cfg)
     seen = set(a.get("trial_checked") or [])
     # a signal whose data isn't collected yet waits until it has enough trades to test
     have = {k for k in TRIAL_SIGNALS if int((scored.get(f"f_{k}", pd.Series(0, index=scored.index)) > 0).sum()) >= 30}
+    left = [k for k in (a.get("trial_pass_left") or []) if k in TRIAL_SIGNALS]     # an unfinished weekly pass
     todo = [k for k in TRIAL_SIGNALS if k not in seen and k in have]
+    todo += [k for k in left if k not in todo]
     if not todo:
         return
     pol = dict(a["policy"])
     rows = list(a.get("evaluation") or [])
-    check_trial_signals(scored, px, cfg, a, pol, rows, dt.date.today().isoformat(), only=todo)
-    a["policy"], a["evaluation"], a["trial_checked"] = pol, rows, sorted(seen | set(todo))
+    done = check_trial_signals(scored, px, cfg, a, pol, rows, dt.date.today().isoformat(), only=todo,
+                               deadline=time.time() + TRIAL_ONCE_MIN * 60)
+    a["policy"], a["evaluation"], a["trial_checked"] = pol, rows, sorted(seen | set(done))
+    a["trial_pass_left"] = [k for k in left if k not in done]
+    log(f"Adjustments: trial signals tested this run: {len(done)} of {len(todo)}"
+        + (f"; {len(todo) - len(done)} continue next run" if len(done) < len(todo) else ""))
     save_adaptive(cfg, a)
 
 
@@ -9753,7 +10207,7 @@ def price_exit_positions(rows, px, hold, price_exit="none", extend="none"):
         return _PEXIT_CACHE[key]
     idx = px.index
     n = len(idx)
-    ent = _entry_positions(idx, rows["filed_date"])
+    ent = _entry_positions(idx, entry_basis(rows))   # same entry day as forward_returns
     out = ent + int(hold)
     col = {c: i for i, c in enumerate(px.columns)}
     if not hasattr(price_exit_positions, "_ff") or price_exit_positions._ff[0] is not px:
@@ -10044,7 +10498,7 @@ def filter_rule_test(scored, px, cfg):
                         if o == cur_v:
                             continue
                         alt = series(with_opt(pol, key, o))
-                        c = _compare(alt[past], base[past])
+                        c = _compare(alt[past], base[past], holdout_start=None)
                         if _rule_passes(r, c, len(opts) - 1) and (best is None or _rank(c) > _rank(best[1])):
                             best = (o, c)
                     if best and r == "strict" and not confirmed(best[1]):
@@ -10192,7 +10646,16 @@ def _long_daily(bt):
     return bt["curves"]["Long picks"].pct_change().fillna(0)
 
 
-HOLDOUT_DAYS = 756          # the last 3 years: never used to pick a setting, only to confirm it
+HOLDOUT_DAYS = 756          # the rolling version (filter_rule_test's year-by-year walk-forward only)
+# Owner, Nov 3 (pipeline audit): a FIXED holdout. Every automatic decision picks using only data before this date
+# and then confirms on the data from it onward. Before, the holdout was "the last 756 days" of each comparison, so it
+# moved forward every week and slowly became data the checks had already chosen on. Be honest about one thing: the
+# Nov 3 signal audit (tools/signal_value_audit.py) used the data from 2023-11 on to decide which signals stay in the
+# main score, so for the main-score signal list this holdout is partly used. Settings the checks choose from here on
+# are judged on it cleanly.
+HOLDOUT_START = "2023-11-01"
+HOLDOUT_NOTE = ("Chosen on data before Nov 2023, confirmed on Nov 2023 onward. The Nov 3 2026 signal audit looked at "
+                "Nov 2023 onward to decide which signals stay in the score, so that period isn't fully unseen.")
 
 
 def _nw_se(d, lags=10):
@@ -10218,15 +10681,22 @@ def _nw_t(d, lags=10):
     return float(np.nanmean(x) / se) if se and np.isfinite(se) and se > 0 else 0.0
 
 
-def _compare(r_new, r_cur):
+def _compare(r_new, r_cur, holdout_start=HOLDOUT_START):
     """Yearly gain of switching and how sure it is (on daily differences, allowing for runs of days), measured
-    three ways: all years, the years before the last 3 (used to choose), and the last 3 (held back to confirm)."""
+    three ways: all years, the years before HOLDOUT_START (used to choose), and from HOLDOUT_START on (held back
+    to confirm). holdout_start=None: the last HOLDOUT_DAYS of the series (only filter_rule_test, whose own
+    year-by-year design keeps each year unseen)."""
     d = (r_new - r_cur).dropna()
     if len(d) < 250 or d.std() == 0:
         return None
-    tr, ho = d.iloc[:-HOLDOUT_DAYS], d.iloc[-HOLDOUT_DAYS:]
+    if holdout_start is None:
+        tr, ho = d.iloc[:-HOLDOUT_DAYS], d.iloc[-HOLDOUT_DAYS:]
+    else:
+        cut = pd.Timestamp(holdout_start)
+        idx = pd.to_datetime(d.index)
+        tr, ho = d[idx < cut], d[idx >= cut]
     ok = len(tr) >= 500 and tr.std() > 0
-    return {"gain": float(d.mean() * 252), "t": _nw_t(d), "recent": float(ho.mean() * 252),
+    return {"gain": float(d.mean() * 252), "t": _nw_t(d), "recent": float(ho.mean() * 252) if len(ho) else float("nan"),
             "train_gain": float(tr.mean() * 252) if ok else None, "train_t": _nw_t(tr) if ok else None}
 
 
@@ -10245,14 +10715,15 @@ def wins_earlier(c, k=1):
     """Won on the years before the last 3, by enough (+1%/yr) and surely enough for the number of options tried."""
     if not c:
         return False
-    if c.get("train_gain") is None:            # short history: all years, same bar
-        return c["gain"] >= 0.01 and c["t"] >= sure_bar(k)
+    if c.get("train_gain") is None:            # too little data before the holdout: nothing to choose on (Nov 3:
+        return False                           # before, the whole series was used, i.e. it chose on the holdout)
     return c["train_gain"] >= 0.01 and c["train_t"] >= sure_bar(k)
 
 
 def confirmed(c):
-    """Also better over the last 3 years, which played no part in choosing it."""
-    return bool(c) and c["recent"] > 0 and c["gain"] > 0
+    """Also better from HOLDOUT_START on, which played no part in choosing it (a pure check: it can only stop a
+    switch the earlier years chose, never pick one)."""
+    return bool(c) and np.isfinite(c.get("recent", float("nan"))) and c["recent"] > 0 and c["gain"] > 0
 
 
 def clearly_better(c, k=1):
@@ -10277,7 +10748,7 @@ def _verdict(c, auto, k=1):
         return "Switched automatically" if auto else "Clearly better: ask Claude to apply"
     tg, tt = (c["train_gain"], c["train_t"]) if c.get("train_gain") is not None else (c["gain"], c["t"])
     if tg >= 0.01 and tt >= sure_bar(k) and c["recent"] <= 0:
-        return "Better before, but not in the last 3 years"
+        return "Better before, but not since Nov 2023"
     if c["gain"] > 0:
         return "Slightly better, not sure enough to switch"
     return "Worse"
@@ -10335,7 +10806,7 @@ def recheck_past_switches(scored, px, cfg, a, pol, rows, today):
         k = fam.get(key, 1)
         s_now, s_start = series(pol, key in sleeve_keys), series(dict(pol, **{key: v0}), key in sleeve_keys)
         c = _compare(s_now, s_start) if s_now is not None and s_start is not None else None
-        keep = clearly_better(c, k) if c else True          # can't measure it: leave it as it is
+        keep = clearly_better(c, k) if (c and c.get("train_gain") is not None) else True   # can't measure: leave it
         rows.append({"Setting": RECHECK_LABEL, "Option": f"{labels[key]}: {pol[key]} (vs starting {v0})",
                      "Per year vs S&P": None, "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
                      "Verdict": ("Kept: still clearly better" if c else "Kept: not enough data to re-check") if keep
@@ -10485,8 +10956,10 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
     except Exception as e:
         log(f"Adjustments: weak-sales check skipped ({e})")
     try:
-        check_trial_signals(scored, px, cfg, a, pol, rows, today)
-        a["trial_checked"] = sorted(TRIAL_SIGNALS)
+        done = check_trial_signals(scored, px, cfg, a, pol, rows, today, deadline=time.time() + TRIAL_WEEKLY_MIN * 60)
+        a["trial_checked"] = sorted(set(a.get("trial_checked") or []) | set(done))
+        # what the weekly slice didn't reach is tested by the next daily runs (check_trial_signals_once)
+        a["trial_pass_left"] = [k for k in TRIAL_SIGNALS if k not in done]
     except Exception as e:
         log(f"Adjustments: new-signal check skipped ({e})")
     try:
@@ -10519,7 +10992,9 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
 
 
 def decide_tuned(cfg, tuned):
-    """Use the tuned weights automatically only when they clearly beat the defaults on years they never saw."""
+    """Use the tuned weights automatically only when they clearly beat the defaults on years they never saw: chosen
+    on the years between the tuning split and HOLDOUT_START, confirmed from HOLDOUT_START on (Nov 3: before, the
+    test period was all inside the holdout, so the choice was made on the holdout)."""
     a = load_adaptive(cfg)
     try:
         c = _compare(_long_daily(tuned["tuned_bt"]), _long_daily(tuned["default_bt"]))
@@ -10655,7 +11130,7 @@ def analyst_features(tx, data):
             # mostly mark the era, not the company
             if rows and rows[0][0] <= td - pd.Timedelta(days=540):
                 nc[i] = 1.0
-                note[i] = "no analyst ratings on record when they bought"
+                note[i] = "analyst coverage had lapsed (no ratings in the 18 months before they bought)"
             continue
         avg = float(np.mean(list(latest.values())))
         if len(latest) >= 2 and avg <= 0.2:
@@ -10771,23 +11246,25 @@ RARE_W_LABEL = "Rare-signal weights from per-trade results"
 
 
 def rare_weight_targets(rows, cfg, on, scale):
-    """Weight of each rare signal in the score = scale x its per-trade gain, shrunk when the result is unsure
-    (sureness under 2), capped at 1. A signal that doesn't help gets 0. Direction kept from the signal's design."""
+    """Weight of each rare signal in the score = scale x its per-trade gain BEFORE the holdout (Nov 3: it used the
+    all-years gain, so the holdout years set the weights they were then judged on), shrunk when that result is
+    unsure (sureness under 2), capped at 1. A signal that doesn't help gets 0. Direction kept from its design."""
     out = {}
     for r in rows or []:
         k = r.get("signal")
         base = cfg["BUY_WEIGHTS"].get(k) or (TRIAL_SIGNALS.get(k) if k in on else None)
-        if not base or r.get("lift") is None:
+        if not base or r.get("lift_early") is None:
             continue
-        shrink = max(0.0, min(1.0, (r.get("t") or 0) / 2.0))
-        w = float(np.clip(scale * r["lift"] * shrink, 0.0, 1.0))
+        shrink = max(0.0, min(1.0, (r.get("t_early") or 0) / 2.0))
+        w = float(np.clip(scale * r["lift_early"] * shrink, 0.0, 1.0))
         out[k] = round(-w if base < 0 else w, 3) + 0.0
     return out
 
 
 def check_rare_weights(scored, px, cfg, force=False):
-    """Weekly: try the rare-signal weights from results at a few scales; keep the best one whose full backtest is
-    not worse than the current weights (all years and the last 3 years)."""
+    """Weekly: try the rare-signal weights from results at a few scales; switch to the best one only when it clearly
+    beats the current weights before the holdout (the usual bar for len(RARE_W_SCALES) options) and also holds up
+    from HOLDOUT_START on. Nov 3: it used to switch on "not worse", with no sureness bar."""
     a = load_adaptive(cfg)
     last = a.get("rare_weights_checked_at")
     if not force and last and (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(last)).days < 7:
@@ -10819,12 +11296,15 @@ def check_rare_weights(scored, px, cfg, force=False):
             continue
         b = run(tw)
         c = _compare(_long_daily(b), r_cur)
-        ok = bool(c) and c["gain"] >= 0 and c["recent"] >= 0
+        kk = len(RARE_W_SCALES)
+        ok = wins_earlier(c, kk)
         ev.append({"Setting": RARE_W_LABEL, "Option": f"From results, scale {sc} (+2%/trade = {sc * 0.02:.1f})",
                    "Per year vs S&P": vs(b), "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
-                   "Verdict": "Not worse" if ok else ("Worse" if c else "Not enough data")})
+                   "Verdict": _verdict(c, True, kk) if c else "Not enough data", **_sure_fields(c, kk)})
         if ok and (best is None or _rank(c) > _rank(best[2])):
             best = (sc, tw, c)
+    if best and not confirmed(best[2]):      # chosen before the holdout; must also hold up from HOLDOUT_START on
+        best = None
     today = dt.date.today().isoformat()
     if best:
         sc, tw, c = best
@@ -10837,9 +11317,9 @@ def check_rare_weights(scored, px, cfg, force=False):
             if r["Setting"] == RARE_W_LABEL and r["Option"].startswith(f"From results, scale {sc} "):
                 r["Verdict"] = "Switched automatically"
         log(f"Rare-signal weights: set from results (scale {sc}); backtest {c['gain'] * 100:+.2f}%/yr vs before, "
-            f"last 3 years {c['recent'] * 100:+.2f}%/yr: " + ", ".join(f"{k} {w:+.2f}" for k, w in tw.items()))
+            f"since Nov 2023 {c['recent'] * 100:+.2f}%/yr: " + ", ".join(f"{k} {w:+.2f}" for k, w in tw.items()))
     else:
-        log("Rare-signal weights: kept as they are (no scale was at least as good in the backtest)")
+        log("Rare-signal weights: kept as they are (no scale clearly beat them before Nov 2023 and held up since)")
     a["policy"], a["evaluation"] = pol, ev
     a["rare_weights_checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     save_adaptive(cfg, a)
@@ -10862,8 +11342,8 @@ def _quarter_t(lifts, when):
 def rare_signal_test(scored, px, cfg, hold=None):
     """Every rare signal (any f_ column on <=10% of timely purchases, trial or not), tested per trade: lift = the
     flagged purchase's result vs the S&P minus the average of unflagged purchases filed the same month in the same
-    industry. Passes when: at least 30 flagged trades, lift > 0 with t >= 1.65 on the years before the last 3, and
-    lift > 0 on the last 3 years (which played no part in choosing). Saved to state/rare_test.json."""
+    industry. Passes when: at least 30 flagged trades, lift > 0 with t >= the bar on the years before HOLDOUT_START,
+    and lift > 0 from HOLDOUT_START on (which plays no part in choosing). Saved to state/rare_test.json."""
     pol = load_adaptive(cfg)["policy"]
     hold = int(hold or pol.get("hold_other") or cfg["HOLD_DAYS"])
     b = scored[(scored["tx_type"] == "buy") & (scored["lag_days"].fillna(999) <= 45)].copy()
@@ -10875,7 +11355,7 @@ def rare_signal_test(scored, px, cfg, hold=None):
     b["x"] = b["x"].clip(-1, 3)
     b["m"] = pd.to_datetime(b["filed_date"]).dt.to_period("M").astype(str)
     b["cell"] = b["m"] + "|" + b["sector"].fillna("?").astype(str)
-    cut = (pd.Timestamp.today() - pd.DateOffset(years=3)).strftime("%Y-%m")
+    cut = pd.Timestamp(HOLDOUT_START).strftime("%Y-%m")       # fixed holdout (Nov 3), not "the last 3 years"
     fcols = [c for c in b.columns if c.startswith("f_") and pd.api.types.is_numeric_dtype(b[c])]
     out, fls = [], {}
     for c in fcols:
@@ -10896,13 +11376,21 @@ def rare_signal_test(scored, px, cfg, hold=None):
         m_e, t_e, n_e = _quarter_t(early["lift"], early["filed_date"])
         m_l, t_l, n_l = _quarter_t(late["lift"], late["filed_date"])
         passed = bool(n_all >= RARE_MIN_N and m_e is not None and t_e is not None and m_e > 0 and t_e >= 1.65
-                      and m_l is not None and m_l > 0)
+                      and m_l is not None and m_l > 0)        # the one-signal bar; raised for switching on below
         label = TRIAL_LABELS.get(c[2:], c[2:].replace("_", " "))
         out.append({"signal": c[2:], "label": label.replace("Signal: ", ""), "trial": c[2:] in TRIAL_SIGNALS,
                     "in_score": bool(cfg["BUY_WEIGHTS"].get(c[2:])),
                     "direction": "lower score" if sign < 0 else "higher score", "share": round(float(share), 4),
                     "n": n_all, "lift": m_all, "t": t_all, "n_early": n_e, "lift_early": m_e, "t_early": t_e,
                     "n_recent": n_l, "lift_recent": m_l, "t_recent": t_l, "passes": passed})
+    # Nov 3 (pipeline audit): ~40 rare signals are tested in one pass, so a signal switched ON (or newly reported as
+    # passing) must clear the bar for the best of all of them; one already on stays on at the one-signal bar.
+    k_rare = max(1, len(out))
+    bar_on = sure_bar(k_rare)
+    for r in out:
+        r["passes_keep"] = r["passes"]
+        r["passes"] = bool(r["passes"] and (r["t_early"] or 0) >= bar_on)
+        r["bar"] = round(bar_on, 2)
     out.sort(key=lambda r: (not r["passes"], -(r["t_early"] or -9)))
     path = _p(cfg, "state", RARE_FILE)
     try:
@@ -10937,7 +11425,8 @@ def rare_signal_test(scored, px, cfg, hold=None):
             since[r["signal"]] = r["recheck"]
             if r["recheck"] == "failed":
                 r["passes"] = False          # it didn't hold up on data it never saw: off, whatever the old years say
-        passing = {r["signal"] for r in out if r["passes"]}
+                r["passes_keep"] = False
+        passing = {r["signal"] for r in out if r.get("passes_keep") and r.get("recheck") != "failed"}
         tested = {r["signal"] for r in out}
         today = dt.date.today().isoformat()
         for r in out:

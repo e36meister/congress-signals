@@ -1058,6 +1058,7 @@ async function extendedHours(env, when) {
       catch (e) { throw new Error(`a duplicate ${o.side} order for ${o.symbol} is still waiting and couldn't be cancelled: ${e.message}`); }
     }
   }
+  const nDup0 = dupes.length;
   if (dupes.length) await deliver(env, { title: "Cancelled a duplicate order", body: `A waiting order for ${dupes.join(", ")} was a duplicate of one that already went in before the open, so it was cancelled.`, tag: "fills", url: "/#port" });
   const place = async (it, extended, px) => {
     const body = { symbol: it.sym, side: it.side, type: extended ? "limit" : "market", time_in_force: "day",
@@ -1068,6 +1069,12 @@ async function extendedHours(env, when) {
     if (!r.ok && extended && it.notional != null && r.status === 422) {          // no fractional orders out of hours for this stock: whole shares
       const q = Math.floor(it.notional / px);
       if (q >= 1) { delete body.notional; body.qty = String(q); r = await a.post("/v2/orders", body); }
+      else {                         // Nov 3 review: under one share out of hours: keep it a market order for the open
+        const mb = { symbol: it.sym, side: it.side, type: "market", time_in_force: "day", client_order_id: extCid(it.cid, "m"),
+                     notional: Math.max(1, it.notional).toFixed(2) };
+        r = await a.post("/v2/orders", mb);
+        if (r.ok) { it.oid = r.data.id; it.px = null; it.at = new Date().toISOString(); it.ext = false; it.wait_open = true; changed = true; return; }
+      }
     }
     if (!r.ok) throw new Error(`${it.side} ${it.sym}: Alpaca refused the ${extended ? "extended-hours" : "market"} order (HTTP ${r.status}: ${String(r.data && r.data.message || "").slice(0, 80)})`);
     it.oid = r.data.id; it.px = extended ? px : null; it.at = new Date().toISOString(); it.ext = extended;
@@ -1078,12 +1085,21 @@ async function extendedHours(env, when) {
     for (const o of Object.values(live)) {
       if (o.type !== "market" || o.extended_hours || !extOurs(o.client_order_id) || Object.values(I).some(x => x.oid === o.id)) continue;
       if (!["buy", "sell"].includes(o.side)) continue;
+      // Nov 3 review: a tool buy placed while an earlier tool buy of the same stock waits for the next session (its
+      // after-hours order expired at 8 PM) is a duplicate under a new date-stamped id: cancel it, keep the first
+      if (o.side === "buy" && /^cs-/.test(o.client_order_id) &&
+          Object.values(I).some(x => x.sym === o.symbol && x.side === "buy" && /^cs-/.test(x.cid) && x.oid !== o.id)) {
+        try { await cancel(o.id); delete live[o.id]; dupes.push(`${o.symbol} (cs)`); changed = true; }
+        catch (e) { throw new Error(`a duplicate buy for ${o.symbol} is waiting and couldn't be cancelled: ${e.message}`); }
+        continue;
+      }
       const key = o.client_order_id;
       I[key] = { cid: key, sym: o.symbol, side: o.side, notional: o.notional != null ? +o.notional : null, qty: o.qty != null ? +o.qty : null,
                  oid: o.id, ext: false, created: new Date().toISOString() };
       changed = true;
     }
   }
+  if (dupes.length > nDup0) await deliver(env, { title: "Cancelled a duplicate buy", body: `The tool placed a second buy for ${dupes.slice(nDup0).map(d => d.split(" ")[0]).join(", ")} while the first one was waiting for the next after-hours session, so the second one was cancelled.`, tag: "fills", url: "/#port" });
   const failures = [];
   for (const [key, it] of Object.entries(I)) {
     try {
@@ -1095,7 +1111,10 @@ async function extendedHours(env, when) {
       }
       const isLive = o && ["new", "accepted", "pending_new", "partially_filled", "held", "accepted_for_bidding", "calculated"].includes(o.status);
       if ((it.notional != null && it.notional < 1) || (it.qty != null && it.qty <= 0)) { if (isLive) await cancel(o.id); delete I[key]; changed = true; continue; }
-      if (o && ["canceled", "rejected"].includes(o.status)) { delete I[key]; changed = true; continue; }   // cancelled by you or the tool: drop it (an 8 PM expiry is "expired")
+      // cancelled by you or the tool: drop it (an 8 PM expiry is "expired"). One the worker cancelled itself to swap is
+      // placed again instead (Nov 3 review: a failed swap used to lose the order)
+      if (o && ["canceled", "rejected"].includes(o.status) && it.self_cancel !== o.id) { delete I[key]; changed = true; continue; }
+      if (it.wait_open && session !== "open") continue;                // a market order waiting for the 9:30 open
       if (session === "open") {
         if (isLive && it.ext) { if (await cancel(o.id)) await place(it, false); }
         else if (!isLive) await place(it, false);
@@ -1105,7 +1124,17 @@ async function extendedHours(env, when) {
       const last = await extLast(a, it.sym);
       if (!last) { failures.push(`${it.sym}: no last price`); continue; }
       const px = extPx(last, it.side);
-      if (isLive && !it.ext) { if (await cancel(o.id)) await place(it, true, px); else { delete I[key]; changed = true; } continue; }
+      if (isLive && !it.ext) {
+        it.self_cancel = o.id; changed = true;
+        if (await cancel(o.id)) {
+          try { await place(it, true, px); }
+          catch (e) {                     // the replacement was refused: put the market order back for the open
+            try { await place(it, false); it.wait_open = true; } catch (e2) { /* kept: the next pass tries again */ }
+            throw e;
+          }
+        } else { delete I[key]; changed = true; }
+        continue;
+      }
       if (!isLive) { await place(it, true, px); continue; }        // expired at 8 PM, or the first time this session
       const age = (Date.now() - Date.parse(it.at || 0)) / 60000;
       if (age >= EXT_REPRICE_MIN && Math.abs(px - (it.px || 0)) / px > 0.001) {

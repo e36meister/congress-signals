@@ -100,15 +100,20 @@ for sig in ("sponsored", "advanced"):
     q = P[P.sig == sig].assign(k=lambda d: d["cls"].map(rank)).sort_values("k").drop_duplicates("row")
     rows = b.loc[q["row"]].copy(); rows["cls"] = q["cls"].values
     rows = rows[rows["entry_px"].notna()]
-    fr = E.forward_returns(rows, px, 60)
-    rows["x"] = fr["excess"].values
     allb = b[b["entry_px"].notna() & (b.get(("f_bills" if sig == "sponsored" else "f_bill_advanced"), 0) == 0)]
-    base = E.forward_returns(allb.sample(min(len(allb), 20000), random_state=1), px, 60)["excess"]
-    print(f"\n{sig}: 60-day result vs SPY by link (buys without the signal: {base.mean() * 100:+.2f}%, n {base.notna().sum():,})")
-    for c, g in rows.groupby("cls"):
-        x = g["x"].dropna()
-        se = x.std() / np.sqrt(len(x)) if len(x) > 2 else np.nan
-        print(f"  {c}: {x.mean() * 100:+.2f}% (±{1.96 * se * 100:.2f}), beat SPY {(x > 0).mean() * 100:.0f}%, n {len(x):,}")
+    allb = allb.sample(min(len(allb), 20000), random_state=1)
+    for h in (20, 60, 125, 250):                # owner, Nov 3: every hold period the strategy can use
+        fr = E.forward_returns(rows, px, h)
+        rows["x"] = np.where(fr["closed"].values, fr["excess"].values, np.nan)
+        fb = E.forward_returns(allb, px, h)
+        base = pd.Series(np.where(fb["closed"].values, fb["excess"].values, np.nan))
+        print(f"\n{sig}: {h}-day result vs SPY by link (buys without the signal: {base.mean() * 100:+.2f}%, n {base.notna().sum():,})")
+        for c, g in rows.groupby("cls"):
+            x = g["x"].dropna()
+            se = x.std() / np.sqrt(len(x)) if len(x) > 2 else np.nan
+            print(f"  {c}: {x.mean() * 100:+.2f}% (±{1.96 * se * 100:.2f}), beat SPY {(x > 0).mean() * 100:.0f}%, n {len(x):,}")
+if os.environ.get("HOLDS_ONLY"):
+    sys.exit(0)
 
 # most-credited bills
 print("\nMOST-CREDITED BILLS (bill | policy | signal | trades | tickers | link | subjects):")

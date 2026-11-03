@@ -77,12 +77,6 @@ for i, r in enumerate(X.itertuples()):
 X["A"], X["C"] = A, C
 X["Lany"] = [1.0 if any(r.trade_date - pd.Timedelta(days=730) < p <= r.filed_date for p, _ in lob.get(r.ticker, [])) else 0.0
              for r in X.itertuples()]
-fr = E.forward_returns(X, px, 60)
-X["x"] = fr["excess"].values
-X = X[X["x"].notna()]
-X["q"] = X["filed_date"].dt.to_period("Q")
-
-
 def line(lab, d):
     if len(d) < 5:
         return f"  {lab}: n {len(d)}"
@@ -91,29 +85,38 @@ def line(lab, d):
     return f"  {lab}: {d['x'].mean() * 100:+.2f}% (t {d['x'].mean() / se if se else np.nan:.1f} by quarter), beat SPY {(d['x'] > 0).mean() * 100:.0f}%, n {len(d):,}"
 
 
-print(f"\n60-day result vs SPY, buys of these {X['ticker'].nunique():,} companies:")
-print(line("all", X))
-print(line("company lobbied on any named bill around the trade", X[X["Lany"] == 1]))
-print(line("A: member backs a bill the company lobbied on", X[X["A"] == 1]))
-print(line("   same companies, other buys", X[(X["A"] == 0) & X["ticker"].isin(X.loc[X["A"] == 1, "ticker"])]))
-if has_cids:
-    print(line("C: a lobbied bill sits in the member's committee", X[X["C"] == 1]))
-    print(line("   same companies, other buys", X[(X["C"] == 0) & X["ticker"].isin(X.loc[X["C"] == 1, "ticker"])]))
-    print(line("A or C", X[(X["A"] == 1) | (X["C"] == 1)]))
-else:
-    print("  (no committee ids on the trades; C not measured)")
-# company-adjusted: each link trade minus the average of the same company's other buys in the same year
-for lab, col in (("A", "A"),) + ((("C", "C"),) if has_cids else ()):
-    X["y"] = X["filed_date"].dt.year
-    base = X[X[col] == 0].groupby(["ticker", "y"])["x"].mean()
-    d = X[X[col] == 1].join(base.rename("base"), on=["ticker", "y"]).dropna(subset=["base"])
-    diff = d["x"] - d["base"]
-    print(f"  {lab} minus the same company's other buys that year: {diff.mean() * 100:+.2f}% "
-          f"(±{1.96 * diff.std() / np.sqrt(max(len(diff), 1)) * 100:.2f}), n {len(diff):,}")
-    for half, g in d.groupby(d["filed_date"] < d["filed_date"].median()):
-        dd = g["x"] - g["base"]
-        print(f"     {'earlier' if half else 'later'} half: {dd.mean() * 100:+.2f}%, n {len(dd):,}")
-print(f"\nshare of buys with A: {X['A'].mean() * 100:.1f}%" + (f", with C: {X['C'].mean() * 100:.1f}%" if has_cids else ""))
+X["q"] = X["filed_date"].dt.to_period("Q")
+X0 = X
+for h in (20, 60, 125, 250):                    # owner, Nov 3: every hold period the strategy can use
+  fr = E.forward_returns(X0, px, h)
+  X = X0.assign(x=np.where(fr["closed"].values, fr["excess"].values, np.nan))
+  X = X[X["x"].notna()]
+  print(f"\n===== {h} trading days =====")
+
+
+  print(f"\n{h}-day result vs SPY, buys of these {X['ticker'].nunique():,} companies:")
+  print(line("all", X))
+  print(line("company lobbied on any named bill around the trade", X[X["Lany"] == 1]))
+  print(line("A: member backs a bill the company lobbied on", X[X["A"] == 1]))
+  print(line("   same companies, other buys", X[(X["A"] == 0) & X["ticker"].isin(X.loc[X["A"] == 1, "ticker"])]))
+  if has_cids:
+      print(line("C: a lobbied bill sits in the member's committee", X[X["C"] == 1]))
+      print(line("   same companies, other buys", X[(X["C"] == 0) & X["ticker"].isin(X.loc[X["C"] == 1, "ticker"])]))
+      print(line("A or C", X[(X["A"] == 1) | (X["C"] == 1)]))
+  else:
+      print("  (no committee ids on the trades; C not measured)")
+  # company-adjusted: each link trade minus the average of the same company's other buys in the same year
+  for lab, col in (("A", "A"),) + ((("C", "C"),) if has_cids else ()):
+      X["y"] = X["filed_date"].dt.year
+      base = X[X[col] == 0].groupby(["ticker", "y"])["x"].mean()
+      d = X[X[col] == 1].join(base.rename("base"), on=["ticker", "y"]).dropna(subset=["base"])
+      diff = d["x"] - d["base"]
+      print(f"  {lab} minus the same company's other buys that year: {diff.mean() * 100:+.2f}% "
+            f"(±{1.96 * diff.std() / np.sqrt(max(len(diff), 1)) * 100:.2f}), n {len(diff):,}")
+      for half, g in d.groupby(d["filed_date"] < d["filed_date"].median()):
+          dd = g["x"] - g["base"]
+          print(f"     {'earlier' if half else 'later'} half: {dd.mean() * 100:+.2f}%, n {len(dd):,}")
+print(f"\nshare of buys with A: {X0['A'].mean() * 100:.1f}%" + (f", with C: {X0['C'].mean() * 100:.1f}%" if has_cids else ""))
 print("\nEXAMPLE A LINKS (ticker | member | role | bill | title | trade date):")
 random.seed(5)
 for e in random.sample(ex, min(40, len(ex))):

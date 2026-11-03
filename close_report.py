@@ -66,9 +66,16 @@ def park_adjustment(api, days):
     raw = {sym: _closes(api, sym, start, "raw") for sym in {f[1] for f in fills}}
     divs = []
     try:
-        for a in api.get("/v2/account/activities/DIV", direction="asc", after=start, page_size=100):
-            if a.get("symbol") in raw:
-                divs.append((str(a.get("date") or a.get("transaction_time") or "")[:10], float(a.get("net_amount") or 0)))
+        tok = None
+        for _ in range(50):            # every page (Nov 3 review: only the first 100 were read)
+            page = api.get("/v2/account/activities/DIV", direction="asc", after=start, page_size=100,
+                           **({"page_token": tok} if tok else {}))
+            for a in page or []:
+                if a.get("symbol") in raw:
+                    divs.append((str(a.get("date") or a.get("transaction_time") or "")[:10], float(a.get("net_amount") or 0)))
+            if not page or len(page) < 100:
+                break
+            tok = page[-1].get("id")
     except Exception as e:
         E.log(f"Close report: S&P-parking dividends not read ({type(e).__name__}); couldn't be read; the re-count may be off by a few dollars")
     out, i = {}, 0
@@ -203,7 +210,7 @@ def main():
         # the close before the start (otherwise its moves while the account held cash count against it)
         t0 = None
         try:
-            t0 = min(o["filled_at"] for o in broker._bot_buys(api, any_buyer=True).values())
+            t0 = min(o["filled_at"] for o in broker._bot_buys(api, any_buyer=True, history=True).values())
             if t0[:10] > pts[0][0]:
                 t0d = dt.datetime.strptime(t0[:19], "%Y-%m-%dT%H:%M:%S")      # Alpaca times are UTC
                 r = requests.get("https://data.alpaca.markets/v2/stocks/SPY/bars", headers=api.h, timeout=30,
@@ -271,13 +278,17 @@ def main():
                 prior = [d for d in spy_all if d <= b]
                 s_then = spy_all[max(prior)] if prior else None
             spy_ret = (spy_now / s_then - 1) if (spy_now and s_then) else None
-            rows.append((p["plpc"], spy_ret, p.get("held") or 0))
+            cost = float(p.get("mv") or 0) / (1 + float(p["plpc"])) if float(p["plpc"]) > -1 else 0.0
+            rows.append((p["plpc"], spy_ret, p.get("held") or 0, max(cost, 0.0)))
         if not rows:
             continue
-        r = float(np.mean([x[0] for x in rows]))
-        sp = [x[1] for x in rows if x[1] is not None]
-        spr = float(np.mean(sp)) if sp else None
-        held = int(round(np.mean([x[2] for x in rows])))
+        # weighted by the money put into each position (Nov 3 review: a simple average let a $50 position count as
+        # much as a $5,000 one); dates come from each position's current holding (broker._segments)
+        wts = np.array([x[3] for x in rows]) if sum(x[3] for x in rows) > 0 else np.ones(len(rows))
+        r = float(np.average([x[0] for x in rows], weights=wts))
+        spi = [(x[1], w_) for x, w_ in zip(rows, wts) if x[1] is not None]
+        spr = float(np.average([a for a, _ in spi], weights=[b for _, b in spi])) if spi and sum(b for _, b in spi) > 0 else None
+        held = int(round(np.average([x[2] for x in rows], weights=wts)))
         sleeves.append({"name": label, "positions": len(rows), "avg_days": held, "ret": r, "spy": spr,
                         "diff": (r - spr) if spr is not None else None, "expected": _expected(horizons, hgroup, held)})
 
@@ -431,6 +442,10 @@ def build_email(rep, mode, snap, data, chart=False):
             f"{h('Today’s biggest moves')}<table cellspacing='0' cellpadding='0' style='font-size:14px'>{movers}</table>"
             f"{h('Each strategy') + strat if strat else ''}"
             f"{h('Coming up')}" + "".join(f"<div style='margin:3px 0'>{x}</div>" for x in nxt) +
+            f"<p style='font-size:12px;color:{grey};margin:16px 2px 0'>“Since {start_txt}” is the whole account, including "
+            f"your own buys and Buy/Sell-button trades, not only the tool’s. The tool’s buys usually fill in the evening or "
+            f"at the next open after a filing is seen; the backtest buys at the next open, so live entry prices and hold "
+            f"lengths can differ from it by a day.</p>" +
             f"<p style='margin-top:22px'><a href='{chart_link}' style='display:inline-block;background:#1D4F91;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600'>Open Capitol Capital</a></p></div>")
     subject = (f"Close: {_fmt_money(day, True)} today · {pct(gap)} vs S&P" if day is not None else f"Close: {pct(gap)} vs S&P")
     return subject, html

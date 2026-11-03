@@ -1332,9 +1332,14 @@ function renderRecord(d) {
   const st = statRow(b.trade_stats, "Long picks");
   const beat = (L["Annual return (CAGR)"] ?? -1) > (S["Annual return (CAGR)"] ?? 0);
   const shortSt = statRow(b.trade_stats, "Short picks");
+  // Nov 3: the honest number first (each year picked only with what was known before it); the regular backtest
+  // below uses settings chosen with these same years, so it's labelled in-sample
+  const WFP = Object.fromEntries(((d.walk_forward || {}).perf || []).map(p => [p.name, p]));
+  const WH = WFP["Never-seen-years picks"];
   const tiles = `
   <div class="tiles">
-    <div class="tile"><span class="v ${beat ? "pos" : "neg"}">${pct(L["Annual return (CAGR)"])}</span><span class="l">Long picks, per year</span><span class="c">S&amp;P 500: ${pct(S["Annual return (CAGR)"])}</span></div>
+    ${WH ? `<div class="tile"><span class="v ${cls(WH["Per year vs S&P 500"])}">${pct(WH["Per year vs S&P 500"])}</span><span class="l">Honest result: per year vs S&amp;P 500</span><span class="c">Each year picked only with what was known before it</span></div>` : ""}
+    <div class="tile"><span class="v ${beat ? "pos" : "neg"}">${pct(L["Annual return (CAGR)"])}</span><span class="l">Long picks, per year (in-sample)</span><span class="c">Settings chosen with these years · S&amp;P 500: ${pct(S["Annual return (CAGR)"])}</span></div>
     <div class="tile"><span class="v">${st["Beat SPY (%)"] != null ? Math.round(st["Beat SPY (%)"]) + "%" : "–"}</span><span class="l">Picks that beat the S&amp;P 500</span><span class="c">${st["Closed trades"] ?? "–"} finished picks</span></div>
     <div class="tile"><span class="v ${cls(st["Avg vs SPY per trade (%)"])}">${pnum(st["Avg vs SPY per trade (%)"])}</span><span class="l">Average pick vs S&amp;P 500</span><span class="c">Typical pick: ${pnum(st["Median vs SPY (%)"])}</span></div>
     ${shortSt["Closed trades"] ? `<div class="tile"><span class="v">${Math.round(shortSt["Beat SPY (%)"])}%</span><span class="l">Short picks that worked</span><span class="c">${shortSt["Closed trades"]} finished shorts</span></div>` : ""}
@@ -1769,7 +1774,7 @@ function renderAdjust(d) {
     <div class="tile"><span class="v">${{none: "Off", ride10: "On (10%)", ride15: "On (15%)"}[p.extend || "none"] || esc(p.extend)}</span><span class="l">Hold longer while rising</span><span class="c">Main picks; switches if clearly better</span></div>
     <div class="tile"><span class="v">${a.use_tuned ? "On" : "Off"}</span><span class="l">Tuned signal weights</span>${a.tuned_eval ? `<span class="c">${esc(a.tuned_eval.verdict || "")}</span>` : ""}</div>
   </div>
-  <p class="note">A setting switches on its own only when the new choice is clearly better. It is chosen on the years before the last 3: at least 1% a year more, and sure enough to rule out luck. The bar is higher when more options were tried, because the best of five is more likely a lucky winner than one option alone. It must then also win the last 3 years, which played no part in choosing it. Earlier automatic switches are re-checked the same way each week and undone if they no longer pass. Positions already open keep the holding period they were bought with. Holding periods count trading days (about 21 a month).</p>
+  <p class="note">A setting switches on its own only when the new choice is clearly better. It is chosen on the years before Nov 2023: at least 1% a year more, and sure enough to rule out luck. The bar is higher when more options were tried, because the best of five is more likely a lucky winner than one option alone. It must then also win from Nov 2023 on, a fixed period kept back to confirm. (One caveat: the Nov 3 2026 signal review looked at Nov 2023 onward to decide which signals stay in the score, so for that list the period isn't fully unseen.) Earlier automatic switches are re-checked the same way each week and undone if they no longer pass. Positions already open keep the holding period they were bought with. Holding periods count trading days (about 21 a month).</p>
   ${hist.length ? `<div class="tbl"><table><thead><tr><th>Date</th><th>What changed</th><th>From</th><th>To</th><th class="n">Gain per year</th><th>How sure</th></tr></thead><tbody>
   ${hist.map(x => `<tr><td class="nw">${esc(fmtDate(x.date))}</td><td>${esc(x.change)}</td><td>${esc(x.from)}</td><td>${esc(x.to)}</td><td class="n ${cls(x.gain_per_year)}">${pct(x.gain_per_year)}</td><td>${sureWord(x.sureness)}</td></tr>`).join("")}
   </tbody></table></div>` : `<div class="empty">No automatic changes yet.</div>`}
@@ -1968,7 +1973,7 @@ function postTests(d) {
   }).join("");
   return `<section class="panel" id="works-posts"><div class="ph"><h2>Members' posts: background tests</h2><span class="sub">Checked every week${rt.hold ? ` · ${rt.hold}-day hold` : ""}</span></div>
     <div class="tbl"><table><thead><tr><th>Signal</th><th>Status</th><th class="n">Purchases</th><th class="n">Earlier years</th><th class="n">Last 3 years</th></tr></thead><tbody>${list}</tbody></table></div>
-    <p class="foot">Each number: how purchases with the signal did against similar purchases filed the same month in the same industry, per trade. A signal switches on by itself once it's ahead in earlier years and sure enough to rule out luck, and still ahead in the last 3 years (which played no part in choosing). "Too few trades" means fewer than 30 purchases had it so far; that changes as post history fills in.</p></section>`;
+    <p class="foot">Each number: how purchases with the signal did against similar purchases filed the same month in the same industry, per trade. A signal switches on by itself once it's ahead in earlier years and sure enough to rule out luck, and still ahead from Nov 2023 on (a fixed period kept back to confirm). "Too few trades" means fewer than 30 purchases had it so far; that changes as post history fills in.</p></section>`;
 }
 function renderWorks(d) {
   const b = d.backtest, tu = d.tuning;

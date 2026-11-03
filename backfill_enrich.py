@@ -26,6 +26,16 @@ steps = [("Lobbying", lambda tl: E.collect_lobbying(cfg_, meta, tl, deep=True), 
          ("Contracts", lambda tl: E.collect_contracts(cfg_, meta, tl, deep=True), "contracts.json"),
          ("Company events", lambda tl: E.collect_events(cfg_, meta, tl, deep=True), "company_events.json")]
 share = {"Lobbying": 0.35, "Grants and loans": 0.2, "Floor speeches": 0.2, "Contracts": 0.15, "Company events": 0.1}
+# Nov 3 (owner: "fill lobbying faster"): lobbying reports are being read again to keep the bill numbers they name
+# (lobbied-bill signals). Until every company has been re-read, lobbying gets most of the fill's time.
+try:
+    _lob = json.load(open(os.path.join("data", "cache", "lobbying.json")))
+    _lob_left = sum(1 for t in tickers if not ((_lob.get(t) or {}).get("deep") and (_lob.get(t) or {}).get("bills")))
+except Exception:
+    _lob_left = 1
+if _lob_left:
+    share = {"Lobbying": 0.6, "Grants and loans": 0.15, "Floor speeches": 0.1, "Contracts": 0.1, "Company events": 0.05}
+    E.log(f"History fill: {_lob_left:,} companies' lobbying still to re-read with bill numbers; lobbying gets 60% of the time")
 end = time.time() + minutes * 60
 
 

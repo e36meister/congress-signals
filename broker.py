@@ -4,7 +4,7 @@ Paper (fake money) is the default. Real money needs TRADING_MODE=live, the live 
 Only positions this tool opened (order IDs starting with "cs-") are ever sold by it; anything you buy yourself
 is left alone. Nothing about balances or positions is written to the run log, because the repo is public.
 """
-import os, re, math, datetime as dt
+import os, re, math, json, datetime as dt
 import numpy as np
 import pandas as pd
 import requests
@@ -72,6 +72,58 @@ def settings(hold_days):
             "max_invested": num("MAX_INVESTED_PCT", 90) / 100, "hold_days": int(hold_days)}
 
 
+def _nyse_holidays(y0=2014, y1=2031):
+    """NYSE full-day closures (Nov 3 review: holding periods counted holidays as trading days, so positions were
+    sold about one trading day early per holiday in the hold; the backtest and the stop check count real trading
+    days). Saturday holidays move to Friday except New Year's Day; Sunday ones to Monday. Alpaca's calendar is
+    added on top when it answers (calendar_holidays)."""
+    from dateutil.easter import easter
+    D = dt.date
+    nth = lambda y, m, wd, n: D(y, m, 1) + dt.timedelta(days=(wd - D(y, m, 1).weekday()) % 7 + 7 * (n - 1))
+    last = lambda y, m, wd: (lambda d: d - dt.timedelta(days=(d.weekday() - wd) % 7))(D(y, m + 1, 1) - dt.timedelta(days=1))
+    out = set()
+    for y in range(y0, y1 + 1):
+        fixed = [D(y, 1, 1), D(y, 7, 4), D(y, 12, 25)] + ([D(y, 6, 19)] if y >= 2022 else [])
+        for d in fixed:
+            if d.weekday() == 5:
+                if d.month != 1:
+                    out.add(d - dt.timedelta(days=1))
+            elif d.weekday() == 6:
+                out.add(d + dt.timedelta(days=1))
+            else:
+                out.add(d)
+        out |= {nth(y, 1, 0, 3), nth(y, 2, 0, 3), easter(y) - dt.timedelta(days=2), last(y, 5, 0), nth(y, 9, 0, 1),
+                nth(y, 11, 3, 4)}
+    out |= {D(2018, 12, 5), D(2025, 1, 9)}      # national days of mourning
+    return out
+
+
+HOLIDAYS = _nyse_holidays()
+
+
+def calendar_holidays(api):
+    """Add Alpaca's own market calendar (weekdays it lists as closed) to HOLIDAYS; quietly keeps the built-in list
+    when the calendar doesn't answer."""
+    try:
+        start = (dt.date.today() - dt.timedelta(days=760)).isoformat()
+        end = (dt.date.today() + dt.timedelta(days=30)).isoformat()
+        days = {d["date"] for d in api.get("/v2/calendar", start=start, end=end) if d.get("date")}
+        if len(days) > 300:
+            d = dt.date.fromisoformat(start)
+            while d.isoformat() <= max(days):
+                if d.weekday() < 5 and d.isoformat() not in days:
+                    HOLIDAYS.add(d)
+                d += dt.timedelta(days=1)
+        return True
+    except Exception:
+        return False
+
+
+def trading_days(a, b):
+    """Trading days from a (counted) to b (not counted), like np.busday_count, without market holidays."""
+    return int(np.busday_count(a, b, holidays=sorted(HOLIDAYS)))
+
+
 class Alpaca:
     def __init__(self, s):
         self.base = BASE[s["mode"]]
@@ -97,10 +149,9 @@ def from_alpaca(s):
     return s.replace(".", "-")
 
 
-def _bot_buys(api, any_buyer=False, owner=False):
-    """First filled buy per symbol that this tool placed (or anyone, with any_buyer; or you, with owner:
-    the Buy button or Alpaca itself), from Alpaca's order history."""
-    out, after = {}, (dt.datetime.utcnow() - dt.timedelta(days=500)).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _filled_orders(api, days=500):
+    """Every filled (or partly filled) order of the last `days` days, newest first."""
+    out, after = [], (dt.datetime.utcnow() - dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     until = None
     for _ in range(20):
         params = {"status": "closed", "limit": 500, "direction": "desc", "after": after}
@@ -109,15 +160,60 @@ def _bot_buys(api, any_buyer=False, owner=False):
         page = api.get("/v2/orders", **params)
         if not page:
             break
-        for o in page:
-            mine = (o.get("client_order_id") or "").startswith(PREFIX)
-            if (any_buyer or (not mine if owner else mine)) and o.get("side") == "buy" and o.get("filled_at"):
-                sym = o["symbol"]
-                if sym not in out or o["filled_at"] < out[sym]["filled_at"]:
-                    out[sym] = o
+        out += [o for o in page if o.get("filled_at") and float(o.get("filled_qty") or 0) > 0]
         if len(page) < 500:
             break
         until = page[-1]["submitted_at"]
+    return out
+
+
+def _segments(orders):
+    """Per symbol: the buys of the CURRENT holding (since the share count was last zero), oldest first.
+    Symbols with no shares left are left out. Owner, Nov 3 (trading-code review): a stock the tool sold and later
+    bought again was timed from its first-ever buy, so it was sold early; and one you bought yourself once was
+    treated as yours for good."""
+    by = {}
+    for o in orders:
+        by.setdefault(o["symbol"], []).append(o)
+    out = {}
+    for sym, os_ in by.items():
+        os_.sort(key=lambda o: o["filled_at"])
+        qty, buys = 0.0, []
+        for o in os_:
+            q = float(o.get("filled_qty") or 0)
+            if o.get("side") == "buy":
+                if qty <= 1e-6:
+                    qty, buys = 0.0, []
+                qty += q
+                buys.append(o)
+            else:
+                qty -= q
+                if qty <= 1e-6:            # sold out (or the window began mid-holding): the next buy starts anew
+                    qty, buys = 0.0, []
+        if qty > 1e-6 and buys:
+            out[sym] = buys
+    return out
+
+
+def _bot_buys(api, any_buyer=False, owner=False, history=False, orders=None):
+    """First filled buy per symbol in the CURRENT holding that this tool placed (or anyone, with any_buyer; or you,
+    with owner: the Buy button or Alpaca itself). history=True: the first such buy in the whole window, held or
+    not (used to tell a first run and for the account's start date)."""
+    orders = _filled_orders(api) if orders is None else orders
+    pick = lambda o: (any_buyer or ((not (o.get("client_order_id") or "").startswith(PREFIX)) if owner
+                                    else (o.get("client_order_id") or "").startswith(PREFIX)))
+    out = {}
+    if history:
+        for o in orders:
+            if o.get("side") == "buy" and pick(o):
+                sym = o["symbol"]
+                if sym not in out or o["filled_at"] < out[sym]["filled_at"]:
+                    out[sym] = o
+        return out
+    for sym, buys in _segments(orders).items():
+        m = [o for o in buys if pick(o)]
+        if m:
+            out[sym] = m[0]
     return out
 
 
@@ -231,7 +327,8 @@ def sleeve_misfits(bot, caps):
 def recheck_queued_sells(caps, log, policy=None):
     """Cancel a waiting cleanup sell whose position no longer counts as a misfit (its size estimate moved
     back under the margin). Only touches sell orders the cleanup itself placed; never your orders.
-    Skipped while a small-company price rule is on, since its sales look the same."""
+    Skipped while a small-company price rule is on, since its sales look the same. Your Sell-button orders
+    ("tap-...") are never touched."""
     if (policy or {}).get("sleeve_price_exit", "none") != "none" or (policy or {}).get("sleeve_extend", "none") != "none":
         return
     s = settings(60)
@@ -245,13 +342,51 @@ def recheck_queued_sells(caps, log, policy=None):
         sym = o["symbol"]
         if (o.get("side") == "sell" and sym in bot and sym not in keep
                 and (bot[sym].get("client_order_id") or "").startswith(PREFIX + "sm-")
-                and sym in caps and not (o.get("client_order_id") or "").startswith(PREFIX)):
-            held = int(np.busday_count(dt.date.fromisoformat(bot[sym]["filled_at"][:10]), dt.date.today()))
+                and sym in caps and not (o.get("client_order_id") or "").startswith((PREFIX, "tap-"))):
+            # the cleanup sells close the position (DELETE /v2/positions), so Alpaca names them; your Sell-button
+            # orders ("tap-...") look the same otherwise and must never be cancelled (Nov 3 review)
+            held = trading_days(dt.date.fromisoformat(bot[sym]["filled_at"][:10]), dt.date.today())
             if held < _hold_of(bot[sym], 250):       # not a normal end-of-hold sale
-                if api.delete(f"/v2/orders/{o['id']}").status_code in (200, 204):
+                r = api.delete(f"/v2/orders/{o['id']}")
+                if r.status_code in (200, 204):
                     n += 1
+                else:
+                    log(f"Broker: couldn't cancel the cleanup sell for {sym} (HTTP {r.status_code}); it stays waiting")
     if n:
         log(f"Broker: cancelled {n} cleanup sell order(s) that no longer apply")
+
+
+_MANUAL_DONE = False                   # the owner's own-buy sell checks ran in this process (sync)
+EXT_KEY = "ext/intents.json"          # the worker's after-hours order state (cloud/worker.js extendedHours)
+
+
+def queued_buys(api, log):
+    """Symbols with a tool buy that's waiting outside Alpaca's open orders. Between 8 PM and 4 AM the worker's
+    after-hours limit order has expired and isn't placed again until 4 AM, so Alpaca shows no open order; a run
+    in that gap used to buy the same stock again under a new date-stamped id (Nov 3 review). Counted: the worker's
+    waiting buy intents, and tool buys of the last 3 days that expired as after-hours limit orders."""
+    out = set()
+    if _ACCOUNT is None:
+        try:
+            import cloud_store
+            raw = cloud_store.get(EXT_KEY, log=lambda m: None)
+            for it in ((json.loads(raw) if raw else {}).get("intents") or {}).values():
+                cid = str(it.get("cid") or "")
+                if it.get("side") == "buy" and cid.startswith(PREFIX) and not cid.startswith(PARK_PREFIX):
+                    out.add(it.get("sym"))
+        except Exception as e:
+            log(f"Broker: couldn't read the after-hours order list ({type(e).__name__}); checking Alpaca's recent orders only")
+    try:
+        since = (dt.datetime.utcnow() - dt.timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for o in api.get("/v2/orders", status="all", limit=500, direction="desc", after=since):
+            cid = o.get("client_order_id") or ""
+            if (o.get("side") == "buy" and cid.startswith(PREFIX) and not cid.startswith(PARK_PREFIX)
+                    and o.get("status") == "expired" and o.get("extended_hours") and not float(o.get("filled_qty") or 0)):
+                out.add(o["symbol"])
+    except Exception as e:
+        log(f"Broker: couldn't read recent orders ({type(e).__name__}); waiting after-hours buys may be missed")
+    out.discard(None)
+    return out
 
 
 def sync(cfg, buys, new, last_prices, log, trade=True):
@@ -270,9 +405,20 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         log(f"Broker: couldn't reach Alpaca ({type(e).__name__}); trying again next run")
         return None
     today = dt.date.today()
+    if not calendar_holidays(api):
+        log("Broker: Alpaca's market calendar didn't answer; holding periods use the built-in holiday list")
     positions = {p["symbol"]: p for p in api.get("/v2/positions")}
     open_orders = api.get("/v2/orders", status="open", limit=500)
     pending = {o["symbol"] for o in open_orders}
+    queued = queued_buys(api, log) - pending if trade else set()
+    # the tool's own main-strategy buys still waiting (not sells, the parked fund, the small-company portfolio or
+    # your orders): only these take a main slot (Nov 3 review: every open order used to count)
+    main_waiting = {o["symbol"] for o in open_orders if o.get("side") == "buy"
+                    and (o.get("client_order_id") or "").startswith(PREFIX)
+                    and not (o.get("client_order_id") or "").startswith((PREFIX + "sm-", PARK_PREFIX))} | queued
+    if queued:
+        log(f"Broker: {len(queued)} buy(s) waiting for the next after-hours session, not bought again: {', '.join(sorted(queued))}")
+    pending |= queued
     # stocks you sold with the app's Sell button in the last 45 days: the tool doesn't buy them back for the same pick
     owner_sold = set()
     try:
@@ -282,12 +428,13 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                 owner_sold.add(o["symbol"])
     except Exception as e:
         log(f"Broker: couldn't read your Sell-button orders ({type(e).__name__}); not buying anything you sold is not checked this run")
-    bot = _bot_buys(api)
+    filled = _filled_orders(api)
+    bot = _bot_buys(api, orders=filled)           # the current holding's first tool buy, per symbol
+    bot_hist = _bot_buys(api, history=True, orders=filled)
     actions, sold = [], set()
-    # symbols you (or the Buy button) also bought: selling would close your shares too, so the tool leaves them
-    # stocks you bought yourself, from the whole order history (the last 500 orders alone would forget
-    # your older buys once the tool has traded a lot, and then a stock you both own could be sold)
-    others = set(_bot_buys(api, owner=True))
+    # symbols you (or the Buy button) also bought into the CURRENT holding: selling would close your shares too,
+    # so the tool leaves them. A stock you owned once and sold no longer counts as yours (Nov 3 review).
+    others = set(_bot_buys(api, owner=True, orders=filled))
 
     is_park = lambda sym: (bot.get(sym, {}).get("client_order_id") or "").startswith(PARK_PREFIX)
     park = next((x for x in park_choices(s["mode"]) if x not in others), None)
@@ -299,11 +446,17 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
     pct = lambda r: int(re.search(r"(\d+)$", r).group(1)) / 100 if re.search(r"(\d+)$", r or "") else 0.0
     hist = cfg.get("_price_hist")                            # daily closes since a date, from the full update
 
+    def skip(sym, why):
+        """Owner's rule: nothing is skipped silently. Logged, and kept in the run's actions (this_run)."""
+        log(f"Broker: {sym}: {why}")
+        actions.append({"side": "skip", "symbol": sym, "ok": False, "why": why})
+
     def high_since(sym, bought, now_px):
         try:
             h = hist(from_alpaca(sym), bought) if hist else None
-        except Exception:
+        except Exception as e:
             h = None
+            log(f"Broker: {sym}: price history since {bought} failed ({type(e).__name__})")
         if h is None or not len(h):
             return None
         return max(float(np.nanmax(h)), now_px)
@@ -313,7 +466,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         if sym not in positions or sym in pending or sym in others or is_park(sym):
             continue
         bought = dt.date.fromisoformat(o["filled_at"][:10])
-        held = int(np.busday_count(bought, today))
+        held = trading_days(bought, today)
         hold = orig = _hold_of(o, s["hold_days"])
         # near the end of its hold (or past it), checked every run: the holding period the weekly check now
         # supports for this group wins over the one it was bought under (longer: keep it; shorter: sell)
@@ -330,7 +483,10 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             now_px = float(positions[sym].get("current_price") or 0)
             entry = float(positions[sym].get("avg_entry_price") or 0)
             hi = high_since(sym, o["filled_at"][:10], now_px)
-            if hi is None or (now_px > entry and now_px >= hi * (1 - pct(ext))):
+            if hi is None:
+                skip(sym, "kept past its hold: no price history to check the keep-holding-while-rising rule")
+                continue
+            if now_px > entry and now_px >= hi * (1 - pct(ext)):
                 continue
         if ext == "ahead_daily_bill" and hold <= held < max(AHEAD_MAX, hold):
             # owner, Oct 29: a pick whose member voted for the industry's bills (or whose committee's industry bill
@@ -351,8 +507,11 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             # on the close before its scheduled sale; "ahead_daily" re-checks every run and sells once it's behind
             try:
                 P, S = hist(from_alpaca(sym), o["filled_at"][:10]), hist("SPY", o["filled_at"][:10])
-            except Exception:
+            except Exception as e:
                 P = S = None
+                log(f"Broker: {sym}: price history for the ahead-of-the-S&P check failed ({type(e).__name__})")
+            if not (P is not None and S is not None and len(P) > 1 and len(S) > 1) and held >= hold:
+                log(f"Broker: {sym}: no price history for the ahead-of-the-S&P check; sold on schedule")
             if P is not None and S is not None and len(P) > 1 and len(S) > 1:
                 j = min(hold - 1, len(P) - 1, len(S) - 1) if ext == "ahead" else min(len(P), len(S)) - 1
                 if P[j] / P[0] - S[j] / S[0] > 0:
@@ -377,8 +536,9 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             bought = o["filled_at"][:10]
             try:
                 hits = [x for x in fn(from_alpaca(sym), bought) if x["d"] >= bought]
-            except Exception:
+            except Exception as e:
                 hits = []
+                skip(sym, f"members' sales since the buy couldn't be checked ({type(e).__name__}); kept this run")
             if hits:
                 r = api.delete(f"/v2/positions/{sym}")
                 actions.append({"side": "sell", "symbol": sym, "ok": r.status_code in (200, 207),
@@ -400,8 +560,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                 for d in ((r.json().get("corporate_actions") or {}).get("cash_dividends") or []) if r.status_code == 200 else []:
                     if since < (d.get("ex_date") or "") <= today_s:
                         tot += float(d.get("rate") or 0)
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"Broker: {sym}: dividends since {since} couldn't be read ({type(e).__name__}); the stop check uses the price alone")
             _divs[sym] = tot
         return _divs[sym]
 
@@ -449,8 +609,10 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
 
     # 1c. owner, Oct 30: your own buys from then on follow the tool's sell rules. A reason to sell sends a phone alert
     #     and an email; the position is sold at the next morning's open unless you tap Keep (manual_rules.py).
-    if trade and not cfg.get("_manual_done") and _ACCOUNT is None:     # the owner's own buys only
-        cfg["_manual_done"] = True
+    global _MANUAL_DONE
+    if trade and not cfg.get("_manual_done") and not _MANUAL_DONE and _ACCOUNT is None:     # the owner's own buys only
+        # once per process: a second trading call in the same run (a copied cfg) used to run these checks again
+        cfg["_manual_done"] = _MANUAL_DONE = True
         try:
             import manual_rules
             acts, al, mst = manual_rules.review(api, cfg, positions, manual_rules.all_orders(api, cfg), clock, log)
@@ -481,12 +643,15 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         plan = max(5, int(per_week * int(pol["hold_other"]) / 5))     # positions open at once in the backtest
         main_cap = s["max_invested"] * (1 - sleeve_pct) * equity
         dollars = s["dollars"] or main_cap / plan
-        slots = (s["max_positions"] or plan) - len([p for p in mine if not is_sleeve(p)]) - len(pending)
+        slots = (s["max_positions"] or plan) - len([p for p in mine if not is_sleeve(p)]) - len(main_waiting - set(mine))
 
         def place(t, amount, cid):
             sym = to_alpaca(t)
             price = last_prices.get(t)
-            if sym in positions or sym in pending or sym in sold or not price or not math.isfinite(price) or price <= 0:
+            if sym in positions or sym in pending or sym in sold:
+                return None                      # already held, waiting or just sold: nothing to do
+            if not price or not math.isfinite(price) or price <= 0:
+                skip(sym, "pick not bought: no current price")
                 return None
             if sym in owner_sold:
                 log(f"Broker: skipping {t}: you sold it with the Sell button")
@@ -494,8 +659,10 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             try:
                 asset = api.get(f"/v2/assets/{sym}")
                 if not asset.get("tradable"):
+                    skip(sym, "pick not bought: Alpaca doesn't trade it")
                     return None
-            except Exception:
+            except Exception as e:
+                skip(sym, f"pick not bought: Alpaca's asset lookup failed ({type(e).__name__})")
                 return None
             body = {"symbol": sym, "side": "buy", "type": "market", "time_in_force": "day", "client_order_id": cid}
             if asset.get("fractionable"):
@@ -503,6 +670,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             else:
                 qty = int(amount // price)
                 if qty < 1:
+                    skip(sym, f"pick not bought: one share (${price:,.2f}) costs more than its ${amount:,.0f} slot "
+                              "and Alpaca doesn't sell fractions of it")
                     return None
                 body["qty"] = str(qty)
             r = api.post("/v2/orders", body)
@@ -518,7 +687,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         else:
             rows = buys[buys["action"] == "BUY"] if buys is not None and len(buys) else buys
             new_buys = set(new.loc[new["action"] == "BUY", "ticker"]) if new is not None and len(new) else set()
-            first_time = not any(not is_sleeve(x) for x in bot)   # first run: start from the whole current BUY list
+            first_time = not any(not (o.get("client_order_id") or "").startswith(PREFIX + "sm-")   # first run: start
+                                 for o in bot_hist.values())                                 # from the whole BUY list
             order = [t for t in rows["ticker"] if first_time or t in new_buys] if rows is not None and len(rows) else []
         if rows is not None and len(rows):
             for t in order:
@@ -553,12 +723,14 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         else:
             sm = None
         if sm is not None and len(sm):
-            sleeve_cap = sleeve_pct * 0.95 * equity
+            # within the same overall limit as the main picks (Nov 3 review: 63% + 28.5% went over the 90% max)
+            sleeve_cap = s["max_invested"] * sleeve_pct * equity
             sm_slots = int(cfg.get("_small_slots") or 25)
             amount = sleeve_cap / max(sm_slots, 1)
             hold = int(pol.get("hold_sleeve", 250))
             # the backtest's rule already spaces repeat buys of a stock; the old list-based path buys each stock once
-            ever = set() if fresh_sm is not None else {sym for sym in bot if is_sleeve(sym)}
+            ever = set() if fresh_sm is not None else {sym for sym, o in bot_hist.items()
+                                                        if (o.get("client_order_id") or "").startswith(PREFIX + "sm-")}
             for t in sm["ticker"]:
                 if inv_sleeve + amount > sleeve_cap:
                     break
@@ -586,7 +758,12 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                             "why": f"moving parked money to {park_label(park)}"})
         if not stale and park and park not in pending and env("PARK_IDLE", "true").lower() != "false":
             spent = inv_main + inv_sleeve - inv0
-            open_buys = sum(float(o.get("notional") or 0) for o in open_orders if o.get("side") == "buy")
+            def _order_dollars(o):          # share-count buys reserve shares x price too (Nov 3 review)
+                if o.get("notional"):
+                    return float(o["notional"])
+                px_ = last_prices.get(from_alpaca(o["symbol"])) or float(o.get("limit_price") or 0)
+                return float(o.get("qty") or 0) * float(px_ or 0)
+            open_buys = sum(_order_dollars(o) for o in open_orders if o.get("side") == "buy")
             buffer = 0.03 * equity
             target = max(0.0, equity - inv_main - inv_sleeve - open_buys - buffer)
             diff = target - parked
@@ -633,16 +810,14 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                  "tool" if cid.startswith(PREFIX) else "tap" if cid.startswith("tap-") else "you"])
     except Exception as e:
         log(f"Broker: fill history skipped ({type(e).__name__})")
-    bot = _bot_buys(api) if actions else bot
     try:
-        first = _bot_buys(api, any_buyer=True)
-    except Exception:
-        first = {}
+        filled = _filled_orders(api) if actions else filled
+    except Exception as e:
+        log(f"Broker: order history for the snapshot not re-read ({type(e).__name__}); using the one from the start of the run")
+    bot = _bot_buys(api, orders=filled)
+    first = _bot_buys(api, any_buyer=True, orders=filled)
     pos = []
-    try:
-        yours_first = _bot_buys(api, owner=True)
-    except Exception:
-        yours_first = {}
+    yours_first = _bot_buys(api, owner=True, orders=filled)
     try:      # which positions you opened ("manual") and which of them follow the tool's sell rules
         if _ACCOUNT is not None:
             raise LookupError("family account")          # the Keep/sell-rule flow is the owner's own
@@ -666,7 +841,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                     "sleeve": ("small" if o and (o.get("client_order_id") or "").startswith(PREFIX + "sm-")
                                else "park" if o and (o.get("client_order_id") or "").startswith(PARK_PREFIX) else None),
                     "hold": (None if (o.get("client_order_id") or "").startswith(PARK_PREFIX) else _hold_of(o, s["hold_days"])) if o else None,
-                    "held": int(np.busday_count(dt.date.fromisoformat(bought), today)) if bought else None,
+                    "held": trading_days(dt.date.fromisoformat(bought), today) if bought else None,
                     "manual": bool((man.get(p["symbol"]) or {}).get("manual")) or (p["symbol"] in others),
                     "ruled": bool((man.get(p["symbol"]) or {}).get("ruled")),
                     "rule_start": (man.get(p["symbol"]) or {}).get("start")})
@@ -745,8 +920,8 @@ def place_tap_order(ticker, dollars, req_id, log):
                 if amt > 1:
                     api.post("/v2/orders", {"symbol": pk, "side": "sell", "notional": f"{amt:.2f}", "type": "market",
                                             "time_in_force": "day", "client_order_id": f"{PARK_PREFIX}tap-{req_id}"[:48]})
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"Broker: Buy button: freeing cash from the parked fund failed ({type(e).__name__}); the buy is tried anyway")
     body = {"symbol": sym, "side": "buy", "type": "market", "time_in_force": "day",
             "client_order_id": f"tap-{ticker}-{req_id}"[:48]}
     if asset.get("fractionable"):
