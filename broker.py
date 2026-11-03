@@ -347,8 +347,11 @@ def recheck_queued_sells(caps, log, policy=None):
             # orders ("tap-...") look the same otherwise and must never be cancelled (Nov 3 review)
             held = trading_days(dt.date.fromisoformat(bot[sym]["filled_at"][:10]), dt.date.today())
             if held < _hold_of(bot[sym], 250):       # not a normal end-of-hold sale
-                if api.delete(f"/v2/orders/{o['id']}").status_code in (200, 204):
+                r = api.delete(f"/v2/orders/{o['id']}")
+                if r.status_code in (200, 204):
                     n += 1
+                else:
+                    log(f"Broker: couldn't cancel the cleanup sell for {sym} (HTTP {r.status_code}); it stays waiting")
     if n:
         log(f"Broker: cancelled {n} cleanup sell order(s) that no longer apply")
 
@@ -437,11 +440,17 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
     pct = lambda r: int(re.search(r"(\d+)$", r).group(1)) / 100 if re.search(r"(\d+)$", r or "") else 0.0
     hist = cfg.get("_price_hist")                            # daily closes since a date, from the full update
 
+    def skip(sym, why):
+        """Owner's rule: nothing is skipped silently. Logged, and kept in the run's actions (this_run)."""
+        log(f"Broker: {sym}: {why}")
+        actions.append({"side": "skip", "symbol": sym, "ok": False, "why": why})
+
     def high_since(sym, bought, now_px):
         try:
             h = hist(from_alpaca(sym), bought) if hist else None
-        except Exception:
+        except Exception as e:
             h = None
+            log(f"Broker: {sym}: price history since {bought} failed ({type(e).__name__})")
         if h is None or not len(h):
             return None
         return max(float(np.nanmax(h)), now_px)
@@ -468,7 +477,10 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             now_px = float(positions[sym].get("current_price") or 0)
             entry = float(positions[sym].get("avg_entry_price") or 0)
             hi = high_since(sym, o["filled_at"][:10], now_px)
-            if hi is None or (now_px > entry and now_px >= hi * (1 - pct(ext))):
+            if hi is None:
+                skip(sym, "kept past its hold: no price history to check the keep-holding-while-rising rule")
+                continue
+            if now_px > entry and now_px >= hi * (1 - pct(ext)):
                 continue
         if ext == "ahead_daily_bill" and hold <= held < max(AHEAD_MAX, hold):
             # owner, Oct 29: a pick whose member voted for the industry's bills (or whose committee's industry bill
@@ -489,8 +501,11 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             # on the close before its scheduled sale; "ahead_daily" re-checks every run and sells once it's behind
             try:
                 P, S = hist(from_alpaca(sym), o["filled_at"][:10]), hist("SPY", o["filled_at"][:10])
-            except Exception:
+            except Exception as e:
                 P = S = None
+                log(f"Broker: {sym}: price history for the ahead-of-the-S&P check failed ({type(e).__name__})")
+            if not (P is not None and S is not None and len(P) > 1 and len(S) > 1) and held >= hold:
+                log(f"Broker: {sym}: no price history for the ahead-of-the-S&P check; sold on schedule")
             if P is not None and S is not None and len(P) > 1 and len(S) > 1:
                 j = min(hold - 1, len(P) - 1, len(S) - 1) if ext == "ahead" else min(len(P), len(S)) - 1
                 if P[j] / P[0] - S[j] / S[0] > 0:
@@ -515,8 +530,9 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             bought = o["filled_at"][:10]
             try:
                 hits = [x for x in fn(from_alpaca(sym), bought) if x["d"] >= bought]
-            except Exception:
+            except Exception as e:
                 hits = []
+                skip(sym, f"members' sales since the buy couldn't be checked ({type(e).__name__}); kept this run")
             if hits:
                 r = api.delete(f"/v2/positions/{sym}")
                 actions.append({"side": "sell", "symbol": sym, "ok": r.status_code in (200, 207),
@@ -538,8 +554,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                 for d in ((r.json().get("corporate_actions") or {}).get("cash_dividends") or []) if r.status_code == 200 else []:
                     if since < (d.get("ex_date") or "") <= today_s:
                         tot += float(d.get("rate") or 0)
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"Broker: {sym}: dividends since {since} couldn't be read ({type(e).__name__}); the stop check uses the price alone")
             _divs[sym] = tot
         return _divs[sym]
 
@@ -624,7 +640,10 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         def place(t, amount, cid):
             sym = to_alpaca(t)
             price = last_prices.get(t)
-            if sym in positions or sym in pending or sym in sold or not price or not math.isfinite(price) or price <= 0:
+            if sym in positions or sym in pending or sym in sold:
+                return None                      # already held, waiting or just sold: nothing to do
+            if not price or not math.isfinite(price) or price <= 0:
+                skip(sym, "pick not bought: no current price")
                 return None
             if sym in owner_sold:
                 log(f"Broker: skipping {t}: you sold it with the Sell button")
@@ -632,8 +651,10 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             try:
                 asset = api.get(f"/v2/assets/{sym}")
                 if not asset.get("tradable"):
+                    skip(sym, "pick not bought: Alpaca doesn't trade it")
                     return None
-            except Exception:
+            except Exception as e:
+                skip(sym, f"pick not bought: Alpaca's asset lookup failed ({type(e).__name__})")
                 return None
             body = {"symbol": sym, "side": "buy", "type": "market", "time_in_force": "day", "client_order_id": cid}
             if asset.get("fractionable"):
@@ -641,6 +662,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             else:
                 qty = int(amount // price)
                 if qty < 1:
+                    skip(sym, f"pick not bought: one share (${price:,.2f}) costs more than its ${amount:,.0f} slot "
+                              "and Alpaca doesn't sell fractions of it")
                     return None
                 body["qty"] = str(qty)
             r = api.post("/v2/orders", body)
@@ -883,8 +906,8 @@ def place_tap_order(ticker, dollars, req_id, log):
                 if amt > 1:
                     api.post("/v2/orders", {"symbol": pk, "side": "sell", "notional": f"{amt:.2f}", "type": "market",
                                             "time_in_force": "day", "client_order_id": f"{PARK_PREFIX}tap-{req_id}"[:48]})
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"Broker: Buy button: freeing cash from the parked fund failed ({type(e).__name__}); the buy is tried anyway")
     body = {"symbol": sym, "side": "buy", "type": "market", "time_in_force": "day",
             "client_order_id": f"tap-{ticker}-{req_id}"[:48]}
     if asset.get("fractionable"):
