@@ -495,7 +495,36 @@ def collect_house(cfg):
     json.dump({"left": left, "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")},
               open(_p(cfg, "cache", "house_backlog.json"), "w"))
     log(f"House: {len(tx)} stock transactions total; {left} reports still to read")
+    try:
+        house_coverage(idx, done, tx)
+    except Exception as e:
+        log(f"House coverage: not computed ({type(e).__name__}: {e})")
     return tx
+
+
+def house_coverage(idx, done, tx, years=5, grace_days=7):
+    """Owner, Nov 3: per filing year, the trade reports in the Clerk's list, how many were read, how many had stock
+    trades, and trades per report with trades, so a real gap (reports listed but not read) can be told apart from a
+    quiet year (2024 looked like a hole: every report was read, members just traded fewer stocks). Only reports
+    listed more than `grace_days` ago and still unread are flagged (a failure line, so Data health shows it)."""
+    now = pd.Timestamp.today().normalize()
+    per_doc = tx.groupby(tx["doc_id"].astype(str)).size() if len(tx) and "doc_id" in tx else pd.Series(dtype=int)
+    parts, gaps = [], []
+    for y in sorted(idx["year"].unique())[-years:]:
+        d = idx[idx["year"] == y]
+        ids = d["DocID"].astype(str)
+        read = ids.isin(done)
+        with_tx = ids.isin(set(per_doc.index))
+        ntx = int(per_doc.reindex(ids[with_tx]).sum()) if with_tx.any() else 0
+        parts.append(f"{y}: {len(d)} listed, {int(read.sum())} read, {int(with_tx.sum())} with trades, "
+                     f"{(ntx / max(int(with_tx.sum()), 1)):.1f} trades each")
+        old = d["FilingDate"] < now - pd.Timedelta(days=grace_days)
+        miss = int((old & ~read).sum())
+        if miss:
+            gaps.append(f"{y}: {miss}")
+    log("House coverage (reports in the Clerk's list): " + "; ".join(parts))
+    if gaps:
+        log("House coverage: reports listed more than a week ago couldn't be read yet (" + ", ".join(gaps) + ")")
 
 
 PAPER_VERSION = 2      # 2: unmatched lines kept for re-matching; older reports re-read after the backlog
