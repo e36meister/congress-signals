@@ -115,11 +115,11 @@ document.addEventListener("click", async ev => {
 // ---------- a few days in: ask once whether they want emails too ----------
 function emailAskCard() {
   if (!isViewer() || !SESSION_ME || !SESSION_ME.ask_email) return "";
-  return `<section class="panel vask"><div class="ph"><h2>Want emails too?</h2></div>
+  return `<section class="panel vask"><div class="ph"><h2>want emails too?</h2></div>
     <p>Besides phone alerts, we can email you each trade in your account and a short summary after the market closes.</p>
     <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px">
-      <button type="button" class="buybtn go" data-vemail="yes">Yes, email me</button>
-      <button type="button" class="link" data-vemail="no">No thanks</button></div>
+      <button type="button" class="buybtn go" data-vemail="yes">yea</button>
+      <button type="button" class="link" data-vemail="no">nay</button></div>
     <p class="foot">Change it anytime in More → Notifications.</p></section>`;
 }
 document.addEventListener("click", async ev => {
