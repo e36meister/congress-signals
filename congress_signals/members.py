@@ -37,7 +37,10 @@ SIG_LABELS = {"committee": "their committee oversees the industry", "contracts":
               "lobbied_bill_backed": "company lobbied on a bill they back",
               "lobbied_bill_committee": "company lobbied on a bill before their committee",
               "committee_oversees_co": "their committee handles the company", "committee_leader_co": "they lead a committee that handles the company",
-              "lobbying_targets_member": "company lobbied on a bill they back in their committee", "proven_big": "proven member, large trade", "first_time": "first time trading this stock",
+              "lobbying_targets_member": "company lobbied on a bill they back in their committee", "proven_big": "proven member, large trade", "ex_member_lobbyist_tech": "tech company with a former member lobbying for it",
+              "fast_filer_comm": "fast filer, communication stock", "foreign_consumer_health": "foreign consumer or health company",
+              "grants_tech": "tech company with big federal grants or a loan", "subcommittee_tech": "tech stock, member on the subcommittee",
+              "closed_briefing_tech": "tech stock, closed briefing before the trade", "first_time": "first time trading this stock",
               "defense_company": "defense company", "small_cap": "company under $2B", "full_sale": "sold the whole position"}
 SECTOR_ALL = "*"
 MAX_EVENTS = 6000      # per member file (keeps the busiest traders' pages under ~1 MB)

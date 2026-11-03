@@ -4151,7 +4151,8 @@ def compute_features(tx, px, data, cfg):
                      ("bills the company lobbied on", lambda x: lobbied_bill_features(x, data, mems)),
                      ("company-specific committee links", lambda x: company_link_features(x, data, cfg, mems)),
                      ("institutions", lambda x: _inst().inst_features(x, cfg)),
-                     ("posts", lambda x: _social().post_features(x, cfg))):
+                     ("posts", lambda x: _social().post_features(x, cfg)),
+                     ("sector versions", sector_variant_features)):
         tx = fn(tx)
         tim[name] = time.time() - t_
         t_ = time.time()
@@ -4204,6 +4205,11 @@ TRIAL_SIGNALS = {"relative_tie": 0.5, "unusual_volume": 0.4, "reg_action": 0.3, 
                  # 60/125/250 days (weak: past the placebo bar at one hold), about 24 picks a year.
                  "committee_oversees_co": 0.4, "committee_leader_co": 0.4, "lobbying_targets_member": 0.4,
                  "proven_big": 0.4,
+                 # Owner, Nov 3 (tools/signal_group_audit.py, run 41580547809): signals tested inside each sector;
+                 # 7 sector hits vs about 2.7 by luck. Each hit as a sector-only trial signal. Found looking at all
+                 # years incl. the holdout, so they must clear the weekly test (multiple-testing bar) on new data.
+                 "ex_member_lobbyist_tech": 0.4, "fast_filer_comm": 0.3, "foreign_consumer_health": -0.4,
+                 "grants_tech": -0.4, "subcommittee_tech": -0.3, "closed_briefing_tech": -0.3,
                  # Owner, Nov 3 (tools/signal_value_audit.py, run 41570844319): moved here from the main weights.
                  # Judged against random placebo signals with the same firing rates (bars |t| 1.97/2.19/2.56/2.85 at
                  # 20/60/125/250 days), none of these beat buys filed the same month in the same sector at any hold;
@@ -4249,6 +4255,12 @@ TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "committee_leader_co": "Signal: the member chairs or leads a committee that handles this company",
                 "lobbying_targets_member": "Signal: the company lobbied, in the year before, on a bill the member backs and whose committee they sit on",
                 "proven_big": "Signal: a proven member making a large trade ($50,001 or more)",
+                "ex_member_lobbyist_tech": "Signal (Technology only): a former member of Congress lobbies for the company",
+                "fast_filer_comm": "Signal (Communication Services only): a member who files fast",
+                "foreign_consumer_health": "Signal (Consumer Cyclical and Healthcare only): score foreign companies lower",
+                "grants_tech": "Signal (Technology only): company got $1M+ in federal grants or a loan, scored lower",
+                "subcommittee_tech": "Signal (Technology only): member sits on the industry's subcommittee, scored lower",
+                "closed_briefing_tech": "Signal (Technology only): closed committee briefing before the trade, scored lower",
                 "vote_sector": "Signal: voted on a bill in the industry near the trade (broad category) (main score until Nov 3)",
                 "spouse_insider": "Signal: spouse is a company insider (main score until Nov 3)",
                 "committee": "Signal: their committee oversees the industry (main score until Nov 3)",
@@ -8929,6 +8941,28 @@ def bill_stage_features(tx, data, cfg, mems):
             kept[pos[ix]] = len(set(who[lo:hi][ss[lo:hi]]))
     tx["n_sellers_kept"] = kept
     log("Bills at the trade: " + ", ".join(f"{c[2:]} {int((tx[c] > 0).sum()):,}" for c in BILL_FEATURES))
+    return tx
+
+
+SECTOR_VARIANTS = {   # name: (base f_ column, sectors, how the base counts as "on")
+    "ex_member_lobbyist_tech": ("f_ex_member_lobbyist", ("Technology",), lambda v: v > 0),
+    "fast_filer_comm": ("f_fast_filer", ("Communication Services",), lambda v: v >= 0.8),   # files in ~9 days or less
+    "foreign_consumer_health": ("f_foreign", ("Consumer Cyclical", "Healthcare"), lambda v: v > 0),
+    "grants_tech": ("f_grants", ("Technology",), lambda v: v >= 1.0),                       # $1M+ or a loan
+    "subcommittee_tech": ("f_subcommittee", ("Technology",), lambda v: v > 0),
+    "closed_briefing_tech": ("f_closed_briefing", ("Technology",), lambda v: v > 0),
+}
+
+
+def sector_variant_features(tx):
+    """Sector-only versions of signals (owner, Nov 3: test signals by group). Same information as the base signal,
+    counted only for stocks in the named sectors; they're trial signals, judged by the weekly test."""
+    sec = tx["sector"].fillna("").astype(str) if "sector" in tx else pd.Series("", index=tx.index)
+    buy = tx["tx_type"].eq("buy") if "tx_type" in tx else pd.Series(True, index=tx.index)
+    for k, (col, secs, on) in SECTOR_VARIANTS.items():
+        v = tx[col].astype(float).fillna(0) if col in tx else pd.Series(0.0, index=tx.index)
+        tx[f"f_{k}"] = (on(v) & sec.isin(secs) & buy).astype(float)
+    log("Sector versions: " + ", ".join(f"{k} {int(tx[f'f_{k}'].sum()):,}" for k in SECTOR_VARIANTS))
     return tx
 
 
