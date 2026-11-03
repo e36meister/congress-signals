@@ -239,6 +239,7 @@ html.viewer [data-jump="today-avoid"],html.viewer [data-jump="today-also"],html.
 html.viewer [data-jump="today-worth"],html.viewer [data-jump="today-unusual"]{display:none!important}
 .vtip{display:none}html.tips .vtip{display:block;background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:12px}
 .vbtns{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
+.pick>.sellbox{grid-column:1/-1;margin-top:6px}.sellbox .note{max-width:760px}
 .vsell{font:600 13px var(--body);padding:6px 12px;border-radius:8px;border:1px solid var(--bad);background:none;color:var(--bad);cursor:pointer}
 .vsell.go{background:var(--bad);color:#fff}.vsell:disabled{opacity:.6}
 .vme{width:64px;height:64px;border-radius:50%;object-fit:cover;border:1px solid var(--rule)}.vme.none{display:inline-block;background:var(--rule)}

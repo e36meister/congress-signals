@@ -7,6 +7,7 @@ html.viewer [data-jump="today-avoid"],html.viewer [data-jump="today-also"],html.
 html.viewer [data-jump="today-worth"],html.viewer [data-jump="today-unusual"],html.viewer .owner-only{display:none!important}
 .vtip{display:none}html.tips .vtip{display:block;background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:12px}
 .vbtns{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
+.pick>.sellbox{grid-column:1/-1;margin-top:6px}.sellbox .note{max-width:760px}
 .vsell{font:600 13px var(--body);padding:6px 12px;border-radius:8px;border:1px solid var(--bad);background:none;color:var(--bad);cursor:pointer}
 .vsell.go{background:var(--bad);color:#fff}.vsell:disabled{opacity:.6}
 .vme{width:64px;height:64px;border-radius:50%;object-fit:cover;border:1px solid var(--rule)}.vme.none{display:inline-block;background:var(--rule)}
@@ -826,7 +827,7 @@ function renderVNotif() {
     <div class="tbl"><table><thead><tr><th>Alert</th><th class="n">Push</th><th class="n">Email</th></tr></thead><tbody>
     ${Object.keys(KIND_L).map(k => `<tr><td><b>${KIND_L[k][0]}</b><div class="foot" style="white-space:normal">${KIND_L[k][1]}</div></td><td class="n">${box("push", k)}</td><td class="n">${box("email", k)}</td></tr>`).join("")}
     </tbody></table></div>
-    <p class="foot">Push alerts need this phone's alerts turned on: tap <b>Turn on alerts</b> at the top of the app (on iPhone, from the app on your home screen). Everything also stays in the Alerts list. You only get alerts about your own account.</p></section>
+    <p class="foot">Push alerts need alerts turned on in each phone or browser you use: tap <b>Turn on alerts</b> at the top of the app (on iPhone, from the app on your home screen). Everything also stays in the Alerts list. You only get alerts about your own account.</p></section>
   <section class="panel"><div class="ph"><h2>Your account alerts</h2><span class="sub">Each one fires at most once a day, during market hours</span></div>
     ${(P.balance || []).length ? `<ul class="vrules">${P.balance.map(r => `<li><span>${esc(BAL_L[r.kind].replace(/\$$/, "$" + Number(r.value).toLocaleString()).replace(/%$/, Number(r.value) + "%"))}</span><button type="button" class="link" data-vruledel="${esc(r.id)}">Remove</button></li>`).join("")}</ul>` : `<div class="empty">None yet.</div>`}
     <form id="vrule" class="keysform" style="grid-template-columns:minmax(0,1fr) 92px auto;align-items:center;max-width:520px">

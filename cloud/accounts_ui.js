@@ -277,7 +277,7 @@ function renderVNotif() {
     <div class="tbl"><table><thead><tr><th>Alert</th><th class="n">Push</th><th class="n">Email</th></tr></thead><tbody>
     ${Object.keys(KIND_L).map(k => `<tr><td><b>${KIND_L[k][0]}</b><div class="foot" style="white-space:normal">${KIND_L[k][1]}</div></td><td class="n">${box("push", k)}</td><td class="n">${box("email", k)}</td></tr>`).join("")}
     </tbody></table></div>
-    <p class="foot">Push alerts need this phone's alerts turned on: tap <b>Turn on alerts</b> at the top of the app (on iPhone, from the app on your home screen). Everything also stays in the Alerts list. You only get alerts about your own account.</p></section>
+    <p class="foot">Push alerts need alerts turned on in each phone or browser you use: tap <b>Turn on alerts</b> at the top of the app (on iPhone, from the app on your home screen). Everything also stays in the Alerts list. You only get alerts about your own account.</p></section>
   <section class="panel"><div class="ph"><h2>Your account alerts</h2><span class="sub">Each one fires at most once a day, during market hours</span></div>
     ${(P.balance || []).length ? `<ul class="vrules">${P.balance.map(r => `<li><span>${esc(BAL_L[r.kind].replace(/\$$/, "$" + Number(r.value).toLocaleString()).replace(/%$/, Number(r.value) + "%"))}</span><button type="button" class="link" data-vruledel="${esc(r.id)}">Remove</button></li>`).join("")}</ul>` : `<div class="empty">None yet.</div>`}
     <form id="vrule" class="keysform" style="grid-template-columns:minmax(0,1fr) 92px auto;align-items:center;max-width:520px">
