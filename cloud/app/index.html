@@ -2486,6 +2486,10 @@ function renderReal(d) {
       <div class="tile"><span class="v ${cls(m.reported)}">${pct(m.reported, 2)}</span><span class="l">Average purchase, 3 months, as reported</span></div>
       <div class="tile"><span class="v ${cls(m.with_missing_best)}">${pct(m.with_missing_best, 2)}</span><span class="l">Including them, best case</span></div>
       <div class="tile"><span class="v ${cls(m.with_missing_worst)}">${pct(m.with_missing_worst, 2)}</span><span class="l">Including them, worst case</span></div></div>` : ""}
+    ${m.picks_reported != null ? `<div class="tiles">
+      <div class="tile"><span class="v ${cls(m.picks_reported)}">${pct(m.picks_reported, 2)}</span><span class="l">Average pick vs S&amp;P, as reported</span></div>
+      <div class="tile"><span class="v ${cls(m.picks_with_missing_best)}">${pct(m.picks_with_missing_best, 2)}</span><span class="l">Picks with them put back, best case</span></div>
+      <div class="tile"><span class="v ${cls(m.picks_with_missing_worst)}">${pct(m.picks_with_missing_worst, 2)}</span><span class="l">Picks with them put back, worst case</span></div></div>` : ""}
     <p class="foot">The reason comes from each company's SEC filings: merger documents mean bought out, a bankruptcy notice means bankrupt, and a delisting notice without a merger means it failed the exchange's rules. Stocks that kept trading under a new ticker get their prices on the next update.</p></section>`;
   }
   h += `<section class="panel"><div class="ph"><h2>No peeking</h2><span class="sub">Every signal must use only what was public on the disclosure day</span></div>

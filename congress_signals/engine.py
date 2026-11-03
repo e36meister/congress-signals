@@ -2998,8 +2998,11 @@ def classify_missing(cfg, tickers):
     return out
 
 
-def missing_price_scenarios(tx, px, cfg, horizons=None):
-    """How much the purchases we can't price could move the headline average, using why each stock vanished."""
+def missing_price_scenarios(tx, px, cfg, horizons=None, pick_avg=None):
+    """How much the purchases we can't price could move the headline average, using why each stock vanished.
+    Nov 3 (pipeline audit): also for the picks themselves (pick_avg = the long picks' average per trade vs the S&P):
+    the missing stocks put back at the same share, best and worst case, so the headline can be read with and
+    without the survivorship gap. The main case is unchanged."""
     buys = tx[(tx["tx_type"] == "buy") & tx["ticker"].notna()]
     if not len(buys):
         return None
@@ -3021,6 +3024,12 @@ def missing_price_scenarios(tx, px, cfg, horizons=None):
     if base is not None:
         res.update({"reported": base, "with_missing_best": base * (1 - share) + best * share,
                     "with_missing_worst": base * (1 - share) + worst * share})
+    if pick_avg is not None and np.isfinite(pick_avg):
+        res.update({"picks_reported": float(pick_avg), "picks_with_missing_best": float(pick_avg * (1 - share) + best * share),
+                    "picks_with_missing_worst": float(pick_avg * (1 - share) + worst * share)})
+        log(f"Missing prices: long picks' average per trade vs the S&P {pick_avg * 100:+.2f}% as reported; with the "
+            f"{share * 100:.1f}% of purchases we can't price put back {res['picks_with_missing_best'] * 100:+.2f}% (best case) "
+            f"to {res['picks_with_missing_worst'] * 100:+.2f}% (worst case)")
     return res
 
 
@@ -4953,8 +4962,12 @@ def run_backtest(scored, px, cfg, since=None):
             log(f"Never-seen-years test skipped ({type(e).__name__}: {e})")
         try:
             hz = extras["horizons"]
-            extras["missing"] = missing_price_scenarios(_TX_ALL, px, cfg, hz.to_dict("records") if hz is not None else None) \
-                if _TX_ALL is not None else None
+            try:
+                pa = float(trade_stats.loc["Avg vs SPY per trade (%)", "Long picks"]) / 100
+            except Exception:
+                pa = None
+            extras["missing"] = missing_price_scenarios(_TX_ALL, px, cfg, hz.to_dict("records") if hz is not None else None,
+                                                        pick_avg=pa) if _TX_ALL is not None else None
         except Exception as e:
             log(f"Missing prices: scenarios skipped ({type(e).__name__})")
     return {**extras, "longs": fmt_trades(longs, False), "shorts": fmt_trades(shorts, True), "perf": pd.DataFrame(perf),
