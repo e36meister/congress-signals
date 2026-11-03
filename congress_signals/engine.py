@@ -1547,6 +1547,57 @@ def attach_notes(cfg, tx):
 PART_SIZES = {}       # trades read from each source this run (checked before auto-buying)
 
 
+SEEN_LATE_DAYS = 3        # a trade first seen more than this many days after its filing date counts as found late
+
+
+def _seen_key(df):
+    return (df["who"].astype(str) + "|" + df["ticker"].astype(str) + "|" + pd.to_datetime(df["trade_date"]).dt.strftime("%Y-%m-%d")
+            + "|" + df["tx_type"].astype(str) + "|" + df["amt_lo"].astype(str))
+
+
+def stamp_seen_at(cfg, tx):
+    """Nov 3 (pipeline audit): the first day the app saw each trade. Scanned reports read later by the text reader,
+    lines matched to a stock later, phone imports and re-reads all kept their original filing date, so the
+    backtest bought them the morning after a filing the app hadn't seen yet. From now on each new trade gets the
+    day it first appeared (state/seen_at.json, keyed like the de-duplication: member, stock, trade date, buy/sell,
+    amount); forward_returns enters at the next open after that day when it's more than SEEN_LATE_DAYS after the
+    filing. Trades already on file when tracking began have no first-seen date and keep their filing date: for
+    them we can't tell (house live-search rows were already dated the day they were first seen)."""
+    path = _p(cfg, "state", "seen_at.json")
+    try:
+        st = json.load(open(path))
+    except Exception:
+        st = {}
+    today = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
+    keys = dict(st.get("keys") or {})
+    first_run = not st.get("started")
+    k = _seen_key(tx)
+    added = 0
+    for x in pd.unique(k.values):
+        if x not in keys:
+            keys[x] = "" if first_run else today        # "" = on file before tracking began
+            added += 0 if first_run else 1
+    st = {"started": st.get("started") or today, "keys": keys}
+    json.dump(st, open(path, "w"))
+    tx = tx.copy()
+    tx["seen_at"] = pd.to_datetime(k.map(keys).replace("", None), errors="coerce")
+    late = tx["seen_at"].notna() & (tx["seen_at"] > tx["filed_date"] + pd.Timedelta(days=SEEN_LATE_DAYS))
+    log(f"First-seen dates: tracking since {st['started']}; {added:,} new trades today; {int(late.sum()):,} trades on "
+        f"file were found more than {SEEN_LATE_DAYS} days after their filing (the backtest buys them after they were seen)")
+    return tx
+
+
+def entry_basis(tx):
+    """The day after which a trade could first be bought: its filing date, or the day the app first saw it when
+    that was more than SEEN_LATE_DAYS later (stamp_seen_at)."""
+    f = pd.to_datetime(tx["filed_date"])
+    if "seen_at" not in tx:
+        return f
+    s = pd.to_datetime(tx["seen_at"], errors="coerce")
+    late = s.notna() & (s > f + pd.Timedelta(days=SEEN_LATE_DAYS))
+    return f.where(~late, s)
+
+
 def collect_all(cfg):
     parts = []
     if cfg.get("USE_HOUSE", True):
@@ -1607,6 +1658,10 @@ def collect_all(cfg):
         tx = attach_notes(cfg, tx)
     except Exception as e:
         log(f"Filing notes: failed ({type(e).__name__}: {str(e)[:150]})")
+    try:
+        tx = stamp_seen_at(cfg, tx)
+    except Exception as e:
+        log(f"First-seen dates: failed ({type(e).__name__}: {str(e)[:150]}); entries use the filing date this run")
     tx.to_pickle(_p(cfg, "cache", "all_tx.pkl"))
     tx.to_csv(_p(cfg, "data", "all_transactions.csv"), index=False)
     log(f"All sources: {len(tx)} unique transactions, {tx['member'].nunique()} members, "
@@ -3666,7 +3721,7 @@ def forward_returns(tx, px, hold, cost=0.0, stop=None, exit_pos=None):
     also at its open (a rule broken by a day's close sells at the next open)."""
     idx = px.index
     n = len(idx)
-    ent = _entry_positions(idx, tx["filed_date"])
+    ent = _entry_positions(idx, entry_basis(tx))     # Nov 3: a trade found late is bought after it was seen
     ext = ent + hold
     if exit_pos is not None:
         exit_pos = np.asarray(exit_pos)
@@ -9991,7 +10046,7 @@ def price_exit_positions(rows, px, hold, price_exit="none", extend="none"):
         return _PEXIT_CACHE[key]
     idx = px.index
     n = len(idx)
-    ent = _entry_positions(idx, rows["filed_date"])
+    ent = _entry_positions(idx, entry_basis(rows))   # same entry day as forward_returns
     out = ent + int(hold)
     col = {c: i for i, c in enumerate(px.columns)}
     if not hasattr(price_exit_positions, "_ff") or price_exit_positions._ff[0] is not px:
