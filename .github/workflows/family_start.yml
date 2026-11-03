@@ -1,0 +1,44 @@
+name: Family account first buys
+
+# Started by the app's server the moment a family member connects their Alpaca keys (cloud/accounts.js setKeys), so
+# the current Buy list is bought right away instead of at the next update. The daily update retries an account whose
+# start didn't happen (congress_signals/accounts.run).
+on:
+  workflow_dispatch:
+    inputs:
+      account:
+        description: "Account id (blank: every connected account not started yet)"
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: family-start
+  cancel-in-progress: false
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: America/New_York
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install libraries
+        run: |
+          for i in 1 2 3 4; do pip install --retries 5 --timeout 60 -r requirements.txt && exit 0; sleep $((i * 20)); done
+          exit 1
+      - name: Buy the current picks
+        env:
+          ACCOUNTS_KEY: ${{ secrets.ACCOUNTS_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          MAX_INVESTED_PCT: ${{ vars.MAX_INVESTED_PCT }}
+          SMALL_SLEEVE_PCT: ${{ vars.SMALL_SLEEVE_PCT }}
+          ACCOUNT: ${{ github.event.inputs.account }}
+        run: python family_start.py "$ACCOUNT"

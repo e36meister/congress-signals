@@ -152,13 +152,38 @@ function vBuyBox(t, inTable) {
   return inTable ? `<tr class="sellrow"><td colspan="6">${box}</td></tr>` : box;
 }
 
+// ---------- buy size (owner, Nov 3 2026): low / standard / high, from their balance ----------
+const SIZE_K = { low: 0.5, standard: 1, high: 1.5 };
+function sizePanel(d, ro) {
+  const V = d.viewer || {}, L = (d.portfolio || {}).limits || {}, cur = V.connected ? (V.size || "standard") : (VA.size || V.size || "standard");
+  const base = L.per_pick != null ? L.per_pick / (L.size_k || SIZE_K[L.size] || 1) : null;      // the standard amount
+  const est = k => base != null ? ` · about ${money(base * SIZE_K[k])} a pick` : "";
+  const opt = (k, l) => `<button type="button" class="seg1" data-vsize="${k}" aria-pressed="${cur === k}"${ro ? " disabled" : ""}>${l}</button>`;
+  return `<section class="panel"><div class="ph"><h2>Buy size</h2></div>
+    <div class="seg" role="group" aria-label="Buy size">${opt("low", "Low")}${opt("standard", "Standard")}${opt("high", "High")}</div>
+    <p class="foot" style="margin-top:8px">How much each pick gets, from your account balance. <b>Low</b> is half the standard amount${est("low")}; <b>Standard</b> is an equal share of the account across the picks a holding period needs${est("standard")}; <b>High</b> is one and a half times${est("high")}. The tool never invests more than ${Math.round(L.max_invested_pct || 90)}% of the account whatever the size, so with High the account fills up with fewer picks and later picks wait for money to free up; with Low more of it stays in the Treasury-bill fund. ${V.connected ? "A change applies to new buys; positions already bought keep their size." : "You can change it any time later."}</p>
+    ${VA.sizeMsg ? `<div class="tapmsg ${VA.sizeMsg.ok ? "pos" : "neg"}">${esc(VA.sizeMsg.text)}</div>` : ""}</section>`;
+}
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest("[data-vsize]");
+  if (!b || !isViewer() || VA.sizeBusy) return;
+  const size = b.dataset.vsize, d = state.data || {};
+  if (!(d.viewer && d.viewer.connected)) { VA.size = size; render(); return; }      // not connected yet: sent with the keys
+  VA.sizeBusy = true; VA.sizeMsg = null;
+  try {
+    const { js } = await api("/api/me/size", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ size }) });
+    d.viewer.size = js.size; VA.sizeMsg = { ok: true, text: js.message || "Saved." };
+  } catch (e) { VA.sizeMsg = { ok: false, text: e.message || "Couldn't save. Try again." }; }
+  VA.sizeBusy = false; render();
+});
+
 // ---------- the Account tab for a family account (also the owner's read-only view of it) ----------
 // opts.readOnly: the owner looking at someone's account (no buttons, no setup form)
 function renderViewerAccount(d, opts = {}) {
   const V = d.viewer || {}, p = d.portfolio, ro = !!opts.readOnly;
   if (!V.connected && !ro) return renderConnect();
   if (!V.connected && ro) return `<div class="empty">They haven't connected their Alpaca account yet.</div>`;
-  if (!p) return `<section class="panel"><div class="ph"><h2>Connected</h2></div><p>Your Alpaca account is connected. It shows up here after the next update (a few times a day). The tool buys new picks as they come in and parks spare cash in a Treasury-bill fund until picks need it.</p></section>`;
+  if (!p) return `<section class="panel"><div class="ph"><h2>Connected</h2></div><p>Your Alpaca account is connected and the tool is buying the current picks for it now. This page fills in within a few minutes; pull down to refresh. After that the tool buys new picks as they come in and parks spare cash in a Treasury-bill fund until picks need it.</p></section>${sizePanel(d, ro)}`;
   const pos = p.positions || [], ords = p.orders || [], L = p.limits || {};
   const picks = pos.filter(x => x.bot && x.sleeve !== "park"), park = pos.filter(x => x.sleeve === "park"), own = pos.filter(x => !x.bot && x.sleeve !== "park");
   const invested = picks.reduce((a, x) => a + (x.mv || 0), 0), gain = picks.reduce((a, x) => a + (x.pl || 0), 0), parked = park.reduce((a, x) => a + (x.mv || 0), 0);
@@ -173,7 +198,7 @@ function renderViewerAccount(d, opts = {}) {
     return `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${m && VA.open !== x.t && VA.sellOpen !== x.t ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</td><td class="n">${Number(x.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
       <td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${held}${btns}</td></tr>${ro ? "" : vBuyBox(x.t, true) + vSellRow(x)}`;
   };
-  return `${ro ? "" : tip("<b>Your Account.</b> Everything here is your own real-money Alpaca account. The tool buys new picks for you as they're found, each with an equal share of your balance; spare cash waits in a Treasury-bill fund (it earns about what short-term Treasury bills pay). Tap a ticker for its chart.")}
+  return `${ro ? "" : tip("<b>Your Account.</b> Everything here is your own real-money Alpaca account. The tool buys new picks for you as they're found, each with a share of your balance set by your buy size; spare cash waits in a Treasury-bill fund (it earns about what short-term Treasury bills pay). Tap a ticker for its chart.")}
   <div class="filters"><span class="chip SHORT">Real money</span>${auto}<span class="foot">Updated ${esc(ago(p.updated))} (${esc(fmtET(p.updated))}) · market ${p.market_open ? "open" : "closed"}</span></div>
   <div class="tiles">
     <div class="tile"><span class="v">${money(p.equity)}</span><span class="l">Account value</span><span class="c">Cash ${money(p.cash)}</span></div>
@@ -183,6 +208,7 @@ function renderViewerAccount(d, opts = {}) {
     ${C && C.since_start != null ? `<div class="tile"><span class="v ${cls(C.gain ?? C.since_start)}">${C.gain != null ? (C.gain > 0 ? "+" : "") + money(C.gain) : pct(C.since_start, 2)}</span><span class="l">Gain since ${esc(fmtDate(C.start))}</span><span class="c">${pct(C.since_start, 2)}${C.net_in ? ` · deposits not counted` : ""} · last close ${esc(fmtDate(C.date))}</span></div>` : ""}
     ${C && C.since_start != null && C.spy_since_start != null ? `<div class="tile"><span class="v ${cls(C.since_start - C.spy_since_start)}">${pnum((C.since_start - C.spy_since_start) * 100, 2)}</span><span class="l">${C.since_start >= C.spy_since_start ? "Ahead of" : "Behind"} the S&amp;P since start</span><span class="c">You ${pct(C.since_start, 2)} · S&amp;P ${pct(C.spy_since_start, 2)}</span></div>` : ""}
   </div>
+  ${sizePanel(d, ro)}
   <section class="panel"><div class="ph"><h2>Positions</h2></div>
     ${pos.length ? `<div class="tbl"><table><thead><tr><th>Ticker</th><th class="n">Shares</th><th class="n">Avg cost</th><th class="n">Value</th><th class="n">Gain</th><th>Held</th></tr></thead><tbody>
     ${[...picks, ...own, ...park].map(row).join("")}</tbody></table></div>
@@ -216,7 +242,7 @@ function vSellRow(x) {
 function renderConnect() {
   const m = VA.keyMsg;
   return `<section class="panel"><div class="ph"><h2>Connect your Alpaca account</h2></div>
-  <p>The tool trades your own real-money Alpaca account: it buys each new pick with an equal share of your balance, sells on its schedule and keeps spare cash in a Treasury-bill fund. It needs a key from Alpaca to do that. You do this once.</p>
+  <p>The tool trades your own real-money Alpaca account: it buys the current picks as soon as you connect, then each new pick as it comes in, sized from your balance (pick a buy size below), sells on its schedule and keeps spare cash in a Treasury-bill fund. It needs a key from Alpaca to do that. You do this once.</p>
   <ol class="steps">
     <li>On a computer or phone browser, sign in at <b>app.alpaca.markets</b> and make sure you're in your <b>Live</b> account (not Paper) at the top left.</li>
     <li>On the home page, find <b>API Keys</b> on the right and tap <b>Generate New Keys</b>.</li>
@@ -228,7 +254,7 @@ function renderConnect() {
     <button type="submit" class="buybtn go"${VA.keyBusy ? " disabled" : ""}>${VA.keyBusy ? "Checking with Alpaca…" : "Connect"}</button>
   </form>
   ${m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}
-  <p class="foot">The key is stored encrypted and is never shown again, here or anywhere else. It lets the tool place trades; it can't move money out of your account. To stop the tool, delete the key in Alpaca at any time.</p></section>`;
+  <p class="foot">The key is stored encrypted and is never shown again, here or anywhere else. It lets the tool place trades; it can't move money out of your account. To stop the tool, delete the key in Alpaca at any time.</p></section>${sizePanel(state.data || {}, false)}`;
 }
 
 document.addEventListener("submit", async ev => {
@@ -242,7 +268,7 @@ document.addEventListener("submit", async ev => {
   let ok = false;
   try {
     const { js } = await api("/api/me/keys", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key, secret }) });
+      body: JSON.stringify({ key, secret, size: VA.size || "standard" }) });
     ok = true;
     VA.keyMsg = { ok: true, text: js.message || "Connected." };
     if (state.data) state.data.viewer = { ...(state.data.viewer || {}), connected: true };
@@ -482,7 +508,7 @@ function renderAccounts() {
     if (D.error) return head + `<div class="note err">${esc(D.error)}</div>`;
     return head + `<section class="panel"><div class="ph"><h2>${esc(a.label)}</h2><span class="sub">${esc(a.email)} · view only</span></div>
       ${D.problem ? `<div class="note warn">${esc(D.problem)}</div>` : ""}</section>` +
-      renderViewerAccount({ viewer: { connected: a.keys, auto: a.auto }, portfolio: D.portfolio, close_report: D.close_report, adaptive: state.data?.adaptive }, { readOnly: true });
+      renderViewerAccount({ viewer: { connected: a.keys, auto: a.auto, size: a.size }, portfolio: D.portfolio, close_report: D.close_report, adaptive: state.data?.adaptive }, { readOnly: true });
   }
   const m = ACC.msg;
   const list = ACC.list;

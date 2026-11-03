@@ -148,7 +148,7 @@ async function api(req, env, url, ctx) {
   if (who.role === "viewer") {
     if (!viewerAllowed(req.method, p)) return json({ error: "forbidden" }, 403);
     const quiet = Object.assign(Object.create(env), { __quiet: true });
-    const r = await viewerApi(req, env, url, who.a, { live, vapid, getSubs, saveSub, sendAll, dispatch, fromR2,
+    const r = await viewerApi(req, env, url, who.a, { live, vapid, getSubs, saveSub, sendAll, dispatch, fromR2, problem: wProblem, ok: wOk,
       sell: (rq, c) => sell(rq, quiet, c),
       widgetScript: (u, key) => new Response(WIDGET_JS.replace("__URL__", u.origin).replace("__KEY__", key), { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } }),
       maxTap: +(env.MAX_TAP_DOLLARS || 25000) || 25000 });

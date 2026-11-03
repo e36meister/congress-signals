@@ -56,7 +56,8 @@ def load(log):
         if not k:
             missing += 1
             continue
-        out.append({"id": a["id"], "auto": a.get("auto", True) is not False, "key": k["key"], "secret": k["secret"]})
+        out.append({"id": a["id"], "auto": a.get("auto", True) is not False, "key": k["key"], "secret": k["secret"],
+                    "size": a.get("size") or "standard", "started": bool(a.get("started_at"))})
     if missing:
         log(f"Family accounts: {missing} account(s) have keys that couldn't be read (ACCOUNTS_KEY missing or changed? "
             "reset their keys on the Accounts page); they're skipped")
@@ -85,6 +86,11 @@ def run(cfg, buys, new, last_prices, log, trade, msales=None, close_report=None)
     accts = load(log)
     snaps = {}
     for i, a in enumerate(accts, 1):
+        if trade and not a.get("started"):      # backup: the connect-time start didn't run (or buys were paused then)
+            try:
+                start(log, only=a["id"], accts=[a], tag=f"Family account {i}")
+            except Exception as e:
+                log(f"Family account {i}: first buys failed ({type(e).__name__}); trying again next run")
         try:
             with broker.use_account(a):
                 snap = broker.sync(dict(cfg, _viewer=True), buys, new, last_prices,
@@ -101,6 +107,99 @@ def run(cfg, buys, new, last_prices, log, trade, msales=None, close_report=None)
     if accts:
         log(f"Family accounts: {len(snaps)} of {len(accts)} refreshed" + ("" if trade else " (no trading this step)"))
     return snaps
+
+
+# ---------- first buys right after someone connects (owner, Nov 3 2026) ----------
+# The app's server starts family_start.yml the moment their keys are saved, so they don't wait for the next update.
+# A new account buys the whole current Buy list (and the small-company picks on it), sized from its own balance and the
+# buy size they picked, like the owner's account did on its first run. An account that already holds tool buys is
+# only marked started (nothing extra is bought). Paused buys (a data problem) are respected; the daily update then
+# retries the start on its next run (run() above).
+_WCOLS = {"t": "ticker", "action": "action", "sm": "f_small_cap", "lag": "lag_days", "sz": "size_mult",
+          "cap": "market_cap", "nc": "f_no_coverage", "px": "price_now"}
+
+
+def _buy_list(log):
+    import pandas as pd
+    raw = cloud_store.get("dashboard_data.json", log=lambda m: None)
+    d = json.loads(raw) if raw else {}
+    rows = [r for r in ((d.get("watchlist") or {}).get("buys") or []) if r.get("action") == "BUY" and r.get("t")]
+    df = pd.DataFrame([{v: r.get(k) for k, v in _WCOLS.items()} for r in rows], columns=list(_WCOLS.values()))
+    for c in ("f_small_cap", "lag_days", "size_mult", "market_cap", "f_no_coverage", "price_now"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["size_mult"] = df["size_mult"].fillna(1.0)
+    pol = (d.get("adaptive") or {}).get("policy") or {}
+    slots = (d.get("small") or {}).get("slots")
+    return df, pol, slots, bool(d.get("updated"))
+
+
+def _prices(api, tickers, fallback):
+    import requests, broker
+    out = {t: float(p) for t, p in fallback.items() if p and p == p and float(p) > 0}
+    syms = [broker.to_alpaca(t) for t in tickers]
+    for i in range(0, len(syms), 100):
+        try:
+            js = requests.get("https://data.alpaca.markets/v2/stocks/trades/latest", headers=api.h, timeout=30,
+                              params={"symbols": ",".join(syms[i:i + 100]), "feed": "iex"}).json()
+            for sym, tr in (js.get("trades") or {}).items():
+                if tr and float(tr.get("p") or 0) > 0:
+                    out[broker.from_alpaca(sym)] = float(tr["p"])
+        except Exception:
+            pass
+    return out
+
+
+def _mark_started(acct_id, why):
+    raw = cloud_store.get(IDX, log=lambda m: None)
+    idx = json.loads(raw) if raw else []
+    for a in idx:
+        if a.get("id") == acct_id:
+            a["started_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+            a["started_how"] = why
+    cloud_store.put(IDX, json.dumps(idx), log=lambda m: None)
+
+
+def start(log, only=None, accts=None, tag="Family account"):
+    """First buys for newly connected accounts (all not yet started, or just `only`). Returns how many started."""
+    import broker
+    accts = [a for a in (accts if accts is not None else load(log)) if not a.get("started") and (only is None or a["id"] == only)]
+    if not accts:
+        return 0
+    try:
+        paused = json.loads(cloud_store.get("push/pause_state.json", log=lambda m: None) or b"{}").get("paused")
+    except Exception:
+        paused = False
+    if paused:
+        log(f"{tag}: first buys wait: new buys are paused for a data problem (the daily update retries)")
+        return 0
+    df, pol, slots, ok = _buy_list(log)
+    if not ok:
+        log(f"{tag}: first buys wait: the Buy list couldn't be read (the daily update retries)")
+        return 0
+    hp = {"hold_other": int(pol.get("hold_other") or 60), "hold_small": int(pol.get("hold_small") or 60), **pol}
+    done = 0
+    for a in accts:
+        with broker.use_account(a):
+            s = broker.settings(hp["hold_other"])
+            api = broker.Alpaca(s)
+            held_before = [sym for sym, o in broker._bot_buys(api, history=True).items()
+                           if not (o.get("client_order_id") or "").startswith(broker.PARK_PREFIX)]
+            if held_before:
+                _mark_started(a["id"], "had tool buys already")
+                log(f"{tag}: already has the tool's buys; marked started, nothing extra bought")
+                continue
+            last = _prices(api, list(df["ticker"]), dict(zip(df["ticker"], df["price_now"])))
+            cfg = {"HOLD_DAYS": hp["hold_other"], "_viewer": True, "_hold_policy": hp, "_small_slots": slots}
+            snap = broker.sync(cfg, df, None, last, lambda m: log(f"{tag}: {m}"), trade=True)
+        if snap is None:
+            log(f"{tag}: first buys failed: Alpaca didn't answer (the daily update retries)")
+            continue
+        bought = [x for x in (snap.get("this_run") or []) if x.get("side") == "buy" and x.get("ok")]
+        _save(a["id"], snap, log)
+        _mark_started(a["id"], f"{len(bought)} first buys")
+        log(f"{tag}: first buys placed: {len(bought)} of {len(df)} on the Buy list (size {a.get('size') or 'standard'})")
+        done += 1
+    return done
 
 
 def _save(acct_id, snap, log, member_sold=None, close_report=None, problem=None):

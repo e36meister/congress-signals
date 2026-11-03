@@ -119,7 +119,7 @@ export async function alpacaFor(env, a) {
 function pub(a) {
   return { id: a.id, label: a.label, email: a.email, status: a.status, auto: a.auto !== false, created: a.created,
            last_login: a.last_login || null, keys: !!a.keys_set_at, keys_set_at: a.keys_set_at || null, key_hint: a.key_hint || null,
-           link_sent: a.link_sent || null };
+           link_sent: a.link_sent || null, size: sizeOf(a), started_at: a.started_at || null };
 }
 
 // ---------- sign-in links ----------
@@ -243,7 +243,7 @@ const VIEWER_GET = new Set(["/api/session", "/api/data", "/api/members", "/api/m
   "/api/movers", "/api/news", "/api/about", "/api/context", "/api/notifications", "/api/live", "/api/push/key", "/api/me/photo",
   "/api/me/prefs", "/api/me/widget"]);
 const VIEWER_POST = new Set(["/api/logout", "/api/notifications/clear", "/api/push/subscribe", "/api/buy-more", "/api/sell",
-  "/api/me/keys", "/api/me/photo", "/api/bug", "/api/me/prefs", "/api/me/widget", "/api/me/email-ask"]);
+  "/api/me/keys", "/api/me/photo", "/api/bug", "/api/me/prefs", "/api/me/widget", "/api/me/email-ask", "/api/me/size"]);
 export function viewerAllowed(method, path) {
   return method === "GET" ? VIEWER_GET.has(path) : method === "POST" ? VIEWER_POST.has(path) : false;
 }
@@ -254,7 +254,7 @@ export async function viewerApi(req, env, url, a, h) {
   if (p === "/api/session") {
     // the first time they open the app is remembered, so a few days in they're asked once whether they want emails too
     if (!a.first_seen) { a.first_seen = new Date().toISOString(); await patchAccount(env, a.id, x => { if (!x.first_seen) x.first_seen = a.first_seen; }); }
-    return json({ ok: true, role: "viewer", connected: !!a.keys_set_at, auto: a.auto !== false, mode: "live",
+    return json({ ok: true, role: "viewer", connected: !!a.keys_set_at, auto: a.auto !== false, mode: "live", size: sizeOf(a),
       photo: a.photo_at || null, photo_prompted: !!(a.photo_at || a.photo_skipped),
       ask_email: !a.email_asked && Date.now() - Date.parse(a.first_seen) >= EMAIL_ASK_DAYS * 864e5 });
   }
@@ -284,7 +284,8 @@ export async function viewerApi(req, env, url, a, h) {
   if (p === "/api/notifications") return json({ items: await visibleAlerts(env, a.id) });
   if (p === "/api/notifications/clear") return clearAlerts(req, env, a.id);
   if (p === "/api/buy-more") return buyMore(req, env, a, h.maxTap);
-  if (p === "/api/me/keys") return setKeys(req, env, a);
+  if (p === "/api/me/keys") return setKeys(req, env, a, h);
+  if (p === "/api/me/size") return setSize(req, env, a);
   if (p === "/api/push/key") return json({ key: (await h.vapid(env)).pub, phones: (await h.getSubs(env, subsKey(a.id))).length });
   if (p === "/api/push/subscribe") {
     const b = await body(req);
@@ -314,7 +315,7 @@ async function viewerData(env, a) {
   out.watchlist = { lookback: w.lookback, updated: w.updated, buys, sells: [], new: (w.new || []).filter(n => n.action === "BUY") };
   const pol = (d.adaptive && d.adaptive.policy) || {};
   out.adaptive = { policy: { hold_other: pol.hold_other, hold_small: pol.hold_small, sizing: pol.sizing } };
-  out.viewer = { connected: !!a.keys_set_at, auto: a.auto !== false };
+  out.viewer = { connected: !!a.keys_set_at, auto: a.auto !== false, size: sizeOf(a) };
   if (port) {
     out.portfolio = port.portfolio || null;
     out.member_sold = port.member_sold || {};
@@ -368,7 +369,18 @@ export async function deliverTo(env, id, msg, sendAll, push = true) {
 }
 
 // ---------- first-time setup: they paste their own live Alpaca keys once ----------
-async function setKeys(req, env, a) {
+// Buy size (owner, Nov 3 2026): each pick's amount for their balance, times 0.5 (low), 1 (standard) or 1.5 (high);
+// the trading side reads it from the account list (broker.SIZE_MULT). Same overall limits whatever the size.
+export const SIZES = { low: 0.5, standard: 1, high: 1.5 };
+export const sizeOf = a => (a && SIZES[a.size] ? a.size : "standard");
+async function setSize(req, env, a) {
+  const b = await body(req), size = String(b.size || "");
+  if (!SIZES[size]) return json({ ok: false, why: "bad-size" }, 400);
+  await patchAccount(env, a.id, x => { x.size = size; });
+  return json({ ok: true, size, message: size === "standard" ? "Buy size: standard." : `Buy size: ${size}. New buys use it from now on.` });
+}
+
+async function setKeys(req, env, a, h = {}) {
   if (a.keys_set_at) return json({ ok: false, why: "already-set", message: "Your account is already connected. Ask the owner if it needs to change." }, 409);
   const b = await body(req);
   // Nov 3: a family member got "Those don't look like Alpaca keys" for keys copied from Alpaca. The check only trimmed
@@ -391,10 +403,21 @@ async function setKeys(req, env, a) {
   if (r.status === 401 || r.status === 403) return json({ ok: false, why: "rejected", message: "Alpaca didn't accept those keys. Check you copied the whole secret, from the Live account." }, 400);
   if (!r.ok || !r.data) return json({ ok: false, why: "alpaca", message: "Couldn't reach Alpaca to check the keys. Try again in a minute." }, 502);
   if (r.data.status && r.data.status !== "ACTIVE") return json({ ok: false, why: "inactive", message: `Your Alpaca account isn't open for trading yet (it says "${String(r.data.status).toLowerCase()}"). Try again once it's approved.` }, 400);
+  const size = SIZES[b.size] ? b.size : sizeOf(a);
   await saveKeys(env, a.id, key, secret);
-  await patchAccount(env, a.id, x => { x.keys_set_at = new Date().toISOString(); x.key_hint = "…" + key.slice(-4); });
+  await patchAccount(env, a.id, x => { x.keys_set_at = new Date().toISOString(); x.key_hint = "…" + key.slice(-4); x.size = size; });
   await env.DATA.put(`accounts/${a.id}/fills_state.json`, JSON.stringify({ seen: [], fresh: true }));
-  return json({ ok: true, message: "Connected. The tool starts buying the current picks at the next update." });
+  // owner, Nov 3: buy the current picks right away (family_start.yml), not at the next update. If GitHub won't start
+  // the job, the daily update does the same first buys on its next run (accounts.run), and the owner sees why.
+  let started = false;
+  if (a.auto !== false && h.dispatch) {
+    try { await h.dispatch(env, "family_start.yml", { account: a.id }); started = true; }
+    catch (e) { if (h.problem) await h.problem(env, "acct-start", `Family account first buys couldn't start right away (${String(e && e.message || e).slice(0, 100)}); the next update does them`); }
+  }
+  if (started && h.ok) await h.ok(env, "acct-start");
+  return json({ ok: true, message: a.auto === false ? "Connected. Automatic buying is off for this account, so nothing is bought until it's turned on."
+    : started ? "Connected. Buying the current picks now. You'll get an alert as each order fills (orders placed while the market is closed fill when it opens)."
+    : "Connected. Your first buys go in with the next update." });
 }
 
 // ---------- Buy more (viewers, on a stock the tool already holds for them) ----------
@@ -414,7 +437,7 @@ async function buyMore(req, env, a, maxTap) {
   const { d, buys } = await buyList(env);
   if (!buys.some(r => r.t === t)) return json({ ok: false, why: "not-a-pick", message: `${t} isn't on the Buy list right now` }, 400);
   const pol = (d.adaptive && d.adaptive.policy) || {}, row = buys.find(r => r.t === t);
-  const hold = Math.max(5, Math.min(500, +((row && row.small) ? pol.hold_small : pol.hold_other) || 60));
+  const hold = Math.max(5, Math.min(500, +((row && row.sm) ? pol.hold_small : pol.hold_other) || 60));
   const [asset, acct] = await Promise.all([c.get(`/v2/assets/${encodeURIComponent(sym)}`), c.get("/v2/account")]);
   if (!asset.ok || !asset.data?.tradable) return json({ ok: false, why: "not-tradable" }, 400);
   if (!acct.ok) return json({ ok: false, why: "not-found" }, 400);

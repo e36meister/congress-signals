@@ -36,6 +36,15 @@ def park_label(sym):
 # Accounts page, and sizing from their own balance (the owner's DOLLARS_PER_TRADE / MAX_POSITIONS don't apply).
 _ACCOUNT = None
 
+# Buy size a family account picked in its app (owner, Nov 3 2026): each pick's amount is this many times the standard
+# amount for their balance. The overall limits (MAX_INVESTED_PCT, the small-company share) stay the same, so "high"
+# fills the account with fewer, bigger positions and later picks wait for money to free up.
+SIZE_MULT = {"low": 0.5, "standard": 1.0, "high": 1.5}
+
+
+def size_mult(name):
+    return SIZE_MULT.get(str(name or "standard").lower(), 1.0)
+
 
 class use_account:
     def __init__(self, acct):
@@ -57,7 +66,8 @@ def settings(hold_days):
         a = _ACCOUNT
         return {"mode": "live", "key": a["key"], "secret": a["secret"], "auto": bool(a.get("auto", True)),
                 "dollars": None, "max_positions": None, "max_invested": float(env("MAX_INVESTED_PCT") or 90) / 100,
-                "hold_days": int(hold_days), "account": a["id"]}
+                "hold_days": int(hold_days), "account": a["id"], "size": str(a.get("size") or "standard"),
+                "size_k": size_mult(a.get("size"))}
     mode = (env("TRADING_MODE") or "paper").strip().lower()
     mode = mode if mode in BASE else "paper"
     up = mode.upper()
@@ -642,7 +652,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         per_week = float(cfg.get("PICKS_PER_WEEK", 5))
         plan = max(5, int(per_week * int(pol["hold_other"]) / 5))     # positions open at once in the backtest
         main_cap = s["max_invested"] * (1 - sleeve_pct) * equity
-        dollars = s["dollars"] or main_cap / plan
+        dollars = (s["dollars"] or main_cap / plan) * s.get("size_k", 1.0)
         slots = (s["max_positions"] or plan) - len([p for p in mine if not is_sleeve(p)]) - len(main_waiting - set(mine))
 
         def place(t, amount, cid):
@@ -687,8 +697,10 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         else:
             rows = buys[buys["action"] == "BUY"] if buys is not None and len(buys) else buys
             new_buys = set(new.loc[new["action"] == "BUY", "ticker"]) if new is not None and len(new) else set()
-            first_time = not any(not (o.get("client_order_id") or "").startswith(PREFIX + "sm-")   # first run: start
-                                 for o in bot_hist.values())                                 # from the whole BUY list
+            first_time = not any(not (o.get("client_order_id") or "").startswith((PREFIX + "sm-", PARK_PREFIX))
+                                 for o in bot_hist.values())   # first run: start from the whole BUY list (parked cash
+                                                               # isn't a pick: a family account that only parked so far
+                                                               # still starts from the list)
             order = [t for t in rows["ticker"] if first_time or t in new_buys] if rows is not None and len(rows) else []
         if rows is not None and len(rows):
             for t in order:
@@ -726,7 +738,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             # within the same overall limit as the main picks (Nov 3 review: 63% + 28.5% went over the 90% max)
             sleeve_cap = s["max_invested"] * sleeve_pct * equity
             sm_slots = int(cfg.get("_small_slots") or 25)
-            amount = sleeve_cap / max(sm_slots, 1)
+            amount = sleeve_cap / max(sm_slots, 1) * s.get("size_k", 1.0)
             hold = int(pol.get("hold_sleeve", 250))
             # the backtest's rule already spaces repeat buys of a stock; the old list-based path buys each stock once
             ever = set() if fresh_sm is not None else {sym for sym, o in bot_hist.items()
@@ -852,7 +864,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         # the tool's budget: account value minus positions you bought yourself (same as when it places orders)
         yours_ = sum(float(p.get("market_value") or 0) for p in positions
                      if p["symbol"] not in bot or p["symbol"] in others)
-        per_pick = s["dollars"] or s["max_invested"] * (1 - sp_) * max(0.0, eq - yours_) / plan_
+        per_pick = (s["dollars"] or s["max_invested"] * (1 - sp_) * max(0.0, eq - yours_) / plan_) * s.get("size_k", 1.0)
     except Exception:
         per_pick = None
     return {"mode": s["mode"], "auto": s["auto"], "updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -867,7 +879,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                        "price_exit": pol.get("price_exit", "none"), "extend": pol.get("extend", "none"),
                        "sleeve_price_exit": pol.get("sleeve_price_exit", "none"),
                        "sleeve_extend": pol.get("sleeve_extend", "none"),
-                       "per_pick": per_pick, "sizing": pol.get("sizing", "equal")},
+                       "per_pick": per_pick, "sizing": pol.get("sizing", "equal"),
+                       "size": s.get("size", "standard"), "size_k": s.get("size_k", 1.0)},
             "positions": sorted(pos, key=lambda x: -x["mv"]),
             "orders": [{"t": from_alpaca(o["symbol"]), "side": o["side"], "qty": o.get("qty"), "filled_qty": o.get("filled_qty"),
                         "notional": o.get("notional"), "status": o.get("status", ""),
