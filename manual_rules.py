@@ -213,7 +213,8 @@ def make_eval(E, scored, px, cfg):
             if prc >= cfg["AVOID_PERCENTILE"]:
                 out.append({"k": "avoid", "t": f"a new sale filing makes it an avoid (sale signal in the top {max(1, round(100 - prc))}%)"})
         # 3. holding period, counted from your buy; kept while ahead of the S&P (up to a year) like the tool's picks
-        held = int(np.busday_count(s0.date(), today.date()))
+        import broker as _b
+        held = _b.trading_days(s0.date(), today.date())       # market holidays aren't trading days (Nov 3)
         cap = caps.get(t)
         hold = int(pol["hold_small"] if (cap is not None and cap == cap and cap < 2e9) else pol["hold_other"])
         if held >= hold:

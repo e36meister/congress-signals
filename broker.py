@@ -72,6 +72,58 @@ def settings(hold_days):
             "max_invested": num("MAX_INVESTED_PCT", 90) / 100, "hold_days": int(hold_days)}
 
 
+def _nyse_holidays(y0=2014, y1=2031):
+    """NYSE full-day closures (Nov 3 review: holding periods counted holidays as trading days, so positions were
+    sold about one trading day early per holiday in the hold; the backtest and the stop check count real trading
+    days). Saturday holidays move to Friday except New Year's Day; Sunday ones to Monday. Alpaca's calendar is
+    added on top when it answers (calendar_holidays)."""
+    from dateutil.easter import easter
+    D = dt.date
+    nth = lambda y, m, wd, n: D(y, m, 1) + dt.timedelta(days=(wd - D(y, m, 1).weekday()) % 7 + 7 * (n - 1))
+    last = lambda y, m, wd: (lambda d: d - dt.timedelta(days=(d.weekday() - wd) % 7))(D(y, m + 1, 1) - dt.timedelta(days=1))
+    out = set()
+    for y in range(y0, y1 + 1):
+        fixed = [D(y, 1, 1), D(y, 7, 4), D(y, 12, 25)] + ([D(y, 6, 19)] if y >= 2022 else [])
+        for d in fixed:
+            if d.weekday() == 5:
+                if d.month != 1:
+                    out.add(d - dt.timedelta(days=1))
+            elif d.weekday() == 6:
+                out.add(d + dt.timedelta(days=1))
+            else:
+                out.add(d)
+        out |= {nth(y, 1, 0, 3), nth(y, 2, 0, 3), easter(y) - dt.timedelta(days=2), last(y, 5, 0), nth(y, 9, 0, 1),
+                nth(y, 11, 3, 4)}
+    out |= {D(2018, 12, 5), D(2025, 1, 9)}      # national days of mourning
+    return out
+
+
+HOLIDAYS = _nyse_holidays()
+
+
+def calendar_holidays(api):
+    """Add Alpaca's own market calendar (weekdays it lists as closed) to HOLIDAYS; quietly keeps the built-in list
+    when the calendar doesn't answer."""
+    try:
+        start = (dt.date.today() - dt.timedelta(days=760)).isoformat()
+        end = (dt.date.today() + dt.timedelta(days=30)).isoformat()
+        days = {d["date"] for d in api.get("/v2/calendar", start=start, end=end) if d.get("date")}
+        if len(days) > 300:
+            d = dt.date.fromisoformat(start)
+            while d.isoformat() <= max(days):
+                if d.weekday() < 5 and d.isoformat() not in days:
+                    HOLIDAYS.add(d)
+                d += dt.timedelta(days=1)
+        return True
+    except Exception:
+        return False
+
+
+def trading_days(a, b):
+    """Trading days from a (counted) to b (not counted), like np.busday_count, without market holidays."""
+    return int(np.busday_count(a, b, holidays=sorted(HOLIDAYS)))
+
+
 class Alpaca:
     def __init__(self, s):
         self.base = BASE[s["mode"]]
@@ -293,7 +345,7 @@ def recheck_queued_sells(caps, log, policy=None):
                 and sym in caps and not (o.get("client_order_id") or "").startswith((PREFIX, "tap-"))):
             # the cleanup sells close the position (DELETE /v2/positions), so Alpaca names them; your Sell-button
             # orders ("tap-...") look the same otherwise and must never be cancelled (Nov 3 review)
-            held = int(np.busday_count(dt.date.fromisoformat(bot[sym]["filled_at"][:10]), dt.date.today()))
+            held = trading_days(dt.date.fromisoformat(bot[sym]["filled_at"][:10]), dt.date.today())
             if held < _hold_of(bot[sym], 250):       # not a normal end-of-hold sale
                 if api.delete(f"/v2/orders/{o['id']}").status_code in (200, 204):
                     n += 1
@@ -349,6 +401,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         log(f"Broker: couldn't reach Alpaca ({type(e).__name__}); trying again next run")
         return None
     today = dt.date.today()
+    if not calendar_holidays(api):
+        log("Broker: Alpaca's market calendar didn't answer; holding periods use the built-in holiday list")
     positions = {p["symbol"]: p for p in api.get("/v2/positions")}
     open_orders = api.get("/v2/orders", status="open", limit=500)
     pending = {o["symbol"] for o in open_orders}
@@ -397,7 +451,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         if sym not in positions or sym in pending or sym in others or is_park(sym):
             continue
         bought = dt.date.fromisoformat(o["filled_at"][:10])
-        held = int(np.busday_count(bought, today))
+        held = trading_days(bought, today)
         hold = orig = _hold_of(o, s["hold_days"])
         # near the end of its hold (or past it), checked every run: the holding period the weekly check now
         # supports for this group wins over the one it was bought under (longer: keep it; shorter: sell)
@@ -750,7 +804,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                     "sleeve": ("small" if o and (o.get("client_order_id") or "").startswith(PREFIX + "sm-")
                                else "park" if o and (o.get("client_order_id") or "").startswith(PARK_PREFIX) else None),
                     "hold": (None if (o.get("client_order_id") or "").startswith(PARK_PREFIX) else _hold_of(o, s["hold_days"])) if o else None,
-                    "held": int(np.busday_count(dt.date.fromisoformat(bought), today)) if bought else None,
+                    "held": trading_days(dt.date.fromisoformat(bought), today) if bought else None,
                     "manual": bool((man.get(p["symbol"]) or {}).get("manual")) or (p["symbol"] in others),
                     "ruled": bool((man.get(p["symbol"]) or {}).get("ruled")),
                     "rule_start": (man.get(p["symbol"]) or {}).get("start")})
