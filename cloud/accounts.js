@@ -142,16 +142,16 @@ async function sendMail(env, msg) {
 }
 async function queueLink(env, a, origin, dispatch) {
   const t = rand(32);
-  await put(env, `auth/links/${hex(await sha("link|" + t))}.json`, { id: a.id, gen: a.gen || 1, exp: Date.now() + LINK_MIN * 60e3 });
+  await put(env, `auth/links/${hex(await sha("link|" + t))}.json`, { id: a.id, gen: a.gen || 1, exp: Date.now() + LINK_MIN * 60e3, ...(a.owner ? { owner: true } : {}) });
   const link = `${env.APP_HOST ? "https://" + env.APP_HOST : origin}/signin#${t}`;
   const html = `<div style="font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:#152033;max-width:480px">
 <h2 style="font-weight:600;margin:0 0 12px">Sign in to Capitol Capital</h2>
-<p>Tap the button on the phone you want to use. It works once and expires in ${LINK_MIN} minutes.</p>
+<p>Tap the button on the device you want to use. It works once and expires in ${LINK_MIN} minutes.</p>
 <p style="margin:24px 0"><a href="${esc(link)}" style="background:#1D4F91;color:#fff;padding:12px 22px;border-radius:10px;text-decoration:none;font-weight:600">Sign in</a></p>
-<p style="color:#46536A;font-size:14px">After you sign in, use Share → Add to Home Screen to keep the app on your phone. It stays signed in for 6 months.<br>
+<p style="color:#46536A;font-size:14px">After you sign in, use Share → Add to Home Screen to keep the app on your phone or computer. It stays signed in for 6 months.<br>
 Didn't ask for this? You can ignore it.</p></div>`;
   const sent = await sendMail(env, { to: a.email, subject: "Your Capitol Capital sign-in link", html });
-  await patchAccount(env, a.id, x => { x.link_sent = new Date().toISOString(); });
+  if (!a.owner) await patchAccount(env, a.id, x => { x.link_sent = new Date().toISOString(); });
   if (!sent) await dispatch(env, "mail.yml", {});
 }
 
@@ -166,12 +166,17 @@ export async function requestLink(req, env, url, dispatch, ctx) {
   const ip = req.headers.get("CF-Connecting-IP") || "local", hour = Math.floor(Date.now() / 3600e3);
   const work = (async () => {
     if (await bump(env, `auth/rate/${hour}/ip-${hex(await sha("ip|" + ip)).slice(0, 24)}.json`) > 10) return;
+    // the owner can sign in with an email link too (backup for the passcode)
+    if (env.OWNER_EMAIL && email === String(env.OWNER_EMAIL).trim().toLowerCase()) {
+      if (await bump(env, `auth/rate/${hour}/acct-owner.json`) > 4) return;
+      return queueLink(env, { id: "owner", gen: 1, email, owner: true }, url.origin, dispatch);
+    }
     const a = (await listAccounts(env)).find(x => x.email === email && x.status !== "disabled");
     if (!a || await bump(env, `auth/rate/${hour}/acct-${a.id}.json`) > 4) return;
     await queueLink(env, a, url.origin, dispatch);
   })().catch(() => {});
   if (ctx && ctx.waitUntil) ctx.waitUntil(work); else await work;
-  return json({ ok: true, message: "If that email has an account, a sign-in link is on its way. It can take a minute or two." });
+  return json({ ok: true, message: "If that email has an account, a sign-in link is on its way. It should arrive within a minute." });
 }
 async function bump(env, key) {
   const n = ((await r2json(env, key, { n: 0 })).n || 0) + 1;
@@ -180,7 +185,7 @@ async function bump(env, key) {
 }
 
 // POST /api/login/link {t}: trade a one-time link for a session cookie
-export async function redeemLink(req, env, sign, cookieName) {
+export async function redeemLink(req, env, sign, cookieName, ownerCookie) {
   const b = await body(req);
   const t = String(b.t || "");
   const bad = json({ error: "link", message: "That sign-in link has expired or was already used. Ask for a new one." }, 401);
@@ -193,6 +198,7 @@ export async function redeemLink(req, env, sign, cookieName) {
   // mark it used only if nobody else did in between (two taps at once: only one wins)
   const won = await env.DATA.put(key, JSON.stringify({ used: true }), { onlyIf: { etagMatches: o.etag } });
   if (!won || !(L.exp > Date.now())) return bad;
+  if (L.owner) return json({ ok: true }, 200, { "Set-Cookie": await ownerCookie() });
   const a = await patchAccount(env, L.id, x => { if (String(x.gen || 1) !== String(L.gen || 1) || x.status === "disabled") return;
     if (x.status === "invited") x.status = "active"; x.last_login = new Date().toISOString(); });
   if (!a || a.status === "disabled" || String(a.gen || 1) !== String(L.gen || 1)) return bad;
@@ -215,7 +221,7 @@ img{width:84px;height:84px;border-radius:20px;justify-self:center}h1{margin:0;fo
 button{font:600 16px inherit;padding:12px;border-radius:10px;border:0;background:var(--accent);color:var(--on);cursor:pointer}button:disabled{opacity:.6}
 .msg{min-height:1.2em;font-size:14px;color:#C0392B}
 </style></head><body><main><div class="c"><img src="/icon-180.png" alt=""><h1>Capitol Capital</h1>
-<p>Tap Sign in to use the app on this phone.</p><button type="button" id="go">Sign in</button><div class="msg" id="msg" role="alert"></div></div></main>
+<p>Tap Sign in to use the app on this device.</p><button type="button" id="go">Sign in</button><div class="msg" id="msg" role="alert"></div></div></main>
 <script>
 const t = location.hash.slice(1); history.replaceState(null, "", "/signin");
 const go = document.getElementById("go"), msg = document.getElementById("msg");

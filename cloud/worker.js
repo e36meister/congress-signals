@@ -4,7 +4,8 @@
 
 const COOKIE = "cc_s";
 const SESSION_DAYS = 180;
-const MAX_FAILS = 10;            // wrong passcodes allowed per hour before locking
+const MAX_FAILS = 10;            // wrong passcodes allowed per hour from one network address before it's locked out
+const MAX_FAILS_ALL = 200;       // and from everyone together (a spread-out guessing attack); email sign-in still works
 const PREFIX = "cs-", PARK_PREFIX = "cs-park-", PARK_CHOICES = ["SPY", "VOO", "IVV", "SGOV", "BIL", "SHV"];
 const enc = new TextEncoder();
 import { vapid, saveSub, sendAll, getSubs } from "./push.js";
@@ -91,7 +92,7 @@ button:disabled{opacity:.6}.msg{min-height:1.2em;font-size:14px;color:#C0392B}.m
 button.alt{background:none;color:var(--accent);font-weight:500;font-size:14px;padding:4px}
 </style></head><body><main><form id="f" autocomplete="on">
 <img src="/icon-180.png" alt=""><h1>Capitol Capital</h1>
-<p id="hint">Enter your email and we'll send you a sign-in link. This phone stays logged in for 6 months.</p>
+<p id="hint">Enter your email and we'll send you a sign-in link. This device stays logged in for 6 months.</p>
 <input type="email" id="em" name="email" autocomplete="email" placeholder="Email" aria-label="Email">
 <input type="text" name="username" value="Capitol Capital" autocomplete="username" hidden>
 <input type="password" id="pc" name="password" autocomplete="current-password" placeholder="Passcode" aria-label="Passcode" hidden>
@@ -103,7 +104,7 @@ let usePc = false;
 swap.addEventListener("click", () => { usePc = !usePc; em.hidden = usePc; pc.hidden = !usePc;
   document.getElementById("go").textContent = usePc ? "Log in" : "Email me a link";
   swap.textContent = usePc ? "Use an email link instead" : "Use a passcode instead";
-  hint.textContent = usePc ? "Enter your passcode. This phone stays logged in for 6 months." : "Enter your email and we'll send you a sign-in link. This phone stays logged in for 6 months.";
+  hint.textContent = usePc ? "Enter your passcode. This device stays logged in for 6 months." : "Enter your email and we'll send you a sign-in link. This device stays logged in for 6 months.";
   document.getElementById("msg").textContent = ""; (usePc ? pc : em).focus(); });
 document.getElementById("f").addEventListener("submit", async e => {
   e.preventDefault(); const go = document.getElementById("go"), msg = document.getElementById("msg");
@@ -136,7 +137,7 @@ async function api(req, env, url, ctx) {
   }
   if (p === "/api/login" && req.method === "POST") return login(req, env);
   if (p === "/api/login/email" && req.method === "POST") return requestLink(req, env, url, dispatch, ctx);
-  if (p === "/api/login/link" && req.method === "POST") return redeemLink(req, env, m => sign(env, m), COOKIE);
+  if (p === "/api/login/link" && req.method === "POST") return redeemLink(req, env, m => sign(env, m), COOKIE, () => ownerCookie(env));
   if (p === "/api/logout" && req.method === "POST") return json({ ok: true }, 200, { "Set-Cookie": `${COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict` });
   if (p === "/api/widget" && req.method === "GET") return widget(req, env, url);   // its own read-only key
   if (p === "/api/senate-import" && req.method === "POST") return senateImport(req, env);   // iPhone Shortcut, its own key
@@ -248,30 +249,33 @@ function timingSafeEqual(a, b) {
 }
 
 // ---------- login ----------
+// Wrong passcodes are counted per network address, so someone guessing can only lock themselves out, not you.
+// A much higher limit for everyone together stops guessing from many addresses; your email link still works then.
 async function login(req, env) {
-  const now = Date.now() / 1000;
-  let fails = { start: now, n: 0 };
-  try { const o = await env.DATA.get("auth/fails.json"); if (o) fails = await o.json(); } catch (e) {}
-  if (now - fails.start > 3600) fails = { start: now, n: 0 };
-  if (fails.n >= MAX_FAILS) {
-    const mins = Math.ceil((fails.start + 3600 - now) / 60);
-    return json({ error: "locked", message: `Too many wrong tries. Try again in ${mins} min.` }, 429);
-  }
+  const now = Date.now() / 1000, hour = Math.floor(now / 3600);
+  const ip = req.headers.get("CF-Connecting-IP") || "local";
+  const ipKey = `auth/fails/${hour}/${b64url(await sha256("ip|" + ip)).slice(0, 24)}.json`, allKey = `auth/fails/${hour}/all.json`;
+  const count = async k => { try { const o = await env.DATA.get(k); return o ? ((await o.json()).n || 0) : 0; } catch (e) { return 0; } };
+  const mine = await count(ipKey), all = await count(allKey);
+  const mins = Math.ceil(((hour + 1) * 3600 - now) / 60);
+  if (mine >= MAX_FAILS) return json({ error: "locked", message: `Too many wrong tries. Try again in ${mins} min, or use an email link.` }, 429);
+  if (all >= MAX_FAILS_ALL) return json({ error: "locked", message: `Passcode sign-in is paused for ${mins} min. Use an email link instead.` }, 429);
   let body = {};
   try { body = await req.json(); } catch (e) {}
   const given = String(body.passcode || "");
   // compare hashes so the check takes the same time whatever was typed
   const ok = timingSafeEqual(b64url(await sha256("pc|" + given)), b64url(await sha256("pc|" + (env.APP_PASSCODE || "\u0000unset"))));
   if (!ok || !env.APP_PASSCODE) {
-    fails.n += 1;
-    await env.DATA.put("auth/fails.json", JSON.stringify(fails));
-    const left = MAX_FAILS - fails.n;
-    return json({ error: "wrong", message: left > 0 ? `Wrong passcode. ${left} ${left === 1 ? "try" : "tries"} left this hour.` : "Too many wrong tries. Try again in an hour." }, 401);
+    await env.DATA.put(ipKey, JSON.stringify({ n: mine + 1 }));
+    await env.DATA.put(allKey, JSON.stringify({ n: all + 1 }));
+    const left = MAX_FAILS - mine - 1;
+    return json({ error: "wrong", message: left > 0 ? `Wrong passcode. ${left} ${left === 1 ? "try" : "tries"} left this hour.` : "Too many wrong tries. Try again in an hour, or use an email link." }, 401);
   }
-  if (fails.n) await env.DATA.put("auth/fails.json", JSON.stringify({ start: now, n: 0 }));
-  const exp = Math.floor(now + SESSION_DAYS * 86400);
-  const val = exp + "." + await sign(env, "s." + exp);
-  return json({ ok: true }, 200, { "Set-Cookie": `${COOKIE}=${val}; Path=/; Max-Age=${SESSION_DAYS * 86400}; HttpOnly; Secure; SameSite=Strict` });
+  return json({ ok: true }, 200, { "Set-Cookie": await ownerCookie(env) });
+}
+async function ownerCookie(env) {
+  const exp = Math.floor(Date.now() / 1000 + SESSION_DAYS * 86400);
+  return `${COOKIE}=${exp}.${await sign(env, "s." + exp)}; Path=/; Max-Age=${SESSION_DAYS * 86400}; HttpOnly; Secure; SameSite=Strict`;
 }
 
 // ---------- data files ----------
