@@ -411,6 +411,11 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
     open_orders = api.get("/v2/orders", status="open", limit=500)
     pending = {o["symbol"] for o in open_orders}
     queued = queued_buys(api, log) - pending if trade else set()
+    # the tool's own main-strategy buys still waiting (not sells, the parked fund, the small-company portfolio or
+    # your orders): only these take a main slot (Nov 3 review: every open order used to count)
+    main_waiting = {o["symbol"] for o in open_orders if o.get("side") == "buy"
+                    and (o.get("client_order_id") or "").startswith(PREFIX)
+                    and not (o.get("client_order_id") or "").startswith((PREFIX + "sm-", PARK_PREFIX))} | queued
     if queued:
         log(f"Broker: {len(queued)} buy(s) waiting for the next after-hours session, not bought again: {', '.join(sorted(queued))}")
     pending |= queued
@@ -638,7 +643,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         plan = max(5, int(per_week * int(pol["hold_other"]) / 5))     # positions open at once in the backtest
         main_cap = s["max_invested"] * (1 - sleeve_pct) * equity
         dollars = s["dollars"] or main_cap / plan
-        slots = (s["max_positions"] or plan) - len([p for p in mine if not is_sleeve(p)]) - len(pending)
+        slots = (s["max_positions"] or plan) - len([p for p in mine if not is_sleeve(p)]) - len(main_waiting - set(mine))
 
         def place(t, amount, cid):
             sym = to_alpaca(t)
@@ -718,7 +723,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         else:
             sm = None
         if sm is not None and len(sm):
-            sleeve_cap = sleeve_pct * 0.95 * equity
+            # within the same overall limit as the main picks (Nov 3 review: 63% + 28.5% went over the 90% max)
+            sleeve_cap = s["max_invested"] * sleeve_pct * equity
             sm_slots = int(cfg.get("_small_slots") or 25)
             amount = sleeve_cap / max(sm_slots, 1)
             hold = int(pol.get("hold_sleeve", 250))
@@ -752,7 +758,12 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                             "why": f"moving parked money to {park_label(park)}"})
         if not stale and park and park not in pending and env("PARK_IDLE", "true").lower() != "false":
             spent = inv_main + inv_sleeve - inv0
-            open_buys = sum(float(o.get("notional") or 0) for o in open_orders if o.get("side") == "buy")
+            def _order_dollars(o):          # share-count buys reserve shares x price too (Nov 3 review)
+                if o.get("notional"):
+                    return float(o["notional"])
+                px_ = last_prices.get(from_alpaca(o["symbol"])) or float(o.get("limit_price") or 0)
+                return float(o.get("qty") or 0) * float(px_ or 0)
+            open_buys = sum(_order_dollars(o) for o in open_orders if o.get("side") == "buy")
             buffer = 0.03 * equity
             target = max(0.0, equity - inv_main - inv_sleeve - open_buys - buffer)
             diff = target - parked
