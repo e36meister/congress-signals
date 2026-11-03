@@ -16,6 +16,9 @@ export default {
     const url = new URL(req.url);
     // the app lives at capitolcapital.cc; the old workers.dev address sends pages there (its /api/ still answers,
     // so widgets and shortcuts set up with the old address keep working). A sign-in link's #token survives the hop.
+    // www.capitolcapital.cc → capitolcapital.cc (everything, so a sign-in only ever happens on one address)
+    if (env.APP_HOST && url.hostname === "www." + env.APP_HOST)
+      return Response.redirect(`https://${env.APP_HOST}${url.pathname}${url.search}`, 301);
     if (env.APP_HOST && url.hostname.endsWith(".workers.dev") && !url.pathname.startsWith("/api/") && req.method === "GET")
       return Response.redirect(`https://${env.APP_HOST}${url.pathname}${url.search}`, 302);
     if (!url.pathname.startsWith("/api/")) return page(req, env, url);
