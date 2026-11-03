@@ -4936,8 +4936,15 @@ def _fit(rows, names, y, defaults, w=None):
     return {n: round(float(out[n]), 3) if n in out else defaults[n] for n in names}
 
 
+TUNE_INNER_YEARS = 3          # Nov 3: tuned weights are learned this long before HOLDOUT_START
+
+
 def tune_weights(scored, px, cfg):
-    split = pd.Timestamp(cfg["TRAIN_TEST_SPLIT"])
+    # Nov 3 (pipeline audit): the split was 2024-01-01, so the "unseen" test (~715 days) was too short for the
+    # weekly check's before/after split and decide_tuned fell back to judging on the whole test period, which is
+    # the holdout. Now the weights are learned on trades that finished before HOLDOUT_START - 3 years, the years
+    # from there to HOLDOUT_START decide, and HOLDOUT_START on only confirms (via _compare).
+    split = min(pd.Timestamp(cfg["TRAIN_TEST_SPLIT"]), pd.Timestamp(HOLDOUT_START) - pd.DateOffset(years=TUNE_INNER_YEARS))
     tr = scored[scored["closed"] & scored["excess"].notna() & (scored["exit_date"] < split)]
     trb, trs = tr[tr["tx_type"] == "buy"], tr[tr["tx_type"] == "sell"]
     if len(trb) < 200:
@@ -10769,7 +10776,9 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
 
 
 def decide_tuned(cfg, tuned):
-    """Use the tuned weights automatically only when they clearly beat the defaults on years they never saw."""
+    """Use the tuned weights automatically only when they clearly beat the defaults on years they never saw: chosen
+    on the years between the tuning split and HOLDOUT_START, confirmed from HOLDOUT_START on (Nov 3: before, the
+    test period was all inside the holdout, so the choice was made on the holdout)."""
     a = load_adaptive(cfg)
     try:
         c = _compare(_long_daily(tuned["tuned_bt"]), _long_daily(tuned["default_bt"]))
