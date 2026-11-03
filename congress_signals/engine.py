@@ -6815,7 +6815,8 @@ def collect_employee_donations(cfg, fec_ids):
 # ----------------------------------------------------------------------------
 # 10, 12. Committee hearings: who testified, and closed briefings (congress.gov)
 # ----------------------------------------------------------------------------
-CLOSED_RE = re.compile(r"\b(closed|classified|executive session|members[- ]only|briefing)\b", re.I)
+# Nov 3: the bare word "briefing" made open briefings count as closed; only closed-door wording counts now
+CLOSED_RE = re.compile(r"\b(closed|classified|executive session|members?[- ]only|member briefing|secure briefing)\b", re.I)
 
 
 def _congresses(cfg):
@@ -7528,6 +7529,33 @@ def _within(dates, lo, hi):
     return bool(len(dates)) and bool(((dates > lo) & (dates <= hi)).any())
 
 
+def committee_cid_sectors(cfg):
+    """Committee id (HSAS, HSAS25, SSFI, ...) -> the stock sectors it oversees, from the congress-legislators
+    committee list (cached a week). Committee ids are stable over time. Nov 3: lets a closed briefing count only
+    when it was held by a committee tied to the stock's industry, not any committee the member sits on."""
+    cache, path = _cache_json(cfg, "committee_names.json", {})
+    if not _fresh(cache.get("_at", ""), 7):
+        try:
+            names = {}
+            for c in _gh_yaml("main", "committees-current.yaml") or []:
+                tid = c.get("thomas_id")
+                if not tid:
+                    continue
+                names[tid] = c["name"]
+                for sc in c.get("subcommittees") or []:
+                    names[tid + str(sc.get("thomas_id"))] = f"{c['name']}: {sc.get('name')}"
+            if names:
+                cache = {"_at": dt.datetime.now().isoformat(), "names": {**(cache.get("names") or {}), **names}}
+                json.dump(cache, open(path, "w"))
+        except Exception as e:
+            log(f"Committee names: couldn't refresh ({type(e).__name__}); using the saved list")
+    out = {}
+    for cid, nm in (cache.get("names") or {}).items():
+        top, _, sub_ = nm.partition(": ")
+        out[str(cid).upper()] = _sectors_for(top, COMMITTEE_SECTORS) | (_sectors_for(sub_, SUBCOMMITTEE_SECTORS) if sub_ else set())
+    return out
+
+
 def compute_connections(tx, data, cfg, mems):
     meta = data["meta"]
     n = len(tx)
@@ -7700,7 +7728,10 @@ def compute_connections(tx, data, cfg, mems):
     cr, crn = np.zeros(n), [""] * n
     if lb is not None and len(lb) and "covered" in lb:
         def core(nm):
-            c = re.sub(r"\b(committee|on|the|of|and|house|senate|joint|select|permanent|special|subcommittee)\b", " ", nm.lower())
+            # Nov 3: both sides go through this (it used to be applied to the committee name only, so "energy
+            # commerce" was searched for in "energy and commerce committee" and never found)
+            c = re.sub(r"[^a-z0-9]+", " ", str(nm).lower())
+            c = re.sub(r"\b(committee|on|the|of|and|house|senate|joint|select|permanent|special|subcommittee|us|u s)\b", " ", c)
             return " ".join(c.split())
         cmemo = {}
         for i, (t, f, ch, m) in enumerate(zip(tx["ticker"], fdt, tx["chamber"], mems)):
@@ -7721,7 +7752,8 @@ def compute_connections(tx, data, cfg, mems):
                 key = (c, cores, chw)
                 h = cmemo.get(key)
                 if h is None:
-                    h = cmemo[key] = next((k for k in cores if re.search(r"\b" + re.escape(k) + r"\b", c)), "")
+                    cc = core(c)
+                    h = cmemo[key] = next((k for k in cores if re.search(r"\b" + re.escape(k) + r"\b", cc)), "")
                 if h:
                     cr[i], crn[i] = 1.0, f"a company lobbyist used to work for the {chw.title()} {h.title()} committee, which the member sits on"
                     break
@@ -7734,6 +7766,7 @@ def compute_connections(tx, data, cfg, mems):
         mt = mt.sort_values("date")
         mt = mt[mt["date"].notna()]
         closed_m = mt[mt.closed]
+        cid_sec = committee_cid_sectors(cfg)
         MD, MO, MC = mt["date"].values, list(mt["orgs"]), list(mt["cids"])
         CD, CC = closed_m["date"].values, list(closed_m["cids"])
         for i, (c_, cs, f, td, fc) in enumerate(zip(tx["_ck"], cids, fdt, tdt, tx["f_committee"])):
@@ -7747,7 +7780,10 @@ def compute_connections(tx, data, cfg, mems):
             if fc > 0 and pd.notna(td):
                 lo = np.searchsorted(CD, np.datetime64(td - D(days=30)), side="right")
                 hi = np.searchsorted(CD, np.datetime64(td), side="right")
-                if any(cs & CC[j] for j in range(lo, hi)):
+                # the closed meeting must be held by one of the member's committees that oversees this stock's
+                # industry (a committee missing from the list keeps the old rule rather than being dropped)
+                sec_ = tx["sector"].iat[i]
+                if any(any(sec_ in cid_sec.get(str(c).upper(), {sec_}) for c in (cs & CC[j])) for j in range(lo, hi)):
                     closed[i] = 1.0
     tx["f_testified"], tx["f_closed_briefing"] = test, closed
 
