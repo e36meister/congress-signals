@@ -19,6 +19,7 @@ import cloud_store
 
 MANUAL_FROM = "2026-10-30T19:45:00Z"          # owner, Oct 30 3:48 PM ET: only new buys from now
 STATE_KEY, KEEP_KEY = "manual/state.json", "manual/keep.json"
+KEEP_HOURS = 12        # a flagged position is sold no sooner than this after the alert (time to tap Keep)
 PREFIX, PARK_PREFIX = "cs-", "cs-park-"
 LABEL = {"member_sold": "a member whose purchase matches yours sold",
          "avoid": "it became an avoid",
@@ -139,7 +140,18 @@ def review(api, cfg, positions, orders, clock, log, trade=True):
         if (keep.get(sym) or {}).get("key") == key:
             continue                                            # you chose to keep it for these reasons
         p = pend.get(sym)
-        if p and p.get("key") == key and p.get("day", today) < today:
+        # Nov 3: a flag raised late in the evening was sold by a run just after midnight (another calendar day,
+        # but ~80 minutes later), so you had no real chance to tap Keep. Now a flagged position is sold only once
+        # it has been flagged for at least KEEP_HOURS (flags saved before this rule carry no time: the day rule plus
+        # a check that the flag is from before today's date applies, as before).
+        old_enough = True
+        if p and p.get("at"):
+            try:
+                old_enough = (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(p["at"])).total_seconds() \
+                    >= KEEP_HOURS * 3600
+            except Exception:
+                old_enough = True
+        if p and p.get("key") == key and p.get("day", today) < today and old_enough:
             if not trade:
                 continue
             r = api.delete(f"/v2/positions/{sym}")
@@ -154,6 +166,7 @@ def review(api, cfg, positions, orders, clock, log, trade=True):
             continue
         if not p or p.get("key") != key:
             pend[sym] = {"key": key, "day": today, "reasons": reasons, "start": h["start"],
+                         "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
                          "sell_on": _next_open_text(clock)}
             alerts.append({"sym": sym, "sold": False, "reasons": reasons, "sell_on": pend[sym]["sell_on"]})
     state = {"pending": pend, "keep": keep, "base": base, "ruled": sorted(ruled),
@@ -169,7 +182,9 @@ def review(api, cfg, positions, orders, clock, log, trade=True):
                 cloud_store.notify(f"Sold your {t} at the open", f"Reason: {txt}. You didn't tap Keep.", tag=f"manual-{t}",
                                    url=f"/#port/{t}", log=log)
             else:
-                cloud_store.notify(f"Sell {t} at the open {a['sell_on']}?", f"{txt[:300]}. Tap Keep in the app to hold it.",
+                cloud_store.notify(f"Sell {t}? (no sooner than {KEEP_HOURS} hours from now)",
+                                   f"{txt[:300]}. Tap Keep in the app to hold it; otherwise the first run at least "
+                                   f"{KEEP_HOURS} hours from now sells it at the next open.",
                                    tag=f"manual-{t}", url=f"/#port/{t}", log=log)
     log(f"Manual positions: {len(ruled)} under the tool's rules, {len(pend)} flagged to sell, "
         f"{sum(1 for a in actions if a['ok'])} sold this run")
