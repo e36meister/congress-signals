@@ -106,7 +106,8 @@ jobs:
           ALERT_TO: ${{ secrets.ALERT_TO }}
         run: |
           python3 - <<'EOF'
-          from congress_signals import mail
+          import sys; sys.path.insert(0, "congress_signals")
+          import mail
           url = mail.app_url("/")
           mail.send("Capitol Capital: your phone app", f"""<p>Your Capitol Capital app is live.</p>
           <p><a href="{url}">{url}</a></p>

@@ -4,7 +4,9 @@ deletes each one. Sign-in links expire in 20 minutes, so older ones are dropped 
 The log shows counts only, never an address or a link (the run log can be public)."""
 import json, os, time
 import cloud_store
-from congress_signals import mail
+import sys, os as _os
+sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "congress_signals"))
+import mail                      # just the email file, not the whole engine (this job has no pandas)
 
 quiet = lambda m: None
 keys = sorted(cloud_store.list_keys("mail/outbox/", log=print))
