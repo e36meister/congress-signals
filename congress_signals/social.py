@@ -585,9 +585,16 @@ def bluesky_accounts(cfg, leg, acc, st, deadline):
     .gov domain, or the name matches and the bio says they serve in Congress)."""
     p = _dir(cfg, "bsky_accounts.json")
     ba = json.load(open(p)) if os.path.exists(p) else {"map": {}, "searched": {}}
+    dead = ba.setdefault("dead", {})
+    for h in [h for h, t in dead.items() if time.time() - t > BSKY_DEAD_RECHECK_DAYS * 86400]:
+        dead.pop(h)                         # look again now and then: a deactivated account can come back
     for b, a in acc.items():
         for h in a.get("bsky") or []:
-            ba["map"].setdefault(h.lower(), b)
+            if h.lower() not in dead:
+                ba["map"].setdefault(h.lower(), b)
+    for h in list(ba["map"]):
+        if h in dead:
+            ba["map"].pop(h)
     cue = re.compile(r"\b(congress|congressman|congresswoman|representative|u\.?s\.? rep|senator|u\.?s\.? senate|"
                      r"house of representatives|serving)\b", re.I)
     have = set(ba["map"].values())
@@ -601,11 +608,55 @@ def bluesky_accounts(cfg, leg, acc, st, deadline):
         for a in (js or {}).get("actors", []):
             h = (a.get("handle") or "").lower()
             gov = h.endswith(".house.gov") or h.endswith(".senate.gov")
+            if h in dead or h == "handle.invalid":
+                continue
             if gov or (_name_match(a.get("displayName"), m) and cue.search(a.get("description") or "")):
                 ba["map"].setdefault(h, b)
         time.sleep(0.3)
     json.dump(ba, open(p, "w"))
     return ba["map"]
+
+
+# Nov 3: 5 handles failed every run with HTTP 400 and were reported as "couldn't be read": Bluesky answers "Profile not
+# found" (normajtorrres = a typo of Norma Torres, repgoodlander, reppeteaguilar) or "Account has been suspended"
+# (thomtillis, amyjeanklobuchar: impostor accounts). The members' real accounts (torres/goodlander/aguilar.house.gov,
+# klobuchar.senate.gov) are on file and read fine. A handle Bluesky says doesn't exist (or was taken down/deactivated) is
+# now dropped from the list, the member is searched by name again if it was their only account, and the handle is
+# looked at again after BSKY_DEAD_RECHECK_DAYS. Any other failure (timeouts, 5xx, rate limits) is still reported.
+BSKY_DEAD_RECHECK_DAYS = 30
+BSKY_GONE = ("Profile not found", "AccountTakedown", "AccountDeactivated", "Unable to resolve handle", "AccountNotFound")
+
+
+def _bsky_gone(h):
+    """The reason Bluesky gives when the account doesn't exist / was taken down / deactivated; None otherwise."""
+    try:
+        r = requests.get(BSKY + "app.bsky.actor.getProfile", params={"actor": h}, timeout=30, headers=UA)
+        if r.status_code != 400:
+            return None
+        js = r.json()
+        why = f"{js.get('error', '')}: {js.get('message', '')}"
+        return why if any(g in why for g in BSKY_GONE) else None
+    except Exception:
+        return None
+
+
+def _bsky_drop(cfg, hmap, h, why):
+    """Takes a nonexistent handle off the list (bsky_accounts.json); re-searches the member if it was their only one."""
+    b = hmap.pop(h, None)
+    p = _dir(cfg, "bsky_accounts.json")
+    try:
+        ba = json.load(open(p)) if os.path.exists(p) else {"map": {}, "searched": {}}
+        ba.setdefault("dead", {})[h] = time.time()
+        ba["map"].pop(h, None)
+        if b and b not in ba["map"].values():
+            ba.setdefault("searched", {}).pop(b, None)
+        json.dump(ba, open(p, "w"))
+    except Exception:
+        pass
+    others = sorted(k for k, v in hmap.items() if v == b)
+    print(dt.datetime.now().strftime("%H:%M:%S"), f"Bluesky: @{h} doesn't exist any more ({why}); taken off the list"
+          + (f", {b} is still read from @{', @'.join(others)}" if others else f", {b} will be looked up by name"),
+          flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -619,10 +670,12 @@ def collect_press(cfg, st, tg, deadline, years=True):
     done = set(st.get("press_years", []))
     jobs = [("m", m) for m in months] + ([("y", str(y)) for y in range(today.year - 1, START_YEAR - 1, -1) if str(y) not in done]
                                          if years else [])
-    # months of the current year that aren't on disk yet (first run, or a missed month)
+    # months of the current year that aren't on disk yet (first run, or a missed month), or not yet fully tagged from
+    # the full text under today's tagger (press_stale)
+    stale = set(st.get("press_stale", []))
     for m in range(1, today.month + 1):
         k = f"{today.year}-{m:02d}"
-        if not os.path.exists(os.path.join(out_dir, f"{k}.jsonl.gz")) and ("m", k) not in jobs:
+        if (k in stale or not os.path.exists(os.path.join(out_dir, f"{k}.jsonl.gz"))) and ("m", k) not in jobs:
             jobs.append(("m", k))
     read_ok = set()
     for kind, k in jobs:
@@ -649,9 +702,17 @@ def collect_press(cfg, st, tg, deadline, years=True):
             for x in (read_jsonl(path) if os.path.exists(path) else []):
                 if len(x) > 4 and x[4]:
                     old[(x[4], x[1], str(x[0])[:10])] = x
-            rows, fresh = _press_rows(lines, tg, reuse=old)
+            # a month not marked stale was last written by this reader under today's tagger: its rows count as full-text
+            rows, fresh, left = _press_rows(lines, tg, reuse=old, deadline=deadline, trust_plain=k not in stale)
             write_jsonl(path, rows)
-            _log(f"Press releases: {k}: {len(rows):,} ({fresh:,} new)")
+            if left:
+                stale.add(k)
+                _log(f"Press releases: {k}: {len(rows):,} ({fresh:,} tagged this run; {left:,} kept with older tags "
+                     f"until a later run re-tags them)")
+            else:
+                stale.discard(k)
+                _log(f"Press releases: {k}: {len(rows):,} ({fresh:,} new)")
+            st["press_stale"] = sorted(stale)
         else:
             r = _get(PRESS + f"{k}.zip", as_json=False, timeout=600)
             if r is None:
@@ -688,10 +749,18 @@ def _press_month_not_posted_yet(k, today, read_ok):
         return False
 
 
-def _press_rows(lines, tg, reuse=None):
-    """(rows, number tagged fresh). `reuse`: {(url, bioguide, date): row already on file} kept as they are."""
-    rows, fresh = [], 0
+PRESS_FULL = "f"     # suffix on the tagger version of a Congress Press row tagged from its full text
+
+
+def _press_rows(lines, tg, reuse=None, deadline=None, trust_plain=False):
+    """(rows, number tagged fresh, number left with older tags). `reuse`: {(url, bioguide, date): row already on file},
+    kept as it is when it was tagged from the full text under today's tagger. Past `deadline`, a release already on
+    file keeps its older row (build_index re-tags it from the stored text meanwhile) and a new one gets a plain row with
+    no tags yet ("stale"), so nothing goes missing; the month is finished in a later run."""
+    rows, fresh, left = [], 0, 0
     reuse = reuse or {}
+    cur = tg.version + PRESS_FULL
+    ok_v = (cur, tg.version) if trust_plain else (cur,)
     for ln in lines:
         try:
             j = json.loads(ln)
@@ -703,13 +772,21 @@ def _press_rows(lines, tg, reuse=None):
         if not b or not d:
             continue
         hit = reuse.get((j.get("url"), b, d)) if j.get("url") else None
-        if hit is not None:
+        if hit is not None and len(hit) > 10 and hit[10] in ok_v:
             rows.append(hit)
             continue
         title, text = j.get("title") or "", j.get("text") or ""
-        rows.append(rec(d, b, "Press release", (title + " — " + text).strip(" —"), j.get("url"), tg, full=title + "\n" + text))
+        shown = (title + " — " + text).strip(" —")
+        if deadline is not None and time.time() > deadline:
+            rows.append(hit if hit is not None else [d, b, "Press release", shown[:400], j.get("url") or "", [], [], 0.0, [],
+                                                      "", "stale"])
+            left += 1
+            continue
+        r = rec(d, b, "Press release", shown, j.get("url"), tg, full=title + "\n" + text)
+        r[10] = cur
+        rows.append(r)
         fresh += 1
-    return rows, fresh
+    return rows, fresh, left
 
 
 def collect_tweets(cfg, st, tg, deadline):
@@ -876,7 +953,11 @@ def collect_bluesky(cfg, st, tg, hmap, deadline, ocr_days=120, max_ocr=300):
             time.sleep(0.15)
         if read_failed:
             if js is None:
-                failed.append(h)
+                why = _bsky_gone(h) if not rows else None
+                if why:
+                    _bsky_drop(cfg, hmap, h, why)
+                else:
+                    failed.append(h)
             continue        # an unfinished read keeps the file as it is (no gap behind the newest post); next run retries
         if rows or not os.path.exists(path) or acc_v.get(h) != BSKY_READ_VERSION:
             write_jsonl(path, sorted(old + rows, key=lambda r: r[0]))
@@ -1669,7 +1750,7 @@ def build_index(cfg, tg=None, sort_until=None, hard_until=None):
                 recs = keep
             for r in recs:
                 cands_now = None
-                if tg is not None and (len(r) < 11 or r[10] != tg.version):     # re-tag with today's rules, once
+                if tg is not None and (len(r) < 11 or r[10] not in (tg.version, tg.version + PRESS_FULL)):  # re-tag, once
                     tk2, pp2, secs2, tone2 = tg.tag(r[3])
                     cands_now = [c for c in tg.last_cands if 0.45 <= c["c"] < 0.75]
                     r[:] = (r + [""] * 10)[:10]
@@ -1912,10 +1993,14 @@ def update_all(cfg, minutes, history=True):
     deadline = t0 + minutes * 60
     st = _state(cfg)
     tg = Tagger(cfg)
-    if st.get("tagger_v") != TAGGER_VERSION:      # tagging rules changed: re-read this year's press releases
-        for f in os.listdir(_dir(cfg, "posts", "press")):
-            if f.startswith(str(dt.date.today().year) + "-"):
-                os.remove(os.path.join(_dir(cfg, "posts", "press"), f))
+    if st.get("tagger_v") != TAGGER_VERSION:      # tagging rules changed: re-tag this year's press releases from full text
+        # Nov 3: this used to delete this year's files and download them again. The daily run then spent its whole
+        # 12 minutes re-tagging one month (Oct, 2,535 releases), Mastodon, Substack, YouTube and Instagram were skipped,
+        # and Jan-Sep were missing from the posts index until someone re-read them ("shrank from 24 to 14"). The files
+        # now stay; each month is re-tagged in place from the full text as time allows (collect_press, press_stale).
+        yr = str(dt.date.today().year) + "-"
+        st["press_stale"] = sorted(set(st.get("press_stale", [])) |
+                                   {f[:7] for f in os.listdir(_dir(cfg, "posts", "press")) if f.startswith(yr)})
         st["tagger_v"] = TAGGER_VERSION
     st["tagger"] = tg.version
     leg = legislators(cfg, st)

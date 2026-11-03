@@ -50,10 +50,23 @@ RELEASE_HINT = re.compile(r"/(press|news|media|newsroom|press-releases?|news-rel
                           r"media-center)/[^/?#]{8,}", re.I)
 
 
+ADMIN = re.compile(r"^[a-z0-9.-]+-admin\.house\.gov$", re.I)
+
+
 def _get(url, timeout=30):
+    """(status, html, final url). Redirects are followed by hand so a redirect into a Next.js site's private
+    '<member>-admin.house.gov' backend (its /feed/ does that) is never requested: that host refuses outside
+    connections, and every such try showed up on Data health as a failing site (Nov 2-3: lucas, owens, nikemawilliams)."""
     try:
-        r = requests.get(url, headers=UA, timeout=timeout, allow_redirects=True)
-        return r.status_code, r.text, r.url
+        for _ in range(6):
+            if ADMIN.match(urlparse(url).netloc):
+                return None, "", url
+            r = requests.get(url, headers=UA, timeout=timeout, allow_redirects=False)
+            if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("Location"):
+                url = urljoin(url, r.headers["Location"])
+                continue
+            return r.status_code, r.text, url
+        return None, "", url
     except Exception:
         return None, "", url
 
@@ -155,8 +168,13 @@ def next_items(url, limit=20):
     """Next.js/React House sites (the library's 'react' pattern): the press list's embedded __NEXT_DATA__ JSON.
     Searches every query for post edges instead of relying on a fixed position, so a page that gains or
     loses a query still reads. [{'url','date','title','text'}] newest first, or []."""
-    import json
+    import json, time
     st, html, final = _get(url)
+    if st != 200 and st != 404:
+        # House sites sit behind one firewall that throttles bursts: a timeout or 429/5xx here used to drop the site to
+        # the page and RSS fallbacks for the run (Nov 3: owens, nikemawilliams, lucas). One slower second try first.
+        time.sleep(4)
+        st, html, final = _get(url, timeout=45)
     if st != 200:
         return []
     m = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.S)

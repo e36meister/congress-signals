@@ -496,14 +496,36 @@ async function aboutWiki(t) {
   }
   return out;
 }
+// Nov 3: "Yahoo sign-in step failed (HTTP 429)" for SBUX. Every lookup signed in again (cookie + crumb), and the
+// sign-in endpoint is the one Yahoo rate-limits. The cookie and crumb are now reused for an hour by this server
+// instance, and a 429 (or a stale crumb, 401) is retried with a short backoff and a fresh sign-in before it's reported.
+let YAHOO_AUTH = null;
+async function yahooAuth(fresh) {
+  if (!fresh && YAHOO_AUTH && Date.now() - YAHOO_AUTH.at < 3600e3) return YAHOO_AUTH;
+  let last = 0;
+  for (let i = 0; i < 3; i++) {
+    if (i) await new Promise(r => setTimeout(r, 1500 * i));
+    const c = await fetch("https://fc.yahoo.com/", { headers: { "User-Agent": "Mozilla/5.0" }, redirect: "manual" });
+    const cookie = (c.headers.get("set-cookie") || "").split(";")[0];
+    const host = i % 2 ? "query2" : "query1";
+    const cr = await fetch(`https://${host}.finance.yahoo.com/v1/test/getcrumb`, { headers: { "User-Agent": "Mozilla/5.0", Cookie: cookie } });
+    last = cr.status;
+    const crumb = cr.ok ? (await cr.text()).trim() : "";
+    if (crumb && !crumb.includes("<")) return (YAHOO_AUTH = { cookie, crumb, at: Date.now() });
+    if (cr.status !== 429 && cr.status < 500) break;
+  }
+  YAHOO_AUTH = null;
+  throw new Error(`Yahoo sign-in step failed (HTTP ${last})`);
+}
 async function aboutYahoo(t) {
-  const c = await fetch("https://fc.yahoo.com/", { headers: { "User-Agent": "Mozilla/5.0" }, redirect: "manual" });
-  const cookie = (c.headers.get("set-cookie") || "").split(";")[0];
-  const cr = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", { headers: { "User-Agent": "Mozilla/5.0", Cookie: cookie } });
-  const crumb = cr.ok ? (await cr.text()).trim() : "";
-  if (!crumb || crumb.includes("<")) throw new Error(`Yahoo sign-in step failed (HTTP ${cr.status})`);
-  const r = await fetch(`https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(t)}?modules=assetProfile&crumb=${encodeURIComponent(crumb)}`,
-    { headers: { "User-Agent": "Mozilla/5.0", Cookie: cookie } });
+  let r = null;
+  for (let i = 0; i < 3; i++) {
+    if (i) await new Promise(res => setTimeout(res, 1500 * i));
+    const a = await yahooAuth(i > 0 && r && r.status === 401);
+    r = await fetch(`https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(t)}?modules=assetProfile&crumb=${encodeURIComponent(a.crumb)}`,
+      { headers: { "User-Agent": "Mozilla/5.0", Cookie: a.cookie } });
+    if (r.ok || r.status === 404 || (r.status !== 429 && r.status !== 401 && r.status < 500)) break;
+  }
   if (r.status === 404) return null;
   if (!r.ok) throw new Error(`Yahoo HTTP ${r.status}`);
   const ap = ((((await r.json()).quoteSummary || {}).result || [])[0] || {}).assetProfile;
