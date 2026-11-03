@@ -8954,6 +8954,45 @@ SECTOR_VARIANTS = {   # name: (base f_ column, sectors, how the base counts as "
 }
 
 
+# when a trial signal was found by looking at all years (including the holdout): it may only be switched on once
+# it has also worked on trades filed after that day (new_data_gate). The weekly sector sweep adds its finds here.
+SIGNAL_FOUND = {k: "2026-11-03" for k in SECTOR_VARIANTS}
+
+
+def new_data_gate(k, scored, px, sign):
+    """(ok, why). For a signal in SIGNAL_FOUND: ok only when at least 30 flagged buys filed after the day it was found
+    have a closed 60-day result and clearly (t 1.65+) beat, or for a negative signal trail, the unflagged buys of the
+    same sector filed the same month. Signals not in SIGNAL_FOUND pass."""
+    d0 = SIGNAL_FOUND.get(k)
+    col = f"f_{k}"
+    if not d0:
+        return True, ""
+    if col not in scored:
+        return False, f"waiting: no data yet since it was found on {d0}"
+    b = scored[(scored["tx_type"] == "buy") & scored["entry_px"].notna()
+               & (pd.to_datetime(scored["filed_date"]) > pd.Timestamp(d0))]
+    fl = b[col].fillna(0) > 0
+    if int(fl.sum()) < RECHECK_MIN_N:
+        return False, f"waiting for trades filed after {d0} ({int(fl.sum())} of {RECHECK_MIN_N})"
+    fr = forward_returns(b, px, 60)
+    d = pd.DataFrame({"x": fr["excess"].values, "c": fr["closed"].values, "f": fl.values,
+                      "cell": pd.to_datetime(b["filed_date"]).dt.to_period("M").astype(str).values + "|"
+                      + b["sector"].fillna("?").astype(str).values})
+    d = d[d["c"].astype(bool) & d["x"].notna()]
+    base = d[~d["f"]].groupby("cell")["x"].mean()
+    y = d[d["f"]].join(base.rename("b"), on="cell").dropna(subset=["b"])
+    need = max(RECHECK_MIN_N, 30)
+    if len(y) < need:
+        return False, f"waiting for 60-day results on trades filed after {d0} ({len(y)} of {need})"
+    dd = (y["x"] - y["b"]).clip(-1, 3)
+    lift = float(dd.mean())
+    t = lift / (float(dd.std()) / np.sqrt(len(dd))) if dd.std() > 0 else 0.0
+    # a lucky find has a coin-flip chance of a positive average on new data, so it must be clearly positive (t 1.65+)
+    if lift * (sign or 1) > 0 and abs(t) >= 1.65:
+        return True, f"also worked on {len(y)} trades filed after {d0} ({lift * 100:+.2f}%, t {t:.1f})"
+    return False, f"not yet clear on {len(y)} trades filed after {d0} ({lift * 100:+.2f}%, t {t:.1f})"
+
+
 def sector_variant_features(tx):
     """Sector-only versions of signals (owner, Nov 3: test signals by group). Same information as the base signal,
     counted only for stocks in the named sectors; they're trial signals, judged by the weekly test."""
@@ -10035,6 +10074,11 @@ def check_trial_signals(scored, px, cfg, a, pol, rows, today, only=None, deadlin
                      "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
                      "Verdict": "Switched automatically" if clearly_better(c, kk) else _verdict(c, True, kk),
                      **_sure_fields(c, kk)})
+        if clearly_better(c, kk) and not on:
+            ok_, why_ = new_data_gate(k, scored, px, np.sign(TRIAL_SIGNALS.get(k, 1)))
+            if not ok_:
+                rows[-1]["Verdict"] = "Clearly better, but " + why_
+                continue
         if clearly_better(c, kk):
             a["history"].append({"date": today, "change": label, "from": "on" if on else "off", "to": "off" if on else "on",
                                  "gain_per_year": c["gain"], "sureness": c["t"]})
@@ -11466,6 +11510,10 @@ def rare_signal_test(scored, px, cfg, hold=None):
         for r in out:
             k = r["signal"]
             if r["passes"] and k in TRIAL_SIGNALS and k not in sig:
+                ok_, why_ = new_data_gate(k, scored, px, np.sign(TRIAL_SIGNALS.get(k, 1)))
+                if not ok_:
+                    r["gate"] = why_
+                    continue
                 sig.append(k)
                 mine.add(k)
                 on_now.append(k)

@@ -427,6 +427,11 @@ def member_pages(scored, px):
 
 def main():
     fetch_app_inputs()
+    try:      # owner, Nov 3: signal-sector pairs found by the weekly sector sweep become trial signals
+        import congress_signals.sector_sweep as SS
+        E.log(f"Sector sweep: {SS.load_auto(E, cfg)} pair(s) found by earlier sweeps loaded as trial signals")
+    except Exception as e:
+        E.log(f"Sector sweep: earlier finds not loaded ({type(e).__name__}: {e})")
     global PAUSE
     try:
         scored, px = E.prepare(cfg)
@@ -532,6 +537,15 @@ def main():
                                         f"strategy uses a different hold." for x in found[:3]), "rare", "/#works", E.log)
     except Exception as e:
         E.log(f"Adjustments: other-hold check skipped ({type(e).__name__}: {e})")
+    try:      # owner, Nov 3: weekly sweep of every signal inside each sector (adds passing pairs as trial signals)
+        import congress_signals.sector_sweep as SS
+        sw_ = SS.run(E, scored, px, cfg, E.log)
+        if sw_ and not DRY_RUN and (sw_["added"] or sw_["hits"]):
+            cloud_store.notify(f"Sector check: {len(sw_['hits'])} hits (luck alone ~{sw_['luck']})",
+                               (f"New trial signals: {', '.join(sw_['added'])}. " if sw_["added"] else "No new pairs. ")
+                               + "They count only after also working on trades filed from now on.", "rare", "/#works", E.log)
+    except Exception as e:
+        E.log(f"Sector sweep: skipped ({type(e).__name__}: {e})")
     try:      # rare signals judged per trade; a passing trial signal is switched on automatically
         rt = E.rare_signal_test(scored, px, cfg)
         fresh = [r for r in (rt or {}).get("rows", []) if (r["signal"] in (rt.get("newly_passing") or [])
