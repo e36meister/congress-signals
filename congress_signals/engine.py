@@ -11009,23 +11009,25 @@ RARE_W_LABEL = "Rare-signal weights from per-trade results"
 
 
 def rare_weight_targets(rows, cfg, on, scale):
-    """Weight of each rare signal in the score = scale x its per-trade gain, shrunk when the result is unsure
-    (sureness under 2), capped at 1. A signal that doesn't help gets 0. Direction kept from the signal's design."""
+    """Weight of each rare signal in the score = scale x its per-trade gain BEFORE the holdout (Nov 3: it used the
+    all-years gain, so the holdout years set the weights they were then judged on), shrunk when that result is
+    unsure (sureness under 2), capped at 1. A signal that doesn't help gets 0. Direction kept from its design."""
     out = {}
     for r in rows or []:
         k = r.get("signal")
         base = cfg["BUY_WEIGHTS"].get(k) or (TRIAL_SIGNALS.get(k) if k in on else None)
-        if not base or r.get("lift") is None:
+        if not base or r.get("lift_early") is None:
             continue
-        shrink = max(0.0, min(1.0, (r.get("t") or 0) / 2.0))
-        w = float(np.clip(scale * r["lift"] * shrink, 0.0, 1.0))
+        shrink = max(0.0, min(1.0, (r.get("t_early") or 0) / 2.0))
+        w = float(np.clip(scale * r["lift_early"] * shrink, 0.0, 1.0))
         out[k] = round(-w if base < 0 else w, 3) + 0.0
     return out
 
 
 def check_rare_weights(scored, px, cfg, force=False):
-    """Weekly: try the rare-signal weights from results at a few scales; keep the best one whose full backtest is
-    not worse than the current weights (all years and the last 3 years)."""
+    """Weekly: try the rare-signal weights from results at a few scales; switch to the best one only when it clearly
+    beats the current weights before the holdout (the usual bar for len(RARE_W_SCALES) options) and also holds up
+    from HOLDOUT_START on. Nov 3: it used to switch on "not worse", with no sureness bar."""
     a = load_adaptive(cfg)
     last = a.get("rare_weights_checked_at")
     if not force and last and (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(last)).days < 7:
@@ -11057,12 +11059,15 @@ def check_rare_weights(scored, px, cfg, force=False):
             continue
         b = run(tw)
         c = _compare(_long_daily(b), r_cur)
-        ok = bool(c) and c["gain"] >= 0 and c["recent"] >= 0
+        kk = len(RARE_W_SCALES)
+        ok = wins_earlier(c, kk)
         ev.append({"Setting": RARE_W_LABEL, "Option": f"From results, scale {sc} (+2%/trade = {sc * 0.02:.1f})",
                    "Per year vs S&P": vs(b), "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
-                   "Verdict": "Not worse" if ok else ("Worse" if c else "Not enough data")})
+                   "Verdict": _verdict(c, True, kk) if c else "Not enough data", **_sure_fields(c, kk)})
         if ok and (best is None or _rank(c) > _rank(best[2])):
             best = (sc, tw, c)
+    if best and not confirmed(best[2]):      # chosen before the holdout; must also hold up from HOLDOUT_START on
+        best = None
     today = dt.date.today().isoformat()
     if best:
         sc, tw, c = best
@@ -11075,9 +11080,9 @@ def check_rare_weights(scored, px, cfg, force=False):
             if r["Setting"] == RARE_W_LABEL and r["Option"].startswith(f"From results, scale {sc} "):
                 r["Verdict"] = "Switched automatically"
         log(f"Rare-signal weights: set from results (scale {sc}); backtest {c['gain'] * 100:+.2f}%/yr vs before, "
-            f"last 3 years {c['recent'] * 100:+.2f}%/yr: " + ", ".join(f"{k} {w:+.2f}" for k, w in tw.items()))
+            f"since Nov 2023 {c['recent'] * 100:+.2f}%/yr: " + ", ".join(f"{k} {w:+.2f}" for k, w in tw.items()))
     else:
-        log("Rare-signal weights: kept as they are (no scale was at least as good in the backtest)")
+        log("Rare-signal weights: kept as they are (no scale clearly beat them before Nov 2023 and held up since)")
     a["policy"], a["evaluation"] = pol, ev
     a["rare_weights_checked_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     save_adaptive(cfg, a)
