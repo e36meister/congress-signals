@@ -4984,9 +4984,17 @@ def walk_forward(scored, px, cfg, min_train=500):
     buys_all = scored[(scored["tx_type"] == "buy") & scored["entry_px"].notna()]
     if not len(buys_all):
         return None
-    names = list(cfg["BUY_WEIGHTS"])
+    # Nov 3 (pipeline audit): every signal on file, not just today's main list (that list was trimmed on Nov 3 using
+    # all years, so learning only from it would let hindsight pick the candidates), and the same sell rules as the
+    # regular side (stop / keep-holding / sell-when-member-sells from the current policy), so the comparison is fair.
+    names = [n for n in dict.fromkeys(list(cfg["BUY_WEIGHTS"]) + list(TRIAL_SIGNALS)) if f"f_{n}" in buys_all]
     zeros = {n: 0.0 for n in names}
-    by_hold = {h: apply_hold_policy(buys_all, px, cfg, {"hold_small": h, "hold_other": h}) for h in HOLD_CHOICES}
+    try:
+        pol0 = {k: v for k, v in (load_adaptive(cfg)["policy"] or {}).items()
+                if k in ("price_exit", "extend", "exit_on_member_sell")}
+    except Exception:
+        pol0 = {}
+    by_hold = {h: apply_hold_policy(buys_all, px, cfg, {**pol0, "hold_small": h, "hold_other": h}) for h in HOLD_CHOICES}
     base = by_hold[60] if 60 in by_hold else next(iter(by_hold.values()))
     years = sorted(base["filed_date"].dt.year.unique())
     picks, log_rows, held = [], [], {}
@@ -5053,6 +5061,7 @@ def walk_forward(scored, px, cfg, min_train=500):
     # always with the hand-set weights, so the weekly check compares the two methods whichever one is in use
     hand = apply_scores(scored, cfg, cfg["BUY_WEIGHTS"], cfg["SHORT_WEIGHTS"])
     reg = run_backtest(hand, px, dict(cfg, _nested=True), since=longs["filed_date"].min())
+    # (scored already carries the current policy's exits, the same pol0 rules the honest side now uses)
     series = {"Never-seen-years picks": ld, "Regular backtest, same years": _long_daily(reg).reindex(idx).fillna(0),
               "S&P 500 (SPY)": spy}
     perf, curves = {}, {}
@@ -6233,6 +6242,9 @@ def export_dashboard(cfg, bt=None, buys=None, sells=None, new=None, tuned=None):
             "settings": {k: cfg[k] for k in ("HOLD_DAYS", "PICKS_PER_WEEK", "SHORTS_PER_WEEK", "PICK_PERCENTILE",
                                               "SHORT_PERCENTILE", "SHORT_ALLOCATION", "USE_TUNED_WEIGHTS")},
             "slots": bt.get("slots"),
+            # Nov 3 (pipeline audit): this backtest uses settings and a signal list chosen with these same years;
+            # the honest number is walk_forward ("Never-seen-years picks"), shown first in the app
+            "in_sample": True, "holdout_note": HOLDOUT_NOTE,
             "perf": [{"name": c, **{k: _j(perf.loc[k, c]) for k in perf.index}} for c in perf.columns],
             "curve": {"dates": [d.strftime("%Y-%m-%d") for d in wk.index],
                       "series": {c: [_j((v - 1) * 100) for v in wk[c].values] for c in wk.columns}},

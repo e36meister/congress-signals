@@ -234,7 +234,10 @@ def send_weekly_summary():
         return None, None, None
     m_, ml, mh = vs(d.get("backtest"), "Long picks")
     s_, sl, sh = vs(d.get("small"), "Small-company picks")
-    parts.append(f"<h3>Backtest since 2014, per year vs the S&amp;P 500</h3><p>Main picks {pc(m_)} (likely {pc(ml)} to {pc(mh)})"
+    w_, wl, wh = vs(d.get("walk_forward"), "Never-seen-years picks")
+    parts.append(f"<h3>Backtest since 2014, per year vs the S&amp;P 500</h3><p>Honest result (each year picked only with "
+                 f"what was known before it): {pc(w_)} (likely {pc(wl)} to {pc(wh)})<br>"
+                 f"Main picks, in-sample (settings chosen with these years) {pc(m_)} (likely {pc(ml)} to {pc(mh)})"
                  f"<br>Small-company portfolio {pc(s_)} (likely {pc(sl)} to {pc(sh)})</p>")
     # data progress
     g = d.get("data_progress") or {}

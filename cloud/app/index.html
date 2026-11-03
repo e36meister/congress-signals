@@ -1953,9 +1953,14 @@ function renderRecord(d) {
   const st = statRow(b.trade_stats, "Long picks");
   const beat = (L["Annual return (CAGR)"] ?? -1) > (S["Annual return (CAGR)"] ?? 0);
   const shortSt = statRow(b.trade_stats, "Short picks");
+  // Nov 3: the honest number first (each year picked only with what was known before it); the regular backtest
+  // below uses settings chosen with these same years, so it's labelled in-sample
+  const WFP = Object.fromEntries(((d.walk_forward || {}).perf || []).map(p => [p.name, p]));
+  const WH = WFP["Never-seen-years picks"];
   const tiles = `
   <div class="tiles">
-    <div class="tile"><span class="v ${beat ? "pos" : "neg"}">${pct(L["Annual return (CAGR)"])}</span><span class="l">Long picks, per year</span><span class="c">S&amp;P 500: ${pct(S["Annual return (CAGR)"])}</span></div>
+    ${WH ? `<div class="tile"><span class="v ${cls(WH["Per year vs S&P 500"])}">${pct(WH["Per year vs S&P 500"])}</span><span class="l">Honest result: per year vs S&amp;P 500</span><span class="c">Each year picked only with what was known before it</span></div>` : ""}
+    <div class="tile"><span class="v ${beat ? "pos" : "neg"}">${pct(L["Annual return (CAGR)"])}</span><span class="l">Long picks, per year (in-sample)</span><span class="c">Settings chosen with these years · S&amp;P 500: ${pct(S["Annual return (CAGR)"])}</span></div>
     <div class="tile"><span class="v">${st["Beat SPY (%)"] != null ? Math.round(st["Beat SPY (%)"]) + "%" : "–"}</span><span class="l">Picks that beat the S&amp;P 500</span><span class="c">${st["Closed trades"] ?? "–"} finished picks</span></div>
     <div class="tile"><span class="v ${cls(st["Avg vs SPY per trade (%)"])}">${pnum(st["Avg vs SPY per trade (%)"])}</span><span class="l">Average pick vs S&amp;P 500</span><span class="c">Typical pick: ${pnum(st["Median vs SPY (%)"])}</span></div>
     ${shortSt["Closed trades"] ? `<div class="tile"><span class="v">${Math.round(shortSt["Beat SPY (%)"])}%</span><span class="l">Short picks that worked</span><span class="c">${shortSt["Closed trades"]} finished shorts</span></div>` : ""}
