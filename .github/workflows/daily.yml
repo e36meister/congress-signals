@@ -212,14 +212,14 @@ jobs:
 
       - name: Fill older years and less-traded companies (lobbying, grants, speeches, contracts, events)
         continue-on-error: true
-        timeout-minutes: 55
+        timeout-minutes: 70
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
           CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
           LDA_API_KEY: ${{ secrets.LDA_API_KEY }}
           CLOUDFLARE_API_TOKEN: ${{ github.event.inputs.dry_run != 'true' && secrets.CLOUDFLARE_API_TOKEN || '' }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: python backfill_enrich.py 45
+        run: python backfill_enrich.py 60      # Nov 3: 45 -> 60 while lobbying is re-read (job limit 150: 35+35+70)
 
       - name: Save data for tomorrow
         if: always()
