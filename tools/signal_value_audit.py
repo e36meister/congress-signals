@@ -89,11 +89,11 @@ rng = np.random.default_rng(11)
 flags = {k: flag_of(k) for k in sigs}
 shares = [max(0.005, float(f.mean())) for f, _ in flags.values()]
 P = []
+# placebos clump like real signals do: flag whole (member, month) groups, not single trades
+who = ((b["bioguide"] if "bioguide" in b else b["ticker"]).astype(object).fillna("?").astype(str) + "|" + b["m"]).values
+uniq, inv = np.unique(who, return_inverse=True)
 for i, sh in enumerate(shares * 2):                  # two placebo sets
-    # placebos clump like real signals do: flag whole (member, month) groups, not single trades
-    who = (b["bioguide"].astype(str) if "bioguide" in b else b["ticker"].astype(str)) + "|" + b["m"]
-    g = pd.Series(rng.random(who.nunique()) < sh, index=who.unique())
-    P.append(stats(who.map(g).values))
+    P.append(stats((rng.random(len(uniq)) < sh)[inv]))
 PT = {h: np.array([abs(p[f"t{h}"]) for p in P if p[f"t{h}"] is not None and np.isfinite(p[f"t{h}"])]) for h in H}
 BAR = {h: max(1.65, float(np.quantile(PT[h], 0.95))) if len(PT[h]) else 1.65 for h in H}
 TOP = {h: float(np.quantile(PT[h], 0.995)) if len(PT[h]) else 3.3 for h in H}
