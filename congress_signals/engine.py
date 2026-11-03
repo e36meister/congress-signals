@@ -9685,6 +9685,78 @@ def check_sizing_once(scored, px, cfg):
     save_adaptive(cfg, a)
 
 
+# ---- switched-off signals at the other hold periods (owner, Nov 3) ---------------------------------------------
+# The weekly check judges a switched-off signal only at the hold the strategy uses, so a signal that helps only with a
+# longer (or shorter) hold would never show up. This tests each one at every other hold too. It never switches
+# anything (the live strategy only earns a signal at its own hold); it reports, so the owner can decide whether a
+# different hold is worth it. Split across runs (owner: "split the runs so it's not as long"): each run works
+# through the next (signal, hold) pairs for at most OTHER_HOLDS_MIN minutes and saves where it stopped, so one full
+# pass takes a few days of runs instead of one long weekly check.
+OTHER_HOLDS = (20, 60, 125, 250)
+OTHER_HOLDS_LABEL = "Switched-off signals at other hold periods"
+
+
+def check_signals_other_holds(scored, px, cfg, minutes=None):
+    """Returns the findings that are new this run: [{"signal", "label", "hold", "gain", "t", "recent"}]."""
+    a = load_adaptive(cfg)
+    pol = dict(a["policy"])
+    on = list(pol.get("signals_on", []))
+    cur_h = int(pol.get("hold_other", cfg["HOLD_DAYS"]))
+    have = [k for k in TRIAL_SIGNALS if k not in on
+            and int((scored.get(f"f_{k}", pd.Series(0, index=scored.index)) > 0).sum()) >= 30]
+    pairs = [(k, h) for k in have for h in OTHER_HOLDS if h != cur_h]
+    st = dict(a.get("other_holds") or {})
+    res = dict(st.get("results") or {})
+    if not pairs:
+        return []
+    i0 = int(st.get("next", 0)) % len(pairs)
+    budget = (float(minutes) if minutes else float(cfg.get("OTHER_HOLDS_MIN", 8))) * 60
+    t0, done, base, found = time.time(), 0, dict(cfg, _nested=True), []
+    held, cur_cache = {}, {}
+    for j in range(len(pairs)):
+        if time.time() - t0 > budget or out_of_time(cfg, 45):
+            break
+        k, h = pairs[(i0 + j) % len(pairs)]
+        pol_h = dict(pol, hold_other=h, hold_small=h, extend="none")      # the hold itself, no keep-holding rule
+        if h not in held:                   # exits depend only on the hold, not the score: computed once per hold
+            held[h] = apply_hold_policy(scored, px, cfg, pol_h)
+
+        def run(sig):
+            bw, sw = active_weights(cfg, signals_on=sig)
+            return run_backtest(apply_scores(held[h], cfg, buy_w=bw, short_w=sw), px, base)
+        if h not in cur_cache:
+            cur_cache[h] = _long_daily(run(on))
+        c = _compare(_long_daily(run(on + [k])), cur_cache[h])
+        key = f"{k}|{h}"
+        was = (res.get(key) or {}).get("verdict")
+        verdict = "Helps with this hold" if clearly_better(c) else (_verdict(c, False) if c else "Not enough data")
+        verdict = verdict.replace("Clearly better: ask Claude to apply", "Helps with this hold")
+        res[key] = {"signal": k, "hold": h, "gain": c["gain"] if c else None, "t": c["t"] if c else None,
+                    "recent": c["recent"] if c else None, "verdict": verdict, "at": dt.date.today().isoformat()}
+        if verdict == "Helps with this hold" and was != verdict:
+            found.append({"signal": k, "label": TRIAL_LABELS.get(k, k), "hold": h, "gain": c["gain"], "t": c["t"],
+                          "recent": c["recent"]})
+        done += 1
+    nxt = (i0 + done) % len(pairs)
+    passes = int(st.get("passes", 0)) + (1 if i0 + done >= len(pairs) else 0)
+    a = load_adaptive(cfg)                  # re-read: save only this check's part
+    a["other_holds"] = {"next": nxt, "passes": passes, "pairs": len(pairs), "results": res,
+                        "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
+    rows = [r for r in (a.get("evaluation") or []) if r.get("Setting") != OTHER_HOLDS_LABEL]
+    for r in sorted(res.values(), key=lambda r: (-(r.get("gain") or -9), r["signal"], r["hold"])):
+        if r["signal"] in have and r["hold"] != cur_h:
+            rows.append({"Setting": OTHER_HOLDS_LABEL, "Option": f"{TRIAL_LABELS.get(r['signal'], r['signal'])}, "
+                         f"{r['hold']}-day hold", "Per year vs S&P": None, "Gain vs current": r.get("gain"),
+                         "Sureness": r.get("t"), "Verdict": r["verdict"] + f" (the strategy holds {cur_h} days; not "
+                         "switched, shown so you can decide)" if r["verdict"] == "Helps with this hold" else r["verdict"]})
+    a["evaluation"] = rows
+    save_adaptive(cfg, a)
+    log(f"Other hold periods: tested {done} of {len(pairs)} signal/hold pairs in {(time.time() - t0) / 60:.1f} min "
+        f"(pass {passes + 1} continues next run)" + (f"; helps: " + ", ".join(f"{x['signal']} at {x['hold']}d" for x in found)
+                                                   if found else ""))
+    return found
+
+
 def check_trial_signals_once(scored, px, cfg):
     """A newly added trial signal is tested right away instead of waiting for the weekly check."""
     a = load_adaptive(cfg)

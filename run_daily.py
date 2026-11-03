@@ -532,6 +532,15 @@ def main():
         E.check_trial_signals_once(scored, px, cfg)
     except Exception as e:
         E.log(f"Adjustments: new-signal check skipped ({e})")
+    try:      # owner, Nov 3: switched-off signals at the other hold periods, a slice each run (reports, never switches)
+        found = E.check_signals_other_holds(scored, px, cfg)
+        if found and not DRY_RUN:
+            cloud_store.notify("Signal helps with a different hold: " + found[0]["label"].replace("Signal: ", "")[:60],
+                               " ".join(f"{x['label'].replace('Signal: ', '')[:60]}: +{(x['gain'] or 0) * 100:.1f}%/yr with a "
+                                        f"{x['hold']}-day hold (sureness {(x['t'] or 0):.1f}); not switched on, because the "
+                                        f"strategy uses a different hold." for x in found[:3]), "rare", "/#works", E.log)
+    except Exception as e:
+        E.log(f"Adjustments: other-hold check skipped ({type(e).__name__}: {e})")
     try:      # rare signals judged per trade; a passing trial signal is switched on automatically
         rt = E.rare_signal_test(scored, px, cfg)
         fresh = [r for r in (rt or {}).get("rows", []) if (r["signal"] in (rt.get("newly_passing") or [])
