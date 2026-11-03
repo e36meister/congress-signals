@@ -4149,6 +4149,7 @@ def compute_features(tx, px, data, cfg):
                      ("analysts", lambda x: analyst_features(x, data)), ("size and the rest", lambda x: extra_features(x, px, data, cfg, mems)),
                      ("bills at the trade", lambda x: bill_stage_features(x, data, cfg, mems)),
                      ("bills the company lobbied on", lambda x: lobbied_bill_features(x, data, mems)),
+                     ("company-specific committee links", lambda x: company_link_features(x, data, cfg, mems)),
                      ("institutions", lambda x: _inst().inst_features(x, cfg)),
                      ("posts", lambda x: _social().post_features(x, cfg))):
         tx = fn(tx)
@@ -4196,6 +4197,13 @@ TRIAL_SIGNALS = {"relative_tie": 0.5, "unusual_volume": 0.4, "reg_action": 0.3, 
                  # 114 most-bought companies: the member backing such a bill -0.16% vs the same company's other buys
                  # (n 1,993), so it starts off like every new signal and is tested weekly
                  "lobbied_bill_backed": 0.3, "lobbied_bill_committee": 0.3,
+                 # Owner, Nov 3 ("do all"): company-specific versions of the broad committee and lobbying signals,
+                 # next to the old ones (which stay on the weekly re-test, so a link the narrow rule misses isn't
+                 # lost). company_link_features; lobbying bill numbers are still being filled (about 10 days), so
+                 # these fire more over time. proven_big: tools/signal_ideas_study.py, +4.8%/+6.7%/+4.2% at
+                 # 60/125/250 days (weak: past the placebo bar at one hold), about 24 picks a year.
+                 "committee_oversees_co": 0.4, "committee_leader_co": 0.4, "lobbying_targets_member": 0.4,
+                 "proven_big": 0.4,
                  # Owner, Nov 3 (tools/signal_value_audit.py, run 41570844319): moved here from the main weights.
                  # Judged against random placebo signals with the same firing rates (bars |t| 1.97/2.19/2.56/2.85 at
                  # 20/60/125/250 days), none of these beat buys filed the same month in the same sector at any hold;
@@ -4237,6 +4245,10 @@ TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "sector_bill_momentum": "Signal: a bill in the same broad category passed recently (main score until Nov 2)",
                 "lobbied_bill_backed": "Signal: the company lobbied on a bill the member sponsors or cosponsors",
                 "lobbied_bill_committee": "Signal: a bill the company lobbied on is before the member's committee",
+                "committee_oversees_co": "Signal: the member's committee handles this company (it lobbied on a bill there or testified there)",
+                "committee_leader_co": "Signal: the member chairs or leads a committee that handles this company",
+                "lobbying_targets_member": "Signal: the company lobbied, in the year before, on a bill the member backs and whose committee they sit on",
+                "proven_big": "Signal: a proven member making a large trade ($50,001 or more)",
                 "vote_sector": "Signal: voted on a bill in the industry near the trade (broad category) (main score until Nov 3)",
                 "spouse_insider": "Signal: spouse is a company insider (main score until Nov 3)",
                 "committee": "Signal: their committee oversees the industry (main score until Nov 3)",
@@ -4373,7 +4385,9 @@ def _why_buy(r):
         b.append(f"company PAC gave member ${r['donations_4y']:,.0f}")
     if r.get("bill_note") and "bills" not in WHY_OFF:
         b.append(r["bill_note"])
-    for k, sig in (("lobbied_note", "lobbied_bill_backed"), ("lobbied_cmte_note", "lobbied_bill_committee")):
+    for k, sig in (("lobbied_note", "lobbied_bill_backed"), ("lobbied_cmte_note", "lobbied_bill_committee"),
+                   ("co_cmte_note", "committee_oversees_co"), ("co_lead_note", "committee_leader_co"),
+                   ("lob_target_note", "lobbying_targets_member"), ("proven_big_note", "proven_big")):
         if r.get(k) and sig not in WHY_OFF:
             b.append(r[k])
     for f, txt in (("f_employee_donations", lambda: f"company employees gave ${r['employee_donations']:,.0f} to the campaign"),
@@ -8915,6 +8929,111 @@ def bill_stage_features(tx, data, cfg, mems):
             kept[pos[ix]] = len(set(who[lo:hi][ss[lo:hi]]))
     tx["n_sellers_kept"] = kept
     log("Bills at the trade: " + ", ".join(f"{c[2:]} {int((tx[c] > 0).sum()):,}" for c in BILL_FEATURES))
+    return tx
+
+
+def company_link_features(tx, data, cfg, mems):
+    """Owner, Nov 3: company-specific versions of the broad committee / lobbying signals (trial signals). The old
+    ones match a stock to a committee by sector (Armed Services -> every tech stock) or count any lobbying at all;
+    these need evidence about THIS company, all known by the filing date:
+      f_committee_oversees_co   a committee the member sat on at the trade had, by the filing, a bill referred to
+                                it that the company named in a lobbying report (posted from 2 years before the
+                                trade to the filing), or heard the company testify in the year before the filing.
+                                The lobbied-bill half is the same rule as f_lobbied_bill_committee; this is the
+                                union with testimony.
+      f_committee_leader_co     the same, for a committee the member chairs or is ranking member of
+      f_lobbying_targets_member in the 12 months before the filing the company lobbied on a bill the member backs
+                                (sponsor or cosponsor by the filing) AND that was referred to one of the member's
+                                committees: the member is both a backer and a gatekeeper of a bill the company wants.
+      f_proven_big              a proven member (f_proven_member) making a trade reported at $50,001 or more
+    """
+    n = len(tx)
+    for c in ("f_committee_oversees_co", "f_committee_leader_co", "f_lobbying_targets_member", "f_proven_big"):
+        tx[c] = 0.0
+    tx["co_cmte_note"], tx["co_lead_note"], tx["lob_target_note"], tx["proven_big_note"] = "", "", "", ""
+    buy = tx["tx_type"].eq("buy").values
+    big = (pd.to_numeric(tx.get("amt_lo", pd.Series(0, index=tx.index)), errors="coerce").fillna(0) >= 50001).values
+    pb = buy & big & (tx.get("f_proven_member", pd.Series(0.0, index=tx.index)).fillna(0).values >= 1)
+    tx["f_proven_big"] = pb.astype(float)
+    tx.loc[pb, "proven_big_note"] = "a proven member put $50,001 or more in"
+    tables, lb, mt = data.get("bill_tables"), data.get("lobbying"), data.get("meetings")
+    td_, fd_ = pd.to_datetime(tx["trade_date"]), pd.to_datetime(tx["filed_date"])
+    # committee names by id, to tell which of the member's committees they lead (records keep lead names)
+    try:
+        committee_cid_sectors(cfg)
+        cnames = (json.load(open(_p(cfg, "cache", "committee_names.json"))).get("names") or {})
+    except Exception:
+        cnames = {}
+    top_of = lambda c: str(c)[:4].upper()
+    mine, lead = [], []
+    for m in mems:
+        cs = {top_of(c) for c in ((m or {}).get("cids") or [])}
+        ln = set((m or {}).get("lead") or [])
+        mine.append(cs)
+        lead.append({top_of(c) for c in ((m or {}).get("cids") or []) if cnames.get(str(c)) in ln})
+    # bills the company lobbied on, by date
+    lob = {}
+    if lb is not None and len(lb) and "bills" in lb:
+        l2 = lb[lb["bills"].map(lambda x: bool(x) if isinstance(x, (list, tuple)) else False) & lb["posted"].notna()]
+        lob = {t: (g["posted"].values.astype("datetime64[ns]"), list(g["bills"]))
+               for t, g in l2.sort_values("posted").groupby("ticker")}
+    refs, back, title = {}, {}, {}
+    if tables is not None:
+        title = dict(zip(tables["bills"]["bill"], tables["bills"]["title"]))
+        rf = tables["refs"]
+        for b_, cid, d in zip(rf["bill"], rf["cid"], pd.to_datetime(rf["date"], errors="coerce")):
+            refs.setdefault(b_, []).append((top_of(cid), d))
+        bk = tables["backers"]
+        for b_, who, j, w in zip(bk["bill"], bk["bioguide"], pd.to_datetime(bk["joined"], errors="coerce"),
+                                 pd.to_datetime(bk["withdrawn"], errors="coerce")):
+            back.setdefault((b_, who), []).append((j, w))
+    # testimony: company key -> [(date, committee ids)]
+    meta = data.get("meta") or {}
+    ck = {t: company_key((meta.get(t) or {}).get("name")) for t in tx["ticker"].unique()}
+    test = {}
+    if mt is not None and len(mt) and "orgs" in mt:
+        m2 = mt[mt["date"].notna()].sort_values("date")
+        want = {k for k in ck.values() if k}
+        for d, orgs, cids in zip(m2["date"], m2["orgs"], m2["cids"]):
+            for o in set(orgs or []) & want:
+                test.setdefault(o, []).append((pd.Timestamp(d), {top_of(c) for c in (cids or [])}))
+    fo, fl, ft = np.zeros(n), np.zeros(n), np.zeros(n)
+    no, nl, nt = [""] * n, [""] * n, [""] * n
+    for i, (t, b, td, fd) in enumerate(zip(tx["ticker"], tx["bioguide"], td_, fd_)):
+        if not buy[i] or pd.isna(td) or pd.isna(fd) or not mine[i]:
+            continue
+        via = {}                                        # committee id -> reason
+        g = lob.get(t)
+        L2y, L1y = [], []
+        if g is not None:
+            lo = np.searchsorted(g[0], np.datetime64(td - pd.Timedelta(days=730)), side="right")
+            lo1 = np.searchsorted(g[0], np.datetime64(fd - pd.Timedelta(days=365)), side="right")
+            hi = np.searchsorted(g[0], np.datetime64(fd), side="right")
+            L2y = sorted({x for bs in g[1][lo:hi] for x in bs})
+            L1y = sorted({x for bs in g[1][lo1:hi] for x in bs})
+        for x in L2y:
+            for c, d in refs.get(x, []):
+                if c in mine[i] and pd.notna(d) and d <= fd:
+                    via.setdefault(c, f"the company lobbied on {title.get(x, x)[:60]}, which went to their committee")
+        for d, cs in test.get(ck.get(t), []):
+            if fd - pd.Timedelta(days=365) < d <= fd:
+                for c in cs & mine[i]:
+                    via.setdefault(c, "the company testified before their committee")
+        if via:
+            fo[i], no[i] = 1.0, next(iter(via.values()))
+            hit = [c for c in via if c in lead[i]]
+            if hit:
+                fl[i], nl[i] = 1.0, "they lead the committee: " + via[hit[0]]
+        for x in L1y:
+            backed = any(pd.notna(j) and j <= fd and (pd.isna(w) or w > td) for j, w in back.get((x, b), []))
+            if backed and any(c in mine[i] and pd.notna(d) and d <= fd for c, d in refs.get(x, [])):
+                ft[i], nt[i] = 1.0, f"the company lobbied on {title.get(x, x)[:60]}, which they back and their committee handles"
+                break
+    tx["f_committee_oversees_co"], tx["f_committee_leader_co"], tx["f_lobbying_targets_member"] = fo, fl, ft
+    tx["co_cmte_note"], tx["co_lead_note"], tx["lob_target_note"] = no, nl, nt
+    log(f"Company-specific committee links: committee handles the company {int(fo.sum()):,}, member leads it "
+        f"{int(fl.sum()):,}, lobbying targets the member {int(ft.sum()):,}, proven member big trade {int(pb.sum()):,} "
+        f"(lobbying bill numbers still filling in)")
     return tx
 
 
