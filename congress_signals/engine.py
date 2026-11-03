@@ -38,20 +38,12 @@ DEFAULT_CONFIG = {
     "WATCHLIST_LOOKBACK_DAYS": 30,
     "CLUSTER_WINDOW_DAYS": 30,
     "TRACK_PRIOR_TRADES": 5,
+    # Owner, Nov 3: signals with no edge in tools/signal_value_audit.py moved to TRIAL_SIGNALS (tested weekly)
     "BUY_WEIGHTS": {
-        "track_record": 0.5, "cluster": 0.8, "committee": 0.6, "subcommittee": 0.4, "committee_leader": 0.4,
-        "size": 0.3, "freshness": 0.4, "fast_filer": 0.6, "sell_pressure": -0.4, "insider_buying": 0.6,
-        "insider_selling": -0.2, "contracts": 0.4, "lobbying": 0.3, "donations": 0.4, "momentum": 0.4,
-        "employee_donations": 0.3, "already_owned": 0.1, "disclosure_tie": 0.4, "revolving_door": 0.4,
-        "testified": 0.4, "closed_briefing": 0.5, "vote_sector": 0.3, "home_state": 0.2, "contract_in_state": 0.3,
-        "speech": 0.3, "social_post": 0.2, "pre_event": 0.4, "committee_cluster": 0.5, "option": 0.4,
-        "spouse": 0.1, "first_time": 0.2, "unusual_size": 0.4, "new_sector": 0.1, "late": -0.5,
-        "small_cap": 0.4, "proven_member": 0.8, "crowded": -0.3, "ex_member_lobbyist": 0.3,
-        "defense_power": 0.5, "dod_award_after_trade": 0.6, "dod_momentum": 0.4,
-        "grants": 0.2, "grant_after_trade": 0.4, "campaign_vendor": 0.3, "spouse_employer": 0.5,
-        "paid_travel": 0.3, "outside_position": 0.4, "buddy": 0.4, "leader": 0.3,
-        "spouse_insider": 0.5,
-        "against_street": 0.3, "after_downgrade": 0.2, "no_coverage": 0.2,
+        "cluster": 0.8, "committee_leader": 0.4, "donations": 0.4, "revolving_door": 0.4, "testified": 0.4,
+        "closed_briefing": 0.5, "contract_in_state": 0.3, "committee_cluster": 0.5, "option": 0.4, "new_sector": 0.1,
+        "late": -0.5, "proven_member": 0.8, "crowded": -0.3, "defense_power": 0.5, "dod_award_after_trade": 0.6,
+        "dod_momentum": 0.4, "grant_after_trade": 0.4, "campaign_vendor": 0.3, "buddy": 0.4, "no_coverage": 0.2,
     },
     "SHORT_WEIGHTS": {
         "sell_track_record": 1.0, "sell_cluster": 0.8, "buy_pressure": -0.4, "committee": 0.5,
@@ -4110,7 +4102,20 @@ TRIAL_SIGNALS = {"relative_tie": 0.5, "unusual_volume": 0.4, "reg_action": 0.3, 
                  # the company named the bill in its own lobbying report (Nov 2). tools/lobbied_bill_study.py on the
                  # 114 most-bought companies: the member backing such a bill -0.16% vs the same company's other buys
                  # (n 1,993), so it starts off like every new signal and is tested weekly
-                 "lobbied_bill_backed": 0.3, "lobbied_bill_committee": 0.3}
+                 "lobbied_bill_backed": 0.3, "lobbied_bill_committee": 0.3,
+                 # Owner, Nov 3 (tools/signal_value_audit.py, run 41570844319): moved here from the main weights.
+                 # Judged against random placebo signals with the same firing rates (bars |t| 1.97/2.19/2.56/2.85 at
+                 # 20/60/125/250 days), none of these beat buys filed the same month in the same sector at any hold;
+                 # vote_sector hurt once the other signals were counted (-1.44% at 60d, t -3.3; -1.90% at 250d, t -2.2)
+                 # and uses the broad bill-category map. Off until the weekly check finds one clearly helps.
+                 "vote_sector": 0.3, "spouse_insider": 0.5, "committee": 0.6, "fast_filer": 0.6,
+                 "insider_buying": 0.6, "home_state": 0.2, "track_record": 0.5, "contracts": 0.4,
+                 "disclosure_tie": 0.4, "freshness": 0.4, "momentum": 0.4, "pre_event": 0.4, "small_cap": 0.4,
+                 "subcommittee": 0.4, "unusual_size": 0.4, "ex_member_lobbyist": 0.3, "against_street": 0.3,
+                 "leader": 0.3, "lobbying": 0.3, "size": 0.3, "after_downgrade": 0.2, "first_time": 0.2,
+                 "grants": 0.2, "already_owned": 0.1, "spouse": 0.1, "spouse_employer": 0.5,
+                 "employee_donations": 0.3, "speech": 0.3, "insider_selling": -0.2, "sell_pressure": -0.4,
+                 "outside_position": 0.4, "paid_travel": 0.3, "social_post": 0.2}
 TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "unusual_volume": "Signal: unusual trading volume before the trade",
                 "reg_action": "Signal: federal rule naming the company soon after the trade",
@@ -4138,7 +4143,40 @@ TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "bill_advanced": "Signal: a bill the member backs in the same broad category advanced after the trade (main score until Nov 2)",
                 "sector_bill_momentum": "Signal: a bill in the same broad category passed recently (main score until Nov 2)",
                 "lobbied_bill_backed": "Signal: the company lobbied on a bill the member sponsors or cosponsors",
-                "lobbied_bill_committee": "Signal: a bill the company lobbied on is before the member's committee"}
+                "lobbied_bill_committee": "Signal: a bill the company lobbied on is before the member's committee",
+                "vote_sector": "Signal: voted on a bill in the industry near the trade (broad category) (main score until Nov 3)",
+                "spouse_insider": "Signal: spouse is a company insider (main score until Nov 3)",
+                "committee": "Signal: their committee oversees the industry (main score until Nov 3)",
+                "fast_filer": "Signal: member usually files quickly (main score until Nov 3)",
+                "insider_buying": "Signal: company insiders were buying (main score until Nov 3)",
+                "home_state": "Signal: company based in their state (main score until Nov 3)",
+                "track_record": "Signal: member's past buys beat the S&P (main score until Nov 3)",
+                "contracts": "Signal: company has big federal contracts (main score until Nov 3)",
+                "disclosure_tie": "Signal: company named in their yearly disclosure (main score until Nov 3)",
+                "freshness": "Signal: disclosed soon after the trade (main score until Nov 3)",
+                "momentum": "Signal: stock beat the S&P over the 3 months before (main score until Nov 3)",
+                "pre_event": "Signal: traded before a company event (main score until Nov 3)",
+                "small_cap": "Signal: company under $2B (main score until Nov 3)",
+                "subcommittee": "Signal: sits on the subcommittee for the industry (main score until Nov 3)",
+                "unusual_size": "Signal: 3x their usual trade size (main score until Nov 3)",
+                "ex_member_lobbyist": "Signal: a former member lobbies for the company (main score until Nov 3)",
+                "against_street": "Signal: bought against Wall Street ratings (main score until Nov 3)",
+                "leader": "Signal: member usually trades before their trading partners (main score until Nov 3)",
+                "lobbying": "Signal: company lobbies their committees (main score until Nov 3)",
+                "size": "Signal: large trade (main score until Nov 3)",
+                "after_downgrade": "Signal: bought after a downgrade (main score until Nov 3)",
+                "first_time": "Signal: first time trading this stock (main score until Nov 3)",
+                "grants": "Signal: company got federal grants or loans (main score until Nov 3)",
+                "already_owned": "Signal: already owned it (main score until Nov 3)",
+                "spouse": "Signal: spouse or family account (main score until Nov 3)",
+                "spouse_employer": "Signal: spouse works for the company (main score until Nov 3)",
+                "employee_donations": "Signal: company employees donated to them (main score until Nov 3)",
+                "speech": "Signal: named the company in a floor speech (main score until Nov 3)",
+                "insider_selling": "Signal: company insiders were selling (scored lower) (main score until Nov 3)",
+                "sell_pressure": "Signal: other members sold (scored lower) (main score until Nov 3)",
+                "outside_position": "Signal: holds a position with the company (main score until Nov 3)",
+                "paid_travel": "Signal: company paid for travel (main score until Nov 3)",
+                "social_post": "Signal: posted about the company (Bluesky) (main score until Nov 3)"}
 try:
     from congress_signals import notes as _NOTES
     TRIAL_LABELS.update({f"note_{k}": f"Signal: filing note says {l[0].lower() + l[1:]}" for k, l, _ in _NOTES.WHO})
@@ -4197,8 +4235,9 @@ WHY_OFF = set()
 
 def apply_scores(tx, cfg, buy_w=None, short_w=None):
     bw, sw = active_weights(cfg)
-    WHY_OFF.clear()
-    WHY_OFF.update(k for k in TRIAL_SIGNALS if not (buy_w or bw).get(k))
+    if buy_w is None:          # the live weights only (backtests rescore with other weights and must not change it)
+        WHY_OFF.clear()
+        WHY_OFF.update(k for k in TRIAL_SIGNALS if not bw.get(k))
     tx = tx.copy()
     tx["score"] = _score(tx, buy_w or bw)
     tx["short_score"] = _score(tx, short_w or sw)
@@ -4218,23 +4257,24 @@ def _size_text(r):
 
 def _why_buy(r):
     b = []
-    if r["track_n"] >= 3:
+    on = lambda k: k not in WHY_OFF        # Nov 3: a reason shows only while its signal counts in the score
+    if r["track_n"] >= 3 and on("track_record"):
         b.append(f"member's past buys {r['track_excess']*100:+.1f}% vs SPY avg ({int(r['track_n'])})")
     if r["n_buyers"] >= 2:
         b.append(f"{int(r['n_buyers'])} members bought within 30d")
     if r["f_committee_leader"] > 0:
         b.append(f"chairs or leads a committee over {r['sector']}")
-    elif r["f_committee"] > 0:
+    elif r["f_committee"] > 0 and on("committee"):
         b.append(f"committee oversees {r['sector']}")
-    if r["f_subcommittee"] > 0:
+    if r["f_subcommittee"] > 0 and on("subcommittee"):
         b.append("sits on the subcommittee for this industry")
-    if r["insider_buyers"] > 0:
+    if r["insider_buyers"] > 0 and on("insider_buying"):
         b.append(f"{int(r['insider_buyers'])} company insider(s) bought")
-    if r["f_contracts"] > 0:
+    if r["f_contracts"] > 0 and on("contracts"):
         b.append(f"${r['contracts_180d']/1e6:,.0f}M federal contracts")
     if r.get("contract_after_trade"):
         b.append("contract awarded after the trade")
-    if r["f_lobbying"] >= 1:
+    if r["f_lobbying"] >= 1 and on("lobbying"):
         b.append("company lobbies this member's committees")
     if r["donations_4y"] > 0:
         b.append(f"company PAC gave member ${r['donations_4y']:,.0f}")
@@ -4277,17 +4317,26 @@ def _why_buy(r):
                    *((("f_sector_bill_momentum", lambda: f"a {r['sector']} bill passed recently"),)
                      if "sector_bill_momentum" not in WHY_OFF else ()),
                    ("f_crowded", lambda: "but the stock already jumped on disclosure day")):
-        if r.get(f, 0) and r.get(f, 0) >= 0.5:
+        if r.get(f, 0) and r.get(f, 0) >= 0.5 and on(f[2:]):
             b.append(txt())
-    for k in ("street_note", "spouse_note", "relative_note", "family_note", "committee_staff_note", "volume_note",
-              "event_note", "buddy_note", "bill_adv_note"):
-        if r.get(k) and not (k == "bill_adv_note" and "bill_advanced" in WHY_OFF):
+    for k, sigs in (("street_note", ("against_street", "after_downgrade", "no_coverage")), ("spouse_note", ("spouse_insider",)),
+                    ("relative_note", ("relative_tie",)), ("family_note", ("family_possible",)),
+                    ("committee_staff_note", ("committee_staff_lobbyist",)),
+                    ("volume_note", ("unusual_volume", "unusual_volume_low")),
+                    ("event_note", ("reg_action", "witness_after", "markup_after", "major_8k_after")),
+                    ("buddy_note", ("buddy",)), ("bill_adv_note", ("bill_advanced",))):
+        if k == "street_note" and r.get(k):        # three signals share this note: keep only the parts that count
+            parts = [x for x in str(r[k]).split("; ") if on("against_street" if x.startswith("bought against") else
+                                                         "after_downgrade" if "downgrade" in x else "no_coverage")]
+            if parts:
+                b.append("; ".join(parts))
+        elif r.get(k) and any(on(x) for x in sigs):
             b.append(r[k])
-    if r["f_size"] >= 0.4:
+    if r["f_size"] >= 0.4 and on("size"):
         b.append(_size_text(r))
-    if r["f_freshness"] >= 0.7:
+    if r["f_freshness"] >= 0.7 and on("freshness"):
         b.append(f"disclosed in {int(r['lag_days'])}d")
-    if r["n_sellers"] >= 2:
+    if r["n_sellers"] >= 2 and on("sell_pressure"):
         b.append(f"but {int(r['n_sellers'])} members sold")
     return "; ".join(b) or "baseline signal"
 
