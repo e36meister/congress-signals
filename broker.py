@@ -97,10 +97,9 @@ def from_alpaca(s):
     return s.replace(".", "-")
 
 
-def _bot_buys(api, any_buyer=False, owner=False):
-    """First filled buy per symbol that this tool placed (or anyone, with any_buyer; or you, with owner:
-    the Buy button or Alpaca itself), from Alpaca's order history."""
-    out, after = {}, (dt.datetime.utcnow() - dt.timedelta(days=500)).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _filled_orders(api, days=500):
+    """Every filled (or partly filled) order of the last `days` days, newest first."""
+    out, after = [], (dt.datetime.utcnow() - dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     until = None
     for _ in range(20):
         params = {"status": "closed", "limit": 500, "direction": "desc", "after": after}
@@ -109,15 +108,60 @@ def _bot_buys(api, any_buyer=False, owner=False):
         page = api.get("/v2/orders", **params)
         if not page:
             break
-        for o in page:
-            mine = (o.get("client_order_id") or "").startswith(PREFIX)
-            if (any_buyer or (not mine if owner else mine)) and o.get("side") == "buy" and o.get("filled_at"):
-                sym = o["symbol"]
-                if sym not in out or o["filled_at"] < out[sym]["filled_at"]:
-                    out[sym] = o
+        out += [o for o in page if o.get("filled_at") and float(o.get("filled_qty") or 0) > 0]
         if len(page) < 500:
             break
         until = page[-1]["submitted_at"]
+    return out
+
+
+def _segments(orders):
+    """Per symbol: the buys of the CURRENT holding (since the share count was last zero), oldest first.
+    Symbols with no shares left are left out. Owner, Nov 3 (trading-code review): a stock the tool sold and later
+    bought again was timed from its first-ever buy, so it was sold early; and one you bought yourself once was
+    treated as yours for good."""
+    by = {}
+    for o in orders:
+        by.setdefault(o["symbol"], []).append(o)
+    out = {}
+    for sym, os_ in by.items():
+        os_.sort(key=lambda o: o["filled_at"])
+        qty, buys = 0.0, []
+        for o in os_:
+            q = float(o.get("filled_qty") or 0)
+            if o.get("side") == "buy":
+                if qty <= 1e-6:
+                    qty, buys = 0.0, []
+                qty += q
+                buys.append(o)
+            else:
+                qty -= q
+                if qty <= 1e-6:            # sold out (or the window began mid-holding): the next buy starts anew
+                    qty, buys = 0.0, []
+        if qty > 1e-6 and buys:
+            out[sym] = buys
+    return out
+
+
+def _bot_buys(api, any_buyer=False, owner=False, history=False, orders=None):
+    """First filled buy per symbol in the CURRENT holding that this tool placed (or anyone, with any_buyer; or you,
+    with owner: the Buy button or Alpaca itself). history=True: the first such buy in the whole window, held or
+    not (used to tell a first run and for the account's start date)."""
+    orders = _filled_orders(api) if orders is None else orders
+    pick = lambda o: (any_buyer or ((not (o.get("client_order_id") or "").startswith(PREFIX)) if owner
+                                    else (o.get("client_order_id") or "").startswith(PREFIX)))
+    out = {}
+    if history:
+        for o in orders:
+            if o.get("side") == "buy" and pick(o):
+                sym = o["symbol"]
+                if sym not in out or o["filled_at"] < out[sym]["filled_at"]:
+                    out[sym] = o
+        return out
+    for sym, buys in _segments(orders).items():
+        m = [o for o in buys if pick(o)]
+        if m:
+            out[sym] = m[0]
     return out
 
 
@@ -282,12 +326,13 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                 owner_sold.add(o["symbol"])
     except Exception as e:
         log(f"Broker: couldn't read your Sell-button orders ({type(e).__name__}); not buying anything you sold is not checked this run")
-    bot = _bot_buys(api)
+    filled = _filled_orders(api)
+    bot = _bot_buys(api, orders=filled)           # the current holding's first tool buy, per symbol
+    bot_hist = _bot_buys(api, history=True, orders=filled)
     actions, sold = [], set()
-    # symbols you (or the Buy button) also bought: selling would close your shares too, so the tool leaves them
-    # stocks you bought yourself, from the whole order history (the last 500 orders alone would forget
-    # your older buys once the tool has traded a lot, and then a stock you both own could be sold)
-    others = set(_bot_buys(api, owner=True))
+    # symbols you (or the Buy button) also bought into the CURRENT holding: selling would close your shares too,
+    # so the tool leaves them. A stock you owned once and sold no longer counts as yours (Nov 3 review).
+    others = set(_bot_buys(api, owner=True, orders=filled))
 
     is_park = lambda sym: (bot.get(sym, {}).get("client_order_id") or "").startswith(PARK_PREFIX)
     park = next((x for x in park_choices(s["mode"]) if x not in others), None)
@@ -518,7 +563,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         else:
             rows = buys[buys["action"] == "BUY"] if buys is not None and len(buys) else buys
             new_buys = set(new.loc[new["action"] == "BUY", "ticker"]) if new is not None and len(new) else set()
-            first_time = not any(not is_sleeve(x) for x in bot)   # first run: start from the whole current BUY list
+            first_time = not any(not (o.get("client_order_id") or "").startswith(PREFIX + "sm-")   # first run: start
+                                 for o in bot_hist.values())                                 # from the whole BUY list
             order = [t for t in rows["ticker"] if first_time or t in new_buys] if rows is not None and len(rows) else []
         if rows is not None and len(rows):
             for t in order:
@@ -558,7 +604,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
             amount = sleeve_cap / max(sm_slots, 1)
             hold = int(pol.get("hold_sleeve", 250))
             # the backtest's rule already spaces repeat buys of a stock; the old list-based path buys each stock once
-            ever = set() if fresh_sm is not None else {sym for sym in bot if is_sleeve(sym)}
+            ever = set() if fresh_sm is not None else {sym for sym, o in bot_hist.items()
+                                                        if (o.get("client_order_id") or "").startswith(PREFIX + "sm-")}
             for t in sm["ticker"]:
                 if inv_sleeve + amount > sleeve_cap:
                     break
@@ -633,16 +680,14 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                  "tool" if cid.startswith(PREFIX) else "tap" if cid.startswith("tap-") else "you"])
     except Exception as e:
         log(f"Broker: fill history skipped ({type(e).__name__})")
-    bot = _bot_buys(api) if actions else bot
     try:
-        first = _bot_buys(api, any_buyer=True)
-    except Exception:
-        first = {}
+        filled = _filled_orders(api) if actions else filled
+    except Exception as e:
+        log(f"Broker: order history for the snapshot not re-read ({type(e).__name__}); using the one from the start of the run")
+    bot = _bot_buys(api, orders=filled)
+    first = _bot_buys(api, any_buyer=True, orders=filled)
     pos = []
-    try:
-        yours_first = _bot_buys(api, owner=True)
-    except Exception:
-        yours_first = {}
+    yours_first = _bot_buys(api, owner=True, orders=filled)
     try:      # which positions you opened ("manual") and which of them follow the tool's sell rules
         if _ACCOUNT is not None:
             raise LookupError("family account")          # the Keep/sell-rule flow is the owner's own

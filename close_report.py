@@ -203,7 +203,7 @@ def main():
         # the close before the start (otherwise its moves while the account held cash count against it)
         t0 = None
         try:
-            t0 = min(o["filled_at"] for o in broker._bot_buys(api, any_buyer=True).values())
+            t0 = min(o["filled_at"] for o in broker._bot_buys(api, any_buyer=True, history=True).values())
             if t0[:10] > pts[0][0]:
                 t0d = dt.datetime.strptime(t0[:19], "%Y-%m-%dT%H:%M:%S")      # Alpaca times are UTC
                 r = requests.get("https://data.alpaca.markets/v2/stocks/SPY/bars", headers=api.h, timeout=30,
