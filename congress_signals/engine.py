@@ -4721,7 +4721,7 @@ BUY_FACTORS = [("f_track_record", "Member track record"), ("f_cluster", "Cluster
                ("f_reg_action", "Federal rule named the company after the trade"), ("f_witness_after", "Company testified to their committee after the trade"),
                ("f_markup_after", "Committee marked up an industry bill after the trade"), ("f_major_8k_after", "Major company announcement after the trade"),
                ("f_against_street", "Bought against Wall Street"), ("f_after_downgrade", "Bought after a downgrade"),
-               ("f_no_coverage", "No analyst coverage"),
+               ("f_no_coverage", "Analyst coverage lapsed (rated before, none in the last 18 months)"),
                ("f_testified", "Company testified to their committee"), ("f_closed_briefing", "Closed briefing before trade"),
                ("f_vote_sector", "Voted on industry bill near trade"), ("f_home_state", "Company based in their state"),
                ("f_contract_in_state", "Contracts in their state"), ("f_speech", "Named company in floor speech"),
@@ -4881,7 +4881,7 @@ def run_backtest(scored, px, cfg, since=None):
                     ("f_reg_action", "Federal rule after the trade"), ("f_witness_after", "Testimony after the trade"),
                     ("f_markup_after", "Industry markup after the trade"), ("f_major_8k_after", "Major 8-K after the trade"),
                     ("f_against_street", "Bought against Wall Street"), ("f_after_downgrade", "Bought after a downgrade"),
-                    ("f_no_coverage", "No analyst coverage")) if f in scored}}
+                    ("f_no_coverage", "Analyst coverage lapsed (rated before, none in the last 18 months)")) if f in scored}}
     extras = {}
     if not cfg.get("_nested") and since is None:
         pt, pv = persistence_table(scored)
@@ -7572,6 +7572,12 @@ def compute_connections(tx, data, cfg, mems):
     tx = tx.sort_values("filed_date")
     key = tx["who"]
     tx["f_first_time"] = (tx.groupby([key, tx["ticker"]]).cumcount() == 0).astype(float)
+    # Nov 3: in a member's first 12 months on file we can't tell a first trade from one we just don't have
+    # (the data starts in 2014, and a new member's earlier holdings were never disclosed), so "first time" and
+    # "new sector" are left unknown (0) there instead of firing on nearly every trade
+    warm = (pd.to_datetime(tx["filed_date"]) < pd.to_datetime(tx["filed_date"]).groupby(key).transform("min")
+            + pd.Timedelta(days=365)).values
+    tx["f_first_time"] = np.where(warm, 0.0, tx["f_first_time"].values)
     mid = (tx["amt_lo"].fillna(1001) + tx["amt_hi"].fillna(15000)) / 2
     med = mid.groupby(key).transform(lambda s: s.expanding().median().shift(1))
     tx["f_unusual_size"] = ((mid / med) >= 3).astype(float).where(med.notna(), 0.0)
@@ -7582,7 +7588,7 @@ def compute_connections(tx, data, cfg, mems):
         ns.append(1.0 if (sec and s_ and sec not in s_) else 0.0)
         if sec:
             s_.add(sec)
-    tx["f_new_sector"] = ns
+    tx["f_new_sector"] = np.where(warm, 0.0, np.asarray(ns, dtype=float))
     tx = tx.sort_index()
     own = tx["owner"].fillna("").astype(str).str.lower()
     tx["f_spouse"] = np.where(own.isin(["sp", "spouse", "dc", "child", "dependent child"]), 1.0,
@@ -10863,7 +10869,7 @@ def analyst_features(tx, data):
             # mostly mark the era, not the company
             if rows and rows[0][0] <= td - pd.Timedelta(days=540):
                 nc[i] = 1.0
-                note[i] = "no analyst ratings on record when they bought"
+                note[i] = "analyst coverage had lapsed (no ratings in the 18 months before they bought)"
             continue
         avg = float(np.mean(list(latest.values())))
         if len(latest) >= 2 and avg <= 0.2:
