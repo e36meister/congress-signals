@@ -4,7 +4,7 @@ Paper (fake money) is the default. Real money needs TRADING_MODE=live, the live 
 Only positions this tool opened (order IDs starting with "cs-") are ever sold by it; anything you buy yourself
 is left alone. Nothing about balances or positions is written to the run log, because the repo is public.
 """
-import os, re, math, datetime as dt
+import os, re, math, json, datetime as dt
 import numpy as np
 import pandas as pd
 import requests
@@ -301,6 +301,38 @@ def recheck_queued_sells(caps, log, policy=None):
         log(f"Broker: cancelled {n} cleanup sell order(s) that no longer apply")
 
 
+EXT_KEY = "ext/intents.json"          # the worker's after-hours order state (cloud/worker.js extendedHours)
+
+
+def queued_buys(api, log):
+    """Symbols with a tool buy that's waiting outside Alpaca's open orders. Between 8 PM and 4 AM the worker's
+    after-hours limit order has expired and isn't placed again until 4 AM, so Alpaca shows no open order; a run
+    in that gap used to buy the same stock again under a new date-stamped id (Nov 3 review). Counted: the worker's
+    waiting buy intents, and tool buys of the last 3 days that expired as after-hours limit orders."""
+    out = set()
+    if _ACCOUNT is None:
+        try:
+            import cloud_store
+            raw = cloud_store.get(EXT_KEY, log=lambda m: None)
+            for it in ((json.loads(raw) if raw else {}).get("intents") or {}).values():
+                cid = str(it.get("cid") or "")
+                if it.get("side") == "buy" and cid.startswith(PREFIX) and not cid.startswith(PARK_PREFIX):
+                    out.add(it.get("sym"))
+        except Exception as e:
+            log(f"Broker: couldn't read the after-hours order list ({type(e).__name__}); checking Alpaca's recent orders only")
+    try:
+        since = (dt.datetime.utcnow() - dt.timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for o in api.get("/v2/orders", status="all", limit=500, direction="desc", after=since):
+            cid = o.get("client_order_id") or ""
+            if (o.get("side") == "buy" and cid.startswith(PREFIX) and not cid.startswith(PARK_PREFIX)
+                    and o.get("status") == "expired" and o.get("extended_hours") and not float(o.get("filled_qty") or 0)):
+                out.add(o["symbol"])
+    except Exception as e:
+        log(f"Broker: couldn't read recent orders ({type(e).__name__}); waiting after-hours buys may be missed")
+    out.discard(None)
+    return out
+
+
 def sync(cfg, buys, new, last_prices, log, trade=True):
     """Sell bot positions past the holding period, buy new BUY picks within the limits, and return a
     snapshot of the account for the dashboard (or None when no keys are set)."""
@@ -320,6 +352,10 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
     positions = {p["symbol"]: p for p in api.get("/v2/positions")}
     open_orders = api.get("/v2/orders", status="open", limit=500)
     pending = {o["symbol"] for o in open_orders}
+    queued = queued_buys(api, log) - pending if trade else set()
+    if queued:
+        log(f"Broker: {len(queued)} buy(s) waiting for the next after-hours session, not bought again: {', '.join(sorted(queued))}")
+    pending |= queued
     # stocks you sold with the app's Sell button in the last 45 days: the tool doesn't buy them back for the same pick
     owner_sold = set()
     try:

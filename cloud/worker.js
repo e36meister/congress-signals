@@ -1054,6 +1054,7 @@ async function extendedHours(env, when) {
       catch (e) { throw new Error(`a duplicate ${o.side} order for ${o.symbol} is still waiting and couldn't be cancelled: ${e.message}`); }
     }
   }
+  const nDup0 = dupes.length;
   if (dupes.length) await deliver(env, { title: "Cancelled a duplicate order", body: `A waiting order for ${dupes.join(", ")} was a duplicate of one that already went in before the open, so it was cancelled.`, tag: "fills", url: "/#port" });
   const place = async (it, extended, px) => {
     const body = { symbol: it.sym, side: it.side, type: extended ? "limit" : "market", time_in_force: "day",
@@ -1074,12 +1075,21 @@ async function extendedHours(env, when) {
     for (const o of Object.values(live)) {
       if (o.type !== "market" || o.extended_hours || !extOurs(o.client_order_id) || Object.values(I).some(x => x.oid === o.id)) continue;
       if (!["buy", "sell"].includes(o.side)) continue;
+      // Nov 3 review: a tool buy placed while an earlier tool buy of the same stock waits for the next session (its
+      // after-hours order expired at 8 PM) is a duplicate under a new date-stamped id: cancel it, keep the first
+      if (o.side === "buy" && /^cs-/.test(o.client_order_id) &&
+          Object.values(I).some(x => x.sym === o.symbol && x.side === "buy" && /^cs-/.test(x.cid) && x.oid !== o.id)) {
+        try { await cancel(o.id); delete live[o.id]; dupes.push(`${o.symbol} (cs)`); changed = true; }
+        catch (e) { throw new Error(`a duplicate buy for ${o.symbol} is waiting and couldn't be cancelled: ${e.message}`); }
+        continue;
+      }
       const key = o.client_order_id;
       I[key] = { cid: key, sym: o.symbol, side: o.side, notional: o.notional != null ? +o.notional : null, qty: o.qty != null ? +o.qty : null,
                  oid: o.id, ext: false, created: new Date().toISOString() };
       changed = true;
     }
   }
+  if (dupes.length > nDup0) await deliver(env, { title: "Cancelled a duplicate buy", body: `The tool placed a second buy for ${dupes.slice(nDup0).map(d => d.split(" ")[0]).join(", ")} while the first one was waiting for the next after-hours session, so the second one was cancelled.`, tag: "fills", url: "/#port" });
   const failures = [];
   for (const [key, it] of Object.entries(I)) {
     try {
