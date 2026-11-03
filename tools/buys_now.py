@@ -20,6 +20,12 @@ print("dashboard keys:", sorted(d)[:60])
 print("as of:", d.get("generated") or d.get("asof") or d.get("updated") or d.get("date"))
 w = d.get("watchlist") or {}
 print("watchlist keys:", list(w))
+print("watchlist new:", json.dumps(w.get("new"), default=str)[:3000])
+print("close_report:", json.dumps(d.get("close_report"), default=str)[:6000])
+ch = d.get("close_history")
+print("close_history last:", json.dumps(ch[-3:] if isinstance(ch, list) else ch, default=str)[:6000])
+if len(sys.argv) > 2 and sys.argv[2] == "short":
+    sys.exit(0)
 for k in ("buys", "sells"):
     rows = w.get(k) or []
     print(f"\n=== {k}: {len(rows)}; actions {sorted(set(str(r.get('action')) for r in rows))}")
