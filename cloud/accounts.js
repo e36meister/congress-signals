@@ -371,9 +371,21 @@ export async function deliverTo(env, id, msg, sendAll, push = true) {
 async function setKeys(req, env, a) {
   if (a.keys_set_at) return json({ ok: false, why: "already-set", message: "Your account is already connected. Ask the owner if it needs to change." }, 409);
   const b = await body(req);
-  const key = String(b.key || "").trim(), secret = String(b.secret || "").trim();
-  if (!/^[A-Z0-9]{16,40}$/.test(key) || !/^[A-Za-z0-9]{30,80}$/.test(secret))
-    return json({ ok: false, why: "format", message: "Those don't look like Alpaca keys. Copy both again from the Alpaca page." }, 400);
+  // Nov 3: a family member got "Those don't look like Alpaca keys" for keys copied from Alpaca. The check only trimmed
+  // the ends, so anything a phone paste carries along (a line break or space in the middle, an invisible character,
+  // the "API Key ID" / "Secret Key" label, quotes) failed it, and so did keys pasted into the wrong boxes. The pasted
+  // text is now cleaned, swapped boxes are put right, and the format check is only a sanity check: Alpaca itself
+  // decides whether the keys work (next step). The message says which box looks wrong, never what was typed.
+  const clean = v => String(v || "").normalize("NFKC").replace(/[\u200B-\u200D\u2060\uFEFF]/g, "")
+    .replace(/^\s*(api\s*)?(key\s*id|secret(\s*key)?|key)(\s*[:=]\s*|\s+)/i, "").replace(/["'`\s]/g, "");
+  let key = clean(b.key).toUpperCase(), secret = clean(b.secret);
+  const keyLike = v => /^[A-Z0-9]{16,40}$/i.test(v) && /^[AP]K/i.test(v);
+  if (!keyLike(key) && keyLike(secret) && secret.length < key.length) [key, secret] = [secret.toUpperCase(), String(b.key ? clean(b.key) : "")];
+  const kOk = /^[A-Z0-9]{12,64}$/.test(key), sOk = /^[A-Za-z0-9+/=_-]{20,128}$/.test(secret);
+  if (!kOk || !sOk)
+    return json({ ok: false, why: "format", message: !kOk && !sOk ? "Neither box looks like an Alpaca key. In Alpaca (Live account) open API Keys, generate a key, and copy the Key (starts with AK) into the first box and the Secret into the second."
+      : !kOk ? `The first box should be the Key: about 20 letters and numbers, starting with AK. What's there is ${key.length} characters${key ? ` starting with "${key.slice(0, 2)}"` : ""}.`
+      : `The second box should be the Secret: about 40 letters and numbers, shown only once when the key is made. What's there is ${secret.length} characters. If you no longer have it, make a new key in Alpaca.` }, 400);
   if (/^PK/.test(key)) return json({ ok: false, why: "paper", message: "Those are paper-trading keys. Make the keys from your real-money (Live) account." }, 400);
   const r = await client({ key, secret }).get("/v2/account");
   if (r.status === 401 || r.status === 403) return json({ ok: false, why: "rejected", message: "Alpaca didn't accept those keys. Check you copied the whole secret, from the Live account." }, 400);
