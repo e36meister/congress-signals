@@ -9646,12 +9646,23 @@ def check_sale_discount_once(scored, px, cfg):
     save_adaptive(cfg, a)
 
 
-def check_trial_signals(scored, px, cfg, a, pol, rows, today, only=None):
-    """Test each new signal on and off (rescoring every trade); switch only when clearly better."""
+# Nov 3: ~80 trial signals now (33 moved from the main weights), each needing its own backtest. The checks are
+# time-capped and resume where they stopped, so one run isn't stretched by all of them at once.
+TRIAL_ONCE_MIN = 8          # per daily run: new trial signals, and the rest of an unfinished weekly pass
+TRIAL_WEEKLY_MIN = 25       # the weekly check's own slice
+
+
+def check_trial_signals(scored, px, cfg, a, pol, rows, today, only=None, deadline=None):
+    """Test each new signal on and off (rescoring every trade); switch only when clearly better.
+    Returns the signals tested (all of them unless `deadline`, a time.time() value, ran out first)."""
     base = dict(cfg, _nested=True)
     vs = lambda b: float(b["perf"].loc["Per year vs S&P 500", "Long picks"])
     _cur_cache = {}
+    done = []
     for k in (only if only is not None else TRIAL_SIGNALS):
+        if deadline is not None and time.time() > deadline:
+            break
+        done.append(k)
         label = TRIAL_LABELS[k]
         rows[:] = [r for r in rows if r.get("Setting") != label]
         on = k in pol.get("signals_on", [])
@@ -9681,6 +9692,7 @@ def check_trial_signals(scored, px, cfg, a, pol, rows, today, only=None):
                                  "gain_per_year": c["gain"], "sureness": c["t"]})
             log(f"Adjustments: {label} -> {'off' if on else 'on'} (+{c['gain']*100:.1f}%/yr in the backtest)")
             pol["signals_on"] = alt_sig
+    return done
 
 
 def check_sizing(scored, px, cfg, a, pol, rows, today):
@@ -9812,13 +9824,19 @@ def check_trial_signals_once(scored, px, cfg):
     seen = set(a.get("trial_checked") or [])
     # a signal whose data isn't collected yet waits until it has enough trades to test
     have = {k for k in TRIAL_SIGNALS if int((scored.get(f"f_{k}", pd.Series(0, index=scored.index)) > 0).sum()) >= 30}
+    left = [k for k in (a.get("trial_pass_left") or []) if k in TRIAL_SIGNALS]     # an unfinished weekly pass
     todo = [k for k in TRIAL_SIGNALS if k not in seen and k in have]
+    todo += [k for k in left if k not in todo]
     if not todo:
         return
     pol = dict(a["policy"])
     rows = list(a.get("evaluation") or [])
-    check_trial_signals(scored, px, cfg, a, pol, rows, dt.date.today().isoformat(), only=todo)
-    a["policy"], a["evaluation"], a["trial_checked"] = pol, rows, sorted(seen | set(todo))
+    done = check_trial_signals(scored, px, cfg, a, pol, rows, dt.date.today().isoformat(), only=todo,
+                               deadline=time.time() + TRIAL_ONCE_MIN * 60)
+    a["policy"], a["evaluation"], a["trial_checked"] = pol, rows, sorted(seen | set(done))
+    a["trial_pass_left"] = [k for k in left if k not in done]
+    log(f"Adjustments: trial signals tested this run: {len(done)} of {len(todo)}"
+        + (f"; {len(todo) - len(done)} continue next run" if len(done) < len(todo) else ""))
     save_adaptive(cfg, a)
 
 
@@ -10606,8 +10624,10 @@ def evaluate_adjustments(scored, px, cfg, wf=None):
     except Exception as e:
         log(f"Adjustments: weak-sales check skipped ({e})")
     try:
-        check_trial_signals(scored, px, cfg, a, pol, rows, today)
-        a["trial_checked"] = sorted(TRIAL_SIGNALS)
+        done = check_trial_signals(scored, px, cfg, a, pol, rows, today, deadline=time.time() + TRIAL_WEEKLY_MIN * 60)
+        a["trial_checked"] = sorted(set(a.get("trial_checked") or []) | set(done))
+        # what the weekly slice didn't reach is tested by the next daily runs (check_trial_signals_once)
+        a["trial_pass_left"] = [k for k in TRIAL_SIGNALS if k not in done]
     except Exception as e:
         log(f"Adjustments: new-signal check skipped ({e})")
     try:
