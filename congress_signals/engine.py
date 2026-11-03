@@ -9732,6 +9732,10 @@ def check_trial_signals(scored, px, cfg, a, pol, rows, today, only=None, deadlin
     vs = lambda b: float(b["perf"].loc["Per year vs S&P 500", "Long picks"])
     _cur_cache = {}
     done = []
+    # Nov 3 (pipeline audit): the same check runs on ~80 trial signals, so switching one ON must clear the bar for
+    # the best of all of them (sure_bar(k), k = trial signals with enough data in the full pass, not just this
+    # slice); otherwise chance alone switches some on. Switching an on-signal OFF tests one specific signal (k=1).
+    k_on = max(1, sum(1 for x in TRIAL_SIGNALS if int((scored.get(f"f_{x}", pd.Series(0, index=scored.index)) > 0).sum()) >= 30))
     for k in (only if only is not None else TRIAL_SIGNALS):
         if deadline is not None and time.time() > deadline:
             break
@@ -9755,12 +9759,14 @@ def check_trial_signals(scored, px, cfg, a, pol, rows, today, only=None, deadlin
             _cur_cache[ck] = run(cur_sig)
         cur, alt = _cur_cache[ck], run(alt_sig)
         c = _compare(_long_daily(alt), _long_daily(cur))
+        kk = 1 if on else k_on
         rows.append({"Setting": label, "Option": ("On" if on else "Off") + " (current)", "Per year vs S&P": vs(cur),
                      "Gain vs current": 0.0, "Sureness": None, "Verdict": "Current"})
         rows.append({"Setting": label, "Option": "Off" if on else "On", "Per year vs S&P": vs(alt),
                      "Gain vs current": c["gain"] if c else None, "Sureness": c["t"] if c else None,
-                     "Verdict": "Switched automatically" if clearly_better(c) else _verdict(c, True), **_sure_fields(c)})
-        if clearly_better(c):
+                     "Verdict": "Switched automatically" if clearly_better(c, kk) else _verdict(c, True, kk),
+                     **_sure_fields(c, kk)})
+        if clearly_better(c, kk):
             a["history"].append({"date": today, "change": label, "from": "on" if on else "off", "to": "off" if on else "on",
                                  "gain_per_year": c["gain"], "sureness": c["t"]})
             log(f"Adjustments: {label} -> {'off' if on else 'on'} (+{c['gain']*100:.1f}%/yr in the backtest)")
@@ -9863,7 +9869,8 @@ def check_signals_other_holds(scored, px, cfg, minutes=None):
         c = _compare(_long_daily(run(on + [k])), cur_cache[h])
         key = f"{k}|{h}"
         was = (res.get(key) or {}).get("verdict")
-        verdict = "Helps with this hold" if clearly_better(c) else (_verdict(c, False) if c else "Not enough data")
+        # k = every signal/hold pair in the full pass (Nov 3): the best of ~200 pairs is likely lucky at the 1-option bar
+        verdict = "Helps with this hold" if clearly_better(c, len(pairs)) else (_verdict(c, False, len(pairs)) if c else "Not enough data")
         verdict = verdict.replace("Clearly better: ask Claude to apply", "Helps with this hold")
         res[key] = {"signal": k, "hold": h, "gain": c["gain"] if c else None, "t": c["t"] if c else None,
                     "recent": c["recent"] if c else None, "verdict": verdict, "at": dt.date.today().isoformat()}
@@ -11127,13 +11134,21 @@ def rare_signal_test(scored, px, cfg, hold=None):
         m_e, t_e, n_e = _quarter_t(early["lift"], early["filed_date"])
         m_l, t_l, n_l = _quarter_t(late["lift"], late["filed_date"])
         passed = bool(n_all >= RARE_MIN_N and m_e is not None and t_e is not None and m_e > 0 and t_e >= 1.65
-                      and m_l is not None and m_l > 0)
+                      and m_l is not None and m_l > 0)        # the one-signal bar; raised for switching on below
         label = TRIAL_LABELS.get(c[2:], c[2:].replace("_", " "))
         out.append({"signal": c[2:], "label": label.replace("Signal: ", ""), "trial": c[2:] in TRIAL_SIGNALS,
                     "in_score": bool(cfg["BUY_WEIGHTS"].get(c[2:])),
                     "direction": "lower score" if sign < 0 else "higher score", "share": round(float(share), 4),
                     "n": n_all, "lift": m_all, "t": t_all, "n_early": n_e, "lift_early": m_e, "t_early": t_e,
                     "n_recent": n_l, "lift_recent": m_l, "t_recent": t_l, "passes": passed})
+    # Nov 3 (pipeline audit): ~40 rare signals are tested in one pass, so a signal switched ON (or newly reported as
+    # passing) must clear the bar for the best of all of them; one already on stays on at the one-signal bar.
+    k_rare = max(1, len(out))
+    bar_on = sure_bar(k_rare)
+    for r in out:
+        r["passes_keep"] = r["passes"]
+        r["passes"] = bool(r["passes"] and (r["t_early"] or 0) >= bar_on)
+        r["bar"] = round(bar_on, 2)
     out.sort(key=lambda r: (not r["passes"], -(r["t_early"] or -9)))
     path = _p(cfg, "state", RARE_FILE)
     try:
@@ -11168,7 +11183,8 @@ def rare_signal_test(scored, px, cfg, hold=None):
             since[r["signal"]] = r["recheck"]
             if r["recheck"] == "failed":
                 r["passes"] = False          # it didn't hold up on data it never saw: off, whatever the old years say
-        passing = {r["signal"] for r in out if r["passes"]}
+                r["passes_keep"] = False
+        passing = {r["signal"] for r in out if r.get("passes_keep") and r.get("recheck") != "failed"}
         tested = {r["signal"] for r in out}
         today = dt.date.today().isoformat()
         for r in out:
