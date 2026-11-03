@@ -7905,6 +7905,38 @@ def is_defense(t, meta, dod_share=None):
                 and (m.get("cap") or 0) < 1e11)
 
 
+def dod_share_at_filing(tx, con, meta):
+    """Nov 3: point-in-time version of is_defense for each trade. dod_share_by_ticker summed every contract on
+    file (later years included) and is_defense used today's market cap, so a company that became a defense
+    contractor later was already "defense" for its 2016 trades. Here the Defense Department's share counts only
+    contracts dated by the filing, and the size test uses the company's size at the time (market_cap) when known.
+    The fixed lists (aerospace & defense industry, DEFENSE_EXTRA) still apply to every year."""
+    out = np.array([is_defense(t, meta) for t in tx["ticker"]], dtype=bool)
+    if con is None or not len(con):
+        return out
+    c = con.dropna(subset=["action_date"]).copy()
+    c["action_date"] = pd.to_datetime(c["action_date"], errors="coerce")
+    c = c.dropna(subset=["action_date"]).sort_values("action_date", kind="stable")
+    c["dod_amt"] = np.where(c["agency"].str.contains("Defense", case=False, na=False), c["amount"].astype(float), 0.0)
+    G = {t: (g["action_date"].values, g["amount"].astype(float).cumsum().values, g["dod_amt"].cumsum().values)
+         for t, g in c.groupby("ticker")}
+    fd = pd.to_datetime(tx["filed_date"])
+    capv = tx["market_cap"].values if "market_cap" in tx else [np.nan] * len(tx)
+    for i, (t, f, cap) in enumerate(zip(tx["ticker"], fd, capv)):
+        if out[i] or t not in G or pd.isna(f):
+            continue
+        m = meta.get(t) or {}
+        if m.get("sector") != "Industrials":
+            continue
+        d_, tot, dod = G[t]
+        j = np.searchsorted(d_, np.datetime64(f), side="right") - 1
+        if j < 0 or tot[j] < 5e7:
+            continue
+        size = cap if cap is not None and np.isfinite(cap) else (m.get("cap") or 0)
+        out[i] = dod[j] / tot[j] >= 0.6 and size < 1e11
+    return out
+
+
 def dod_share_by_ticker(con):
     if con is None or not len(con):
         return {}
@@ -8065,8 +8097,7 @@ def extra_features(tx, px, data, cfg, mems):
 
     # ---------------- defense ----------------
     con = data.get("contracts")
-    share = dod_share_by_ticker(con)
-    tx["is_defense"] = [is_defense(tk, meta, share) for tk in tx["ticker"]]
+    tx["is_defense"] = dod_share_at_filing(tx, con, meta)
     tx["f_defense_company"] = tx["is_defense"].astype(float)
     cids = [set(m.get("cids") or []) if m else set() for m in mems]
     tx["f_defense_power"] = [1.0 if (d and (c & DEFENSE_CIDS)) else 0.0 for d, c in zip(tx["is_defense"], cids)]
