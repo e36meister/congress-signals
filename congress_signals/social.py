@@ -29,7 +29,7 @@ TWEETS_FIRST, TWEETS_LAST = dt.date(2017, 6, 21), dt.date(2023, 7, 15)
 START_YEAR = 2013
 MONTHS_DAYS = set("jan january feb february mar march apr april may jun june jul july aug august sep sept september oct "
                   "october nov november dec december monday tuesday wednesday thursday friday saturday sunday".split())
-TAGGER_VERSION = 10       # 9: executives by last name or distinctive first name alone, scored
+TAGGER_VERSION = 11       # 9: executives by last name or distinctive first name alone, scored
 # How Bluesky posts are read (text, quotes, alt text, image text). Only a change here needs every account read again;
 # a new TAGGER_VERSION doesn't: build_index re-tags every stored post. (Oct 22: the re-read was tied to TAGGER_VERSION,
 # so after tagger 9 and 10 every run restarted a full re-read it never finished, and no new Bluesky posts were saved
@@ -37,6 +37,7 @@ TAGGER_VERSION = 10       # 9: executives by last name or distinctive first name
 BSKY_READ_VERSION = 8
 
 # 10: a member's own name is never a company person, nicknames included ("Chris Murphy" = Sen. Christopher Murphy)
+# 11: a company person named with another organization ("X, director at the ACLU") isn't that company's person
 _NICK_GROUPS = ["christopher chris kit", "robert bob rob bobby", "william bill will billy", "james jim jimmy jamie",
                 "michael mike mick", "charles chuck charlie", "thomas tom tommy", "richard dick rick rich", "edward ed ted eddie",
                 "theodore ted", "joseph joe joey", "john jack johnny", "daniel dan danny", "david dave", "steven steve stephen",
@@ -306,6 +307,9 @@ class Tagger:
                 else:
                     if ct[-1] in self.surnames and _same_first(ct[0], self.firsts.get(ct[-1], ())):
                         continue                                # it's a member of Congress, not the executive
+                    end = spans[i + n - 1][1] + len(spans[i + n - 1][0])
+                    if _other_affiliation(raw, pos, end, self.names.get(t, ()), t):
+                        continue                                # same name, but the post says they're with another group
                     ppl.append((" ".join(x.capitalize() for x in ct), t, kind[3:]))
                     tick.add(t)
         secs = sorted({s for w in tset for s in self.sectors.get(w, ())})
@@ -395,6 +399,34 @@ def _zipf(w):
         return zipf_frequency(w, "en")
     except Exception:
         return 0.0
+
+
+# "X, deputy director at the ACLU", "X of the Sierra Club", "the ACLU's X", "X (ACLU)": the sentence gives the person
+# another organization. (Nov 3: an ACLU lawyer quoted in a 65-member letter shares a name with someone on a company's
+# list, so the release, and every member who reposted it, was tagged with that company and pushed as an insider hint.)
+_AFTER_ORG = re.compile(r"^\s*(?:,\s*[^,.;!?\"“”]{0,80}?\b(?:at|of|for|with)\s+|\s+(?:of|at|from)\s+|\s*\(\s*)"
+                        r"(?:the\s+)?([A-Z#][\w&.#'\-]*(?:\s+(?:of\s+|for\s+|and\s+|&\s+)?[A-Z][\w&.'\-]*){0,5})")
+_BEFORE_ORG = re.compile(r"(?:the\s+)?([A-Z#][\w&.#\-]*(?:\s+(?:of\s+|for\s+|and\s+|&\s+)?[A-Z][\w&.\-]*){0,5})(?:'s|’s)"
+                         r"\s+(?:[a-z][a-z\-]*\s+){0,6}$")
+_EXEC_TITLE = re.compile(r"\b(ceo|chief executive|founder|co-founder|chair(?:man|woman)?|president)\b", re.I)
+_ORG_SKIP = {"the", "a", "an", "u", "s", "us", "of", "for", "and", "inc", "corp", "co", "company", "group", "llc"}
+
+
+def _other_affiliation(raw, start, end, co_words, ticker):
+    """True when the words right around a person's name tie them to an organization that isn't the company."""
+    orgs = []
+    m = _AFTER_ORG.match(raw[end:end + 140])
+    if m and not _EXEC_TITLE.search(m.group(0)):      # "CEO of Google" for Alphabet: an exec title keeps the match
+        orgs.append(m.group(1))
+    m = _BEFORE_ORG.search(raw[max(0, start - 100):start])
+    if m:
+        orgs.append(m.group(1))
+    own = {w.lower() for w in co_words or ()} | {str(ticker).lower()}
+    for org in orgs:
+        ws = {w for w in re.findall(r"[a-z0-9]+", org.lower()) if w not in _ORG_SKIP}
+        if ws and not ws & own:
+            return True
+    return False
 
 
 def _generic(ct):

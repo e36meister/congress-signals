@@ -14,7 +14,7 @@ company, which reads tone better). Setting ANTHROPIC_API_KEY and POST_SORTER=hai
 Never raises; a post it can't read gets an empty result."""
 import os, re
 
-SORT_VERSION = 4       # 2: tone toward industries too; 3: 'met with' and 'strong' only when the company is what the sentence is about; 4: alert levels (Oct 19)
+SORT_VERSION = 5       # 2: tone toward industries too; 3: 'met with' and 'strong' only when the company is what the sentence is about; 4: alert levels (Oct 19); 5: re-sort after tagger 11 (Nov 3)
 
 TYPE_RX = [
     ("meeting", re.compile(r"\b(met\b.{0,30}\bwith|meet(?:ing|s)?\b.{0,30}\bwith|sat down with|sit down with|hosted|"
