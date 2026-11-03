@@ -164,14 +164,15 @@ def close_all(log, send_email=None, notify=None):
 
 
 def _prefs(acct_id):
-    """Whether they want the daily close by push and by email (More → Settings in their app). Defaults: both on."""
+    """Whether they want the daily close by push and by email (More → Notifications in their app). Defaults: push on,
+    email off (they're asked about email after a few days of using the app)."""
     try:
         raw = cloud_store.get(f"accounts/{acct_id}/prefs.json", log=lambda m: None)
         p = json.loads(raw) if raw else {}
     except Exception:
         p = {}
     pick = lambda side: (p.get(side) or {}).get("close")
-    return {"push": pick("push") is not False, "email": pick("email") is not False}
+    return {"push": pick("push") is not False, "email": pick("email") is True}
 
 
 def _flows(api, start):

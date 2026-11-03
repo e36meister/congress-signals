@@ -81,6 +81,54 @@ document.addEventListener("click", async ev => {
   }
 });
 
+// ---------- first time in, after the picture: turn on alerts (once per phone; alerts are per device) ----------
+// Shown only where alerts can work (on iPhone: the home-screen app), and not again once on or skipped here.
+let ALERT_STEP = null;     // null = not checked yet, true = show, false = don't
+function alertStepSeen() { try { return localStorage.getItem("cc-alert-step") === "1"; } catch (e) { return false; } }
+function alertStepDone() { try { localStorage.setItem("cc-alert-step", "1"); } catch (e) {} ALERT_STEP = false; }
+function needsAlertStep() {
+  if (!isViewer() || alertStepSeen()) return false;
+  if (ALERT_STEP === null) {
+    ALERT_STEP = false;
+    alertsStatus().then(st => { if (st === "off") { ALERT_STEP = true; render(); } else if (st === "on") alertStepDone(); });
+  }
+  return ALERT_STEP;
+}
+function renderAlertStep() {
+  return `<section class="panel"><div class="ph"><h2>Turn on alerts</h2></div>
+    <p>Get a notification on this phone when the tool buys or sells in your account, plus a short summary after the market closes. Tapping one opens the app right to it.</p>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:10px 0">
+      <button type="button" class="buybtn go" data-valerton="1"${VA.alertBusy ? " disabled" : ""}>${VA.alertBusy ? "Turning on…" : "Turn on alerts"}</button>
+      <button type="button" class="link" data-valertskip="1">Not now</button></div>
+    <p class="foot">You can pick which alerts you get in More → Notifications.</p></section>`;
+}
+document.addEventListener("click", async ev => {
+  if (!isViewer()) return;
+  if (ev.target.closest("[data-valertskip]")) { alertStepDone(); render(); return; }
+  if (ev.target.closest("[data-valerton]") && !VA.alertBusy) {
+    VA.alertBusy = true; render();
+    await enableAlerts();          // right from the tap, so the phone shows its permission question
+    VA.alertBusy = false; alertStepDone(); render();
+  }
+});
+
+// ---------- a few days in: ask once whether they want emails too ----------
+function emailAskCard() {
+  if (!isViewer() || !SESSION_ME || !SESSION_ME.ask_email) return "";
+  return `<section class="panel vask"><div class="ph"><h2>Want emails too?</h2></div>
+    <p>Besides phone alerts, we can email you each trade in your account and a short summary after the market closes.</p>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px">
+      <button type="button" class="buybtn go" data-vemail="yes">Yes, email me</button>
+      <button type="button" class="link" data-vemail="no">No thanks</button></div>
+    <p class="foot">Change it anytime in More → Notifications.</p></section>`;
+}
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest && ev.target.closest("[data-vemail]");
+  if (!b || !isViewer() || !SESSION_ME) return;
+  SESSION_ME.ask_email = false; VA.prefs = null; render();
+  try { await api("/api/me/email-ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ choice: b.dataset.vemail }) }); } catch (e) {}
+});
+
 // ---------- Today: a Buy button on each Buy candidate ----------
 function vBuyArea(r) {
   if (!state.data?.viewer?.connected) return "";

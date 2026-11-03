@@ -249,22 +249,36 @@ async function alertsState() {
   btn.dataset.mode = "on"; btn.textContent = "Turn on alerts";
   btn.hidden = !!(sub && Notification.permission === "granted");
 }
-$("#alerts").addEventListener("click", async () => {
+// true when alerts are on for this phone/browser (asks for permission; must run from a tap)
+async function enableAlerts() {
   const btn = $("#alerts");
-  if (btn.dataset.mode === "info") { alert("Alerts work in the home-screen app. Open Capitol Capital from its icon, then tap “Turn on alerts”."); return; }
-  btn.disabled = true;
   try {
     const perm = await Notification.requestPermission();
-    if (perm !== "granted") { alert("Notifications are off for Capitol Capital. Turn them on in iPhone Settings → Notifications → Capitol Capital, then tap the button again."); return; }
+    if (perm !== "granted") { alert("Notifications are off for Capitol Capital. Turn them on in iPhone Settings → Notifications → Capitol Capital, then tap the button again."); return false; }
     const reg = await navigator.serviceWorker.ready;
     const { js } = await api("/api/push/key");
     let sub = await reg.pushManager.getSubscription();
     if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(js.key) });
     await api("/api/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sub: sub.toJSON() }) });
-    btn.hidden = true;
+    if (btn) btn.hidden = true;
+    return true;
   } catch (e) {
     if (e.code !== "login") alert("Couldn't turn on alerts: " + (e.message || e.code || e));
-  } finally { btn.disabled = false; }
+    return false;
+  }
+}
+// can this phone/browser get alerts, and are they already on?
+async function alertsStatus() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return "unsupported";
+  const reg = await navigator.serviceWorker.getRegistration().catch(() => null);
+  const sub = reg ? await reg.pushManager.getSubscription().catch(() => null) : null;
+  return sub && Notification.permission === "granted" ? "on" : "off";
+}
+$("#alerts").addEventListener("click", async () => {
+  const btn = $("#alerts");
+  if (btn.dataset.mode === "info") { alert("Alerts work in the home-screen app. Open Capitol Capital from its icon, then tap “Turn on alerts”."); return; }
+  btn.disabled = true;
+  try { await enableAlerts(); } finally { btn.disabled = false; }
 });
 // tapping an alert opens a tab (e.g. /#port)
 addEventListener("hashchange", () => {

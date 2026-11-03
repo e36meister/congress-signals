@@ -237,7 +237,7 @@ const VIEWER_GET = new Set(["/api/session", "/api/data", "/api/members", "/api/m
   "/api/movers", "/api/news", "/api/about", "/api/context", "/api/notifications", "/api/live", "/api/push/key", "/api/me/photo",
   "/api/me/prefs", "/api/me/widget"]);
 const VIEWER_POST = new Set(["/api/logout", "/api/notifications/clear", "/api/push/subscribe", "/api/buy-more", "/api/sell",
-  "/api/me/keys", "/api/me/photo", "/api/bug", "/api/me/prefs", "/api/me/widget"]);
+  "/api/me/keys", "/api/me/photo", "/api/bug", "/api/me/prefs", "/api/me/widget", "/api/me/email-ask"]);
 export function viewerAllowed(method, path) {
   return method === "GET" ? VIEWER_GET.has(path) : method === "POST" ? VIEWER_POST.has(path) : false;
 }
@@ -245,8 +245,19 @@ export function viewerAllowed(method, path) {
 // usual; these are answered here with the viewer's own data.
 export async function viewerApi(req, env, url, a, h) {
   const p = url.pathname;
-  if (p === "/api/session") return json({ ok: true, role: "viewer", connected: !!a.keys_set_at, auto: a.auto !== false, mode: "live",
-    photo: a.photo_at || null, photo_prompted: !!(a.photo_at || a.photo_skipped) });
+  if (p === "/api/session") {
+    // the first time they open the app is remembered, so a few days in they're asked once whether they want emails too
+    if (!a.first_seen) { a.first_seen = new Date().toISOString(); await patchAccount(env, a.id, x => { if (!x.first_seen) x.first_seen = a.first_seen; }); }
+    return json({ ok: true, role: "viewer", connected: !!a.keys_set_at, auto: a.auto !== false, mode: "live",
+      photo: a.photo_at || null, photo_prompted: !!(a.photo_at || a.photo_skipped),
+      ask_email: !a.email_asked && Date.now() - Date.parse(a.first_seen) >= EMAIL_ASK_DAYS * 864e5 });
+  }
+  if (p === "/api/me/email-ask") {
+    const b = await body(req), yes = b.choice === "yes";
+    if (yes) { const cur = await getPrefs(env, a.id); cur.email.close = true; cur.email.fills = true; await put(env, `accounts/${a.id}/prefs.json`, cur); }
+    await patchAccount(env, a.id, x => { x.email_asked = yes ? "yes" : "no"; });
+    return json({ ok: true });
+  }
   if (p === "/api/data") return viewerData(env, a);
   if (p === "/api/movers") return viewerMovers(env, a);
   if (p === "/api/me/photo" && req.method === "GET") return getPhoto(env, a);
@@ -610,7 +621,9 @@ export async function checkFillsAll(env, sendAll, reasons, dispatch) {
 // kinds: fills (the tool's or their trades filled), close (daily market-close summary), moves (a big move in a stock
 // they hold), balance (their own account-value alerts). Each can go by push, email, both or neither.
 const KINDS = ["fills", "close", "moves", "balance"];
-const DEF_PREFS = { push: { fills: true, close: true, moves: false, balance: true }, email: { fills: false, close: true, moves: false, balance: false }, balance: [] };
+// new accounts: push on, email off; after EMAIL_ASK_DAYS of using the app they're asked once whether they want emails too
+const DEF_PREFS = { push: { fills: true, close: true, moves: false, balance: true }, email: { fills: false, close: false, moves: false, balance: false }, balance: [] };
+const EMAIL_ASK_DAYS = 3;
 export async function getPrefs(env, id) {
   const p = await r2json(env, `accounts/${id}/prefs.json`, {});
   const out = { push: { ...DEF_PREFS.push }, email: { ...DEF_PREFS.email }, balance: [] };

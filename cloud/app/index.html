@@ -631,6 +631,54 @@ document.addEventListener("click", async ev => {
   }
 });
 
+// ---------- first time in, after the picture: turn on alerts (once per phone; alerts are per device) ----------
+// Shown only where alerts can work (on iPhone: the home-screen app), and not again once on or skipped here.
+let ALERT_STEP = null;     // null = not checked yet, true = show, false = don't
+function alertStepSeen() { try { return localStorage.getItem("cc-alert-step") === "1"; } catch (e) { return false; } }
+function alertStepDone() { try { localStorage.setItem("cc-alert-step", "1"); } catch (e) {} ALERT_STEP = false; }
+function needsAlertStep() {
+  if (!isViewer() || alertStepSeen()) return false;
+  if (ALERT_STEP === null) {
+    ALERT_STEP = false;
+    alertsStatus().then(st => { if (st === "off") { ALERT_STEP = true; render(); } else if (st === "on") alertStepDone(); });
+  }
+  return ALERT_STEP;
+}
+function renderAlertStep() {
+  return `<section class="panel"><div class="ph"><h2>Turn on alerts</h2></div>
+    <p>Get a notification on this phone when the tool buys or sells in your account, plus a short summary after the market closes. Tapping one opens the app right to it.</p>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:10px 0">
+      <button type="button" class="buybtn go" data-valerton="1"${VA.alertBusy ? " disabled" : ""}>${VA.alertBusy ? "Turning on…" : "Turn on alerts"}</button>
+      <button type="button" class="link" data-valertskip="1">Not now</button></div>
+    <p class="foot">You can pick which alerts you get in More → Notifications.</p></section>`;
+}
+document.addEventListener("click", async ev => {
+  if (!isViewer()) return;
+  if (ev.target.closest("[data-valertskip]")) { alertStepDone(); render(); return; }
+  if (ev.target.closest("[data-valerton]") && !VA.alertBusy) {
+    VA.alertBusy = true; render();
+    await enableAlerts();          // right from the tap, so the phone shows its permission question
+    VA.alertBusy = false; alertStepDone(); render();
+  }
+});
+
+// ---------- a few days in: ask once whether they want emails too ----------
+function emailAskCard() {
+  if (!isViewer() || !SESSION_ME || !SESSION_ME.ask_email) return "";
+  return `<section class="panel vask"><div class="ph"><h2>Want emails too?</h2></div>
+    <p>Besides phone alerts, we can email you each trade in your account and a short summary after the market closes.</p>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px">
+      <button type="button" class="buybtn go" data-vemail="yes">Yes, email me</button>
+      <button type="button" class="link" data-vemail="no">No thanks</button></div>
+    <p class="foot">Change it anytime in More → Notifications.</p></section>`;
+}
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest && ev.target.closest("[data-vemail]");
+  if (!b || !isViewer() || !SESSION_ME) return;
+  SESSION_ME.ask_email = false; VA.prefs = null; render();
+  try { await api("/api/me/email-ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ choice: b.dataset.vemail }) }); } catch (e) {}
+});
+
 // ---------- Today: a Buy button on each Buy candidate ----------
 function vBuyArea(r) {
   if (!state.data?.viewer?.connected) return "";
@@ -1503,6 +1551,7 @@ function render() {
   else if (SUB_TABS[state.tab]) html += `<button type="button" class="moreback" data-more="${SUB_TABS[state.tab].back}">${SUB_TABS[state.tab].l}</button>`;
   else if (MORE_TABS.some(m => m.k === state.tab)) html += `<button type="button" class="moreback" data-more="more">‹ More</button>`;
   if (isViewer() && needsPhotoStep()) { main.innerHTML = renderPhotoStep(); bind(); return; }
+  if (isViewer() && needsAlertStep()) { main.innerHTML = renderAlertStep(); bind(); return; }
   if (isViewer() && (state.tab === "more" || VIEWER_SUB.has(state.tab) && state.tab !== "search")) html += renderViewerPage();
   else if (state.tab === "more") html += renderMore();
   if (state.tab === "health") html += renderHealth();
@@ -1513,6 +1562,7 @@ function render() {
   if (state.tab === "me") html += renderMe(d);
   if (d.data_warning && (d.data_warning.problems || []).length && ["today", "port"].includes(state.tab)) html += dataWarning(d.data_warning);
   if (state.tab === "today" && isViewer()) html += tip("<b>Today.</b> These are the stocks members of Congress bought recently whose purchases score near the top of all past ones. The tool buys them for you automatically; you don't need to do anything. Tap a ticker for its chart and what's going on.");
+  if (state.tab === "today" && isViewer()) html += emailAskCard();
   if (state.tab === "today") html += renderToday(d);
   if (state.tab === "record") html += renderRecord(d);
   if (state.tab === "defense") html += autoJump(renderDefense(d), "def");
@@ -3829,22 +3879,36 @@ async function alertsState() {
   btn.dataset.mode = "on"; btn.textContent = "Turn on alerts";
   btn.hidden = !!(sub && Notification.permission === "granted");
 }
-$("#alerts").addEventListener("click", async () => {
+// true when alerts are on for this phone/browser (asks for permission; must run from a tap)
+async function enableAlerts() {
   const btn = $("#alerts");
-  if (btn.dataset.mode === "info") { alert("Alerts work in the home-screen app. Open Capitol Capital from its icon, then tap “Turn on alerts”."); return; }
-  btn.disabled = true;
   try {
     const perm = await Notification.requestPermission();
-    if (perm !== "granted") { alert("Notifications are off for Capitol Capital. Turn them on in iPhone Settings → Notifications → Capitol Capital, then tap the button again."); return; }
+    if (perm !== "granted") { alert("Notifications are off for Capitol Capital. Turn them on in iPhone Settings → Notifications → Capitol Capital, then tap the button again."); return false; }
     const reg = await navigator.serviceWorker.ready;
     const { js } = await api("/api/push/key");
     let sub = await reg.pushManager.getSubscription();
     if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(js.key) });
     await api("/api/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sub: sub.toJSON() }) });
-    btn.hidden = true;
+    if (btn) btn.hidden = true;
+    return true;
   } catch (e) {
     if (e.code !== "login") alert("Couldn't turn on alerts: " + (e.message || e.code || e));
-  } finally { btn.disabled = false; }
+    return false;
+  }
+}
+// can this phone/browser get alerts, and are they already on?
+async function alertsStatus() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return "unsupported";
+  const reg = await navigator.serviceWorker.getRegistration().catch(() => null);
+  const sub = reg ? await reg.pushManager.getSubscription().catch(() => null) : null;
+  return sub && Notification.permission === "granted" ? "on" : "off";
+}
+$("#alerts").addEventListener("click", async () => {
+  const btn = $("#alerts");
+  if (btn.dataset.mode === "info") { alert("Alerts work in the home-screen app. Open Capitol Capital from its icon, then tap “Turn on alerts”."); return; }
+  btn.disabled = true;
+  try { await enableAlerts(); } finally { btn.disabled = false; }
 });
 // tapping an alert opens a tab (e.g. /#port)
 addEventListener("hashchange", () => {

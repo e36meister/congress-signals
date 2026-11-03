@@ -212,6 +212,7 @@ src = sub('function showLogin(msg) {\n  $("#login").hidden = false;',
 # their More menu and pages, and the first-time profile picture step
 src = sub('  if (state.tab === "more") html += renderMore();',
           '  if (isViewer() && needsPhotoStep()) { main.innerHTML = renderPhotoStep(); bind(); return; }\n'
+          '  if (isViewer() && needsAlertStep()) { main.innerHTML = renderAlertStep(); bind(); return; }\n'
           '  if (isViewer() && (state.tab === "more" || VIEWER_SUB.has(state.tab) && state.tab !== "search")) html += renderViewerPage();\n'
           '  else if (state.tab === "more") html += renderMore();', src)
 # Today for a family account: Buy candidates only, with their own Buy box
@@ -222,6 +223,7 @@ src = sub("function buyArea(r) {", "function buyArea(r) {\n  if (isViewer()) ret
 src = sub("function confirmBox(r) {", "function confirmBox(r) {\n  if (isViewer()) return vBuyBox(r.t, false);", src)
 src = sub('  if (state.tab === "today") html += renderToday(d);',
           '  if (state.tab === "today" && isViewer()) html += tip("<b>Today.</b> These are the stocks members of Congress bought recently whose purchases score near the top of all past ones. The tool buys them for you automatically; you don\'t need to do anything. Tap a ticker for its chart and what\'s going on.");\n'
+          '  if (state.tab === "today" && isViewer()) html += emailAskCard();\n'
           '  if (state.tab === "today") html += renderToday(d);', src)
 # your trades on a stock's chart show your own picture
 n = src.count('<img src="/me.jpg" alt="" onerror="this.style.display=\'none\'"></button>`).join("")}')
