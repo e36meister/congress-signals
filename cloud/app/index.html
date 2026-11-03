@@ -561,7 +561,7 @@ const VIEWER_MORE = [
   { k: "vnotif", l: "Notifications", d: "Push and email: trades, the daily close, big moves, your own account alerts" },
   { k: "vset", l: "Settings", d: "Profile picture, extra explanations, home-screen widget, sign out" },
   { k: "faq", l: "Questions and answers", d: "How the tool picks, buys, sells and sizes, and what you can do" },
-  { k: "bug", l: "Report a bug", d: "Something broken or confusing? It goes straight to the owner" },
+  { k: "bug", l: "Report a bug or suggest a feature", d: "Something broken, or an idea for the app? It goes straight to the owner" },
 ];
 const VIEWER_SUB = new Set(["search", "vnotif", "vset", "faq", "bug"]);
 function applyRole(s) {
@@ -583,7 +583,7 @@ function buyListHas(t) { return ((state.data?.watchlist?.buys) || []).some(r => 
 const tip = html => `<div class="vtip">${html}</div>`;
 
 const VA = { open: null, sellOpen: null, sellMode: {}, amt: {}, msg: {}, busy: false, keyMsg: null, keyBusy: false,
-  prefs: null, prefsErr: null, prefsMsg: null, photoMsg: null, photoBusy: false, bugMsg: null, bugBusy: false, bugFrom: null };
+  prefs: null, prefsErr: null, prefsMsg: null, photoMsg: null, photoBusy: false, bugMsg: null, bugBusy: false, bugFrom: null, bugKind: "bug" };
 
 // ---------- first time in: a profile picture (or skip) ----------
 function needsPhotoStep() { return isViewer() && SESSION_ME && !SESSION_ME.photo_prompted; }
@@ -908,23 +908,33 @@ function renderFaq() {
   ];
   return `<section class="panel"><div class="ph"><h2>Questions and answers</h2></div>
     <div class="faq">${qa.map(([q, a]) => `<details><summary>${esc(q)}</summary><p>${esc(a)}</p></details>`).join("")}</div>
-    <p class="foot">Something not covered here? Use Report a bug and ask; it goes to the owner.</p></section>`;
+    <p class="foot">Something not covered here? Use Report a bug or suggest a feature and ask; it goes to the owner.</p></section>`;
 }
 function renderBug() {
-  const m = VA.bugMsg;
-  return `<section class="panel"><div class="ph"><h2>Report a bug</h2></div>
-    <p>What happened, and what did you expect? Which page were you on? It's emailed to the owner along with which phone you're using.</p>
+  const m = VA.bugMsg, idea = VA.bugKind === "idea";
+  const opt = (k, l) => `<button type="button" data-bugkind="${k}" aria-pressed="${VA.bugKind === k}">${l}</button>`;
+  return `<section class="panel"><div class="ph"><h2>${idea ? "Suggest a feature" : "Report a bug"}</h2></div>
+    <div class="seg" style="margin-bottom:4px;width:fit-content">${opt("bug", "Report a bug")}${opt("idea", "Suggest a feature")}</div>
+    <p>${idea ? "What would you like the app to do? What would it help with? It's emailed to the owner."
+              : "What happened, and what did you expect? Which page were you on? It's emailed to the owner along with which phone you're using."}</p>
     <form id="vbug" class="keysform" style="max-width:560px">
-      <textarea id="vbugt" rows="6" maxlength="4000" placeholder="Describe the problem" required style="font:15px/1.4 var(--body);padding:10px 12px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);color:var(--ink);width:100%;box-sizing:border-box"></textarea>
+      <textarea id="vbugt" rows="6" maxlength="4000" placeholder="${idea ? "Describe your idea" : "Describe the problem"}" required style="font:15px/1.4 var(--body);padding:10px 12px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);color:var(--ink);width:100%;box-sizing:border-box"></textarea>
       <button type="submit" class="buybtn go"${VA.bugBusy ? " disabled" : ""}>${VA.bugBusy ? "Sending…" : "Send"}</button></form>
     ${m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</section>`;
 }
+document.addEventListener("click", ev => {
+  const b = ev.target.closest && ev.target.closest("[data-bugkind]");
+  if (!b || !isViewer()) return;
+  const t = $("#vbugt"), draft = t ? t.value : "";
+  VA.bugKind = b.dataset.bugkind === "idea" ? "idea" : "bug"; VA.bugMsg = null; render();
+  const t2 = $("#vbugt"); if (t2) t2.value = draft;
+});
 document.addEventListener("submit", async ev => {
   if (ev.target.id !== "vbug" || !isViewer() || VA.bugBusy) return;
   ev.preventDefault();
   const text = $("#vbugt").value;
   VA.bugBusy = true; VA.bugMsg = null; render();
-  try { const { js } = await api("/api/bug", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, page: VA.bugFrom || "" }) }); VA.bugMsg = { ok: true, text: js.message || "Sent." }; }
+  try { const { js } = await api("/api/bug", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, kind: VA.bugKind, page: VA.bugFrom || "" }) }); VA.bugMsg = { ok: true, text: js.message || "Sent." }; }
   catch (e) { VA.bugMsg = { ok: false, text: errText(e) }; }
   VA.bugBusy = false; render();
 });

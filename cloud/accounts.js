@@ -690,18 +690,19 @@ async function setPhoto(req, env, a) {
   return json({ ok: true, photo: at });
 }
 
-// ---------- bug reports: emailed to the owner (5 a day per account) ----------
+// ---------- bug reports and feature ideas: emailed to the owner (5 a day per account, both kinds together) ----------
 async function bugReport(req, env, a, dispatch) {
   const b = await body(req);
   const text = String(b.text || "").trim().slice(0, 4000), page = String(b.page || "").slice(0, 60), ua = String(req.headers.get("User-Agent") || "").slice(0, 200);
-  if (text.length < 5) return json({ ok: false, message: "Tell us a little about what happened." }, 400);
+  const idea = b.kind === "idea", what = idea ? "Feature idea" : "Bug report";
+  if (text.length < 5) return json({ ok: false, message: idea ? "Tell us a little about your idea." : "Tell us a little about what happened." }, 400);
   const day = new Date().toISOString().slice(0, 10);
-  if (await bump(env, `auth/rate/bug-${day}-${a.id}.json`) > 5) return json({ ok: false, message: "That's the most bug reports for today. Thanks! Try again tomorrow." }, 429);
+  if (await bump(env, `auth/rate/bug-${day}-${a.id}.json`) > 5) return json({ ok: false, message: "That's the most for today. Thanks! Try again tomorrow." }, 429);
   const html = `<div style="font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:#152033;max-width:560px">
-<h2 style="font-weight:600;margin:0 0 8px">Bug report from ${esc(a.label)}</h2>
+<h2 style="font-weight:600;margin:0 0 8px">${what} from ${esc(a.label)}</h2>
 <p style="white-space:pre-wrap;border-left:3px solid #DCE1E8;padding-left:12px">${esc(text)}</p>
 <p style="color:#46536A;font-size:13px">Page: ${esc(page || "unknown")}<br>Account: ${esc(a.email)}<br>Phone/browser: ${esc(ua)}<br>Sent ${esc(new Date().toISOString())}</p></div>`;
-  await put(env, `mail/outbox/${Date.now()}-${rand(6)}.json`, { to: "owner", subject: `Capitol Capital bug report from ${a.label}`.slice(0, 120), html });
+  await put(env, `mail/outbox/${Date.now()}-${rand(6)}.json`, { to: "owner", subject: `Capitol Capital ${what.toLowerCase()} from ${a.label}`.slice(0, 120), html });
   try { await dispatch(env, "mail.yml", {}); } catch (e) {}
-  return json({ ok: true, message: "Sent. Thanks for letting us know." });
+  return json({ ok: true, message: idea ? "Sent. Thanks for the idea." : "Sent. Thanks for letting us know." });
 }
