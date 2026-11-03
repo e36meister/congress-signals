@@ -152,6 +152,7 @@ def refresh_portfolio():
     if old.get("limits", {}).get("from_policy"):
         snap["limits"] = old["limits"]          # the full update knows the current holding periods; keep them
     data["portfolio"] = snap
+    sc_new = None
     # Stop check on the Account page: redone when it's over an hour old or a sale filled since, so a stop sale
     # shows up the same day. The automatic stop switch only runs in the daily update.
     try:
@@ -167,11 +168,20 @@ def refresh_portfolio():
             new_sc = stop_check.check(broker.Alpaca(s_), rule, E.log)
             if sc.get("switched"):
                 new_sc["switched"] = sc["switched"]
-            data["stop_check"] = new_sc
+            data["stop_check"] = sc_new = new_sc
             E.log(f"Quick check: stop check updated ({new_sc['summary']['n']} stop sale(s), "
                   f"{new_sc['summary']['n_done']} past their planned hold)")
     except Exception as e:
         E.log(f"Quick check: stop check failed ({type(e).__name__}: {str(e)[:120]})")
+    # Nov 3 review: the syncs and the stop check above take a while; if the full update or the close report wrote
+    # the file meanwhile, writing our older copy back would undo them. Re-read it and change only our two parts.
+    mine = {"portfolio": data.get("portfolio"), **({"stop_check": sc_new} if sc_new is not None else {})}
+    try:
+        fresh = json.loads(drive.files().get_media(fileId=fid, supportsAllDrives=True).execute())
+        fresh.update(mine)
+        data = fresh
+    except Exception as e:
+        E.log(f"Quick check: couldn't re-read the dashboard before saving ({type(e).__name__}); saving the copy read at the start")
     body = io.BytesIO(json.dumps(data).encode())
     drive.files().update(fileId=fid, media_body=MediaIoBaseUpload(body, mimetype="application/json"),
                          supportsAllDrives=True).execute()
