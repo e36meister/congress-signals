@@ -267,7 +267,9 @@ export async function viewerApi(req, env, url, a, h) {
     const bv = String(url.searchParams.get("b") || "").slice(0, 40);
     if (/^0\.\d+\.[\w-]+$/.test(bv) && bv !== a.build) await patchAccount(env, a.id, x => { x.build = bv; x.build_at = new Date().toISOString(); });
     return json({ ok: true, role: "viewer", connected: !!a.keys_set_at, auto: a.auto !== false, mode: "live", size: sizeOf(a),
-      terms: termsOk(a), paused: !!a.paused, hold: await familyHold(env), build: env.APP_BUILD || null, initials: nameInitials(a.name || a.label),
+      terms: termsOk(a), paused: !!a.paused, hold: await familyHold(env), build: env.APP_BUILD || null,
+      initials: nameInitials(a.name || a.label),
+      mark: `${a.name || a.label} · ${a.email}`,      // the faint watermark on their screens
       photo: a.photo_at || null, photo_prompted: !!(a.photo_at || a.photo_skipped),
       ask_email: !a.email_asked && Date.now() - Date.parse(a.first_seen) >= EMAIL_ASK_DAYS * 864e5 });
   }

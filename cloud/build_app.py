@@ -273,6 +273,14 @@ html.viewer [data-jump="today-worth"],html.viewer [data-jump="today-unusual"]{di
 .btn.ghost.bwarn{color:#9A5B00;border-color:#E9C27A}.btn.ghost.bdanger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
 /* Members: the time-window bar sits right under the top bar, whatever its height */
 .mwin{top:calc(env(safe-area-inset-top,0px) + var(--hdr,92px))!important}
+/* family accounts: faint watermark, blank screen in the app switcher, no text selection */
+#wmark{position:fixed;inset:0;z-index:2147483646;pointer-events:none;opacity:.07;background-repeat:repeat}
+@media (prefers-color-scheme:dark){#wmark{opacity:.10}}
+#vcover{display:none}
+html.covered #vcover{display:grid;place-items:center;position:fixed;inset:0;z-index:2147483647;background:var(--ground)}
+#vcover img{width:84px;height:84px;border-radius:20px}
+html.viewer body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+html.viewer input,html.viewer textarea{-webkit-user-select:text;user-select:text}
 .verline{text-align:center;color:var(--muted);font-size:12px;margin:-6px 0 18px}
 .updbar{background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent);border-radius:10px;padding:10px 12px;margin:0 0 12px;font-size:14px;display:flex;gap:10px;align-items:center;justify-content:space-between}
 /* spare cash choice */

@@ -20,6 +20,7 @@ const VIEWER_SUB = new Set(["search", "vnotif", "vset", "faq", "bug", "terms", "
 function applyRole(s) {
   ROLE = s && s.role === "viewer" ? "viewer" : "owner";
   SESSION_ME = s || null;
+  setTimeout(applyLeakGuards, 0);
   document.documentElement.classList.toggle("viewer", isViewer());
   let tips = false;
   try { tips = localStorage.getItem("cc-tips") === "1"; } catch (e) {}
@@ -936,3 +937,30 @@ document.addEventListener("click", async ev => {
   } catch (e) { PK.msg = { ok: false, text: e && e.name === "InvalidStateError" ? PK_NAME + " is already set up on this device." : e && e.name === "NotAllowedError" ? "Cancelled." : (e && e.message) || "Couldn't set it up." }; }
   PK.busy = false; PK.items = null; render();
 });
+
+
+// ---------- leak deterrents for family accounts (owner, Nov 4 2026) ----------
+// A web app can't detect screenshots, so: (1) a faint watermark with their name and email over every screen, so a
+// shared screenshot shows whose it was; (2) the screen goes blank when the app leaves the screen, so the app
+// switcher's preview shows nothing; (3) text on the page can't be selected or copied.
+function applyLeakGuards() {
+  if (!isViewer()) return;
+  const who = (SESSION_ME && SESSION_ME.mark) || "";
+  let wm = document.getElementById("wmark");
+  if (!wm) { wm = document.createElement("div"); wm.id = "wmark"; wm.setAttribute("aria-hidden", "true"); document.body.appendChild(wm); }
+  const txt = (who + " · " + new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })).replace(/[<&>"]/g, "");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="460" height="190"><text x="20" y="105" transform="rotate(-20 230 95)" font-family="system-ui,sans-serif" font-size="13" fill="#808080">${txt}</text></svg>`;
+  wm.style.backgroundImage = `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}")`;
+  if (!document.getElementById("vcover")) { const c = document.createElement("div"); c.id = "vcover"; c.innerHTML = `<img src="/icon-180.png" alt="">`; document.body.appendChild(c); }
+}
+const coverOn = () => { if (isViewer()) document.documentElement.classList.add("covered"); };
+const coverOff = () => document.documentElement.classList.remove("covered");
+addEventListener("pagehide", coverOn);
+addEventListener("blur", coverOn);
+addEventListener("focus", coverOff);
+addEventListener("pageshow", coverOff);
+document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" ? coverOn() : coverOff());
+// never left stuck: any touch or click takes the cover away
+document.addEventListener("pointerdown", coverOff, true);
+document.addEventListener("keydown", coverOff, true);
+document.addEventListener("copy", ev => { if (isViewer() && !(ev.target.closest && ev.target.closest("input,textarea"))) ev.preventDefault(); });
