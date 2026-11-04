@@ -225,6 +225,10 @@ src = sub('  if (state.tab === "today") html += renderToday(d);',
           '  if (state.tab === "today" && isViewer()) html += tip("<b>Today.</b> These are the stocks members of Congress bought recently whose purchases score near the top of all past ones. The tool buys them for you automatically; you don\'t need to do anything. Tap a ticker for its chart and what\'s going on.");\n'
           '  if (state.tab === "today" && isViewer()) html += emailAskCard();\n'
           '  if (state.tab === "today") html += renderToday(d);', src)
+# family accounts: the Today jump bar lists only the sections they see, and is hidden while that's just one
+src = sub('function todayJump(d, nb, nAvoid, nAlso) {\n  const notable', 'function todayJump(d, nb, nAvoid, nAlso) {\n  if (isViewer() && VIEWER_SECTIONS.size < 2) return "";\n  const notable', src)
+src = sub('    .filter(([id, , n]) => n !== null && (id === "today-buy" || id === "posts" || n > 0));\n  return `<nav class="jump"',
+          '    .filter(([id, , n]) => n !== null && (id === "today-buy" || id === "posts" || n > 0))\n    .filter(([id]) => !isViewer() || VIEWER_SECTIONS.has(id));\n  return `<nav class="jump"', src)
 # a paused family account sees a banner at the top of every page
 src = sub('  let html = "";\n  if (d.version === 1)', '  let html = "";\n  if (isViewer()) html += pausedBanner();\n  if (d.version === 1)', src)
 # your trades on a stock's chart show your own picture

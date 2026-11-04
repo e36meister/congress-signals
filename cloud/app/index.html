@@ -593,6 +593,8 @@ const VIEWER_MORE = [
   { k: "faq", l: "Questions and answers", d: "How the tool picks, buys, sells and sizes, and what you can do" },
   { k: "bug", l: "Report a bug or suggest a feature", d: "Something broken, or an idea for the app? It goes straight to the Operator" },
 ];
+// Today sections a family account sees; the jump bar shows once there are two or more (owner, Nov 3 2026)
+const VIEWER_SECTIONS = new Set(["today-buy"]);
 const VIEWER_SUB = new Set(["search", "vnotif", "vset", "faq", "bug", "terms", "privacy"]);
 function applyRole(s) {
   ROLE = s && s.role === "viewer" ? "viewer" : "owner";
@@ -2120,11 +2122,13 @@ function pickRow(r, side) {
 
 // a jump bar for the Today tab: one tap to each section (it stays under the header while scrolling)
 function todayJump(d, nb, nAvoid, nAlso) {
+  if (isViewer() && VIEWER_SECTIONS.size < 2) return "";
   const notable = (POSTS.feed?.items || []).filter(x => x.lvl >= 2).length;
   const items = [["today-buy", "Buy", nb], ["today-worth", "Worth a look", (d.worth || []).length],
     ["posts", "Posts", POSTS.err?.code === "app_only" ? null : notable], ["today-avoid", "Avoid", nAvoid],
     ["today-unusual", "Unusual", (d.unusual || []).length], ["today-also", "Also bought", nAlso]]
-    .filter(([id, , n]) => n !== null && (id === "today-buy" || id === "posts" || n > 0));
+    .filter(([id, , n]) => n !== null && (id === "today-buy" || id === "posts" || n > 0))
+    .filter(([id]) => !isViewer() || VIEWER_SECTIONS.has(id));
   return `<nav class="jump" aria-label="Sections on this page">${items.map(([id, l, n]) =>
     `<button type="button" data-jump="${id}">${esc(l)}${n ? ` <span class="jn">${n}</span>` : ""}</button>`).join("")}</nav>`;
 }

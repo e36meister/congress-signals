@@ -13,6 +13,8 @@ const VIEWER_MORE = [
   { k: "faq", l: "Questions and answers", d: "How the tool picks, buys, sells and sizes, and what you can do" },
   { k: "bug", l: "Report a bug or suggest a feature", d: "Something broken, or an idea for the app? It goes straight to the Operator" },
 ];
+// Today sections a family account sees; the jump bar shows once there are two or more (owner, Nov 3 2026)
+const VIEWER_SECTIONS = new Set(["today-buy"]);
 const VIEWER_SUB = new Set(["search", "vnotif", "vset", "faq", "bug", "terms", "privacy"]);
 function applyRole(s) {
   ROLE = s && s.role === "viewer" ? "viewer" : "owner";
