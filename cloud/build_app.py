@@ -188,7 +188,7 @@ src = src[:start] + open(os.path.join(HERE, "data_layer.js"), encoding="utf-8").
 # The family-account code goes first inside the app's script, so render() can use it from the start.
 src = sub("<script>\n(() => {\n", "<script>\n(() => {\n" + open(os.path.join(HERE, "accounts_ui.js"), encoding="utf-8").read() + "\n", src)
 # a family account only ever renders Today, Members, Alerts and its own Account
-src = sub("function render() {\n  setHeaderHeight();", "function render() {\n  guardTab();\n  setHeaderHeight();", src)
+src = sub("function render() {\n  setHeaderHeight();", "function render() {\n  guardTab();\n  vMeButton();\n  setHeaderHeight();", src)
 src = sub('  if (state.tab === "port") html += renderPortfolio(d);',
           '  if (state.tab === "port") html += isViewer() ? renderViewerAccount(d) : renderPortfolio(d);\n'
           '  if (state.tab === "accounts") html += renderAccounts();', src)
@@ -240,13 +240,14 @@ src = sub('det.innerHTML = `<div class="tdet"><img src="/me.jpg" alt=""', 'det.i
 src = sub('const r = await fetch("/api/widget/script",', 'const r = await fetch(isViewer() ? "/api/me/widget" : "/api/widget/script",', src)
 acct_css = """
 /* family accounts: nothing that leads outside Today, Members, Alerts and their Account */
-html.viewer #mebtn,html.viewer [data-more]:not([data-vok]):not([data-more="more"]),html.viewer [data-why],
+html.viewer [data-more]:not([data-vok]):not([data-more="more"]),html.viewer [data-why],
 html.viewer [data-buy],html.viewer .sellbtn,html.viewer .keepbtn,html.viewer [data-tie],html.viewer [data-tiev],
 html.viewer #today-avoid,html.viewer #today-also,html.viewer #today-unusual,html.viewer #today-worth,html.viewer #posts,
 html.viewer [data-jump="today-avoid"],html.viewer [data-jump="today-also"],html.viewer [data-jump="posts"],
 html.viewer [data-jump="today-worth"],html.viewer [data-jump="today-unusual"]{display:none!important}
 .vtip{display:none}html.tips .vtip{display:block;background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:12px}
 .vbtns{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
+.meini{display:grid;place-items:center;width:100%;height:100%;font:600 15px var(--body);color:var(--accent);background:var(--accent-soft)}
 /* spare cash choice */
 .parkopts{display:grid;gap:10px}
 .parkopt{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;align-items:start;text-align:left;background:var(--surface);border:1.5px solid var(--rule);border-radius:12px;padding:12px;color:var(--ink);font:15px/1.45 var(--body);cursor:pointer}

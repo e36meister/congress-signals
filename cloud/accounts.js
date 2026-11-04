@@ -262,7 +262,7 @@ export async function viewerApi(req, env, url, a, h) {
     // the first time they open the app is remembered, so a few days in they're asked once whether they want emails too
     if (!a.first_seen) { a.first_seen = new Date().toISOString(); await patchAccount(env, a.id, x => { if (!x.first_seen) x.first_seen = a.first_seen; }); }
     return json({ ok: true, role: "viewer", connected: !!a.keys_set_at, auto: a.auto !== false, mode: "live", size: sizeOf(a),
-      terms: termsOk(a), paused: !!a.paused, hold: await familyHold(env),
+      terms: termsOk(a), paused: !!a.paused, hold: await familyHold(env), initials: nameInitials(a.name || a.label),
       photo: a.photo_at || null, photo_prompted: !!(a.photo_at || a.photo_skipped),
       ask_email: !a.email_asked && Date.now() - Date.parse(a.first_seen) >= EMAIL_ASK_DAYS * 864e5 });
   }
@@ -855,6 +855,11 @@ export const TERMS = { v: "2026-11-03", title: "Capitol Capital Terms of Use",
 // first buys done ("0 first buys" was written for an account that had no money in it yet: not done)
 export const startedOk = a => !!(a && a.started_at && a.started_how !== "0 first buys");
 export function termsOk(a) { return !!(a && a.terms_at && a.terms_v === TERMS.v); }
+// for their picture button when they have no photo: first and last name (the last of several last names)
+function nameInitials(n) {
+  const w = String(n || "").normalize("NFKC").replace(/[^\p{L}\s'-]/gu, " ").split(/\s+/).filter(Boolean);
+  return w.length ? (w[0][0] + (w.length > 1 ? w[w.length - 1][0] : "")).toUpperCase() : "";
+}
 const initialsOf = name => name.split(/\s+/).filter(Boolean).map(w => w[0].toUpperCase()).join("").slice(0, 4);
 
 async function signTerms(req, env, a, dispatch) {
@@ -869,7 +874,7 @@ async function signTerms(req, env, a, dispatch) {
     device: String(req.headers.get("User-Agent") || "").slice(0, 200), ip: String(req.headers.get("CF-Connecting-IP") || "").slice(0, 60),
     place: [cf.city, cf.region, cf.country].filter(Boolean).join(", "), text: TERMS };
   await put(env, `accounts/${a.id}/terms.json`, rec);
-  await patchAccount(env, a.id, x => { x.terms_at = rec.at; x.terms_v = TERMS.v; });
+  await patchAccount(env, a.id, x => { x.terms_at = rec.at; x.terms_v = TERMS.v; x.name = name; });
   // already connected (they connected before the Terms existed, or re-signed new terms): trading was on hold until
   // now, so the first buys start right away if they haven't happened yet (Nov 4)
   if (a.keys_set_at && !startedOk(a) && a.auto !== false && !a.paused && dispatch) {

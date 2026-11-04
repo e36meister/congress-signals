@@ -1,12 +1,13 @@
 <!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}
 /* family accounts: nothing that leads outside Today, Members, Alerts and their Account */
-html.viewer #mebtn,html.viewer [data-more]:not([data-vok]):not([data-more="more"]),html.viewer [data-why],
+html.viewer [data-more]:not([data-vok]):not([data-more="more"]),html.viewer [data-why],
 html.viewer [data-buy],html.viewer .sellbtn,html.viewer .keepbtn,html.viewer [data-tie],html.viewer [data-tiev],
 html.viewer #today-avoid,html.viewer #today-also,html.viewer #today-unusual,html.viewer #today-worth,html.viewer #posts,
 html.viewer [data-jump="today-avoid"],html.viewer [data-jump="today-also"],html.viewer [data-jump="posts"],
 html.viewer [data-jump="today-worth"],html.viewer [data-jump="today-unusual"],html.viewer .owner-only{display:none!important}
 .vtip{display:none}html.tips .vtip{display:block;background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:12px}
 .vbtns{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
+.meini{display:grid;place-items:center;width:100%;height:100%;font:600 15px var(--body);color:var(--accent);background:var(--accent-soft)}
 /* spare cash choice */
 .parkopts{display:grid;gap:10px}
 .parkopt{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;align-items:start;text-align:left;background:var(--surface);border:1.5px solid var(--rule);border-radius:12px;padding:12px;color:var(--ink);font:15px/1.45 var(--body);cursor:pointer}
@@ -765,22 +766,26 @@ document.addEventListener("click", async ev => {
 // ---------- the Account tab for a family account (also the owner's read-only view of it) ----------
 // opts.readOnly: the owner looking at someone's account (no buttons, no setup form)
 function renderViewerAccount(d, opts = {}) {
-  const V = d.viewer || {}, p = d.portfolio, ro = !!opts.readOnly;
+  const V = d.viewer || {}, ro = !!opts.readOnly;
   if (!V.terms && !ro) return renderTermsSign(true);
   if (!V.connected && !ro) return renderConnect();
   if (!V.connected && ro) return `<div class="empty">They haven't connected their Alpaca account yet.</div>`;
-  if (!p) return `<section class="panel"><div class="ph"><h2>Connected</h2></div>
-    ${VA.keyMsg ? `<div class="tapmsg ${VA.keyMsg.ok ? "pos" : "neg"}">${esc(VA.keyMsg.text)}</div>` : ""}
-    <p>${V.hold ? "Your Alpaca account is connected. Trading for family accounts hasn't started yet, so nothing is bought for now. This page fills in with your account at the next update (within a few hours)."
+  // before the first update there's no snapshot yet: the page shows zeros, with a note on what happens next
+  const first = !d.portfolio;
+  const p = d.portfolio || { equity: 0, cash: 0, day_pl: 0, positions: [], orders: [], limits: {}, updated: null, market_open: null };
+  const firstNote = first ? `<div class="note">${VA.keyMsg ? `<b>${esc(VA.keyMsg.text)}</b> ` : ""}${ro ? "They're connected; this fills in at the next update."
+      : V.hold ? "Your Alpaca account is connected. This page fills in with your account at the next update (within a few hours)."
       : V.paused ? "Your Alpaca account is connected. Trading is paused, so nothing is bought until you resume it."
       : V.auto === false ? "Your Alpaca account is connected. Automatic buying is turned off for your account for now, so nothing is bought until the Operator turns it on."
-      : "Your Alpaca account is connected and the tool is buying the current picks for it now. This page fills in within a few minutes; pull down to refresh. After that the tool buys new picks as they come in" + (V.park === "cash" ? " and keeps spare cash as cash" : " and keeps spare cash in SGOV") + " until picks need it."}
-    If your Alpaca account doesn't have money in it yet, deposit in the Alpaca app; the tool buys the current picks once the money shows up.</p></section>${sizePanel(d, ro)}${ro ? "" : pausePanel(V)}`;
+      : "Your Alpaca account is connected and the tool is buying the current picks for it now. This page fills in within a few minutes; pull down to refresh."}</div>` : "";
   const pos = p.positions || [], ords = p.orders || [], L = p.limits || {};
   const picks = pos.filter(x => x.bot && x.sleeve !== "park"), park = pos.filter(x => x.sleeve === "park"), own = pos.filter(x => !x.bot && x.sleeve !== "park");
+  const mainP = picks.filter(x => x.sleeve !== "small"), smallP = picks.filter(x => x.sleeve === "small");
+  const grp = a => { const v = a.reduce((s, x) => s + (x.mv || 0), 0), g = a.reduce((s, x) => s + (x.pl || 0), 0); return { v, g, pc: v - g > 0 ? g / (v - g) : 0, n: a.length }; };
+  const GM = grp(mainP), GS = grp(smallP);
   const invested = picks.reduce((a, x) => a + (x.mv || 0), 0), gain = picks.reduce((a, x) => a + (x.pl || 0), 0), parked = park.reduce((a, x) => a + (x.mv || 0), 0);
   const C = d.close_report;
-  const auto = V.paused ? `<span class="chip avoid">Trading paused</span>` : V.auto !== false ? `<span class="chip BUY">Auto-buying on</span>` : `<span class="chip avoid">Auto-buying paused</span>`;
+  const auto = V.hold ? `<span class="chip watch">View only for now</span>` : V.paused ? `<span class="chip avoid">Trading paused</span>` : V.auto !== false ? `<span class="chip BUY">Auto-buying on</span>` : `<span class="chip avoid">Auto-buying paused</span>`;
   const row = x => {
     const held = x.sleeve === "park" ? `Cash waiting for picks<div class="foot">${V.park === "cash" ? "Being moved back to cash" : "In SGOV until the tool needs it"}</div>`
       : x.bot ? `${x.sleeve === "small" ? "Small-company pick · " : ""}${x.held ?? 0} of ${x.hold ?? L.hold_days ?? 60} days${x.bought ? `<div class="foot">Tool sells ~${esc(fmtDate(addTradingDays(x.bought, x.hold ?? L.hold_days ?? 60)))}; a winner may be kept longer</div>` : ""}`
@@ -791,27 +796,38 @@ function renderViewerAccount(d, opts = {}) {
       <td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${held}${btns}</td></tr>${ro ? "" : vBuyBox(x.t, true) + vSellRow(x)}`;
   };
   // Nov 4: the first family account was connected with nothing in it, and its page just said "Nothing bought yet"
-  const empty = !(p.equity >= 1) && !pos.length;
+  const empty = !first && !(p.equity >= 1) && !pos.length;
   const why = empty ? `<div class="note warn"><b>${ro ? "This Alpaca account has no money in it yet." : "Your Alpaca account doesn't have any money in it yet."}</b> ${ro ? "The tool buys the current picks once they deposit." : "Deposit money in the Alpaca app (Banking → Deposit). The tool buys the current picks as soon as the money shows up during market hours, or at the next update."}</div>`
-    : V.auto === false && !V.paused ? `<div class="note">${ro ? "Auto-buying is off for this account." : "The Operator has turned off automatic buying for your account for now. The tool still sells what it holds on its usual schedule."}</div>` : "";
+    : V.auto === false && !V.paused && !V.hold ? `<div class="note">${ro ? "Auto-buying is off for this account." : "The Operator has turned off automatic buying for your account for now. The tool still sells what it holds on its usual schedule."}</div>` : "";
   return `${ro ? "" : tip("<b>Your Account.</b> Everything here is your own real-money Alpaca account. The tool buys new picks for you as they're found, each with a share of your balance set by your buy size; spare cash waits the way you chose under Spare cash. Tap a ticker for its chart.")}
-  <div class="filters"><span class="chip SHORT">Real money</span>${auto}<span class="foot">Updated ${esc(ago(p.updated))} (${esc(fmtET(p.updated))}) · market ${p.market_open ? "open" : "closed"}</span></div>
-  ${why}
+  <div class="filters"><span class="chip SHORT">Real money</span>${auto}<span class="foot">${p.updated ? `Updated ${esc(ago(p.updated))} (${esc(fmtET(p.updated))}) · market ${p.market_open ? "open" : "closed"}` : "Waiting for the first update"}</span></div>
+  ${firstNote}${why}
   <div class="tiles">
     <div class="tile"><span class="v">${money(p.equity)}</span><span class="l">Account value</span><span class="c">Cash ${money(p.cash)}</span></div>
     <div class="tile"><span class="v ${cls(p.day_pl)}">${p.day_pl == null ? "–" : (p.day_pl > 0 ? "+" : "") + money(p.day_pl)}</span><span class="l">${esc(dayLabel(p))}</span></div>
-    <div class="tile"><span class="v ${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain)}</span><span class="l">Gain on the tool's picks</span><span class="c">${money(invested)} in ${picks.length} pick${picks.length === 1 ? "" : "s"}</span></div>
+    <div class="tile"><span class="v ${cls(GM.pc)}">${pct(GM.pc, 2)}</span><span class="l">Main picks</span><span class="c">${(GM.g > 0 ? "+" : "") + money(GM.g)} · ${money(GM.v)} in ${GM.n} pick${GM.n === 1 ? "" : "s"}</span></div>
+    <div class="tile"><span class="v ${cls(GS.pc)}">${pct(GS.pc, 2)}</span><span class="l">Small-company buys</span><span class="c">${(GS.g > 0 ? "+" : "") + money(GS.g)} · ${money(GS.v)} in ${GS.n} stock${GS.n === 1 ? "" : "s"}</span></div>
     <div class="tile"><span class="v">${money(V.park === "cash" ? Math.max(0, +p.cash || 0) + parked : parked)}</span><span class="l">${V.park === "cash" ? "Cash waiting for picks" : "Waiting for picks"}</span><span class="c">${V.park === "cash" ? "Kept as cash" : "In SGOV"}</span></div>
+    ${!(C && C.since_start != null) ? `<div class="tile"><span class="v">${money(0)}</span><span class="l">Gain since start</span><span class="c">${pct(0, 2)} · starts counting at the first market close</span></div>` : ""}
     ${C && C.since_start != null ? `<div class="tile"><span class="v ${cls(C.gain ?? C.since_start)}">${C.gain != null ? (C.gain > 0 ? "+" : "") + money(C.gain) : pct(C.since_start, 2)}</span><span class="l">Gain since ${esc(fmtDate(C.start))}</span><span class="c">${pct(C.since_start, 2)}${C.net_in ? ` · deposits not counted` : ""} · last close ${esc(fmtDate(C.date))}</span></div>` : ""}
-    ${C && C.since_start != null && C.spy_since_start != null ? `<div class="tile"><span class="v ${cls(C.since_start - C.spy_since_start)}">${pnum((C.since_start - C.spy_since_start) * 100, 2)}</span><span class="l">${C.since_start >= C.spy_since_start ? "Ahead of" : "Behind"} the S&amp;P since start</span><span class="c">You ${pct(C.since_start, 2)} · S&amp;P ${pct(C.spy_since_start, 2)}</span></div>` : ""}
+    ${C && C.since_start != null && C.spy_since_start != null ? `<div class="tile"><span class="v ${cls(C.since_start - C.spy_since_start)}">${pnum((C.since_start - C.spy_since_start) * 100, 2)}</span><span class="l">${C.since_start >= C.spy_since_start ? "Ahead of" : "Behind"} the S&amp;P since start</span><span class="c">You ${pct(C.since_start, 2)} · S&amp;P ${pct(C.spy_since_start, 2)}</span></div>`
+      : `<div class="tile"><span class="v">${pnum(0, 2)}</span><span class="l">Vs the S&amp;P since start</span><span class="c">Starts counting at the first market close</span></div>`}
   </div>
   ${parkPanel(d, ro)}
   ${sizePanel(d, ro)}
-  <section class="panel"><div class="ph"><h2>Positions</h2></div>
-    ${pos.length ? `<div class="tbl"><table><thead><tr><th>Ticker</th><th class="n">Shares</th><th class="n">Avg cost</th><th class="n">Value</th><th class="n">Gain</th><th>Held</th></tr></thead><tbody>
-    ${[...picks, ...own, ...park].map(row).join("")}</tbody></table></div>
+  ${(() => {
+    const head = `<thead><tr><th>Ticker</th><th class="n">Shares</th><th class="n">Avg cost</th><th class="n">Value</th><th class="n">Gain</th><th>Held</th></tr></thead>`;
+    const sec = (title, sub, list, none) => `<section class="panel"><div class="ph"><h2>${title}</h2><span class="sub">${sub}</span></div>
+      ${list.length ? `<div class="tbl"><table>${head}<tbody>${list.map(row).join("")}</tbody></table></div>` : `<div class="empty">${none}</div>`}</section>`;
+    const nothing = empty ? "Nothing bought yet: there's no money in the account yet." : V.hold ? "Nothing bought yet: trading hasn't started." : "Nothing bought yet. New picks are bought as they come in.";
+    return sec("Main picks", `${GM.n} · ${pct(GM.pc, 2)} · ${(GM.g > 0 ? "+" : "") + money(GM.g)}`, mainP, nothing)
+      + sec("Small-company buys", `${GS.n} · ${pct(GS.pc, 2)} · ${(GS.g > 0 ? "+" : "") + money(GS.g)}`, smallP, "None yet. Purchases of companies under $2B are bought here and held longer.")
+      + (own.length || park.length ? sec("Other holdings", "Bought by you, and cash waiting for picks", [...own, ...park], "") : "");
+  })()}
+  <section class="panel"><div class="ph"><h2>How it works</h2></div>
+    ${pos.length ? `
     <p class="foot">The tool buys each new pick with an equal share of the account, sells it at the end of its hold (or keeps a winner while it's ahead of the S&amp;P 500), and keeps spare cash in a Treasury-bill fund. Most picks are held about ${(d.adaptive?.policy?.hold_other) ?? L.hold_days ?? 60} trading days.${ro ? "" : " Buy more shows on stocks that are on today's Buy list."}</p>`
-    : `<div class="empty">${empty ? "Nothing bought yet: there's no money in the account yet." : "Nothing bought yet. New picks are bought as they come in."}</div>`}</section>
+    : `<p class="foot">The tool buys each new pick with an equal share of the account and sells it at the end of its hold (or keeps a winner while it's ahead of the S&amp;P 500).</p>`}</section>
   ${vDaysSection(d)}
   ${divSection({ ...p, mode: "live" })}
   <section class="panel"><div class="ph"><h2>Recent orders</h2></div>
@@ -1261,7 +1277,7 @@ document.addEventListener("click", async ev => {
         body: JSON.stringify({ v: TS.doc.v, name: TS.name, initialed: [...TS.init] }) });
       TS.signed = js.signed; TS.msg = null;
       if (state.data) state.data.viewer = { ...(state.data.viewer || {}), terms: true };
-      if (SESSION_ME) SESSION_ME.terms = true;
+      if (SESSION_ME) { SESSION_ME.terms = true; const w = TS.name.trim().split(/\s+/); SESSION_ME.initials = (w[0][0] + (w.length > 1 ? w[w.length - 1][0] : "")).toUpperCase(); }
       VA.keyMsg = { ok: true, text: js.message || "Signed." };
       if (state.tab !== "port") VA.termsDone = js.message;
     } catch (e) { TS.msg = { ok: false, text: e.message || "Couldn't sign. Try again." }; }
@@ -1304,7 +1320,7 @@ function pausePanel(V) {
 }
 function pausedBanner() {
   const V = (state.data && state.data.viewer) || {};
-  if (isViewer() && V.hold) return `<div class="pausebar"><b>View only for now.</b> Trading for your account hasn't started yet, so the tool isn't buying or selling and the Buy and Sell buttons are off. You'll get a heads-up when it starts.</div>`;
+  if (isViewer() && V.hold) return `<div class="pausebar"><b>View only for now.</b> Trading for your account hasn't started yet, so the tool isn't buying or selling and the Buy and Sell buttons are off. <b>Estimated beta launch: November 27, 2026</b> (the date may change). You'll get a heads-up when it starts.</div>`;
   if (!isViewer() || !V.paused) return "";
   return `<div class="pausebar"><b>Trading paused.</b> The tool isn't buying or selling in your account. <button type="button" class="link" data-tab-go="port">Resume on your Account page</button></div>`;
 }
@@ -1388,6 +1404,25 @@ document.addEventListener("click", async ev => {
   } catch (e) { VA.parkMsg = { ok: false, text: e.message || "Couldn't change it. Try again." }; }
   VA.parkBusy = false; render();
 });
+
+
+// ---------- their profile picture at the top, next to the bell (owner, Nov 4 2026): opens Settings ----------
+function vMeButton() {
+  const b = document.getElementById("mebtn");
+  if (!b || !isViewer()) return;
+  const has = SESSION_ME && SESSION_ME.photo, src = has ? myPhoto() : "";
+  b.setAttribute("aria-label", "Your settings"); b.title = "Your settings";
+  const ini = (SESSION_ME && SESSION_ME.initials) || "";
+  b.innerHTML = has ? `<img src="${esc(src)}" alt="">`
+    : ini ? `<span class="meini">${esc(ini)}</span>`
+    : `<svg viewBox="0 0 24 24" width="100%" height="100%" aria-hidden="true"><circle cx="12" cy="9" r="4" fill="var(--muted)"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7" fill="var(--muted)"/></svg>`;
+  b.setAttribute("aria-pressed", String(state.tab === "vset"));
+}
+document.getElementById("mebtn")?.addEventListener("click", ev => {
+  if (!isViewer()) return;
+  ev.stopImmediatePropagation();
+  state.tab = state.tab === "vset" ? "today" : "vset"; try { location.hash = state.tab; } catch (e) {} render(); scrollTo(0, 0);
+}, true);
 
 "use strict";
 const SERVER = "Google Drive";
@@ -1842,6 +1877,7 @@ document.getElementById("bell").addEventListener("click", () => {
 // ---------- rendering ----------
 function render() {
   guardTab();
+  vMeButton();
   setHeaderHeight();
   TIPS = [];
   const navTab = SUB_TABS[state.tab] ? SUB_TABS[state.tab].back : MORE_TABS.some(m => m.k === state.tab) ? "more" : state.tab;
