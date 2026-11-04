@@ -29,7 +29,7 @@ TWEETS_FIRST, TWEETS_LAST = dt.date(2017, 6, 21), dt.date(2023, 7, 15)
 START_YEAR = 2013
 MONTHS_DAYS = set("jan january feb february mar march apr april may jun june jul july aug august sep sept september oct "
                   "october nov november dec december monday tuesday wednesday thursday friday saturday sunday".split())
-TAGGER_VERSION = 11       # 9: executives by last name or distinctive first name alone, scored
+TAGGER_VERSION = 12       # 9: executives by last name or distinctive first name alone, scored; 12: every person matched is kept (Nov 4)
 # How Bluesky posts are read (text, quotes, alt text, image text). Only a change here needs every account read again;
 # a new TAGGER_VERSION doesn't: build_index re-tags every stored post. (Oct 22: the re-read was tied to TAGGER_VERSION,
 # so after tagger 9 and 10 every run restarted a full re-read it never finished, and no new Bluesky posts were saved
@@ -387,7 +387,10 @@ class Tagger:
                 tick.add(c["t"])
         p, n = len(tset & POS), len(tset & NEG)
         tone = 0.0 if p + n == 0 else round((p - n) / (p + n), 2)
-        return sorted(tick), ppl[:6], secs, tone
+        # Nov 4 (owner, post audit): this kept only the first 6 people but every company they brought in, so a post
+        # naming someone who shares a lobbyist's name (57 companies) showed 51 companies with no reason on file and
+        # read as "posted about" each one. Every person is kept now, so each company has its reason.
+        return sorted(tick), ppl[:120], secs, tone
 
 
 _GEN = {}

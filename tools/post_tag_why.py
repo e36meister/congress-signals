@@ -35,3 +35,7 @@ for t in sorted(tk):
     print(f"{t}: name words {words[:4]} {why}\n   " + (" | ".join(hits[:2]) if hits else "(no name words found in the text)"))
 # the tail of the text, where site footers and 'related' lists usually sit
 print("\n--- last 1,500 characters of the text ---\n" + full[-1500:])
+pp_s = [f"{a}|{b}|{c}" for a, b, c in pp]
+lob = S._lobbyist_only(pp_s, full, tg.names)
+print(f"\npeople kept: {len(pp)} · companies there only through a lobbyist's name: {len(lob)} "
+      f"(e.g. {dict(list(lob.items())[:3])})")
