@@ -108,7 +108,7 @@ function client(keys) {
     try { data = await r.json(); } catch (e) {}
     return { status: r.status, ok: r.ok, data };
   };
-  return { mode: "live", ready: true, get: p => call("GET", p), post: (p, b) => call("POST", p, b) };
+  return { mode: "live", ready: true, get: p => call("GET", p), post: (p, b) => call("POST", p, b), del: p => call("DELETE", p) };
 }
 export async function alpacaFor(env, a) {
   const keys = a && a.keys_set_at ? await loadKeys(env, a.id) : null;
@@ -119,7 +119,8 @@ export async function alpacaFor(env, a) {
 function pub(a) {
   return { id: a.id, label: a.label, email: a.email, status: a.status, auto: a.auto !== false, created: a.created,
            last_login: a.last_login || null, keys: !!a.keys_set_at, keys_set_at: a.keys_set_at || null, key_hint: a.key_hint || null,
-           link_sent: a.link_sent || null, size: sizeOf(a), started_at: a.started_at || null };
+           link_sent: a.link_sent || null, size: sizeOf(a), started_at: a.started_at || null,
+           terms_at: termsOk(a) ? a.terms_at : null, paused: !!a.paused, paused_at: a.paused_at || null };
 }
 
 // ---------- sign-in links ----------
@@ -241,9 +242,9 @@ go.addEventListener("click", async () => {
 // Anything not listed answers 403, whatever the page asks for.
 const VIEWER_GET = new Set(["/api/session", "/api/data", "/api/members", "/api/member", "/api/chart", "/api/charts", "/api/search",
   "/api/movers", "/api/news", "/api/about", "/api/context", "/api/notifications", "/api/live", "/api/push/key", "/api/me/photo",
-  "/api/me/prefs", "/api/me/widget"]);
+  "/api/me/prefs", "/api/me/widget", "/api/me/terms"]);
 const VIEWER_POST = new Set(["/api/logout", "/api/notifications/clear", "/api/push/subscribe", "/api/buy-more", "/api/sell",
-  "/api/me/keys", "/api/me/photo", "/api/bug", "/api/me/prefs", "/api/me/widget", "/api/me/email-ask", "/api/me/size"]);
+  "/api/me/keys", "/api/me/photo", "/api/bug", "/api/me/prefs", "/api/me/widget", "/api/me/email-ask", "/api/me/size", "/api/me/terms", "/api/me/pause"]);
 export function viewerAllowed(method, path) {
   return method === "GET" ? VIEWER_GET.has(path) : method === "POST" ? VIEWER_POST.has(path) : false;
 }
@@ -255,6 +256,7 @@ export async function viewerApi(req, env, url, a, h) {
     // the first time they open the app is remembered, so a few days in they're asked once whether they want emails too
     if (!a.first_seen) { a.first_seen = new Date().toISOString(); await patchAccount(env, a.id, x => { if (!x.first_seen) x.first_seen = a.first_seen; }); }
     return json({ ok: true, role: "viewer", connected: !!a.keys_set_at, auto: a.auto !== false, mode: "live", size: sizeOf(a),
+      terms: termsOk(a), paused: !!a.paused,
       photo: a.photo_at || null, photo_prompted: !!(a.photo_at || a.photo_skipped),
       ask_email: !a.email_asked && Date.now() - Date.parse(a.first_seen) >= EMAIL_ASK_DAYS * 864e5 });
   }
@@ -286,6 +288,9 @@ export async function viewerApi(req, env, url, a, h) {
   if (p === "/api/buy-more") return buyMore(req, env, a, h.maxTap);
   if (p === "/api/me/keys") return setKeys(req, env, a, h);
   if (p === "/api/me/size") return setSize(req, env, a);
+  if (p === "/api/me/terms" && req.method === "GET") return json({ terms: TERMS, signed: await r2json(env, `accounts/${a.id}/terms.json`, null) });
+  if (p === "/api/me/terms") return signTerms(req, env, a, h.dispatch);
+  if (p === "/api/me/pause") return setPause(req, env, a);
   if (p === "/api/push/key") return json({ key: (await h.vapid(env)).pub, phones: (await h.getSubs(env, subsKey(a.id))).length });
   if (p === "/api/push/subscribe") {
     const b = await body(req);
@@ -315,7 +320,7 @@ async function viewerData(env, a) {
   out.watchlist = { lookback: w.lookback, updated: w.updated, buys, sells: [], new: (w.new || []).filter(n => n.action === "BUY") };
   const pol = (d.adaptive && d.adaptive.policy) || {};
   out.adaptive = { policy: { hold_other: pol.hold_other, hold_small: pol.hold_small, sizing: pol.sizing } };
-  out.viewer = { connected: !!a.keys_set_at, auto: a.auto !== false, size: sizeOf(a) };
+  out.viewer = { connected: !!a.keys_set_at, auto: a.auto !== false, size: sizeOf(a), terms: termsOk(a), paused: !!a.paused };
   if (port) {
     out.portfolio = port.portfolio || null;
     out.member_sold = port.member_sold || {};
@@ -381,7 +386,8 @@ async function setSize(req, env, a) {
 }
 
 async function setKeys(req, env, a, h = {}) {
-  if (a.keys_set_at) return json({ ok: false, why: "already-set", message: "Your account is already connected. Ask the owner if it needs to change." }, 409);
+  if (a.keys_set_at) return json({ ok: false, why: "already-set", message: "Your account is already connected. Email the Operator if it needs to change." }, 409);
+  if (!termsOk(a)) return json({ ok: false, why: "terms", message: "Please review and agree to the Terms of Use first." }, 400);
   const b = await body(req);
   // Nov 3: a family member got "Those don't look like Alpaca keys" for keys copied from Alpaca. The check only trimmed
   // the ends, so anything a phone paste carries along (a line break or space in the middle, an invisible character,
@@ -410,7 +416,7 @@ async function setKeys(req, env, a, h = {}) {
   // owner, Nov 3: buy the current picks right away (family_start.yml), not at the next update. If GitHub won't start
   // the job, the daily update does the same first buys on its next run (accounts.run), and the owner sees why.
   let started = false;
-  if (a.auto !== false && h.dispatch) {
+  if (a.auto !== false && !a.paused && h.dispatch) {
     try { await h.dispatch(env, "family_start.yml", { account: a.id }); started = true; }
     catch (e) { if (h.problem) await h.problem(env, "acct-start", `Family account first buys couldn't start right away (${String(e && e.message || e).slice(0, 100)}); the next update does them`); }
   }
@@ -424,6 +430,8 @@ async function setKeys(req, env, a, h = {}) {
 // The order is marked as the tool's (cs-more-…), so the extra shares are sold with the rest of the position when
 // the tool sells it. Short on cash: some of the parked T-bill fund is sold first.
 async function buyMore(req, env, a, maxTap) {
+  if (a.paused) return json({ ok: false, why: "paused", message: "trading is paused for your account. Resume it at the bottom of your Account page to buy" }, 400);
+  if (!termsOk(a)) return json({ ok: false, why: "terms", message: "please agree to the Terms of Use first" }, 400);
   const c = await alpacaFor(env, a);
   if (!c) return json({ ok: false, why: "no-keys" }, 503);
   const b = await body(req);
@@ -496,6 +504,11 @@ export async function ownerAccount(env, url) {
   const port = await r2json(env, `accounts/${a.id}/portfolio.json`, null);
   return json({ account: pub(a), portfolio: port && port.portfolio || null, member_sold: port && port.member_sold || {},
                 close_report: port && port.close_report || null, problem: port && port.problem || null });
+}
+export async function ownerAccountTerms(env, url) {
+  const a = await getAccount(env, url.searchParams.get("id"));
+  if (!a) return json({ error: "not-found" }, 404);
+  return json({ terms: TERMS, signed: await r2json(env, `accounts/${a.id}/terms.json`, null) });
 }
 export async function ownerAccountLive(env, url, live) {
   const a = await getAccount(env, url.searchParams.get("id"));
@@ -760,10 +773,12 @@ async function setPhoto(req, env, a) {
   return json({ ok: true, photo: at });
 }
 
-// ---------- bug reports and feature ideas: emailed to the owner (5 a day per account, both kinds together) ----------
+// ---------- bug reports and feature ideas: emailed to the Operator (the owner) (5 a day per account, both kinds together) ----------
 async function bugReport(req, env, a, dispatch) {
   const b = await body(req);
   const text = String(b.text || "").trim().slice(0, 4000), page = String(b.page || "").slice(0, 60), ua = String(req.headers.get("User-Agent") || "").slice(0, 200);
+  const cf = req.cf || {}, ip = String(req.headers.get("CF-Connecting-IP") || "unknown").slice(0, 60);
+  const conn = [ip, [cf.city, cf.region, cf.country].filter(Boolean).join(", "), cf.asOrganization].filter(Boolean).map(String).join(" · ").slice(0, 200);
   const idea = b.kind === "idea", what = idea ? "Feature idea" : "Bug report";
   if (text.length < 5) return json({ ok: false, message: idea ? "Tell us a little about your idea." : "Tell us a little about what happened." }, 400);
   const day = new Date().toISOString().slice(0, 10);
@@ -771,9 +786,90 @@ async function bugReport(req, env, a, dispatch) {
   const html = `<div style="font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:#152033;max-width:560px">
 <h2 style="font-weight:600;margin:0 0 8px">${what} from ${esc(a.label)}</h2>
 <p style="white-space:pre-wrap;border-left:3px solid #DCE1E8;padding-left:12px">${esc(text)}</p>
-<p style="color:#46536A;font-size:13px">Page: ${esc(page || "unknown")}<br>Account: ${esc(a.email)}<br>Phone/browser: ${esc(ua)}<br>Sent ${esc(new Date().toISOString())}</p></div>`;
+<p style="color:#46536A;font-size:13px">Page: ${esc(page || "unknown")}<br>Account: ${esc(a.email)}<br>Device/browser: ${esc(ua)}<br>Connection: ${esc(conn)}<br>Sent ${esc(new Date().toISOString())}</p></div>`;
   if (!await sendMail(env, { to: "owner", subject: `Capitol Capital ${what.toLowerCase()} from ${a.label}`.slice(0, 120), html, reply_to: a.email })) {
     try { await dispatch(env, "mail.yml", {}); } catch (e) {}
   }
   return json({ ok: true, message: idea ? "Sent. Thanks for the idea." : "Sent. Thanks for letting us know." });
+}
+
+
+// ---------- Terms of Use (owner, Nov 3 2026) ----------
+// Each person initials every section and signs with their typed full name before they can connect Alpaca, and the
+// tool doesn't trade an account whose signature is missing or older than the current terms (congress_signals/
+// accounts.py TERMS_V must match TERMS.v). The signed copy is kept at accounts/<id>/terms.json with the exact text
+// signed, and emailed to them and to the Operator.
+export const TERMS = { v: "2026-11-03", title: "Capitol Capital Terms of Use",
+  intro: 'These Terms of Use (the "Terms") govern your use of Capitol Capital (the "Service"), a private software tool provided by its operator (the "Operator"). By initialing each section and signing below, you ("you") agree to these Terms.',
+  sections: [
+    ["The Service", "The Service selects securities based on publicly disclosed transactions by members of the U.S. Congress and, once you connect your brokerage account, places orders in that account according to its rules."],
+    ["No compensation; not investment advice", "The Service is offered privately, by invitation only, and free of charge. The Operator is not a registered investment adviser or broker-dealer, receives no compensation of any kind, and nothing in the Service constitutes individualized investment, legal or tax advice."],
+    ["Authorization to trade", "You authorize the Service to place, change and cancel orders in your Alpaca account through the API key you provide, including automatic purchases sized from your account balance and the buy size you select, and sales under the Service's rules, without confirming each order with you, except while trading is paused under Section 6."],
+    ["Investment risk", "Investing in securities involves risk, including the loss of principal. Backtested results are hypothetical, past performance does not guarantee future results, and congressional disclosures are reported with a delay and may not anticipate price movements."],
+    ["Technical risk", "The Service relies on third-party data, software and brokerage systems. Errors, delays, outages or incorrect data may cause orders to be placed, missed or timed differently than intended."],
+    ["Your control", "Your account and the assets in it remain yours at all times. You may sell any position at any time. You may pause trading in the app at any time; while trading is paused, the Service will not place any buy or sell orders in your account and will hold your existing positions until you resume trading or sell them yourself. You may also revoke your API key in Alpaca, which immediately ends the Service's ability to trade."],
+    ["Account visibility", "The Operator can view your account value, positions, orders and trade history as reported by Alpaca. How your information is stored and protected is described in the Privacy Policy."],
+    ["Confidentiality", 'The Service\'s selections, scores, signals, alerts, analysis and other content (the "Confidential Information") are provided for your personal use only. You agree not to share, publish, sell or otherwise disclose Confidential Information to anyone who does not have an account, including by forwarding notifications or emails or sharing screenshots, and not to use it to provide advice or services to others. This does not apply to information that is publicly available, such as the congressional disclosures themselves, or to sharing your own account information with your tax, legal or financial professionals or as required by law.'],
+    ["Taxes", "You are solely responsible for all taxes on activity in your account. Alpaca issues your tax forms."],
+    ["Limitation of liability", 'THE SERVICE IS PROVIDED "AS IS" AND "AS AVAILABLE," WITHOUT WARRANTIES OF ANY KIND. TO THE FULLEST EXTENT PERMITTED BY LAW, YOU RELEASE THE OPERATOR FROM, AND AGREE THAT THE OPERATOR SHALL NOT BE LIABLE FOR, ANY AND ALL CLAIMS, LOSSES OR DAMAGES OF ANY KIND ARISING FROM OR RELATED TO YOUR USE OF THE SERVICE, INCLUDING TRADING LOSSES AND CLAIMS BASED ON THE OPERATOR\'S OWN NEGLIGENCE OR GROSS NEGLIGENCE, EXCEPT LIABILITY FOR THE OPERATOR\'S WILLFUL MISCONDUCT OR FRAUD OR LIABILITY THAT CANNOT BE WAIVED UNDER APPLICABLE LAW.'],
+    ["Changes and termination", "Either party may end your use of the Service at any time. The Operator may update these Terms; you will be asked to agree to any updated Terms before the Service trades in your account again."],
+    ["Entire agreement; severability", "These Terms and the Privacy Policy are the entire agreement between you and the Operator about the Service. If any part of these Terms is found unenforceable, the rest remains in effect."],
+    ["Governing law", "These Terms are governed by the laws of the State of Florida."],
+  ],
+  attest: "By signing, you confirm that you are at least 18 years old and have read and agree to these Terms and the Privacy Policy." };
+export function termsOk(a) { return !!(a && a.terms_at && a.terms_v === TERMS.v); }
+const initialsOf = name => name.split(/\s+/).filter(Boolean).map(w => w[0].toUpperCase()).join("").slice(0, 4);
+
+async function signTerms(req, env, a, dispatch) {
+  const b = await body(req);
+  const name = String(b.name || "").normalize("NFKC").replace(/\s+/g, " ").trim().slice(0, 80);
+  if (!/^\S+(\s+\S+)+$/.test(name) || name.length < 4) return json({ ok: false, message: "Type your full legal name (first and last) to sign." }, 400);
+  const got = Array.isArray(b.initialed) ? b.initialed.map(Number) : [];
+  if (TERMS.sections.some((_, i) => !got.includes(i + 1))) return json({ ok: false, message: "Initial every section first." }, 400);
+  if (b.v !== TERMS.v) return json({ ok: false, message: "These terms were just updated. Reload the page and review them again." }, 409);
+  const cf = req.cf || {};
+  const rec = { v: TERMS.v, name, initials: initialsOf(name), at: new Date().toISOString(), email: a.email,
+    device: String(req.headers.get("User-Agent") || "").slice(0, 200), ip: String(req.headers.get("CF-Connecting-IP") || "").slice(0, 60),
+    place: [cf.city, cf.region, cf.country].filter(Boolean).join(", "), text: TERMS };
+  await put(env, `accounts/${a.id}/terms.json`, rec);
+  await patchAccount(env, a.id, x => { x.terms_at = rec.at; x.terms_v = TERMS.v; });
+  const html = termsHtml(rec);
+  const fmt = new Date(rec.at).toLocaleString("en-US", { timeZone: "America/New_York", dateStyle: "long", timeStyle: "short" });
+  let queued = false;
+  for (const to of [a.email, "owner"])
+    if (!await sendMail(env, { to, subject: to === "owner" ? `Capitol Capital: ${a.label} signed the Terms of Use` : "Your signed Capitol Capital Terms of Use", html })) queued = true;
+  if (queued && dispatch) { try { await dispatch(env, "mail.yml", {}); } catch (e) {} }
+  return json({ ok: true, signed: rec, message: `Signed ${fmt} ET. A copy was emailed to you.` });
+}
+
+// the signed copy, as an email (also what the app shows)
+export function termsHtml(rec) {
+  const T = rec.text || TERMS;
+  const when = new Date(rec.at).toLocaleString("en-US", { timeZone: "America/New_York", dateStyle: "long", timeStyle: "short" }) + " ET";
+  return `<div style="font:15px/1.6 Georgia,'Times New Roman',serif;color:#1b1f27;max-width:620px">
+<h2 style="text-align:center;font-weight:600;margin:0 0 14px">${esc(T.title)}</h2><p>${esc(T.intro)}</p>
+${T.sections.map(([h, t], i) => `<p style="border-top:1px solid #e3e6eb;padding-top:8px"><b>${i + 1}. ${esc(h)}.</b> ${esc(t)} <span style="display:inline-block;border:1px solid #9aa3b2;border-radius:3px;padding:0 6px;font:600 13px system-ui,sans-serif;color:#1D4F91">${esc(rec.initials)}</span></p>`).join("")}
+<p style="border-top:2px solid #1b1f27;padding-top:10px">${esc(T.attest)}</p>
+<p><b>Signed:</b> <span style="font:italic 20px 'Snell Roundhand','Brush Script MT',cursive;color:#1D4F91">${esc(rec.name)}</span><br>
+<b>Date:</b> ${esc(when)}<br><b>Email:</b> ${esc(rec.email || "")}</p></div>`;
+}
+
+// ---------- Pause trading (owner, Nov 3 2026) ----------
+// While paused the tool places no orders at all in the account (no buys, no sells; congress_signals/accounts.py skips
+// it) and its open orders are cancelled; their own Sell still works. Buy more is off until they resume.
+async function setPause(req, env, a) {
+  const b = await body(req), on = b.paused === true;
+  await patchAccount(env, a.id, x => { if (on) { x.paused = true; x.paused_at = new Date().toISOString(); } else { delete x.paused; delete x.paused_at; } });
+  let cancelled = 0;
+  if (on) {
+    const c = await alpacaFor(env, a);
+    if (c) {
+      const r = await c.get("/v2/orders?status=open&limit=200");
+      for (const o of (r.data || []).filter(o => /^cs-/.test(o.client_order_id || ""))) {    // the tool's orders only
+        try { const x = await c.del(`/v2/orders/${o.id}`); if (x.ok || x.status === 204) cancelled++; } catch (e) {}
+      }
+    }
+  }
+  return json({ ok: true, paused: on, cancelled,
+    message: on ? `Trading paused. The tool won't buy or sell anything in your account until you resume.${cancelled ? ` ${cancelled} waiting order${cancelled === 1 ? " was" : "s were"} cancelled.` : ""}` : "Trading resumed. The tool goes back to buying and selling on its usual schedule." });
 }

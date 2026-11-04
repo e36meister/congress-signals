@@ -10,11 +10,14 @@ const PREFIX = "cs-", PARK_PREFIX = "cs-park-", PARK_CHOICES = ["SPY", "VOO", "I
 const enc = new TextEncoder();
 import { vapid, saveSub, sendAll, getSubs } from "./push.js";
 import { readViewer, viewerAllowed, viewerApi, requestLink, redeemLink, SIGNIN_PAGE, ownerAccounts, ownerAccount, ownerAccountLive,
-         ownerAccountsPost, checkFillsAll, deliverTo, viewerWidget } from "./accounts.js";
+         ownerAccountTerms, ownerAccountsPost, checkFillsAll, deliverTo, viewerWidget } from "./accounts.js";
 
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
+    // always HTTPS: a plain http:// request is sent to the https:// address (local testing excepted)
+    if (url.protocol === "http:" && !/^(127\.0\.0\.1|localhost)$/.test(url.hostname))
+      return Response.redirect(`https://${url.host}${url.pathname}${url.search}`, 301);
     // the app lives at capitolcapital.cc; the old workers.dev address sends pages there (its /api/ still answers,
     // so widgets and shortcuts set up with the old address keep working). A sign-in link's #token survives the hop.
     // www.capitolcapital.cc → capitolcapital.cc (everything, so a sign-in only ever happens on one address)
@@ -22,12 +25,17 @@ export default {
       return Response.redirect(`https://${env.APP_HOST}${url.pathname}${url.search}`, 301);
     if (env.APP_HOST && url.hostname.endsWith(".workers.dev") && !url.pathname.startsWith("/api/") && req.method === "GET")
       return Response.redirect(`https://${env.APP_HOST}${url.pathname}${url.search}`, 302);
-    if (!url.pathname.startsWith("/api/")) return page(req, env, url);
-    try {
-      return await api(req, env, url, ctx);
-    } catch (e) {
-      return json({ error: "server", message: String(e && e.message || e).slice(0, 200) }, 500);
+    let res;
+    if (!url.pathname.startsWith("/api/")) res = await page(req, env, url);
+    else {
+      try { res = await api(req, env, url, ctx); }
+      catch (e) { res = json({ error: "server", message: String(e && e.message || e).slice(0, 200) }, 500); }
     }
+    // browsers remember to use HTTPS only for this site (a year)
+    if (url.protocol === "https:" && res && res.status !== 101) {
+      try { res = new Response(res.body, res); res.headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains"); } catch (e) {}
+    }
+    return res;
   },
   // every minute: send alerts the GitHub runs queued; every 2 minutes in market hours: alert on new fills
   // each step reports to Data health when it fails, instead of failing silently
@@ -160,6 +168,7 @@ async function api(req, env, url, ctx) {
   if (p === "/api/accounts" && req.method === "GET") return ownerAccounts(env);
   if (p === "/api/accounts/view" && req.method === "GET") return ownerAccount(env, url);
   if (p === "/api/accounts/live" && req.method === "GET") return ownerAccountLive(env, url, live);
+  if (p === "/api/accounts/terms" && req.method === "GET") return ownerAccountTerms(env, url);
   if (p === "/api/accounts" && req.method === "POST") return ownerAccountsPost(req, env, url, dispatch);
   if (p === "/api/data" && req.method === "GET") return fromR2(req, env, "dashboard_data.json");
   if (p === "/api/charts" && req.method === "GET") return fromR2(req, env, "ticker_charts.json");

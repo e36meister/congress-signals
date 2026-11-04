@@ -5,15 +5,15 @@
 // The owner gets the Accounts page (under More) to add people and see each portfolio.
 let ROLE = "owner", SESSION_ME = null;
 const isViewer = () => ROLE === "viewer";
-const VIEWER_TABS = new Set(["today", "members", "port", "alerts", "more", "search", "vnotif", "vset", "faq", "bug"]);
+const VIEWER_TABS = new Set(["today", "members", "port", "alerts", "more", "search", "vnotif", "vset", "faq", "bug", "terms", "privacy"]);
 const VIEWER_MORE = [
   { k: "search", l: "Company search", d: "Any ticker or company: its chart, what's going on, and every member's trades" },
   { k: "vnotif", l: "Notifications", d: "Push and email: trades, the daily close, big moves, your own account alerts" },
   { k: "vset", l: "Settings", d: "Profile picture, extra explanations, home-screen widget, sign out" },
   { k: "faq", l: "Questions and answers", d: "How the tool picks, buys, sells and sizes, and what you can do" },
-  { k: "bug", l: "Report a bug or suggest a feature", d: "Something broken, or an idea for the app? It goes straight to the owner" },
+  { k: "bug", l: "Report a bug or suggest a feature", d: "Something broken, or an idea for the app? It goes straight to the Operator" },
 ];
-const VIEWER_SUB = new Set(["search", "vnotif", "vset", "faq", "bug"]);
+const VIEWER_SUB = new Set(["search", "vnotif", "vset", "faq", "bug", "terms", "privacy"]);
 function applyRole(s) {
   ROLE = s && s.role === "viewer" ? "viewer" : "owner";
   SESSION_ME = s || null;
@@ -131,7 +131,7 @@ document.addEventListener("click", async ev => {
 
 // ---------- Today: a Buy button on each Buy candidate ----------
 function vBuyArea(r) {
-  if (!state.data?.viewer?.connected) return "";
+  if (!state.data?.viewer?.connected || state.data.viewer.paused || !state.data.viewer.terms) return "";
   const held = (state.data?.portfolio?.positions || []).some(x => x.t === r.t);
   return `<button type="button" class="buybtn vb" data-vbuy="${esc(r.t)}">${VA.open === r.t ? "Close" : held ? "Buy more" : "Buy"}</button>`;
 }
@@ -181,6 +181,7 @@ document.addEventListener("click", async ev => {
 // opts.readOnly: the owner looking at someone's account (no buttons, no setup form)
 function renderViewerAccount(d, opts = {}) {
   const V = d.viewer || {}, p = d.portfolio, ro = !!opts.readOnly;
+  if (!V.terms && !ro) return renderTermsSign(true);
   if (!V.connected && !ro) return renderConnect();
   if (!V.connected && ro) return `<div class="empty">They haven't connected their Alpaca account yet.</div>`;
   if (!p) return `<section class="panel"><div class="ph"><h2>Connected</h2></div><p>Your Alpaca account is connected and the tool is buying the current picks for it now. This page fills in within a few minutes; pull down to refresh. After that the tool buys new picks as they come in and parks spare cash in a Treasury-bill fund until picks need it.</p></section>${sizePanel(d, ro)}`;
@@ -188,12 +189,12 @@ function renderViewerAccount(d, opts = {}) {
   const picks = pos.filter(x => x.bot && x.sleeve !== "park"), park = pos.filter(x => x.sleeve === "park"), own = pos.filter(x => !x.bot && x.sleeve !== "park");
   const invested = picks.reduce((a, x) => a + (x.mv || 0), 0), gain = picks.reduce((a, x) => a + (x.pl || 0), 0), parked = park.reduce((a, x) => a + (x.mv || 0), 0);
   const C = d.close_report;
-  const auto = V.auto !== false ? `<span class="chip BUY">Auto-buying on</span>` : `<span class="chip avoid">Auto-buying paused</span>`;
+  const auto = V.paused ? `<span class="chip avoid">Trading paused</span>` : V.auto !== false ? `<span class="chip BUY">Auto-buying on</span>` : `<span class="chip avoid">Auto-buying paused</span>`;
   const row = x => {
     const held = x.sleeve === "park" ? `Cash waiting for picks<div class="foot">In a Treasury-bill fund until the tool needs it</div>`
       : x.bot ? `${x.sleeve === "small" ? "Small-company pick · " : ""}${x.held ?? 0} of ${x.hold ?? L.hold_days ?? 60} days${x.bought ? `<div class="foot">Tool sells ~${esc(fmtDate(addTradingDays(x.bought, x.hold ?? L.hold_days ?? 60)))}; a winner may be kept longer</div>` : ""}`
       : `Yours<div class="foot">You bought this yourself; the tool leaves it alone</div>`;
-    const btns = ro || x.sleeve === "park" ? "" : `<div class="vbtns">${buyListHas(x.t) ? `<button type="button" class="buybtn vb" data-vbuy="${esc(x.t)}">${VA.open === x.t ? "Close" : "Buy more"}</button>` : ""}<button type="button" class="vsell" data-vsell="${esc(x.t)}">${VA.sellOpen === x.t ? "Close" : "Sell"}</button></div>`;
+    const btns = ro || x.sleeve === "park" ? "" : `<div class="vbtns">${buyListHas(x.t) && !V.paused ? `<button type="button" class="buybtn vb" data-vbuy="${esc(x.t)}">${VA.open === x.t ? "Close" : "Buy more"}</button>` : ""}<button type="button" class="vsell" data-vsell="${esc(x.t)}">${VA.sellOpen === x.t ? "Close" : "Sell"}</button></div>`;
     const m = VA.msg[x.t];
     return `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${m && VA.open !== x.t && VA.sellOpen !== x.t ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</td><td class="n">${Number(x.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
       <td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${held}${btns}</td></tr>${ro ? "" : vBuyBox(x.t, true) + vSellRow(x)}`;
@@ -217,7 +218,8 @@ function renderViewerAccount(d, opts = {}) {
   <section class="panel"><div class="ph"><h2>Recent orders</h2></div>
     ${ords.length ? `<div class="tbl scroll"><table><thead><tr><th>When</th><th>Ticker</th><th>Side</th><th class="n">Shares</th><th class="n">Fill price</th><th>Status</th></tr></thead><tbody>
     ${ords.filter(o => !/^(SGOV|BIL|SHV|SPY|VOO|IVV)$/.test(o.t) || o.by !== "tool").map(o => `<tr><td class="nw">${esc(fmtET(o.at))}</td><td class="mono">${tkBtn(o.t)}</td><td>${esc(o.side)}</td><td class="n">${shQty(o)}</td><td class="n">${o.filled_px ? money(+o.filled_px, 2) : "–"}</td><td>${esc(String(o.status).replace(/_/g, " "))}</td></tr>`).join("")}
-    </tbody></table></div>` : `<div class="empty">No orders yet.</div>`}</section>`;
+    </tbody></table></div>` : `<div class="empty">No orders yet.</div>`}</section>
+  ${ro ? "" : pausePanel(V)}`;
 }
 
 // Sell: any position but the parked fund, whenever they want, with a note on what selling early means
@@ -320,7 +322,8 @@ document.addEventListener("click", async ev => {
 // ---------- their More menu and its pages ----------
 function vBack() { return `<button type="button" class="moreback" data-vok="1" data-more="more">‹ More</button>`; }
 function renderViewerMore() {
-  return `<section class="panel"><div class="morelist">${VIEWER_MORE.map(m => `<button type="button" class="moreitem" data-vok="1" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}</div></section>`;
+  return `<section class="panel"><div class="morelist">${VIEWER_MORE.map(m => `<button type="button" class="moreitem" data-vok="1" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}</div></section>
+  <div class="legal"><button type="button" class="link" data-vok="1" data-more="terms">Terms of Use</button><span aria-hidden="true">·</span><button type="button" class="link" data-vok="1" data-more="privacy">Privacy Policy</button></div>`;
 }
 function renderViewerPage() {
   if (state.tab === "more") return renderViewerMore();
@@ -328,6 +331,8 @@ function renderViewerPage() {
   if (state.tab === "vset") return vBack() + renderVSettings();
   if (state.tab === "faq") return vBack() + renderFaq();
   if (state.tab === "bug") return vBack() + renderBug();
+  if (state.tab === "terms") return vBack() + renderTermsPage();
+  if (state.tab === "privacy") return vBack() + renderPrivacy();
   return "";
 }
 
@@ -434,19 +439,19 @@ function renderFaq() {
     ["Why isn't a stock I like on the list?", "A stock is only on the Buy list when a member bought it recently and the purchase scores in the top of all past purchases. Company search shows any stock's chart and members' trades."],
     ["Is this guaranteed to make money?", "No. The strategy is tested on past years, and past results don't promise future ones. It can lose money, sometimes for a long stretch. Only put in money you're comfortable leaving for a while."],
     ["Taxes?", "Alpaca sends you a 1099 each year with every sale. Selling a stock you held under a year is a short-term gain or loss, taxed like regular income."],
-    ["How do I stop it?", "Ask the owner to pause your auto-buying, or delete the key in your Alpaca account; the tool can't trade without it. What you hold stays yours either way."],
+    ["How do I stop it?", "Turn on Pause trading at the bottom of your Account page: the tool stops buying and selling and holds what you have until you resume. Deleting the key in your Alpaca account also stops it for good. What you hold stays yours either way."],
   ];
   return `<section class="panel"><div class="ph"><h2>Questions and answers</h2></div>
     <div class="faq">${qa.map(([q, a]) => `<details><summary>${esc(q)}</summary><p>${esc(a)}</p></details>`).join("")}</div>
-    <p class="foot">Something not covered here? Use Report a bug or suggest a feature and ask; it goes to the owner.</p></section>`;
+    <p class="foot">Something not covered here? Use Report a bug or suggest a feature and ask; it goes to the Operator.</p></section>`;
 }
 function renderBug() {
   const m = VA.bugMsg, idea = VA.bugKind === "idea";
   const opt = (k, l) => `<button type="button" data-bugkind="${k}" aria-pressed="${VA.bugKind === k}">${l}</button>`;
   return `<section class="panel"><div class="ph"><h2>${idea ? "Suggest a feature" : "Report a bug"}</h2></div>
     <div class="seg" style="margin-bottom:4px;width:fit-content">${opt("bug", "Report a bug")}${opt("idea", "Suggest a feature")}</div>
-    <p>${idea ? "What would you like the app to do? What would it help with? It's emailed to the owner."
-              : "What happened, and what did you expect? Which page were you on? It's emailed to the owner along with which phone you're using."}</p>
+    <p>${idea ? "What would you like the app to do? What would it help with? It's emailed to the Operator."
+              : "What happened, and what did you expect? Which page were you on? It's emailed to the Operator along with your device and connection details."}</p>
     <form id="vbug" class="keysform" style="max-width:560px">
       <textarea id="vbugt" rows="6" maxlength="4000" placeholder="${idea ? "Describe your idea" : "Describe the problem"}" required style="font:15px/1.4 var(--body);padding:10px 12px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);color:var(--ink);width:100%;box-sizing:border-box"></textarea>
       <button type="submit" class="buybtn go"${VA.bugBusy ? " disabled" : ""}>${VA.bugBusy ? "Sending…" : "Send"}</button></form>
@@ -505,10 +510,11 @@ function renderAccounts() {
     const D = ACC.data, a = D && D.account;
     const head = `<button type="button" class="moreback" data-accback="1">‹ Accounts</button>`;
     if (!D) return head + `<div class="empty">Loading…</div>`;
+    if (D.terms) return head + (D.signed ? termsSignedDoc(D.signed) : `<div class="empty">Not signed yet.</div>`);
     if (D.error) return head + `<div class="note err">${esc(D.error)}</div>`;
     return head + `<section class="panel"><div class="ph"><h2>${esc(a.label)}</h2><span class="sub">${esc(a.email)} · view only</span></div>
       ${D.problem ? `<div class="note warn">${esc(D.problem)}</div>` : ""}</section>` +
-      renderViewerAccount({ viewer: { connected: a.keys, auto: a.auto, size: a.size }, portfolio: D.portfolio, close_report: D.close_report, adaptive: state.data?.adaptive }, { readOnly: true });
+      renderViewerAccount({ viewer: { connected: a.keys, auto: a.auto, size: a.size, paused: a.paused, terms: !!a.terms_at }, portfolio: D.portfolio, close_report: D.close_report, adaptive: state.data?.adaptive }, { readOnly: true });
   }
   const m = ACC.msg;
   const list = ACC.list;
@@ -517,11 +523,12 @@ function renderAccounts() {
     const conn = a.keys ? `Alpaca connected ${esc(a.key_hint || "")}` : "Hasn't connected Alpaca yet";
     const btn = (act, l, extra = "") => `<button type="button" class="btn ghost sm" data-acc="${act}" data-id="${esc(a.id)}"${ACC.busy ? " disabled" : ""}${extra}>${l}</button>`;
     return `<article class="acct">
-      <div class="acct-h"><b>${esc(a.label)}</b>${st}${a.keys ? (a.auto ? `<span class="chip BUY">Auto-buying on</span>` : `<span class="chip avoid">Auto-buying paused</span>`) : ""}</div>
+      <div class="acct-h"><b>${esc(a.label)}</b>${st}${a.paused ? `<span class="chip avoid">They paused trading</span>` : a.keys ? (a.auto ? `<span class="chip BUY">Auto-buying on</span>` : `<span class="chip avoid">Auto-buying paused</span>`) : ""}${a.terms_at ? `<span class="chip watch">Terms signed</span>` : `<span class="chip avoid">Terms not signed</span>`}</div>
       <div class="foot">${esc(a.email)} · ${conn}${a.last_login ? ` · last sign-in ${esc(ago(a.last_login))}` : a.link_sent ? ` · link sent ${esc(ago(a.link_sent))}` : ""}</div>
       ${S ? `<div class="acct-s"><span><b>${money(S.equity)}</b> value</span><span class="${cls(S.day_pl)}">${S.day_pl == null ? "–" : (S.day_pl > 0 ? "+" : "") + money(S.day_pl)} today</span><span>${money(S.invested)} in picks</span><span>${S.positions} position${S.positions === 1 ? "" : "s"}</span><span class="foot">updated ${esc(ago(S.updated))}</span></div>` : ""}
       ${a.problem ? `<div class="foot neg">${esc(a.problem)}</div>` : ""}
       <div class="acct-b">${a.keys ? `<button type="button" class="btn sm" data-accview="${esc(a.id)}">View portfolio</button>` : ""}
+        ${a.terms_at ? `<button type="button" class="btn ghost sm" data-accterms="${esc(a.id)}">Signed terms</button>` : ""}
         ${a.keys ? btn("auto", a.auto ? "Pause auto-buying" : "Turn auto-buying on", ` data-on="${a.auto ? "0" : "1"}"`) : ""}
         ${a.status !== "disabled" ? btn("link", "Send sign-in link") : ""}
         ${a.status !== "disabled" ? btn("signout", "Sign out everywhere") : ""}
@@ -554,6 +561,12 @@ document.addEventListener("click", ev => {
   if (back) { ACC.view = null; ACC.data = null; render(); window.scrollTo(0, 0); return; }
   const v = ev.target.closest("[data-accview]");
   if (v) { accOpen(v.dataset.accview); return; }
+  const tv = ev.target.closest("[data-accterms]");
+  if (tv) {
+    ACC.view = tv.dataset.accterms; ACC.data = null; render(); window.scrollTo(0, 0);
+    api("/api/accounts/terms?id=" + encodeURIComponent(ACC.view)).then(r => { ACC.data = r.js; }).catch(e => { ACC.data = { error: e.message || "Couldn't load it." }; }).finally(render);
+    return;
+  }
   const b = ev.target.closest("[data-acc]");
   if (!b || ACC.busy) return;
   const act = b.dataset.acc, id = b.dataset.id, a = (ACC.list || []).find(x => x.id === id);
@@ -566,4 +579,131 @@ document.addEventListener("click", ev => {
   if (act === "reset-keys" && !confirm(`Remove ${a.label}'s saved Alpaca keys? The tool stops trading their account until they connect again. Nothing is sold.`)) return;
   if (act === "disable" && !confirm(`Turn off ${a.label}'s account? They're signed out and the tool stops trading it. Nothing is sold.`)) return;
   accPost({ action: act, id, on: b.dataset.on === "1" });
+});
+
+
+// ---------- Terms of Use: initial every section, then sign (owner, Nov 3 2026) ----------
+// Shown on the Account tab before they can connect Alpaca (and again if the terms change), and under More → Terms of
+// Use, where a signed copy is shown afterwards. The server checks everything again and keeps the exact text signed.
+const TS = { doc: null, signed: null, err: null, loading: false, init: new Set(), name: "", busy: false, msg: null };
+function termsLoad() {
+  if (TS.loading || TS.doc) return;
+  TS.loading = true;
+  api("/api/me/terms").then(r => { TS.doc = r.js.terms; TS.signed = r.js.signed; }).catch(e => { TS.err = e; })
+    .finally(() => { TS.loading = false; render(); });
+}
+const initialsOf = n => String(n || "").trim().split(/\s+/).filter(Boolean).map(w => w[0].toUpperCase()).join("").slice(0, 4);
+function renderTermsSign(fromAccount) {
+  termsLoad();
+  if (!TS.doc) return `<div class="empty">${TS.err ? esc(errorText(TS.err)) : "Loading…"}</div>`;
+  const T = TS.doc, ini = initialsOf(TS.name), all = T.sections.every((_, i) => TS.init.has(i + 1));
+  const ready = all && /\S+\s+\S+/.test(TS.name.trim());
+  const box = i => `<button type="button" class="tini${TS.init.has(i) ? " on" : ""}" data-tini="${i}" aria-label="Initial section ${i}" aria-pressed="${TS.init.has(i)}">${TS.init.has(i) ? esc(ini || "✓") : "Initial"}</button>`;
+  return `${fromAccount ? `<p class="tlead">Before connecting your Alpaca account, please review and agree to the terms below.</p>` : ""}
+  <article class="tdoc"><h1>${esc(T.title)}</h1><p class="tsub">Please review and agree to the terms below. Initial each section, then sign.</p>
+    <p>${esc(T.intro)}</p>
+    ${T.sections.map(([h, t], i) => `<div class="tcl"><div><b>${i + 1}. ${esc(h)}.</b> ${esc(t)}</div>${box(i + 1)}</div>`).join("")}
+    <div class="tsig"><p>${esc(T.attest)}</p>
+      <div class="tsg"><div><input id="tname" class="tline" type="text" autocomplete="name" maxlength="80" value="${esc(TS.name)}" placeholder="Full legal name" aria-label="Type your full legal name to sign"><div class="tcap">Signature: type your full legal name</div></div>
+        <div><div class="tdate">${esc(new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }))}</div><div class="tcap">Date</div></div></div>
+      <button type="button" class="buybtn go tgo" data-tsign="1"${ready && !TS.busy ? "" : " disabled"}>${TS.busy ? "Signing…" : "Agree and sign"}</button>
+      ${!all ? `<p class="tcap" style="text-align:center">Initial all ${T.sections.length} sections to continue.</p>` : ""}
+      ${TS.msg ? `<div class="tapmsg ${TS.msg.ok ? "pos" : "neg"}">${esc(TS.msg.text)}</div>` : ""}
+      <p class="tcap" style="text-align:center">A signed copy is emailed to you and to the Operator, and kept in More → Terms of Use.</p></div>
+  </article>`;
+}
+function termsSignedDoc(rec) {
+  const T = rec.text, when = new Date(rec.at).toLocaleString("en-US", { timeZone: "America/New_York", dateStyle: "long", timeStyle: "short" }) + " ET";
+  return `<article class="tdoc"><h1>${esc(T.title)}</h1><p class="tsub">Signed ${esc(when)}</p><p>${esc(T.intro)}</p>
+    ${T.sections.map(([h, t], i) => `<div class="tcl"><div><b>${i + 1}. ${esc(h)}.</b> ${esc(t)}</div><span class="tini on">${esc(rec.initials)}</span></div>`).join("")}
+    <div class="tsig"><p>${esc(T.attest)}</p>
+      <div class="tsg"><div><div class="tline signed">${esc(rec.name)}</div><div class="tcap">Signature</div></div><div><div class="tdate">${esc(new Date(rec.at).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }))}</div><div class="tcap">Date</div></div></div></div></article>`;
+}
+function renderTermsPage() {
+  termsLoad();
+  if (!TS.doc) return `<div class="empty">${TS.err ? esc(errorText(TS.err)) : "Loading…"}</div>`;
+  return TS.signed && TS.signed.v === TS.doc.v ? termsSignedDoc(TS.signed) : renderTermsSign(false);
+}
+document.addEventListener("input", ev => {
+  if (ev.target.id !== "tname" || !isViewer()) return;
+  TS.name = ev.target.value;
+  // update the initials and the button in place (a full redraw would drop the cursor)
+  const ini = initialsOf(TS.name);
+  document.querySelectorAll(".tini.on[data-tini]").forEach(b => { b.textContent = ini || "✓"; });
+  const go = document.querySelector("[data-tsign]"), all = TS.doc && TS.doc.sections.every((_, i) => TS.init.has(i + 1));
+  if (go) go.disabled = !(all && /\S+\s+\S+/.test(TS.name.trim())) || TS.busy;
+});
+document.addEventListener("click", async ev => {
+  if (!isViewer()) return;
+  const b = ev.target.closest("[data-tini]");
+  if (b) { const i = +b.dataset.tini; TS.init.has(i) ? TS.init.delete(i) : TS.init.add(i); const y = scrollY; render(); scrollTo(0, y); return; }
+  if (ev.target.closest("[data-tsign]") && !TS.busy) {
+    TS.busy = true; TS.msg = null; render();
+    try {
+      const { js } = await api("/api/me/terms", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ v: TS.doc.v, name: TS.name, initialed: [...TS.init] }) });
+      TS.signed = js.signed; TS.msg = null;
+      if (state.data) state.data.viewer = { ...(state.data.viewer || {}), terms: true };
+      if (SESSION_ME) SESSION_ME.terms = true;
+      VA.keyMsg = { ok: true, text: js.message || "Signed." };
+      if (state.tab !== "port") VA.termsDone = js.message;
+    } catch (e) { TS.msg = { ok: false, text: e.message || "Couldn't sign. Try again." }; }
+    TS.busy = false; render(); scrollTo(0, 0);
+  }
+});
+
+// ---------- Privacy Policy ----------
+function renderPrivacy() {
+  const S = (h, body) => `<h3>${h}</h3>${body}`, ul = a => `<ul>${a.map(x => `<li>${x}</li>`).join("")}</ul>`;
+  return `<article class="tdoc"><h1>Capitol Capital Privacy Policy</h1><p class="tsub">How your information is collected, stored and protected.</p>
+  ${S("1. Information collected", ul([
+    "Your name and email address, used to sign you in and send the notifications you choose.",
+    "Your Alpaca API key, used only to place trades and read your account.",
+    "Account information from Alpaca: account value, cash, positions, orders and trade history.",
+    "Your signed Terms of Use, with the date, time, device and network address it was signed from.",
+    "Bug reports and feature suggestions you send, with your device and browser type and your connection details (network address and approximate location) at the time.",
+    "Optional: a profile picture, notification settings and account-balance alerts."]))}
+  ${S("2. How it is stored", ul([
+    "Your Alpaca key is encrypted with AES-256-GCM before it is saved. The encryption key is kept separately as a protected secret and is never stored with your data, and the key is never shown again after you enter it.",
+    "Your information is kept in private cloud storage (Cloudflare R2) that is not publicly reachable. Every request is checked against your signed-in session.",
+    "Sign-in links work once and expire after 20 minutes; only a scrambled fingerprint (hash) of each link is stored. Network addresses used to limit sign-in attempts are stored only in scrambled form.",
+    "All connections to the app are encrypted with HTTPS."]))}
+  ${S("3. Who can see it", ul([
+    "You and the Operator. No other account holder can see your information.",
+    "Your information is never sold, rented or used for advertising.",
+    "The Service's activity logs never include your name, email address, balances or positions."]))}
+  ${S("4. Service providers", `<p>Alpaca (your brokerage), Cloudflare (hosting and storage), Resend (email delivery), and Apple or Google (phone notifications). Each receives only the information it needs to provide its service.</p>`)}
+  ${S("5. Your choices", `<p>You can change your notifications or remove your picture at any time in the app. Revoking your key in Alpaca immediately ends all access to your account. To close your account and have all of your stored information deleted, email the Operator at <a href="mailto:admin@capitolcapital.cc">admin@capitolcapital.cc</a>.</p>`)}
+  </article>`;
+}
+
+// ---------- Pause trading (bottom of their Account page) and the banner on every page ----------
+function pausePanel(V) {
+  const on = !!V.paused;
+  return `<section class="panel"><div class="ph"><h2>Pause trading</h2></div>
+    <label class="vswitch"><input type="checkbox" data-vpause="1"${on ? " checked" : ""}${VA.pauseBusy ? " disabled" : ""}> <span>${on ? "Trading is paused" : "Pause all trading in my account"}</span></label>
+    <p class="foot" style="margin-top:6px">While paused, the tool doesn't buy or sell anything in your account, no matter what, and anything it had waiting to fill is cancelled. Everything you hold stays as it is until you turn this off or sell it yourself. Sell still works; Buy more is off.</p>
+    ${VA.pauseMsg ? `<div class="tapmsg ${VA.pauseMsg.ok ? "pos" : "neg"}">${esc(VA.pauseMsg.text)}</div>` : ""}</section>`;
+}
+function pausedBanner() {
+  const V = (state.data && state.data.viewer) || {};
+  if (!isViewer() || !V.paused) return "";
+  return `<div class="pausebar"><b>Trading paused.</b> The tool isn't buying or selling in your account. <button type="button" class="link" data-tab-go="port">Resume on your Account page</button></div>`;
+}
+document.addEventListener("change", async ev => {
+  if (!ev.target.matches || !ev.target.matches("[data-vpause]") || !isViewer() || VA.pauseBusy) return;
+  const on = ev.target.checked;
+  if (on && !confirm("Pause all trading? The tool won't buy or sell anything in your account until you turn this off. Anything it has waiting to fill is cancelled.")) { ev.target.checked = false; return; }
+  VA.pauseBusy = true; VA.pauseMsg = null; render();
+  try {
+    const { js } = await api("/api/me/pause", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paused: on }) });
+    if (state.data) state.data.viewer = { ...(state.data.viewer || {}), paused: js.paused };
+    VA.pauseMsg = { ok: true, text: js.message };
+  } catch (e) { VA.pauseMsg = { ok: false, text: e.message || "Couldn't change it. Try again." }; }
+  VA.pauseBusy = false; render();
+});
+document.addEventListener("click", ev => {
+  const g = ev.target.closest && ev.target.closest("[data-tab-go]");
+  if (!g || !isViewer()) return;
+  state.tab = g.dataset.tabGo; location.hash = state.tab; render(); scrollTo(0, document.body.scrollHeight);
 });

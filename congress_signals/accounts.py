@@ -10,6 +10,7 @@ import base64, hashlib, json, os, datetime as dt
 import cloud_store
 
 IDX = "accounts/index.json"
+TERMS_V = "2026-11-03"     # must match TERMS.v in cloud/accounts.js: an account trades only with the current terms signed
 
 
 def _unb64u(s):
@@ -57,7 +58,9 @@ def load(log):
             missing += 1
             continue
         out.append({"id": a["id"], "auto": a.get("auto", True) is not False, "key": k["key"], "secret": k["secret"],
-                    "size": a.get("size") or "standard", "started": bool(a.get("started_at"))})
+                    "size": a.get("size") or "standard", "started": bool(a.get("started_at")),
+                    # they paused trading (no orders at all), or haven't signed the current Terms of Use
+                    "hold": bool(a.get("paused")) or not (a.get("terms_at") and a.get("terms_v") == TERMS_V)})
     if missing:
         log(f"Family accounts: {missing} account(s) have keys that couldn't be read (ACCOUNTS_KEY missing or changed? "
             "reset their keys on the Accounts page); they're skipped")
@@ -86,7 +89,10 @@ def run(cfg, buys, new, last_prices, log, trade, msales=None, close_report=None)
     accts = load(log)
     snaps = {}
     for i, a in enumerate(accts, 1):
-        if trade and not a.get("started"):      # backup: the connect-time start didn't run (or buys were paused then)
+        trade_a = trade and not a.get("hold")       # paused or terms not signed: snapshot only, no orders
+        if trade and a.get("hold"):
+            log(f"Family account {i}: trading paused (by them, or the current terms aren't signed); no orders")
+        if trade_a and not a.get("started"):      # backup: the connect-time start didn't run (or buys were paused then)
             try:
                 start(log, only=a["id"], accts=[a], tag=f"Family account {i}")
             except Exception as e:
@@ -94,7 +100,7 @@ def run(cfg, buys, new, last_prices, log, trade, msales=None, close_report=None)
         try:
             with broker.use_account(a):
                 snap = broker.sync(dict(cfg, _viewer=True), buys, new, last_prices,
-                                   lambda m, i=i: log(f"Family account {i}: {m}"), trade=trade)
+                                   lambda m, i=i: log(f"Family account {i}: {m}"), trade=trade_a)
         except Exception as e:
             snap = None
             log(f"Family account {i}: failed ({type(e).__name__}); the others go on")
@@ -162,7 +168,8 @@ def _mark_started(acct_id, why):
 def start(log, only=None, accts=None, tag="Family account"):
     """First buys for newly connected accounts (all not yet started, or just `only`). Returns how many started."""
     import broker
-    accts = [a for a in (accts if accts is not None else load(log)) if not a.get("started") and (only is None or a["id"] == only)]
+    accts = [a for a in (accts if accts is not None else load(log))
+             if not a.get("started") and not a.get("hold") and (only is None or a["id"] == only)]
     if not accts:
         return 0
     try:

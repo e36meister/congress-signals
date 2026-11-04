@@ -225,6 +225,8 @@ src = sub('  if (state.tab === "today") html += renderToday(d);',
           '  if (state.tab === "today" && isViewer()) html += tip("<b>Today.</b> These are the stocks members of Congress bought recently whose purchases score near the top of all past ones. The tool buys them for you automatically; you don\'t need to do anything. Tap a ticker for its chart and what\'s going on.");\n'
           '  if (state.tab === "today" && isViewer()) html += emailAskCard();\n'
           '  if (state.tab === "today") html += renderToday(d);', src)
+# a paused family account sees a banner at the top of every page
+src = sub('  let html = "";\n  if (d.version === 1)', '  let html = "";\n  if (isViewer()) html += pausedBanner();\n  if (d.version === 1)', src)
 # your trades on a stock's chart show your own picture
 n = src.count('<img src="/me.jpg" alt="" onerror="this.style.display=\'none\'"></button>`).join("")}')
 assert n == 1, n
@@ -241,6 +243,25 @@ html.viewer [data-jump="today-avoid"],html.viewer [data-jump="today-also"],html.
 html.viewer [data-jump="today-worth"],html.viewer [data-jump="today-unusual"]{display:none!important}
 .vtip{display:none}html.tips .vtip{display:block;background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:12px}
 .vbtns{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
+/* Terms of Use and Privacy Policy: a document page with an initial box after each section */
+.tdoc{background:#fff;color:#1b1f27;border:1px solid var(--rule);border-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,.08);padding:24px 20px 26px;margin:0 0 16px;font:15px/1.6 Georgia,"Times New Roman",serif;max-width:760px}
+.tdoc h1{font:600 21px/1.3 Georgia,serif;text-align:center;margin:0 0 4px;color:#1b1f27}.tdoc h3{font:700 15px Georgia,serif;margin:16px 0 4px;color:#1b1f27}
+.tdoc p,.tdoc li{margin:0 0 8px}.tdoc ul{padding-left:20px;margin:0}.tdoc a{color:#1D4F91}
+.tsub{text-align:center;font:13.5px var(--body);color:#4b5565;margin:0 0 16px!important}
+.tlead{margin:0 0 12px;color:var(--ink2)}
+.tcl{display:grid;grid-template-columns:minmax(0,1fr) 58px;gap:12px;padding:10px 0;border-top:1px solid #e3e6eb}
+.tini{width:58px;height:36px;align-self:end;border:1.5px dashed #9aa3b2;border-radius:4px;background:#fff;color:#8a93a3;font:12px var(--body);cursor:pointer;display:grid;place-items:center}
+.tini.on{border-style:solid;border-color:#1D4F91;color:#1D4F91;font:600 15px var(--body)}
+.tsig{margin-top:18px;padding-top:12px;border-top:2px solid #1b1f27}
+.tsg{display:grid;grid-template-columns:minmax(0,1fr) 110px;gap:14px;margin:12px 0 14px}
+.tline{width:100%;box-sizing:border-box;border:0;border-bottom:1.5px solid #1b1f27;background:none;height:38px;padding:0 4px;font:italic 22px "Snell Roundhand","Brush Script MT",cursive;color:#1D4F91;outline:none;border-radius:0}
+.tline::placeholder{font:14px var(--body);color:#9aa3b2}.tline.signed{display:flex;align-items:flex-end}
+.tdate{border-bottom:1.5px solid #1b1f27;height:38px;display:flex;align-items:flex-end;padding:0 0 4px 4px;font:15px var(--body);box-sizing:border-box}
+.tcap{font:12px var(--body);color:#4b5565;margin-top:4px}.tgo{width:100%}.tgo:disabled{opacity:.5}
+.legal{display:flex;gap:10px;justify-content:center;align-items:center;margin:4px 0 16px;color:var(--ink2);font-size:13px}.legal .link{font-size:13px}
+.pausebar{background:#FFF4E5;color:#7A4B00;border:1px solid #F0C27A;border-radius:10px;padding:10px 12px;margin:0 0 12px;font-size:14px}
+.pausebar .link{color:inherit;text-decoration:underline;font-size:14px}
+@media (prefers-color-scheme:dark){.pausebar{background:#3A2A10;color:#F5D59A;border-color:#7A5A20}}
 .pick>.sellbox{grid-column:1/-1;margin-top:6px}.sellbox .note{max-width:760px}
 .vsell{font:600 13px var(--body);padding:6px 12px;border-radius:8px;border:1px solid var(--bad);background:none;color:var(--bad);cursor:pointer}
 .vsell.go{background:var(--bad);color:#fff}.vsell:disabled{opacity:.6}
