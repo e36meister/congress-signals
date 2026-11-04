@@ -776,7 +776,7 @@ function renderViewerAccount(d, opts = {}) {
   const firstNote = first ? `<div class="note">${VA.keyMsg ? `<b>${esc(VA.keyMsg.text)}</b> ` : ""}${ro ? "They're connected; this fills in at the next update."
       : V.hold ? "Your Alpaca account is connected. This page fills in with your account at the next update (within a few hours)."
       : V.paused ? "Your Alpaca account is connected. Trading is paused, so nothing is bought until you resume it."
-      : V.auto === false ? "Your Alpaca account is connected. Automatic buying is turned off for your account for now, so nothing is bought until the Operator turns it on."
+      : V.auto === false ? "Your Alpaca account is connected. Auto-buying turned off by Operator: nothing is bought until the Operator turns it back on."
       : "Your Alpaca account is connected and the tool is buying the current picks for it now. This page fills in within a few minutes; pull down to refresh."}</div>` : "";
   const pos = p.positions || [], ords = p.orders || [], L = p.limits || {};
   const picks = pos.filter(x => x.bot && x.sleeve !== "park"), park = pos.filter(x => x.sleeve === "park"), own = pos.filter(x => !x.bot && x.sleeve !== "park");
@@ -785,7 +785,7 @@ function renderViewerAccount(d, opts = {}) {
   const GM = grp(mainP), GS = grp(smallP);
   const invested = picks.reduce((a, x) => a + (x.mv || 0), 0), gain = picks.reduce((a, x) => a + (x.pl || 0), 0), parked = park.reduce((a, x) => a + (x.mv || 0), 0);
   const C = d.close_report;
-  const auto = V.hold ? `<span class="chip watch">View only for now</span>` : V.paused ? `<span class="chip avoid">Trading paused</span>` : V.auto !== false ? `<span class="chip BUY">Auto-buying on</span>` : `<span class="chip avoid">Auto-buying paused</span>`;
+  const auto = V.hold ? `<span class="chip watch">View only for now</span>` : V.paused ? `<span class="chip avoid">Trading paused</span>` : V.auto !== false ? `<span class="chip BUY">Auto-buying on</span>` : `<span class="chip avoid">${ro ? "Auto-buying turned off by you" : "Auto-buying turned off by Operator"}</span>`;
   const row = x => {
     const held = x.sleeve === "park" ? `Cash waiting for picks<div class="foot">${V.park === "cash" ? "Being moved back to cash" : "In SGOV until the tool needs it"}</div>`
       : x.bot ? `${x.sleeve === "small" ? "Small-company pick · " : ""}${x.held ?? 0} of ${x.hold ?? L.hold_days ?? 60} days${x.bought ? `<div class="foot">Tool sells ~${esc(fmtDate(addTradingDays(x.bought, x.hold ?? L.hold_days ?? 60)))}; a winner may be kept longer</div>` : ""}`
@@ -798,7 +798,7 @@ function renderViewerAccount(d, opts = {}) {
   // Nov 4: the first family account was connected with nothing in it, and its page just said "Nothing bought yet"
   const empty = !first && !(p.equity >= 1) && !pos.length;
   const why = empty ? `<div class="note warn"><b>${ro ? "This Alpaca account has no money in it yet." : "Your Alpaca account doesn't have any money in it yet."}</b> ${ro ? "The tool buys the current picks once they deposit." : "Deposit money in the Alpaca app (Banking → Deposit). The tool buys the current picks as soon as the money shows up during market hours, or at the next update."}</div>`
-    : V.auto === false && !V.paused && !V.hold ? `<div class="note">${ro ? "Auto-buying is off for this account." : "The Operator has turned off automatic buying for your account for now. The tool still sells what it holds on its usual schedule."}</div>` : "";
+    : V.auto === false && !V.paused && !V.hold ? `<div class="note">${ro ? "Auto-buying is off for this account." : "<b>Auto-buying turned off by Operator.</b> The tool won't buy anything new in your account until the Operator turns it back on. The tool still sells what it holds on its usual schedule."}</div>` : "";
   return `${ro ? "" : tip("<b>Your Account.</b> Everything here is your own real-money Alpaca account. The tool buys new picks for you as they're found, each with a share of your balance set by your buy size; spare cash waits the way you chose under Spare cash. Tap a ticker for its chart.")}
   <div class="filters"><span class="chip SHORT">Real money</span>${auto}<span class="foot">${p.updated ? `Updated ${esc(ago(p.updated))} (${esc(fmtET(p.updated))}) · market ${p.market_open ? "open" : "closed"}` : "Waiting for the first update"}</span></div>
   ${firstNote}${why}
