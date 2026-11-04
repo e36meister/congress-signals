@@ -99,7 +99,6 @@ jobs:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
           CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
           LDA_API_KEY: ${{ secrets.LDA_API_KEY }}
-          QUIVER_API_KEY: ${{ secrets.QUIVER_API_KEY }}
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
           OCR_SPACE_API_KEY: ${{ secrets.OCR_SPACE_API_KEY }}
           GOOGLE_VISION_API_KEY: ${{ secrets.GOOGLE_VISION_API_KEY }}

@@ -2998,7 +2998,7 @@ function renderProgress(d) {
     <div class="tile"><span class="v">${m.matched_share != null ? (m.matched_share * 100).toFixed(1) + "%" : "–"}</span><span class="l">Trades tied to a member's official ID</span><span class="c">${n(m.members)} members</span>${meter(m.matched_share, 1)}</div>
     <div class="tile"><span class="v">${g.filter_test?.complete ? "Done" : "Running"}</span><span class="l">"How strict" replay</span><span class="c">${g.company_names?.tickers ? n(g.company_names.tickers) + " past company names for scan matching" : ""}</span></div>
   </div>
-  ${src.length ? `<p class="foot">Sources: ${src.map(([k, v]) => `${esc({ house_paper: "House scans", senate_paper: "Senate scans", quiver: "Quiver", fmp: "FMP" }[k] || k)} ${v.ok ? "working" : "off" + (v.error ? " (" + esc(v.error) + ")" : "")}`).join(" · ")}</p>` : ""}
+  ${src.length ? `<p class="foot">Sources: ${src.map(([k, v]) => `${esc({ house_paper: "House scans", senate_paper: "Senate scans", fmp: "FMP" }[k] || k)} ${v.ok ? "working" : "off" + (v.error ? " (" + esc(v.error) + ")" : "")}`).join(" · ")}</p>` : ""}
   </section>`;
 }
 

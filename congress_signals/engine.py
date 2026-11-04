@@ -59,7 +59,6 @@ DEFAULT_CONFIG = {
     "SEC_USER_AGENT": "",            # required by the SEC: "Your Name you@example.com"
     "CONGRESS_API_KEY": "",          # free key from api.congress.gov/sign-up (bills)
     "LDA_API_KEY": "",               # optional free key from lda.gov (faster lobbying downloads)
-    "QUIVER_API_KEY": "",
     "FMP_API_KEY": "",
     "OCR_SPACE_API_KEY": "",
     "GOOGLE_VISION_API_KEY": "",     # Google Cloud Vision, free tier only (950 pages a month), after OCR.space's daily cap
@@ -1329,44 +1328,6 @@ def _err_text(r):
         return ""
 
 
-def collect_quiver(cfg):
-    key = cfg.get("QUIVER_API_KEY")
-    if not key:
-        source_health(cfg, "quiver", ok=False, error="no QUIVER_API_KEY secret set")
-        return pd.DataFrame()
-    try:
-        r = requests.get("https://api.quiverquant.com/beta/bulk/congresstrading", timeout=180,
-                         headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
-        if r.status_code != 200:
-            source_health(cfg, "quiver", ok=False, status=r.status_code, error=_err_text(r))
-            log(f"Quiver: HTTP {r.status_code}")
-            return pd.DataFrame()
-        rows = []
-        for d in r.json():
-            name = _pick(d, "Representative", "Name", "Politician")
-            first, last = _split_name(name)
-            ch = str(_pick(d, "House", "Chamber") or "")
-            lo, hi = parse_amount(_pick(d, "Range", "Amount", "Trade_Size_USD"))
-            rows.append({"member": name, "first": first, "last": last,
-                         "chamber": "Senate" if "sen" in ch.lower() else "House", "state": None,
-                         "ticker": _pick(d, "Ticker"), "tx_type": norm_type(_pick(d, "Transaction", "Type")),
-                         "tx_raw": _pick(d, "Transaction", "Type"),
-                         "trade_date": _pick(d, "TransactionDate", "Traded"),
-                         "filed_date": _pick(d, "ReportDate", "Filed", "Disclosed"),
-                         "amt_lo": lo, "amt_hi": hi, "source": "quiver"})
-        log(f"Quiver: {len(rows)} rows")
-        df = pd.DataFrame(rows)
-        yrs = pd.to_datetime(df["filed_date"], errors="coerce").dt.year.value_counts().sort_index().to_dict() if len(df) else {}
-        source_health(cfg, "quiver", ok=bool(len(df)), status=200, rows=len(df),
-                      by_year={int(k): int(v) for k, v in yrs.items() if k == k},
-                      fields=sorted(r.json()[0].keys()) if len(df) else [])
-        return df
-    except Exception as e:
-        source_health(cfg, "quiver", ok=False, error=f"{type(e).__name__}: {str(e)[:150]}")
-        log(f"Quiver: failed ({type(e).__name__})")
-        return pd.DataFrame()
-
-
 # FMP backup for Senate trades (owner, Oct 27). The Senate filings site (eFD) blocks automated reads since Oct 23.
 # FMP's free plan only returns the newest 25 Senate trades (page 0, limit 25; anything more is HTTP 402), so every
 # read is merged into a saved list on Cloudflare (sources/fmp_senate.json) and the quick check reads it every 15
@@ -1643,7 +1604,14 @@ def collect_all(cfg):
             parts.append(("house_paper", collect_house_paper(cfg)))
         except Exception as e:
             log(f"House paper: skipped ({type(e).__name__}: {e})")
-    parts.append(("quiver", collect_quiver(cfg)))
+    # Quiver removed (owner, Nov 4): no subscription, so it never returned anything; drop its old health entry
+    try:
+        _sh = _p(cfg, "state", "source_health.json")
+        _h = json.load(open(_sh))
+        if _h.pop("quiver", None) is not None:
+            json.dump(_h, open(_sh, "w"), indent=1, default=str)
+    except Exception:
+        pass
     parts.append(("fmp", collect_fmp(cfg)))
     PART_SIZES.clear()
     PART_SIZES.update({k: int(len(d)) if d is not None else 0 for k, d in parts})
@@ -1668,15 +1636,7 @@ def collect_all(cfg):
         log(f"Member IDs: skipped at collection ({type(e).__name__}: {e})")
         tx["who"], tx["bio_id"] = tx["chamber"] + "|" + tx["last_key"], None
     # de-duplicate across sources: official sources first
-    prio = {"house_clerk": 0, "senate_efd": 0, "quiver": 1, "house_paper": 2, "senate_paper": 2, "fmp": 3}
-    # a scanned-report row that Quiver also has (same member, stock and filing day) is dropped: Quiver's is typed
-    if (tx["source"] == "quiver").any() and tx["source"].isin(["house_paper", "senate_paper"]).any():
-        q = tx[tx["source"] == "quiver"]
-        qk = set(zip(q["who"], q["ticker"], q["filed_date"].dt.date))
-        pm = tx["source"].isin(["house_paper", "senate_paper"])
-        dup = pm & pd.Series([(w, t, f.date()) in qk for w, t, f in
-                              zip(tx["who"], tx["ticker"], tx["filed_date"])], index=tx.index)
-        tx = tx[~dup]
+    prio = {"house_clerk": 0, "senate_efd": 0, "house_paper": 2, "senate_paper": 2, "fmp": 3}
     tx["_p"] = tx["source"].map(prio).fillna(3)
     tx = tx.sort_values("_p")
     tx = tx.drop_duplicates(["who", "ticker", "trade_date", "tx_type", "amt_lo"], keep="first")
