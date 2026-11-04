@@ -409,3 +409,52 @@ setInterval(() => { if (document.visibilityState === "visible") refreshAlerts();
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshAlerts(); });
 api("/api/session").then(() => { loadData(); alertsState(); refreshAlerts(); }, e => { if (e.code !== "login") { state.error = errorText(e); setStatus("err", "Can't reach the server", true); render(); } });
 
+
+// ---------- table headers stay in view while scrolling (owner, Nov 3 2026) ----------
+// Wide tables scroll sideways inside their box, so a plain CSS sticky header can't follow the page. Instead, when a
+// table's header has scrolled up under the app's top bar while its rows are still on screen, a copy of that header
+// is pinned just below the top bar, with the same column widths and sideways position. Phone card layouts (no
+// header row) are left alone. Tables that scroll inside their own box also get a CSS sticky header (in the styles).
+(() => {
+  const main = document.getElementById("main");
+  if (!main) return;
+  const bar = document.createElement("div");
+  bar.className = "stickyhead"; bar.hidden = true; bar.setAttribute("aria-hidden", "true");
+  document.body.appendChild(bar);
+  let cur = null, raf = 0;
+  const topEdge = () => { const h = document.querySelector("header.top"); return h ? Math.max(0, h.getBoundingClientRect().bottom) : 0; };
+  function update() {
+    raf = 0;
+    const top = topEdge();
+    let pick = null, wrap = null;
+    for (const t of main.querySelectorAll("table")) {
+      const th = t.tHead;
+      if (!th || !th.rows[0] || getComputedStyle(th).display === "none" || !t.offsetParent) continue;
+      const w = t.closest(".tbl") || t.parentElement, wr = w.getBoundingClientRect(), tr = t.getBoundingClientRect();
+      const shown = Math.min(tr.bottom, wr.bottom), hh = th.getBoundingClientRect().height;
+      if (Math.max(tr.top, wr.top) < top && shown > top + hh + 12) { pick = t; wrap = w; break; }
+    }
+    if (!pick) { bar.hidden = true; cur = null; return; }
+    if (cur !== pick) {
+      cur = pick; bar.innerHTML = "";
+      const tb = document.createElement("table");
+      tb.appendChild(pick.tHead.cloneNode(true));
+      bar.appendChild(tb);
+    }
+    const tb = bar.firstChild, src = pick.tHead.rows[0].cells, dst = tb.tHead.rows[0].cells;
+    for (let i = 0; i < src.length && i < dst.length; i++) {
+      const w = src[i].getBoundingClientRect().width + "px";
+      Object.assign(dst[i].style, { width: w, minWidth: w, maxWidth: w, boxSizing: "border-box" });
+    }
+    const wr = wrap.getBoundingClientRect(), pr = pick.getBoundingClientRect();
+    tb.style.width = pr.width + "px";
+    tb.style.transform = `translateX(${pr.left - wr.left}px)`;
+    Object.assign(bar.style, { top: top + "px", left: wr.left + "px", width: wr.width + "px" });
+    bar.hidden = false;
+  }
+  const queue = () => { if (!raf) raf = requestAnimationFrame(update); };
+  addEventListener("scroll", queue, { passive: true });
+  addEventListener("resize", queue);
+  document.addEventListener("scroll", queue, { capture: true, passive: true });    // sideways scrolling inside a table
+  new MutationObserver(() => { cur = null; queue(); }).observe(main, { childList: true, subtree: true });
+})();

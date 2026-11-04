@@ -243,6 +243,10 @@ html.viewer [data-jump="today-avoid"],html.viewer [data-jump="today-also"],html.
 html.viewer [data-jump="today-worth"],html.viewer [data-jump="today-unusual"]{display:none!important}
 .vtip{display:none}html.tips .vtip{display:block;background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:12px}
 .vbtns{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
+/* table headers stay in view: a pinned copy below the top bar (data_layer.js), and inside boxes that scroll */
+.stickyhead{position:fixed;z-index:4;overflow:hidden;pointer-events:none;background:var(--sunken);box-shadow:0 2px 6px rgba(0,0,0,.10);border-radius:0 0 6px 6px}
+.stickyhead table{border-collapse:collapse;table-layout:fixed;font-size:13.5px}.stickyhead th{border-bottom:1px solid var(--rule)}
+.tbl.scroll thead th{position:sticky;top:0;z-index:1}
 /* Terms of Use and Privacy Policy: a document page with an initial box after each section */
 .tdoc{background:#fff;color:#1b1f27;border:1px solid var(--rule);border-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,.08);padding:24px 20px 26px;margin:0 0 16px;font:15px/1.6 Georgia,"Times New Roman",serif;max-width:760px}
 .tdoc h1{font:600 21px/1.3 Georgia,serif;text-align:center;margin:0 0 4px;color:#1b1f27}.tdoc h3{font:700 15px Georgia,serif;margin:16px 0 4px;color:#1b1f27}
