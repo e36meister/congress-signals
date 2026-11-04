@@ -300,6 +300,8 @@ async function api(req, env, url, ctx) {
   if (p === "/api/people-review" && req.method === "GET") return peopleReviewList(env);
   if (p === "/api/people-review" && req.method === "POST") return peopleReview(req, env);
   if (p === "/api/tie-review" && req.method === "POST") return tieReview(req, env);
+  if (p === "/api/post-reviews" && req.method === "GET") return json(await postReviews(env));
+  if (p === "/api/post-review" && req.method === "POST") return postReview(req, env);
   if (p === "/api/live" && req.method === "GET") return live(env);
   if (p === "/api/buy" && req.method === "POST") return buy(req, env);
   if (p === "/api/sell" && req.method === "POST") return sell(req, env);
@@ -873,6 +875,31 @@ async function tieReview(req, env) {
   if (verdict === "clear") delete all[key];
   else all[key] = { verdict, ...(verdict === "relative" ? { rel } : {}), note: String(b.note || "").slice(0, 500), at: new Date().toISOString() };
   await env.DATA.put(TIE_FILE, JSON.stringify(all), { httpMetadata: { contentType: "application/json" } });
+  return json({ ok: true, review: all[key] || null });
+}
+
+// ---------- post-link reviews (owner, Nov 4): yea/nay on each post a Worth a look item links to a trade ----------
+// Keyed ticker|member ID|post URL. Kept as a labeled set to measure how often the post links are right; nothing in
+// the scoring reads it yet.
+const POST_REV_FILE = "inputs/post_reviews.json";
+async function postReviews(env) {
+  try { const o = await env.DATA.get(POST_REV_FILE); if (o) return await o.json(); } catch (e) {}
+  return {};
+}
+async function postReview(req, env) {
+  let b = {};
+  try { b = await req.json(); } catch (e) {}
+  const t = String(b.t || ""), m = String(b.b || ""), u = String(b.u || ""), verdict = String(b.verdict || "");
+  if (!/^[A-Z0-9.\-]{1,12}$/.test(t)) return json({ ok: false, why: "bad-ticker" }, 400);
+  if (m && !/^[A-Z]\d{6}$/.test(m)) return json({ ok: false, why: "bad-member" }, 400);
+  if (!/^https?:\/\/[^\s"<>]{3,600}$/.test(u)) return json({ ok: false, why: "bad-url" }, 400);
+  if (!["yea", "nay", "clear"].includes(verdict)) return json({ ok: false, why: "bad-verdict" }, 400);
+  const key = `${t}|${m}|${u}`;
+  const all = await postReviews(env);
+  if (verdict === "clear") delete all[key];
+  else all[key] = { verdict, why: String(b.why || "").slice(0, 300), d: String(b.d || "").slice(0, 10),
+                    ctx: !!b.ctx, at: new Date().toISOString() };
+  await env.DATA.put(POST_REV_FILE, JSON.stringify(all), { httpMetadata: { contentType: "application/json" } });
   return json({ ok: true, review: all[key] || null });
 }
 

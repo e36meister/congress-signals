@@ -117,9 +117,9 @@ def send_worth_alerts(items):
             first = fresh[0]
             body = (f"{first['t']}: " + "; ".join(first.get("why") or [])[:180]) if len(fresh) == 1 else \
                    f"{len(fresh)} recent trades with a rare red flag. Not buy signals on their own."
-            wp = [o for o in fresh if o.get("posts")]
+            wp = [o for o in fresh if any(not q.get("ctx") for q in o.get("posts") or [])]
             if wp:      # a trade that lines up with the member's own post: say so and point to the post
-                p0 = wp[0]["posts"][0]
+                p0 = next(q for q in wp[0]["posts"] if not q.get("ctx"))
                 body = f"{wp[0]['t']}: {p0.get('who', '').split(',')[0]} {p0['why']}. Check the post in Worth a look." + \
                        (f" (+{len(fresh) - 1} more flagged trades)" if len(fresh) > 1 else "")
             title = (f"Trade + post: {', '.join(o['t'] for o in wp[:4])}" if wp else f"Worth a look: {ts}")

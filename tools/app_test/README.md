@@ -10,4 +10,4 @@ logging what each button sends to the server and what comes back (out/log-runN.j
 
 run1 owner adds an account, sign-in link · run2 first screens, Today, chart, Members, More pages, Terms, Connect ·
 run3 Account page, buy size, Buy / Buy more, Sell, Pause · run4 Alerts, Notifications, Settings, bug report, search,
-email question, everything that must stay out of reach · run5 the owner's Accounts buttons · run6 Nov 4 fixes.
+email question, everything that must stay out of reach · run5 the owner's Accounts buttons · run6 Nov 4 fixes. · run7 the owner's Yea/Nay buttons on Worth a look post links.

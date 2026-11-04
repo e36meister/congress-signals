@@ -580,12 +580,22 @@ def _name_match(display, m):
     return bool(last) and re.search(r"\b" + re.escape(last) + r"\b", d) and any(re.search(r"\b" + re.escape(f) + r"\b", d) for f in firsts)
 
 
+def _last_match(display, m):
+    """The member's last name is in the profile name ("Congresswoman Smith", "Rep. Jane Smith")."""
+    E = __import__("congress_signals.engine", fromlist=["x"])
+    last = E._strip_accents(m.get("last") or "").lower()
+    return bool(last) and bool(re.search(r"\b" + re.escape(last) + r"\b", E._strip_accents(display or "").lower()))
+
+
 def bluesky_accounts(cfg, leg, acc, st, deadline):
-    """handle -> bioguide: from members' websites, then a search by name (kept only when the profile's handle is a
-    .gov domain, or the name matches and the bio says they serve in Congress)."""
+    """handle -> bioguide: from members' websites, then a search by name (kept only when the profile's name matches
+    the member: their last name for a .gov handle, first and last name plus a bio saying they serve in Congress
+    otherwise)."""
     p = _dir(cfg, "bsky_accounts.json")
     ba = json.load(open(p)) if os.path.exists(p) else {"map": {}, "searched": {}}
     dead = ba.setdefault("dead", {})
+    wrong = ba.setdefault("wrong", {})
+    site = {h.lower() for a in acc.values() for h in (a.get("bsky") or [])}     # linked from the member's own website
     for h in [h for h, t in dead.items() if time.time() - t > BSKY_DEAD_RECHECK_DAYS * 86400]:
         dead.pop(h)                         # look again now and then: a deactivated account can come back
     for b, a in acc.items():
@@ -608,13 +618,59 @@ def bluesky_accounts(cfg, leg, acc, st, deadline):
         for a in (js or {}).get("actors", []):
             h = (a.get("handle") or "").lower()
             gov = h.endswith(".house.gov") or h.endswith(".senate.gov")
-            if h in dead or h == "handle.invalid":
+            if h in dead or (wrong.get(h) or {}).get("b") == b or h == "handle.invalid":
                 continue
-            if gov or (_name_match(a.get("displayName"), m) and cue.search(a.get("description") or "")):
+            # Nov 4 (owner, HONA audit): a .gov handle used to be kept without a name check, so searching one
+            # member's name kept another member's account (a senator who shares a first name) and filed that
+            # account's posts and reposts under the wrong member. The profile's name must match now, .gov or not.
+            if (gov and _last_match(a.get("displayName"), m)) or \
+                    (_name_match(a.get("displayName"), m) and cue.search(a.get("description") or "")):
                 ba["map"].setdefault(h, b)
         time.sleep(0.3)
+    _bsky_recheck_map(cfg, ba, leg, site, deadline)
     json.dump(ba, open(p, "w"))
     return ba["map"]
+
+
+BSKY_MAP_CHECK = 2      # bump to check every account found by search again
+
+
+def _bsky_recheck_map(cfg, ba, leg, site, deadline):
+    """Accounts found by name search earlier (not linked from the member's own website): the profile's name must
+    match the member they're filed under. A mismatch is taken off the list for good, and its saved posts move out of
+    the posts folder (to social/dropped/bsky) so they stop showing on that member's page and in trade-post links.
+    A profile that can't be read now is checked again next run (never dropped on a failed read)."""
+    done = ba.setdefault("checked", {})
+    wrong = ba.setdefault("wrong", {})
+    dropped = []
+    for h, b in list(ba["map"].items()):
+        if time.time() > deadline:
+            break
+        if h in site or done.get(h) == BSKY_MAP_CHECK or b not in leg:
+            continue
+        js = _get(BSKY + "app.bsky.actor.getProfile", params={"actor": h})
+        if not js:
+            continue
+        if _last_match(js.get("displayName"), leg[b]):
+            done[h] = BSKY_MAP_CHECK
+            continue
+        ba["map"].pop(h, None)
+        wrong[h] = {"b": b, "name": (js.get("displayName") or "")[:80], "at": time.time()}
+        src = os.path.join(_dir(cfg, "posts", "bsky"), re.sub(r"[^a-z0-9.-]", "_", h) + ".jsonl.gz")
+        if os.path.exists(src):
+            os.replace(src, os.path.join(_dir(cfg, "dropped", "bsky"), os.path.basename(src)))
+        # the account is usually another member's own (first and last name match exactly one current member):
+        # file it under them; with its saved posts moved out, it's read again in full under the right member
+        right = [k for k, m in leg.items() if m.get("current") and k != b and _name_match(js.get("displayName"), m)]
+        if len(right) == 1:
+            ba["map"][h] = right[0]
+            done[h] = BSKY_MAP_CHECK
+        dropped.append(f"@{h} (filed under {leg[b].get('name') or b}, profile says {js.get('displayName') or 'no name'}"
+                       + (f"; now filed under {leg[right[0]].get('name') or right[0]})" if len(right) == 1 else ")"))
+        time.sleep(0.2)
+    if dropped:
+        _log(f"Bluesky: {len(dropped)} account(s) were filed under the wrong member and were moved off them: "
+             + "; ".join(dropped[:8]) + ("…" if len(dropped) > 8 else ""))
 
 
 # Nov 3: 5 handles failed every run with HTTP 400 and were reported as "couldn't be read": Bluesky answers "Profile not
@@ -1789,6 +1845,8 @@ def build_index(cfg, tg=None, sort_until=None, hard_until=None):
                             "d": str(d)[:10], "u": url, "x": (text or "")[:220], "src": s, "t": list(tk or []),
                             "p": [q.split("|")[0] for q in (pp or [])], "s": list(secs or []), "ag": ag,
                             "ty": srt.get("ty") or [], "ins": srt.get("ins") or "", "meet": srt.get("meet") or [],
+                            "hit": [x["n"] for x in srt.get("tg", []) if x["k"] == "industry" and x.get("hit")],
+                            "rp": bool(rp),
                             "st": {(x.get("t") if x["k"] == "co" else x.get("n")): x.get("s") for x in srt.get("tg", [])
                                    if x.get("s") is not None}})
                 if srt:      # what kind of post, insider hint, meeting, and tone toward each company or person
@@ -1897,16 +1955,20 @@ def trade_post_links(trades, idx, before_days=90):
                               (f" ({'positive' if tone >= 0.3 else 'negative' if tone <= -0.3 else 'neutral'} tone)" if tone is not None else "")))
             elif sec and sec in secs and p.get("ins"):
                 found.append((3, p, f"hinted at something not yet public about {sec.lower()} (\"{p['ins']}\") {when}"))
-            elif sec and sec in secs and p["d"] >= lo30:
+            elif sec and sec in secs and p["d"] >= lo30 and not p.get("rp"):
+                # Nov 4 (owner, HONA audit): a repost isn't the member's own words, and "against" needs both
+                # oversight/criticism wording in a sentence that names the industry and a negative tone toward it
+                # (a +0.67 hearing release and a funding release were read as against industrials)
                 tone = p.get("st", {}).get(sec)
                 ty = set(p.get("ty") or [])
                 if buy and (ty & BOOST_TYPES) and (tone is None or tone >= 0.2):
                     found.append((2, p, f"posted a {sec.lower()} boost ({', '.join(sorted(ty & BOOST_TYPES))}) {when}"))
-                elif not buy and ((ty & HIT_TYPES) or (tone is not None and tone <= -0.3)):
+                elif not buy and sec in (p.get("hit") or []) and tone is not None and tone <= -0.2:
                     found.append((2, p, f"posted against {sec.lower()} {when}"))
         if found:
             found.sort(key=lambda z: (-z[0], z[1]["d"]), reverse=False)
-            out[i] = [{"d": p["d"], "u": p.get("u"), "x": p.get("x"), "src": p.get("src"), "why": w, "lvl": lv}
+            out[i] = [{"d": p["d"], "u": p.get("u"), "x": p.get("x"), "src": p.get("src"),
+                       "why": w + (" (a repost)" if p.get("rp") else ""), "lvl": lv}
                       for lv, p, w in found[:3]]
     return out
 

@@ -2,7 +2,7 @@
 
 For every post (press release, Bluesky, Mastodon, Substack, YouTube, X archive):
   ty    what kind of post: funding (grants, jobs, money for the district), visit (tours, site visits), meeting
-        (met with / sat down with), oversight (letters, investigations, demands), legislation (bills, votes),
+        (met with / sat down with), oversight (letters, investigations, demands), advocacy (urges, calls on: neutral), legislation (bills, votes),
         hearing (committee hearings, testimony), praise, criticism, personal/other. Several can apply.
   tg    who it's about: companies, company people (executives, lobbyists), agencies, industries; with a tone toward
         each (-1 against ... +1 for), read from the sentences that name them.
@@ -14,7 +14,7 @@ company, which reads tone better). Setting ANTHROPIC_API_KEY and POST_SORTER=hai
 Never raises; a post it can't read gets an empty result."""
 import os, re
 
-SORT_VERSION = 5       # 2: tone toward industries too; 3: 'met with' and 'strong' only when the company is what the sentence is about; 4: alert levels (Oct 19); 5: re-sort after tagger 11 (Nov 3)
+SORT_VERSION = 6       # 2: tone toward industries too; 3: 'met with' and 'strong' only when the company is what the sentence is about; 4: alert levels (Oct 19); 5: re-sort after tagger 11 (Nov 3); 6: "urge/calls on" is advocacy, not oversight; per-industry hit wording (Nov 4)
 
 TYPE_RX = [
     ("meeting", re.compile(r"\b(met\b.{0,30}\bwith|meet(?:ing|s)?\b.{0,30}\bwith|sat down with|sit down with|hosted|"
@@ -25,8 +25,13 @@ TYPE_RX = [
     ("funding", re.compile(r"(\$\s?\d[\d,.]*\s*(?:million|billion|thousand|[mbk])\b|\bgrants?\b|\bfunding\b|\bawarded\b|"
                            r"\bsecured\b|\bappropriat\w+|\bfederal (?:dollars|investment)|\bnew jobs\b|\bjobs (?:to|in|for)\b|"
                            r"\binvest(?:ing|ment)s? in\b)", re.I)),
+    # Nov 4 (owner, HONA audit): "urged Congress to act" / "calls on" put a supportive hearing release and a funding
+    # release in oversight, which made them read as posts against an industry. Asking for something is advocacy
+    # (neutral); oversight is letters, investigations, subpoenas, demands for answers.
     ("oversight", re.compile(r"\b(letter to|wrote to|sent a letter|demand\w*|investigat\w+|probe|subpoena\w*|oversight|"
-                             r"inquiry|calls? on|urg(?:e|es|ed|ing)|hold .{0,30} accountable|answers from)\b", re.I)),
+                             r"inquiry|hold .{0,30} accountable|answers from)\b", re.I)),
+    ("advocacy", re.compile(r"\b(calls? on|call(?:ed|ing) on|urg(?:e|es|ed|ing)|push(?:es|ed|ing)? for|fight(?:s|ing)? for|"
+                            r"advocat\w+)\b", re.I)),
     ("legislation", re.compile(r"\b(introduc\w+ (?:the |a |my |bipartisan )?(?:bill|legislation|act)|cosponsor\w*|"
                                r"\bbill\b|legislation|amendment|signed into law|passed the (?:house|senate)|"
                                r"voted (?:for|against|to)|my vote|\bact\b)", re.I)),
@@ -183,9 +188,16 @@ def sort_record(r, names=None):
             from congress_signals.social import SECTOR_WORDS
         except Exception:
             SECTOR_WORDS = {}
+        hit_rx = [rx for k, rx in TYPE_RX if k in HIT_TYPES]
         for s in secs[:4]:
             words = [w for w in (SECTOR_WORDS.get(s) or "").split() if len(w) > 2]
-            targets.append({"k": "industry", "n": s, "s": _target_tone(text, words, tone) if words else None})
+            x = {"k": "industry", "n": s, "s": _target_tone(text, words, tone) if words else None}
+            # Nov 4: oversight or criticism counts against an industry only in a sentence that names it (a release
+            # criticizing a foreign government that also mentions "military" isn't against industrials)
+            if words and any(rx.search(sn) and any(re.search(r"\b" + re.escape(w) + r"\b", sn, re.I) for w in words)
+                             for sn in _sentences(text) for rx in hit_rx):
+                x["hit"] = True
+            targets.append(x)
         # "met with": the company or person must be in the same sentence as the meeting or visit words (Oct 18:
         # a Memphis roundtable post that listed FedEx among the city's employers was flagged as meeting FedEx)
         sents = _sentences(text)
@@ -215,7 +227,7 @@ def sort_record(r, names=None):
         for x in targets:
             if x["k"] == "co" and not central(x):
                 x["side"] = True         # mentioned in passing
-        return {"v": SORT_VERSION, "ty": types[:4], "tg": targets[:12], "ins": ins.group(0) if ins else "",
+        return {"v": SORT_VERSION, "ty": types[:5], "tg": targets[:12], "ins": ins.group(0) if ins else "",
                 "meet": meet, "strong": bool(strong), "m": model_name()}
     except Exception:
         return {"v": SORT_VERSION, "ty": ["other"], "tg": [], "ins": "", "meet": None, "strong": False, "m": "error"}

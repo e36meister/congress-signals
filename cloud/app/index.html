@@ -250,6 +250,8 @@ nav.jump button{flex:0 0 auto;font:600 13px var(--body);color:var(--ink2);backgr
   border-radius:999px;padding:7px 12px;min-height:36px;cursor:pointer;white-space:nowrap}
 nav.jump button:active{background:var(--accent-soft);color:var(--accent)}
 nav.jump .jn{font:600 11px var(--mono);color:var(--accent);margin-left:2px}
+.prv{display:inline-flex;gap:4px;align-items:center;flex-wrap:wrap}.prv-yn{display:inline-flex;gap:4px;flex-wrap:nowrap}
+.prv-b{min-width:44px}.prv-b.on.yea{background:var(--good);color:#fff;border-color:var(--good)}.prv-b.on.nay{background:var(--bad);color:#fff;border-color:var(--bad)}
 #today-buy,#today-worth,#posts,#today-avoid,#today-unusual,#today-also{scroll-margin-top:calc(var(--hdr,96px) + 60px)}
 .post{border-top:1px solid var(--rule);padding-top:8px;overflow-wrap:anywhere}
 .mlink{color:inherit;font:inherit;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px;text-decoration-color:color-mix(in srgb,currentColor 40%,transparent);cursor:pointer}
@@ -592,7 +594,7 @@ nav.tabs button{overflow:hidden}
 
 <script>
 (() => {
-const APP_BUILD = '0.1.dev-d2f9bb6', APP_BUILT = '2026-11-04T07:00+00:00', APP_SHA = 'd2f9bb6';
+const APP_BUILD = '0.1.dev-6f87a26', APP_BUILT = '2026-11-04T14:51+00:00', APP_SHA = '6f87a26';
 // ---------- family accounts (owner, Nov 2 2026) ----------
 // A family account sees Today (Buy candidates only), Members, Alerts, its own Account and a short More menu (company
 // search, notifications, settings, questions, bug report). The server only answers those (cloud/accounts.js); this
@@ -2385,7 +2387,7 @@ function renderToday(d) {
   <p class="foot">Analyst, earnings and news details are context only; they aren't part of the score. Watchlist built ${esc(ago(w.updated))} (${esc(fmtET(w.updated))}).</p>`;
 }
 
-const POST_TY = { funding: "Funding/jobs", visit: "Visit", meeting: "Meeting", oversight: "Letter/oversight", legislation: "Legislation",
+const POST_TY = { funding: "Funding/jobs", visit: "Visit", meeting: "Meeting", oversight: "Letter/oversight", advocacy: "Urging", legislation: "Legislation",
   hearing: "Hearing", praise: "Praise", criticism: "Criticism", other: "Other" };
 const POSTS = { feed: null, loading: false, err: null, show: "notable", n: 30 };
 const PREV = { items: null, verdicts: {}, err: null, loading: false, busy: false };
@@ -2458,6 +2460,36 @@ document.getElementById("main").addEventListener("click", ev => {
   else if (t.dataset.pmore) { POSTS.n += 30; render(); }
 });
 
+// yea/nay on each post a Worth a look item links (owner, Nov 4): builds a labeled set to measure the post links
+const PLINK = { rev: null, loading: false, err: null, busy: false, msg: {} };
+const prevKey = (t, q) => `${t}|${q.b || ""}|${q.u}`;
+function postRevBtns(t, q) {
+  if (!q.u || PLINK.err?.code === "app_only") return "";
+  if (PLINK.rev === null && !PLINK.loading && !PLINK.err) {
+    PLINK.loading = true;
+    loadPostReviews().then(js => { PLINK.rev = js || {}; }).catch(e => { PLINK.err = e; PLINK.rev = {}; }).finally(() => { PLINK.loading = false; render(); });
+  }
+  const v = (PLINK.rev || {})[prevKey(t, q)]?.verdict;
+  const b = (x, l) => `<button type="button" class="tag prv-b${v === x ? " on " + x : ""}" data-prv="${x}" data-pt="${esc(t)}" data-pb="${esc(q.b || "")}" data-pu="${esc(q.u)}" data-pw="${esc(q.why || "")}" data-pd="${esc(q.d || "")}" data-pc="${q.ctx ? 1 : ""}" aria-pressed="${v === x}" ${PLINK.busy ? "disabled" : ""}>${l}</button>`;
+  return `<span class="prv-yn">${b("yea", "Yea")}${b("nay", "Nay")}</span>`;
+}
+function postRevMsg(t) { const m = PLINK.msg[t]; return m ? `<p class="foot" style="color:${m.ok ? "var(--muted)" : "var(--bad)"}">${esc(m.text)}</p>` : ""; }
+document.getElementById("main").addEventListener("click", async ev => {
+  const el = ev.target.closest("[data-prv]");
+  if (!el || PLINK.busy) return;
+  const t = el.dataset.pt, q = { b: el.dataset.pb, u: el.dataset.pu };
+  const was = (PLINK.rev || {})[prevKey(t, q)]?.verdict;
+  const verdict = was === el.dataset.prv ? "clear" : el.dataset.prv;     // tapping your answer again undoes it
+  PLINK.busy = true; render();
+  try {
+    const js = await savePostReview({ t, b: q.b, u: q.u, verdict, why: el.dataset.pw, d: el.dataset.pd, ctx: !!el.dataset.pc });
+    PLINK.rev = PLINK.rev || {};
+    if (js.review) PLINK.rev[prevKey(t, q)] = js.review; else delete PLINK.rev[prevKey(t, q)];
+    PLINK.msg[t] = { ok: true, text: verdict === "clear" ? "Answer removed." : `Saved: ${verdict}.` };
+  } catch (e) {
+    PLINK.msg[t] = { ok: false, text: e.code === "offline" ? "You're offline; not saved." : e.code === "app_only" ? "Answers can be saved in the phone app only." : "Not saved: " + (e.why || e.message || "unknown error") };
+  } finally { PLINK.busy = false; render(); }
+});
 function worthSection(d) {
   if (isViewer()) return "";
   const u = d.worth || [];
@@ -2472,7 +2504,7 @@ function worthSection(d) {
       <div><div class="co">${esc(r.co || infoFor(r.t).co || r.t)}</div>
         <div class="ppl">${(r.who || []).map(w => `<span class="person">${avatar({ n: w.n, b: w.b })}<span><span class="pn">${mlink(w.n, w.b)}${tagHtml({ n: w.n, b: w.b })}</span><span class="pr"><span class="bs ${w.ty}">${w.ty === "buy" ? "Bought" : "Sold"}</span> ${esc(fmtDate(w.td))} · disclosed ${esc(fmtDate(w.d))}${w.tr != null ? " · " + esc(trackText(w, w.ty)) : ""}</span></span></span>`).join("")}</div>
         ${tagsHtml(r.why, 5, `Why ${r.t} is flagged`)}
-        ${(r.posts || []).length ? `<div class="tags">${r.posts.map(q => `<a class="tag go" href="${esc(q.u)}" target="_blank" rel="noopener">Go to post</a>${tipBtn(reasonTag(q.why).label + " · " + fmtShort(q.d), "The post", `<p><b>${esc(q.who || "")}</b> ${esc(q.why)}</p><p class="foot">${esc(fmtDate(q.d))} · ${esc(q.src || "")}</p><p>“${esc(String(q.x || ""))}”</p><p><a href="${esc(q.u)}" target="_blank" rel="noopener">Go to post</a></p>`, "post")}`).join("")}</div>` : ""}</div>
+        ${(r.posts || []).length ? `<div class="tags">${r.posts.map(q => `<span class="prv"><a class="tag go" href="${esc(q.u)}" target="_blank" rel="noopener">Go to post</a>${tipBtn((q.ctx ? "Context · " : "") + reasonTag(q.why).label + " · " + fmtShort(q.d), "The post", `<p><b>${esc(q.who || "")}</b> ${esc(q.why)}</p>${q.ctx ? `<p class="foot">Context only: this post matches the trade's industry, not the company, so it doesn't flag the stock by itself.</p>` : ""}<p class="foot">${esc(fmtDate(q.d))} · ${esc(q.src || "")}</p><p>“${esc(String(q.x || ""))}”</p><p><a href="${esc(q.u)}" target="_blank" rel="noopener">Go to post</a></p>`, "post")}${postRevBtns(r.t, q)}</span>`).join("")}</div>${postRevMsg(r.t)}` : ""}</div>
       <div class="side">${side(r)}</div>
       ${buyList.has(r.t) ? "" : confirmBox({ t: r.t })}</article>`).join("")}</div>
     <p class="foot">These aren't buy or sell signals on their own: the backtest hasn't shown these flags help yet. They're here so nothing unusual slips by. New ones are also emailed to you.</p></section>`;
@@ -4149,6 +4181,10 @@ async function savePeopleReview(key, verdict, n) {
   return (await api("/api/people-review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, verdict, n }) })).js;
 }
 async function loadTieReviews() { return (await api("/api/tie-reviews")).js; }
+async function loadPostReviews() { return (await api("/api/post-reviews")).js; }
+async function savePostReview(o) {
+  return (await api("/api/post-review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(o) })).js;
+}
 async function saveTieReview(key, verdict, note, rel) {
   return (await api("/api/tie-review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, verdict, note, rel }) })).js;
 }

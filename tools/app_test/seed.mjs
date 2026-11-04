@@ -17,7 +17,10 @@ export const dashboard = {
     new: [{ action: "BUY", t: "GS" }, { action: "SELL", t: "OWNERSELL" }] },
   adaptive: { policy: { hold_other: 60, hold_small: 375, hold_sleeve: 375, sizing: "equal", price_exit: "none", extend: "none" }, OWNER_ONLY: "adaptive history" },
   small: { slots: 25, OWNER_ONLY: "small backtest" },
-  portfolio: { equity: 987654, OWNER_ONLY: "owner portfolio" }, close_report: { OWNER_ONLY: "owner close" }, worth: [{ t: "OWNERWORTH", OWNER_ONLY: 1 }],
+  portfolio: { equity: 987654, OWNER_ONLY: "owner portfolio" }, close_report: { OWNER_ONLY: "owner close" }, worth: [{ t: "OWNERWORTH", OWNER_ONLY: 1, d: "2026-11-02", who: [{ n: "Test Member", b: "T000001", ty: "sell", td: "2026-09-29", d: "2026-11-02" }],
+    why: ["Test Member posted about OWNERWORTH before the trade: check the post"],
+    posts: [{ d: "2026-09-02", u: "https://example.test/post-1", x: "named the company", src: "Press release", who: "Test Member", b: "T000001", why: "posted about OWNERWORTH before the trade" },
+            { d: "2026-09-16", u: "https://example.test/post-2", x: "industry only", src: "Press release", who: "Test Member", b: "T000001", why: "posted against industrials before the trade", ctx: true }] }],
   source_health: { OWNER_ONLY: "health" }, backtest: { OWNER_ONLY: "backtest" },
 };
 export const members = { updated: now, members: [

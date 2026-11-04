@@ -2163,13 +2163,17 @@ def worth_a_look(scored, cfg, days=None):
             log("Worth a look: posts index not found; trade-post links skipped")
     except Exception as e:
         log(f"Worth a look: trade-post links failed ({type(e).__name__}: {e})")
-    flags = flags | r.index.isin(list(links))
+    # Nov 4 (owner, HONA audit): a post that only matches the trade's industry is context, not a red flag. It puts the
+    # stock here only when the post names the company or hints at non-public news (level 3); industry-only posts
+    # still show on a trade that's flagged for something else.
+    flags = flags | r.index.isin([k for k, v in links.items() if any(p_.get("lvl", 0) >= 3 for p_ in v)])
     r = r[flags]
     out = {}
     for ix, x in zip(r.sort_values("filed_date", ascending=False).index, r.sort_values("filed_date", ascending=False).to_dict("records")):
         why = [x.get(k) for k in ("spouse_note", "relative_note", "family_note", "volume_note", "event_note") if x.get(k)]
         for p_ in links.get(ix, []):
-            why.append(f"{str(x['member']).split(',')[0]} {p_['why']}: check the post")
+            if p_.get("lvl", 0) >= 3:
+                why.append(f"{str(x['member']).split(',')[0]} {p_['why']}: check the post")
         if x.get("f_spouse_employer", 0) > 0:
             why.append("the member's yearly disclosure says their spouse works for or is paid by the company")
         if x.get("f_closed_briefing", 0) > 0:
@@ -2182,7 +2186,9 @@ def worth_a_look(scored, cfg, days=None):
         for p_ in links.get(ix, []):
             if p_.get("u") and all(q.get("u") != p_["u"] for q in o["posts"]):
                 o["posts"].append({"d": p_["d"], "u": p_["u"], "x": p_.get("x"), "src": p_.get("src"),
-                                   "who": str(x["member"]), "why": p_["why"]})
+                                   "who": str(x["member"]), "why": p_["why"],
+                                   "b": x.get("bioguide") if isinstance(x.get("bioguide"), str) else None,
+                                   **({"ctx": True} if p_.get("lvl", 0) < 3 else {})})
         if not any(w["n"] == x["member"] and w["ty"] == x["tx_type"] for w in o["who"]):
             w_ = {"n": str(x["member"]), "b": x.get("bioguide") if isinstance(x.get("bioguide"), str) else None,
                   "ty": x["tx_type"], "td": pd.Timestamp(x["trade_date"]).strftime("%Y-%m-%d"),
