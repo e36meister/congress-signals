@@ -364,7 +364,7 @@ function renderViewerMore() {
 function renderViewerPage() {
   if (state.tab === "more") return renderViewerMore();
   if (state.tab === "vnotif") return vBack() + renderVNotif();
-  if (state.tab === "vset") return vBack() + renderVSettings();
+  if (state.tab === "vset") return vBack() + renderVSettings() + signInPanel();
   if (state.tab === "faq") return vBack() + renderFaq();
   if (state.tab === "bug") return vBack() + renderBug();
   if (state.tab === "terms") return vBack() + renderTermsPage();
@@ -570,13 +570,13 @@ function renderAccounts() {
     const active = a.seen_at ? ` · last active ${esc(ago(a.seen_at))}` : "";
     return `<article class="acct">
       <div class="acct-h"><b>${esc(a.label)}</b>${seen}${st}${trade}${a.terms_at ? `<span class="chip watch">Terms signed</span>` : `<span class="chip avoid">Terms not signed</span>`}</div>
-      <div class="foot">${esc(a.email)} · ${conn}${a.build ? ` · app ${esc(a.build)}${SERVER_BUILD && a.build !== SERVER_BUILD ? " (older)" : " (latest)"}` : ""}${seen ? "" : active}${a.last_login ? ` · signed in with a link ${esc(ago(a.last_login))}` : a.link_sent ? ` · link sent ${esc(ago(a.link_sent))}` : ""}</div>
+      <div class="foot">${esc(a.email)} · ${conn}${a.build ? ` · app ${esc(a.build)}${SERVER_BUILD && a.build !== SERVER_BUILD ? " (older)" : " (latest)"}` : ""}${seen ? "" : active}${a.last_login ? ` · last signed in ${esc(ago(a.last_login))}` : a.link_sent ? ` · invite sent ${esc(ago(a.link_sent))}` : ""}</div>
       ${S ? `<div class="acct-s"><span><b>${money(S.equity)}</b> value</span><span class="${cls(S.day_pl)}">${S.day_pl == null ? "–" : (S.day_pl > 0 ? "+" : "") + money(S.day_pl)} today</span><span>${money(S.invested)} in picks</span><span>${S.positions} position${S.positions === 1 ? "" : "s"}</span><span class="foot">updated ${esc(ago(S.updated))}</span></div>` : ""}
       ${a.problem ? `<div class="foot neg">${esc(a.problem)}</div>` : ""}
       <div class="acct-b">${a.keys ? `<button type="button" class="btn sm" data-accview="${esc(a.id)}">View portfolio</button>` : ""}
         ${a.terms_at ? `<button type="button" class="btn ghost sm" data-accterms="${esc(a.id)}">Signed terms</button>` : ""}
         ${a.keys ? btn("auto", a.auto ? (ACC.hold ? "Keep paused at launch" : "Pause auto-buying") : (ACC.hold ? "Start with everyone at launch" : "Turn auto-buying on"), ` data-on="${a.auto ? "0" : "1"}"`, a.auto ? "warn" : "go") : ""}
-        ${a.status !== "disabled" ? btn("link", "Send sign-in link") : ""}
+        ${a.status !== "disabled" ? btn("link", "Send invite") : ""}
         ${a.status !== "disabled" ? btn("signout", "Sign out everywhere", "", "warn") : ""}
         ${a.keys ? btn("reset-keys", "Reset keys", "", "warn") : ""}
         ${a.status === "disabled" ? btn("enable", "Turn back on", "", "go") : btn("disable", "Turn off", "", "danger")}
@@ -595,9 +595,9 @@ function renderAccounts() {
     <form id="accadd" class="keysform" autocomplete="off">
       <input id="accl" type="text" placeholder="Name, e.g. Mom" maxlength="40" required aria-label="Name">
       <input id="acce" type="email" placeholder="Their email" required aria-label="Email">
-      <button type="submit" class="buybtn go"${ACC.busy ? " disabled" : ""}>Add and email a sign-in link</button>
+      <button type="submit" class="buybtn go"${ACC.busy ? " disabled" : ""}>Add and email an invite</button>
     </form>
-    <p class="foot">They get a sign-in link by email (from admin@capitolcapital.cc), then connect their own real-money Alpaca account once in the app. From then on the tool buys the same picks for them, sized from their own balance, and sends alerts only to them. Don't charge for this: trading other people's money for a fee would need an adviser registration.</p>
+    <p class="foot">They get an invite by email (from admin@capitolcapital.cc) that explains how to add the app to their home screen and set up a password (sign-in is password plus an emailed code, or Face ID once set up), then they connect their own real-money Alpaca account once in the app. From then on the tool buys the same picks for them, sized from their own balance, and sends alerts only to them. Don't charge for this: trading other people's money for a fee would need an adviser registration.</p>
   </section>`;
 }
 document.addEventListener("submit", ev => {
@@ -635,9 +635,9 @@ document.addEventListener("click", ev => {
   }
   const ask = { auto: b.dataset.on === "1" ? (ACC.hold ? `Start ${a.label} with everyone when family trading starts?` : `Turn automatic buying back on for ${a.label}? The tool starts buying new picks in their account again.`)
       : (ACC.hold ? `Keep ${a.label}'s automatic buying paused when family trading starts? You can turn it on any time.` : `Pause automatic buying for ${a.label}? The tool stops buying new picks in their account (it still sells on schedule).`),
-    link: `Email a new sign-in link to ${a.label} (${a.email})?`,
-    signout: `Sign ${a.label} out on every device? They'll need a new sign-in link to get back in.`,
-    enable: `Turn ${a.label}'s account back on? You can then send them a sign-in link.` }[act];
+    link: `Email ${a.label} (${a.email}) the invite again? It explains how to add the app and set up a password.`,
+    signout: `Sign ${a.label} out on every device? They sign in again with their password and code (or Face ID).`,
+    enable: `Turn ${a.label}'s account back on? They can then sign in again.` }[act];
   if (ask && !confirm(ask)) return;
   if (act === "reset-keys" && !confirm(`Remove ${a.label}'s saved Alpaca keys? The tool stops trading their account until they connect again. Nothing is sold.`)) return;
   if (act === "disable" && !confirm(`Turn off ${a.label}'s account? They're signed out and the tool stops trading it. Nothing is sold.`)) return;
@@ -729,7 +729,7 @@ function renderPrivacy() {
   ${S("2. How it is stored", ul([
     "Your Alpaca key is encrypted with AES-256-GCM before it is saved. The encryption key is kept separately as a protected secret and is never stored with your data, and the key is never shown again after you enter it.",
     "Your information is kept in private cloud storage (Cloudflare R2) that is not publicly reachable. Every request is checked against your signed-in session.",
-    "Sign-in links work once and expire after 20 minutes; only a scrambled fingerprint (hash) of each link is stored. Network addresses used to limit sign-in attempts are stored only in scrambled form.",
+    "Your password is never stored, only a scrambled one-way fingerprint of it (salted PBKDF2-SHA256 with a secret key). Sign-in codes expire after 10 minutes, can be tried 5 times, and only a fingerprint of each is stored. Face ID or a passkey never leaves your device; the app keeps only its public key. Network addresses used to limit sign-in attempts are stored only in scrambled form.",
     "All connections to the app are encrypted with HTTPS."]))}
   ${S("3. Who can see it", ul([
     "You and the Operator. No other account holder can see your information.",
@@ -890,4 +890,49 @@ setInterval(() => {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible") return;
   api("/api/session?b=" + encodeURIComponent(APP_BUILD)).then(r => { const had = SERVER_BUILD; checkBuild(r.js); if (SERVER_BUILD !== had) render(); }, () => {});
+});
+
+
+// ---------- Face ID / passkey sign-in: set up or remove (their Settings; the owner's More page) ----------
+const PK = { items: null, loading: false, msg: null, busy: false, can: null };
+const PK_NAME = /iPhone|iPad/.test(navigator.userAgent) ? "Face ID" : /Macintosh/.test(navigator.userAgent) ? "Touch ID" : "a passkey";
+function pkLoad() {
+  if (PK.loading || PK.items) return;
+  PK.loading = true;
+  (async () => { try { PK.can = !!(window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()); } catch (e) { PK.can = false; } })();
+  api("/api/me/passkeys").then(r => { PK.items = r.js.items || []; }).catch(() => { PK.items = []; }).finally(() => { PK.loading = false; render(); });
+}
+function signInPanel() {
+  pkLoad();
+  const L = PK.items || [];
+  return `<section class="panel"><div class="ph"><h2>Sign-in</h2><span class="sub">${esc(PK_NAME === "a passkey" ? "Passkeys" : PK_NAME)}</span></div>
+    <p class="foot" style="margin:0 0 8px">You sign in with your email and password plus a code we email you, and stay signed in for a month. On a device with ${esc(PK_NAME)}, you can use it instead.</p>
+    ${L.length ? `<ul class="vrules">${L.map(k => `<li><span>${esc(k.device || "Device")} · set up ${esc(fmtDate(String(k.at).slice(0, 10)))}</span><button type="button" class="link" data-pkdel="${esc(k.id)}">Remove</button></li>`).join("")}</ul>` : ""}
+    ${PK.can === false ? `<p class="foot">This device doesn't have ${esc(PK_NAME)} or a passkey; keep using your password and code here.</p>`
+      : `<button type="button" class="btn sm" data-pkadd="1"${PK.busy ? " disabled" : ""}>Set up ${esc(PK_NAME)} on this device</button>`}
+    ${PK.msg ? `<div class="tapmsg ${PK.msg.ok ? "pos" : "neg"}">${esc(PK.msg.text)}</div>` : ""}</section>`;
+}
+const pkB64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const pkUnb64 = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), c => c.charCodeAt(0));
+document.addEventListener("click", async ev => {
+  const add = ev.target.closest && ev.target.closest("[data-pkadd]"), del = ev.target.closest && ev.target.closest("[data-pkdel]");
+  if (!add && !del) return;
+  if (del) {
+    if (!confirm("Remove " + PK_NAME + " sign-in from that device? It will sign in with password and code instead.")) return;
+    try { const { js } = await api("/api/me/passkey/remove", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: del.dataset.pkdel }) }); PK.msg = { ok: true, text: js.message }; }
+    catch (e) { PK.msg = { ok: false, text: e.message || "Couldn't remove it." }; }
+    PK.items = null; render(); return;
+  }
+  PK.busy = true; PK.msg = null; render();
+  try {
+    const o = (await api("/api/me/passkey/options")).js;
+    const c = await navigator.credentials.create({ publicKey: { ...o, challenge: pkUnb64(o.challenge), user: { ...o.user, id: pkUnb64(o.user.id) },
+      excludeCredentials: (o.excludeCredentials || []).map(x => ({ ...x, id: pkUnb64(x.id) })) } });
+    const R = c.response, ua = navigator.userAgent;
+    const { js } = await api("/api/me/passkey", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: c.id,
+      clientDataJSON: pkB64(R.clientDataJSON), authenticatorData: pkB64(R.getAuthenticatorData()), publicKey: pkB64(R.getPublicKey()), alg: R.getPublicKeyAlgorithm(),
+      device: /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Macintosh/.test(ua) ? "Mac" : /Android/.test(ua) ? "Android" : /Windows/.test(ua) ? "Windows" : "This device" }) });
+    PK.msg = { ok: true, text: js.message };
+  } catch (e) { PK.msg = { ok: false, text: e && e.name === "InvalidStateError" ? PK_NAME + " is already set up on this device." : e && e.name === "NotAllowedError" ? "Cancelled." : (e && e.message) || "Couldn't set it up." }; }
+  PK.busy = false; PK.items = null; render();
 });

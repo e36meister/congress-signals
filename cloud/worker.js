@@ -10,7 +10,8 @@ const PREFIX = "cs-", PARK_PREFIX = "cs-park-", PARK_CHOICES = ["SPY", "VOO", "I
 const enc = new TextEncoder();
 import { vapid, saveSub, sendAll, getSubs } from "./push.js";
 import { readViewer, viewerAllowed, viewerApi, requestLink, redeemLink, SIGNIN_PAGE, ownerAccounts, ownerAccount, ownerAccountLive,
-         ownerAccountTerms, ownerAccountsPost, checkFillsAll, deliverTo, viewerWidget } from "./accounts.js";
+         ownerAccountTerms, ownerAccountsPost, authStart, authVerify, passkeyLoginOptions, passkeyLogin,
+         passkeyRegOptions, passkeyRegister, passkeyRemove, passkeyList, viewerCookie, checkFillsAll, deliverTo, viewerWidget } from "./accounts.js";
 
 export default {
   async fetch(req, env, ctx) {
@@ -89,49 +90,138 @@ const LOGIN_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>Capitol Capital</title><style>
 :root{--ground:#F3F5F8;--surface:#FFF;--ink:#152033;--ink2:#46536A;--rule:#DCE1E8;--accent:#1D4F91;--on:#fff}
 @media (prefers-color-scheme:dark){:root{--ground:#0E131A;--surface:#151C26;--ink:#E6EBF2;--ink2:#B4BECC;--rule:#27303D;--accent:#7FAEEA;--on:#0E131A}}
-*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--ground);color:var(--ink);font:16px system-ui,-apple-system,"Segoe UI",sans-serif}
-main{min-height:100%;display:grid;place-items:center;padding:24px 16px}
-form{width:100%;max-width:340px;display:grid;gap:14px;text-align:center}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--ground);color:var(--ink);font:16px system-ui,-apple-system,"Segoe UI",sans-serif}
+main{min-height:100vh;display:grid;place-items:center;padding:24px 16px}
+form{width:100%;max-width:340px;display:grid;gap:12px;text-align:center}
 img{width:84px;height:84px;border-radius:20px;justify-self:center;box-shadow:0 6px 20px rgba(0,0,0,.15)}
-h1{margin:0;font-weight:600;font-size:26px}p{margin:0;color:var(--ink2);font-size:14px}
-input{font:500 18px ui-monospace,Menlo,monospace;padding:12px 14px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);color:var(--ink);text-align:center;width:100%}
+h1{margin:0;font-weight:600;font-size:26px}h2{margin:4px 0 0;font-weight:600;font-size:19px}p{margin:0;color:var(--ink2);font-size:14px}
+input{font:500 17px system-ui,-apple-system,sans-serif;padding:12px 14px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);color:var(--ink);width:100%}
+input.code{font:600 26px ui-monospace,Menlo,monospace;letter-spacing:8px;text-align:center}
 button{font:600 16px inherit;padding:12px;border-radius:10px;border:0;background:var(--accent);color:var(--on);cursor:pointer}
 button:disabled{opacity:.6}.msg{min-height:1.2em;font-size:14px;color:#C0392B}.msg.ok{color:var(--ink2)}
 button.alt{background:none;color:var(--accent);font-weight:500;font-size:14px;padding:4px}
-</style></head><body><main><form id="f" autocomplete="on">
+button.pk{background:var(--surface);color:var(--ink);border:1px solid var(--rule)}
+.links{display:flex;flex-wrap:wrap;gap:4px 14px;justify-content:center}[hidden]{display:none!important}
+</style></head><body><main><form id="f" autocomplete="on" novalidate>
 <img src="/icon-180.png" alt=""><h1>Capitol Capital</h1>
-<p id="hint">Enter your email and we'll send you a sign-in link. This device stays logged in for 6 months.</p>
-<input type="email" id="em" name="email" autocomplete="email" placeholder="Email" aria-label="Email">
-<input type="text" name="username" value="Capitol Capital" autocomplete="username" hidden>
-<input type="password" id="pc" name="password" autocomplete="current-password" placeholder="Passcode" aria-label="Passcode" hidden>
-<button type="submit" id="go">Email me a link</button><div class="msg" id="msg" role="alert"></div>
-<button type="button" class="alt" id="swap">Use a passcode instead</button>
+<h2 id="title" hidden></h2>
+<p id="hint">Sign in with your email and password. We'll email you a code to finish.</p>
+<input type="email" id="em" name="email" autocomplete="username email" placeholder="Email" aria-label="Email">
+<input type="password" id="pw" name="password" autocomplete="current-password" placeholder="Password" aria-label="Password">
+<input type="text" id="cd" class="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" aria-label="6-digit code" hidden>
+<input type="password" id="np" autocomplete="new-password" placeholder="New password" aria-label="New password" hidden>
+<input type="password" id="np2" autocomplete="new-password" placeholder="New password again" aria-label="New password again" hidden>
+<input type="password" id="pc" autocomplete="off" placeholder="Passcode" aria-label="Passcode" hidden>
+<button type="submit" id="go">Sign in</button>
+<button type="button" class="pk" id="pk" hidden>Sign in with Face ID</button>
+<div class="msg" id="msg" role="alert"></div>
+<div class="links" id="links">
+<button type="button" class="alt" data-go="setup">First time? Set up your account</button>
+<button type="button" class="alt" data-go="reset">Forgot password?</button>
+<button type="button" class="alt" data-go="pc">Owner passcode</button></div>
+<button type="button" class="alt" id="back" hidden>‹ Back to sign in</button>
+<button type="button" class="alt" id="resend" hidden>Email me a new code</button>
+<div id="offer" hidden style="display:grid;gap:10px"><button type="button" id="pkyes">Use Face ID</button><button type="button" class="alt" id="pkno">Not now</button></div>
 </form></main><script>
-const em = document.getElementById("em"), pc = document.getElementById("pc"), swap = document.getElementById("swap"), hint = document.getElementById("hint");
-let usePc = false;
-swap.addEventListener("click", () => { usePc = !usePc; em.hidden = usePc; pc.hidden = !usePc;
-  document.getElementById("go").textContent = usePc ? "Log in" : "Email me a link";
-  swap.textContent = usePc ? "Use an email link instead" : "Use a passcode instead";
-  hint.textContent = usePc ? "Enter your passcode. This device stays logged in for 6 months." : "Enter your email and we'll send you a sign-in link. This device stays logged in for 6 months.";
-  document.getElementById("msg").textContent = ""; (usePc ? pc : em).focus(); });
-document.getElementById("f").addEventListener("submit", async e => {
-  e.preventDefault(); const go = document.getElementById("go"), msg = document.getElementById("msg");
-  go.disabled = true; msg.textContent = ""; msg.className = "msg";
+const $ = id => document.getElementById(id), msg = $("msg");
+const ios = /iPhone|iPad/.test(navigator.userAgent), mac = /Macintosh/.test(navigator.userAgent) && !ios;
+const PK_NAME = ios ? "Face ID" : mac ? "Touch ID" : "a passkey";
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
+const unb64u = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), c => c.charCodeAt(0));
+let mode = "signin", cid = null, startBody = null, pkOk = false;
+const SHOW = { signin: ["em", "pw", "links"], code: ["cd", "back", "resend"], setup: ["em", "back"], reset: ["em", "back"],
+  setcode: ["cd", "np", "np2", "back", "resend"], pc: ["pc", "back"], offer: ["offer"] };
+function view(m, hint, title) {
+  mode = m; msg.textContent = ""; msg.className = "msg";
+  for (const id of ["em", "pw", "cd", "np", "np2", "pc", "links", "back", "resend", "offer", "pk"]) $(id).hidden = !SHOW[m].includes(id);
+  $("pk").hidden = !(m === "signin" && pkOk);
+  $("go").hidden = m === "offer";
+  $("go").textContent = { signin: "Sign in", code: "Verify", setup: "Email me a code", reset: "Email me a code", setcode: "Set password and sign in", pc: "Sign in" }[m] || "";
+  $("title").hidden = !title; $("title").textContent = title || "";
+  $("hint").textContent = hint;
+  const f = { signin: "em", code: "cd", setup: "em", reset: "em", setcode: "cd", pc: "pc" }[m];
+  if (f) setTimeout(() => $(f).focus(), 50);
+}
+async function post(u, b) {
+  const r = await fetch(u, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify(b) });
+  let j = {}; try { j = await r.json(); } catch (x) {}
+  return { ok: r.ok, j };
+}
+function done(j) {
+  if (pkOk && !j.passkeys && j.how !== "passkey") { $("pkyes").textContent = "Use " + PK_NAME; view("offer", "Sign in with " + PK_NAME + " next time on this device, instead of a password and code?", "Use " + PK_NAME + "?"); return; }
+  location.replace("/");
+}
+$("f").addEventListener("submit", async e => {
+  e.preventDefault(); const go = $("go"); go.disabled = true; msg.textContent = ""; msg.className = "msg";
   try {
-    if (!usePc) {
-      const r = await fetch("/api/login/email", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
-        body: JSON.stringify({ email: em.value }) });
-      let j = {}; try { j = await r.json(); } catch (x) {}
-      msg.textContent = j.message || (r.ok ? "Check your email." : "Couldn't send. Try again."); if (r.ok) msg.className = "msg ok";
-      go.disabled = false; return;
+    if (mode === "signin") {
+      startBody = { email: $("em").value, password: $("pw").value };
+      const { ok, j } = await post("/api/auth/start", startBody);
+      if (!ok) { msg.textContent = j.message || "Couldn't sign in. Try again."; return; }
+      cid = j.cid; view("code", "We emailed a 6-digit code to " + j.to + ". It expires in 10 minutes.", "Check your email");
+    } else if (mode === "setup" || mode === "reset") {
+      startBody = { email: $("em").value, purpose: mode };
+      const { ok, j } = await post("/api/auth/start", startBody);
+      if (!ok) { msg.textContent = j.message || "Couldn't send a code. Try again."; return; }
+      cid = j.cid; view("setcode", "If " + j.to + " has an account, we emailed it a 6-digit code (it expires in 10 minutes). Enter it and choose a password: at least 10 characters, with a number or symbol.", mode === "setup" ? "Set up your account" : "Reset your password");
+    } else if (mode === "code" || mode === "setcode") {
+      const b = { cid, code: $("cd").value };
+      if (mode === "setcode") {
+        if ($("np").value !== $("np2").value) { msg.textContent = "The two passwords don't match."; return; }
+        b.password = $("np").value;
+      }
+      const { ok, j } = await post("/api/auth/verify", b);
+      if (!ok) { msg.textContent = j.message || "That didn't work. Try again."; return; }
+      done(j);
+    } else if (mode === "pc") {
+      const { ok, j } = await post("/api/login", { passcode: $("pc").value });
+      if (ok) { location.replace("/"); return; }
+      msg.textContent = j.message || "Couldn't sign in. Try again.";
     }
-    const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
-      body: JSON.stringify({ passcode: pc.value }) });
-    if (r.ok) { location.reload(); return; }
-    let j = {}; try { j = await r.json(); } catch (x) {}
-    msg.textContent = j.message || "Couldn't log in. Try again.";
   } catch (x) { msg.textContent = "No connection. Try again."; }
-  go.disabled = false;
+  finally { go.disabled = false; }
+});
+document.addEventListener("click", e => {
+  const g = e.target.closest("[data-go]");
+  if (g) { const m = g.dataset.go; view(m, m === "pc" ? "Enter your passcode." : m === "setup" ? "Enter the email address you were invited with. We'll email you a code, then you choose a password." : "Enter your email. We'll email you a code to choose a new password.", m === "setup" ? "Set up your account" : m === "reset" ? "Reset your password" : "Owner sign-in"); }
+});
+$("back").addEventListener("click", () => view("signin", "Sign in with your email and password. We'll email you a code to finish."));
+$("resend").addEventListener("click", async () => {
+  if (!startBody) return;
+  const { ok, j } = await post("/api/auth/start", startBody);
+  msg.className = ok ? "msg ok" : "msg"; msg.textContent = ok ? "A new code is on its way." : (j.message || "Couldn't send a code.");
+  if (ok) cid = j.cid;
+});
+// Face ID / passkey
+(async () => {
+  try { pkOk = !!(window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()); } catch (x) { pkOk = false; }
+  $("pk").textContent = "Sign in with " + PK_NAME;
+  view("signin", "Sign in with your email and password. We'll email you a code to finish.");
+})();
+$("pk").addEventListener("click", async () => {
+  msg.textContent = ""; $("pk").disabled = true;
+  try {
+    const o = await (await fetch("/api/auth/pk/options", { credentials: "same-origin" })).json();
+    const c = await navigator.credentials.get({ publicKey: { challenge: unb64u(o.challenge), rpId: o.rpId, timeout: o.timeout, userVerification: "required" } });
+    const { ok, j } = await post("/api/auth/pk/login", { id: c.id, clientDataJSON: b64u(c.response.clientDataJSON), authenticatorData: b64u(c.response.authenticatorData), signature: b64u(c.response.signature) });
+    if (ok) { location.replace("/"); return; }
+    msg.textContent = j.message || PK_NAME + " didn't work. Use your email and password.";
+  } catch (x) { msg.textContent = PK_NAME + " sign-in was cancelled or isn't set up on this device. Use your email and password."; }
+  $("pk").disabled = false;
+});
+$("pkno").addEventListener("click", () => location.replace("/"));
+$("pkyes").addEventListener("click", async () => {
+  $("pkyes").disabled = true;
+  try {
+    const o = await (await fetch("/api/me/passkey/options", { credentials: "same-origin" })).json();
+    const c = await navigator.credentials.create({ publicKey: { ...o, challenge: unb64u(o.challenge), user: { ...o.user, id: unb64u(o.user.id) },
+      excludeCredentials: (o.excludeCredentials || []).map(x => ({ ...x, id: unb64u(x.id) })) } });
+    const R = c.response;
+    const { ok, j } = await post("/api/me/passkey", { id: c.id, clientDataJSON: b64u(R.clientDataJSON), authenticatorData: b64u(R.getAuthenticatorData()),
+      publicKey: b64u(R.getPublicKey()), alg: R.getPublicKeyAlgorithm(), device: ios ? "iPhone" : mac ? "Mac" : /Android/.test(navigator.userAgent) ? "Android" : /Windows/.test(navigator.userAgent) ? "Windows" : "This device" });
+    if (!ok) { msg.textContent = j.message || "Couldn't set it up."; $("pkyes").disabled = false; return; }
+  } catch (x) {}
+  location.replace("/");
 });
 </script></body></html>`;
 
@@ -145,6 +235,16 @@ async function api(req, env, url, ctx) {
   }
   if (p === "/api/login" && req.method === "POST") return login(req, env);
   if (p === "/api/login/email" && req.method === "POST") return requestLink(req, env, url, dispatch, ctx);
+  // sign-in (owner, Nov 4 2026): email + password → emailed code, or a passkey
+  const cookieFor = async a => {
+    if (!a) return await ownerCookie(env);
+    const c = await viewerCookie(m => sign(env, m), a);
+    return `${COOKIE}=${c.value}; Path=/; Max-Age=${c.maxAge}; HttpOnly; Secure; SameSite=Strict`;
+  };
+  if (p === "/api/auth/start" && req.method === "POST") return authStart(req, env, dispatch);
+  if (p === "/api/auth/verify" && req.method === "POST") return authVerify(req, env, cookieFor);
+  if (p === "/api/auth/pk/options" && req.method === "GET") return passkeyLoginOptions(env, url);
+  if (p === "/api/auth/pk/login" && req.method === "POST") return passkeyLogin(req, env, url, cookieFor);
   if (p === "/api/login/link" && req.method === "POST") return redeemLink(req, env, m => sign(env, m), COOKIE, () => ownerCookie(env));
   if (p === "/api/logout" && req.method === "POST") return json({ ok: true }, 200, { "Set-Cookie": `${COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict` });
   if (p === "/api/widget" && req.method === "GET") return widget(req, env, url);   // its own read-only key
@@ -169,6 +269,10 @@ async function api(req, env, url, ctx) {
   if (p === "/api/accounts/view" && req.method === "GET") return ownerAccount(env, url);
   if (p === "/api/accounts/live" && req.method === "GET") return ownerAccountLive(env, url, live);
   if (p === "/api/accounts/terms" && req.method === "GET") return ownerAccountTerms(env, url);
+  if (p === "/api/me/passkey/options" && req.method === "GET") return passkeyRegOptions(env, url, "owner", env.OWNER_EMAIL, "Owner");
+  if (p === "/api/me/passkey" && req.method === "POST") return passkeyRegister(req, env, url, "owner");
+  if (p === "/api/me/passkey/remove" && req.method === "POST") return passkeyRemove(req, env, "owner");
+  if (p === "/api/me/passkeys" && req.method === "GET") return passkeyList(env, "owner");
   if (p === "/api/accounts" && req.method === "POST") return ownerAccountsPost(req, env, url, dispatch);
   if (p === "/api/data" && req.method === "GET") return fromR2(req, env, "dashboard_data.json");
   if (p === "/api/charts" && req.method === "GET") return fromR2(req, env, "ticker_charts.json");

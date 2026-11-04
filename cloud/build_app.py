@@ -221,7 +221,7 @@ src = sub('  const b = ev.target.closest("[data-buy],[data-send],[data-cancel]")
 src = sub('api("/api/session").then(() => { loadData();', 'api("/api/session?b=" + encodeURIComponent(APP_BUILD)).then(r => { applyRole(r.js); checkBuild(r.js); render(); loadData();', src)
 # owner's More page: the version line at the bottom too
 src = sub('  ${MORE_TABS.filter(m => !["search", "small", "defense"].includes(m.k)).map(m => `<button type="button" class="moreitem" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}\n  </div></section>`;',
-          '  ${MORE_TABS.filter(m => !["search", "small", "defense"].includes(m.k)).map(m => `<button type="button" class="moreitem" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}\n  </div></section>${versionLine()}`;', src)
+          '  ${MORE_TABS.filter(m => !["search", "small", "defense"].includes(m.k)).map(m => `<button type="button" class="moreitem" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}\n  </div></section>${signInPanel()}${versionLine()}`;', src)
 # signed out: the server's login page has both ways in (email link and passcode)
 src = sub('function showLogin(msg) {\n  $("#login").hidden = false;',
           'function showLogin(msg) {\n  if (!window.__CTD_SAMPLE) { location.replace("/"); return; }\n  $("#login").hidden = false;', src)

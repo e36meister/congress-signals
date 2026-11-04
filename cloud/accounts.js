@@ -13,7 +13,7 @@
 
 const enc = new TextEncoder();
 const IDX = "accounts/index.json";
-const LINK_MIN = 20, SESSION_DAYS = 180;
+const LINK_MIN = 20, SESSION_DAYS = 30;     // owner, Nov 4 2026: family accounts sign in again every month (was 6)
 const LIVE = "https://api.alpaca.markets", DATA = "https://data.alpaca.markets";
 const PREFIX = "cs-", PARK_PREFIX = "cs-park-", MORE_PREFIX = "cs-more-", PARK_CHOICES = ["SPY", "VOO", "IVV", "SGOV", "BIL", "SHV"];
 const ID_RX = /^[a-z0-9]{12}$/;
@@ -78,6 +78,7 @@ export async function viewerCookie(sign, a) {
 export async function readViewer(env, sign, cookie, safeEq) {
   const p = String(cookie || "").split(".");
   if (p.length !== 4 || !ID_RX.test(p[0]) || !/^\d{1,6}$/.test(p[1]) || !(+p[2] > Date.now() / 1000)) return null;
+  if (+p[2] > Date.now() / 1000 + (SESSION_DAYS + 1) * 86400) return null;      // made before the 1-month rule
   if (!safeEq(p[3], await sign(`v.${p[0]}.${p[1]}.${p[2]}`))) return null;
   const a = await getAccount(env, p[0]);
   if (!a || a.status === "disabled" || String(a.gen || 1) !== p[1]) return null;
@@ -248,9 +249,9 @@ go.addEventListener("click", async () => {
 // Anything not listed answers 403, whatever the page asks for.
 const VIEWER_GET = new Set(["/api/session", "/api/data", "/api/members", "/api/member", "/api/chart", "/api/charts", "/api/search",
   "/api/movers", "/api/news", "/api/about", "/api/context", "/api/notifications", "/api/live", "/api/push/key", "/api/me/photo",
-  "/api/me/prefs", "/api/me/widget", "/api/me/terms", "/api/tax", "/api/tax/file"]);
+  "/api/me/prefs", "/api/me/widget", "/api/me/terms", "/api/tax", "/api/tax/file", "/api/me/passkey/options", "/api/me/passkeys"]);
 const VIEWER_POST = new Set(["/api/logout", "/api/notifications/clear", "/api/push/subscribe", "/api/buy-more", "/api/sell",
-  "/api/me/keys", "/api/me/photo", "/api/bug", "/api/me/prefs", "/api/me/widget", "/api/me/email-ask", "/api/me/size", "/api/me/terms", "/api/me/pause", "/api/me/park"]);
+  "/api/me/keys", "/api/me/photo", "/api/bug", "/api/me/prefs", "/api/me/widget", "/api/me/email-ask", "/api/me/size", "/api/me/terms", "/api/me/pause", "/api/me/park", "/api/me/passkey", "/api/me/passkey/remove"]);
 export function viewerAllowed(method, path) {
   return method === "GET" ? VIEWER_GET.has(path) : method === "POST" ? VIEWER_POST.has(path) : false;
 }
@@ -306,6 +307,10 @@ export async function viewerApi(req, env, url, a, h) {
   if (p === "/api/me/terms") return signTerms(req, env, a, h.dispatch);
   if (p === "/api/me/pause") return setPause(req, env, a);
   if (p === "/api/me/park") return setPark(req, env, a);
+  if (p === "/api/me/passkey/options") return passkeyRegOptions(env, url, a.id, a.email, a.name || a.label);
+  if (p === "/api/me/passkey") return passkeyRegister(req, env, url, a.id);
+  if (p === "/api/me/passkey/remove") return passkeyRemove(req, env, a.id);
+  if (p === "/api/me/passkeys") return passkeyList(env, a.id);
   if (p === "/api/push/key") return json({ key: (await h.vapid(env)).pub, phones: (await h.getSubs(env, subsKey(a.id))).length });
   if (p === "/api/push/subscribe") {
     const b = await body(req);
@@ -559,8 +564,8 @@ export async function ownerAccountsPost(req, env, url, dispatch) {
     });
     if (why) return json({ ok: false, message: why }, 400);
     let sent = true;
-    try { await queueLink(env, a, url.origin, dispatch); } catch (e) { sent = false; }
-    return json({ ok: true, account: pub(a), message: sent ? `Added. A sign-in link is on its way to ${email}.` : "Added, but the email couldn't be queued. Tap Send sign-in link to try again." });
+    try { await sendInvite(env, a, url.origin, dispatch); } catch (e) { sent = false; }
+    return json({ ok: true, account: pub(a), message: sent ? `Added. An invite is on its way to ${email}: how to add the app and set up a password.` : "Added, but the email couldn't be sent. Tap Send invite to try again." });
   }
   if (act === "hold") {
     const on = b.on === true;
@@ -571,8 +576,8 @@ export async function ownerAccountsPost(req, env, url, dispatch) {
   if (!a) return json({ ok: false, message: "That account doesn't exist anymore." }, 404);
   if (act === "link") {
     if (a.status === "disabled") return json({ ok: false, message: "Turn the account back on first." }, 400);
-    try { await queueLink(env, a, url.origin, dispatch); } catch (e) { return json({ ok: false, message: "Couldn't queue the email: " + String(e.message || e).slice(0, 120) }, 502); }
-    return json({ ok: true, message: `Sign-in link sent to ${a.email}.` });
+    try { await sendInvite(env, a, url.origin, dispatch); } catch (e) { return json({ ok: false, message: "Couldn't send the email: " + String(e.message || e).slice(0, 120) }, 502); }
+    return json({ ok: true, message: `Invite sent to ${a.email}: how to add the app and set up a password.` });
   }
   if (act === "auto") {
     const on = b.on === true;
@@ -981,4 +986,205 @@ async function noteSeen(env, a) {
   const k = `accounts/${a.id}/seen.json`, cur = await r2json(env, k, null);
   if (cur && Date.now() - Date.parse(cur.at) < 60e3) return;
   await put(env, k, { at: new Date().toISOString() });
+}
+
+
+// =====================================================================================================================
+// Sign-in (owner, Nov 4 2026): email + password, then a 6-digit code emailed to them (10 minutes), every time; or Face
+// ID / a passkey on a device where they set one up. Emailed links opened Safari instead of the home-screen app, so
+// codes replace them. First time (and forgot password): email → code → choose a password. The owner can use the
+// same sign-in with OWNER_EMAIL (id "owner"), besides the passcode.
+//   accounts/<id>/auth.json   {salt, hash, iter}: PBKDF2-SHA256 of the password, peppered with the server secret
+//   auth/owner/auth.json      the same for the owner
+//   auth/codes/<cid>.json     a pending code: {who, purpose, hash, exp, tries}
+//   auth/passkeys/<cred>.json {who, jwk, alg, at}; accounts/<id>/passkeys.json lists theirs
+//   auth/pkch/<challenge>.json a passkey challenge (5 minutes, used once)
+// =====================================================================================================================
+const CODE_MIN = 10, PBKDF2_ITER = 60000;
+const authKey = who => who === "owner" ? "auth/owner/auth.json" : `accounts/${who}/auth.json`;
+const mask = e => { const [u, d] = String(e).split("@"); return (u.length <= 2 ? u[0] + "*" : u[0] + "***" + u.slice(-1)) + "@" + d; };
+async function pwHash(env, pw, salt, iter) {
+  const pepper = await crypto.subtle.importKey("raw", enc.encode("cc-pw-v1|" + (env.ACCOUNTS_KEY || env.APP_PASSCODE || "")), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const pre = await crypto.subtle.sign("HMAC", pepper, enc.encode(pw.normalize("NFKC")));
+  const k = await crypto.subtle.importKey("raw", pre, "PBKDF2", false, ["deriveBits"]);
+  return b64u(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: unb64u(salt), iterations: iter }, k, 256));
+}
+function sameStr(a, b) { a = String(a); b = String(b); let d = a.length ^ b.length; for (let i = 0; i < Math.max(a.length, b.length); i++) d |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0); return d === 0; }
+// who an email belongs to: the owner, an account, or nobody
+async function whoByEmail(env, email) {
+  if (env.OWNER_EMAIL && email === String(env.OWNER_EMAIL).trim().toLowerCase()) return { who: "owner", email, label: "Owner" };
+  const a = (await listAccounts(env)).find(x => x.email === email && x.status !== "disabled");
+  return a ? { who: a.id, email, label: a.label, a } : null;
+}
+function pwProblem(pw) {
+  if (pw.length < 10) return "Use at least 10 characters.";
+  if (pw.length > 200) return "That's too long.";
+  if (!/[A-Za-z]/.test(pw) || !/[^A-Za-z]/.test(pw)) return "Use letters plus at least one number or symbol.";
+  return "";
+}
+async function sendCode(env, W, purpose, dispatch) {
+  if (await bump(env, `auth/rate/${Math.floor(Date.now() / 3600e3)}/code-${W.who}.json`) > 6) return { ok: false, message: "Too many codes this hour. Try again later." };
+  const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0"), cid = rand(18);
+  await put(env, `auth/codes/${cid}.json`, { who: W.who, purpose, hash: hex(await sha("code|" + cid + "|" + code)), exp: Date.now() + CODE_MIN * 60e3, tries: 0 });
+  const what = purpose === "login" ? "sign in" : purpose === "setup" ? "set up your account" : "reset your password";
+  const html = `<div style="font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:#152033;max-width:480px">
+<h2 style="font-weight:600;margin:0 0 12px">Your Capitol Capital code</h2>
+<p>Use this code to ${what}. It expires in ${CODE_MIN} minutes.</p>
+<p style="font:600 34px/1.2 ui-monospace,Menlo,monospace;letter-spacing:8px;margin:20px 0">${code}</p>
+<p style="color:#46536A;font-size:14px">Didn't try to ${what}? Ignore this email; nobody can get in without the code. Never share it.</p></div>`;
+  if (!await sendMail(env, { to: W.who === "owner" ? "owner" : W.email, subject: `${code} is your Capitol Capital code`, html })) { try { await dispatch(env, "mail.yml", {}); } catch (e) {} }
+  return { ok: true, cid, to: mask(W.email) };
+}
+// POST /api/auth/start {email, password}  → a code is emailed (login)
+// POST /api/auth/start {email, purpose: "setup"|"reset"} → a code is emailed (first time / forgot password)
+export async function authStart(req, env, dispatch) {
+  const b = await body(req), email = String(b.email || "").trim().toLowerCase(), purpose = b.purpose === "setup" || b.purpose === "reset" ? b.purpose : "login";
+  if (!EMAIL_RX.test(email)) return json({ ok: false, message: "Enter your email address." }, 400);
+  const ip = req.headers.get("CF-Connecting-IP") || "local", hour = Math.floor(Date.now() / 3600e3);
+  if (await bump(env, `auth/rate/${hour}/start-${hex(await sha("ip|" + ip)).slice(0, 24)}.json`) > 30) return json({ ok: false, message: "Too many tries from this connection. Try again in an hour." }, 429);
+  const W = await whoByEmail(env, email);
+  if (purpose !== "login") {
+    // same answer whether or not the email has an account, so the form can't be used to find out
+    const fake = { ok: true, cid: rand(18), to: mask(email) };
+    if (!W) return json(fake);
+    const r = await sendCode(env, W, purpose, dispatch);
+    return json(r.ok ? r : fake, r.ok ? 200 : 429);
+  }
+  const bad = json({ ok: false, message: "That email and password don't match. First time here? Tap Set up your account." }, 401);
+  if (!W) { await pwHash(env, String(b.password || "x"), rand(16), PBKDF2_ITER); return bad; }      // same work either way
+  if (await bump(env, `auth/rate/${hour}/pw-${W.who}.json`) > 10) return json({ ok: false, message: "Too many tries for this account. Try again in an hour, or reset your password." }, 429);
+  const A = await r2json(env, authKey(W.who), null);
+  if (!A) return json({ ok: false, message: "You haven't set a password yet. Tap Set up your account." }, 401);
+  if (!sameStr(await pwHash(env, String(b.password || ""), A.salt, A.iter), A.hash)) return bad;
+  const r = await sendCode(env, W, "login", dispatch);
+  return json(r, r.ok ? 200 : 429);
+}
+// POST /api/auth/verify {cid, code, password?} → signed in (and the new password saved for setup / reset)
+export async function authVerify(req, env, cookieFor) {
+  const b = await body(req), cid = String(b.cid || ""), code = String(b.code || "").replace(/\D/g, "");
+  const bad = msg => json({ ok: false, message: msg }, 400);
+  if (!/^[A-Za-z0-9_-]{20,30}$/.test(cid)) return bad("That code has expired. Ask for a new one.");
+  const key = `auth/codes/${cid}.json`, o = await env.DATA.get(key);
+  if (!o) return bad("That code has expired. Ask for a new one.");
+  const C = await o.json();
+  if (!(C.exp > Date.now()) || C.tries >= 5) { await env.DATA.delete(key); return bad(C.tries >= 5 ? "Too many wrong codes. Ask for a new one." : "That code has expired. Ask for a new one."); }
+  if (!sameStr(hex(await sha("code|" + cid + "|" + code)), C.hash)) {
+    await env.DATA.put(key, JSON.stringify({ ...C, tries: C.tries + 1 }), { onlyIf: { etagMatches: o.etag } });
+    return bad(`That code isn't right. ${4 - C.tries} ${4 - C.tries === 1 ? "try" : "tries"} left.`);
+  }
+  if (C.purpose !== "login") {
+    const pw = String(b.password || ""), why = pwProblem(pw);
+    if (why) return json({ ok: false, why: "password", message: why }, 400);           // the code stays good for a retry
+  }
+  const won = await env.DATA.put(key, JSON.stringify({ ...C, used: true, exp: 0 }), { onlyIf: { etagMatches: o.etag } });
+  if (!won) return bad("That code was just used. Ask for a new one.");
+  if (C.purpose !== "login") {
+    const salt = rand(16);
+    await put(env, authKey(C.who), { salt, iter: PBKDF2_ITER, hash: await pwHash(env, String(b.password), salt, PBKDF2_ITER), at: new Date().toISOString() });
+  }
+  return finishSignIn(env, C.who, cookieFor, C.purpose);
+}
+async function finishSignIn(env, who, cookieFor, how) {
+  if (who !== "owner") {
+    const a = await patchAccount(env, who, x => { if (x.status === "disabled") return; if (x.status === "invited") x.status = "active"; x.last_login = new Date().toISOString(); });
+    if (!a || a.status === "disabled") return json({ ok: false, message: "This account is turned off. Contact the Operator." }, 403);
+    return json({ ok: true, how, passkeys: ((await r2json(env, `accounts/${who}/passkeys.json`, [])) || []).length }, 200, { "Set-Cookie": await cookieFor(a) });
+  }
+  return json({ ok: true, how, owner: true, passkeys: ((await r2json(env, "auth/owner/passkeys.json", [])) || []).length }, 200, { "Set-Cookie": await cookieFor(null) });
+}
+
+// ---------- passkeys (Face ID / Touch ID / fingerprint) ----------
+const pkListKey = who => who === "owner" ? "auth/owner/passkeys.json" : `accounts/${who}/passkeys.json`;
+// signed in: GET /api/me/passkey/options  → what navigator.credentials.create needs
+export async function passkeyRegOptions(env, url, who, name, label) {
+  const challenge = rand(32);
+  await put(env, `auth/pkch/${challenge}.json`, { who, purpose: "reg", exp: Date.now() + 5 * 60e3 });
+  const have = (await r2json(env, pkListKey(who), [])) || [];
+  return json({ challenge, rp: { name: "Capitol Capital", id: url.hostname }, user: { id: b64u(enc.encode(who)), name: name || label || who, displayName: label || name || "Capitol Capital" },
+    pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }], timeout: 60000, attestation: "none",
+    authenticatorSelection: { residentKey: "required", requireResidentKey: true, userVerification: "required" },
+    excludeCredentials: have.map(k => ({ type: "public-key", id: k.id })) });
+}
+// signed in: POST /api/me/passkey {id, clientDataJSON, authenticatorData, publicKey (SPKI), alg, device}
+export async function passkeyRegister(req, env, url, who) {
+  const b = await body(req);
+  try {
+    const cd = JSON.parse(new TextDecoder().decode(unb64u(String(b.clientDataJSON || ""))));
+    if (cd.type !== "webauthn.create" || cd.origin !== url.origin) throw 0;
+    const chKey = `auth/pkch/${cd.challenge}.json`, ch = await r2json(env, chKey, null);
+    await env.DATA.delete(chKey);
+    if (!ch || ch.purpose !== "reg" || ch.who !== who || !(ch.exp > Date.now())) throw 0;
+    const ad = unb64u(String(b.authenticatorData || ""));
+    if (!await rpOk(ad, url.hostname) || !(ad[32] & 0x01) || !(ad[32] & 0x04)) throw 0;          // user present + verified
+    const alg = +b.alg === -257 ? -257 : -7, id = String(b.id || "");
+    if (!/^[A-Za-z0-9_-]{16,400}$/.test(id)) throw 0;
+    const key = await crypto.subtle.importKey("spki", unb64u(String(b.publicKey || "")), alg === -7 ? { name: "ECDSA", namedCurve: "P-256" } : { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, true, ["verify"]);
+    const jwk = await crypto.subtle.exportKey("jwk", key);
+    const dev = String(b.device || "This device").slice(0, 60), at = new Date().toISOString();
+    await put(env, `auth/passkeys/${hex(await sha("cred|" + id))}.json`, { who, id, jwk, alg, at, device: dev });
+    const list = ((await r2json(env, pkListKey(who), [])) || []).filter(k => k.id !== id);
+    list.push({ id, device: dev, at });
+    await put(env, pkListKey(who), list.slice(-10));
+    return json({ ok: true, message: "Face ID sign-in is set up on this device." });
+  } catch (e) { return json({ ok: false, message: "Couldn't set it up. Try again." }, 400); }
+}
+export async function passkeyRemove(req, env, who) {
+  const b = await body(req), id = String(b.id || "");
+  const list = (await r2json(env, pkListKey(who), [])) || [];
+  if (!list.some(k => k.id === id)) return json({ ok: false, message: "Not found." }, 404);
+  await env.DATA.delete(`auth/passkeys/${hex(await sha("cred|" + id))}.json`);
+  await put(env, pkListKey(who), list.filter(k => k.id !== id));
+  return json({ ok: true, message: "Removed. That device signs in with password and code again." });
+}
+export async function passkeyList(env, who) { return json({ items: ((await r2json(env, pkListKey(who), [])) || []).map(k => ({ id: k.id, device: k.device, at: k.at })) }); }
+async function rpOk(ad, host) { const h = new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(host))); return ad.length >= 37 && h.every((v, i) => v === ad[i]); }
+// public: GET /api/auth/pk/options → a challenge for navigator.credentials.get
+export async function passkeyLoginOptions(env, url) {
+  const challenge = rand(32);
+  await put(env, `auth/pkch/${challenge}.json`, { purpose: "login", exp: Date.now() + 5 * 60e3 });
+  return json({ challenge, rpId: url.hostname, timeout: 60000, userVerification: "required" });
+}
+// public: POST /api/auth/pk/login {id, clientDataJSON, authenticatorData, signature}
+export async function passkeyLogin(req, env, url, cookieFor) {
+  const b = await body(req), fail = json({ ok: false, message: "Face ID sign-in didn't work on this device. Use your email and password." }, 401);
+  try {
+    const cdRaw = unb64u(String(b.clientDataJSON || "")), cd = JSON.parse(new TextDecoder().decode(cdRaw));
+    if (cd.type !== "webauthn.get" || cd.origin !== url.origin) return fail;
+    const chKey = `auth/pkch/${cd.challenge}.json`, ch = await r2json(env, chKey, null);
+    await env.DATA.delete(chKey);
+    if (!ch || ch.purpose !== "login" || !(ch.exp > Date.now())) return fail;
+    const K = await r2json(env, `auth/passkeys/${hex(await sha("cred|" + String(b.id || "")))}.json`, null);
+    if (!K) return fail;
+    const ad = unb64u(String(b.authenticatorData || ""));
+    if (!await rpOk(ad, url.hostname) || !(ad[32] & 0x01) || !(ad[32] & 0x04)) return fail;
+    const data = new Uint8Array(ad.length + 32);
+    data.set(ad, 0); data.set(new Uint8Array(await crypto.subtle.digest("SHA-256", cdRaw)), ad.length);
+    let sig = unb64u(String(b.signature || ""));
+    const algo = K.alg === -7 ? { name: "ECDSA", namedCurve: "P-256" } : { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" };
+    const key = await crypto.subtle.importKey("jwk", K.jwk, algo, false, ["verify"]);
+    if (K.alg === -7) sig = derToRaw(sig);
+    const ok = await crypto.subtle.verify(K.alg === -7 ? { name: "ECDSA", hash: "SHA-256" } : "RSASSA-PKCS1-v1_5", key, sig, data);
+    if (!ok) return fail;
+    return finishSignIn(env, K.who, cookieFor, "passkey");
+  } catch (e) { return fail; }
+}
+// an ECDSA signature from WebAuthn is DER; WebCrypto wants r||s (32 bytes each)
+function derToRaw(der) {
+  let i = 2; if (der[1] & 0x80) i += der[1] & 0x7f;
+  const read = () => { i++; let len = der[i++]; let v = der.slice(i, i + len); i += len; while (v.length > 32 && v[0] === 0) v = v.slice(1); const o = new Uint8Array(32); o.set(v, 32 - v.length); return o; };
+  const r = read(), s2 = read(), out = new Uint8Array(64); out.set(r, 0); out.set(s2, 32); return out;
+}
+// the invite email (Accounts → Send invite): how to install the app and set up, with no sign-in link
+export async function sendInvite(env, a, origin, dispatch) {
+  const site = env.APP_HOST ? "https://" + env.APP_HOST : origin;
+  const html = `<div style="font:16px/1.55 system-ui,-apple-system,Segoe UI,sans-serif;color:#152033;max-width:500px">
+<h2 style="font-weight:600;margin:0 0 12px">You're invited to Capitol Capital</h2>
+<ol style="padding-left:20px">
+<li>On your iPhone, open <a href="${esc(site)}">${esc(site.replace(/^https:\/\//, ""))}</a> in <b>Safari</b>.</li>
+<li>Tap <b>Share</b> → <b>Add to Home Screen</b>, then open Capitol Capital from the new icon.</li>
+<li>Tap <b>First time? Set up your account</b> and enter this email address (${esc(a.email)}). We'll email you a code, then you choose a password.</li></ol>
+<p style="color:#46536A;font-size:14px">On a computer, just open the site and do step 3. Didn't expect this? You can ignore it.</p></div>`;
+  const sent = await sendMail(env, { to: a.email, subject: "You're invited to Capitol Capital", html });
+  await patchAccount(env, a.id, x => { x.link_sent = new Date().toISOString(); });
+  if (!sent) await dispatch(env, "mail.yml", {});
 }
