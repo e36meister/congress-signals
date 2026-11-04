@@ -28,6 +28,12 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": 
 function json(obj, status = 200, headers = {}) {
   return new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...headers } });
 }
+// ---------- family trading hold (owner, Nov 3 2026) ----------
+// One switch for every family account, kept at accounts/hold.json. While it's on (the default until the owner turns
+// it off on the Accounts page), family accounts are view-only: they can sign the terms and connect Alpaca, but the
+// tool places no orders for them (congress_signals/accounts.py) and their Buy and Sell buttons are off.
+export async function familyHold(env) { const h = await r2json(env, "accounts/hold.json", null); return !h || h.on !== false; }
+const HOLD_MSG = "Trading for family accounts hasn't started yet; the app is view-only for now";
 async function r2json(env, key, dflt) { try { const o = await env.DATA.get(key); if (o) return await o.json(); } catch (e) {} return dflt; }
 const put = (env, key, v) => env.DATA.put(key, JSON.stringify(v), { httpMetadata: { contentType: "application/json" } });
 async function body(req) { try { return await req.json(); } catch (e) { return {}; } }
@@ -256,7 +262,7 @@ export async function viewerApi(req, env, url, a, h) {
     // the first time they open the app is remembered, so a few days in they're asked once whether they want emails too
     if (!a.first_seen) { a.first_seen = new Date().toISOString(); await patchAccount(env, a.id, x => { if (!x.first_seen) x.first_seen = a.first_seen; }); }
     return json({ ok: true, role: "viewer", connected: !!a.keys_set_at, auto: a.auto !== false, mode: "live", size: sizeOf(a),
-      terms: termsOk(a), paused: !!a.paused,
+      terms: termsOk(a), paused: !!a.paused, hold: await familyHold(env),
       photo: a.photo_at || null, photo_prompted: !!(a.photo_at || a.photo_skipped),
       ask_email: !a.email_asked && Date.now() - Date.parse(a.first_seen) >= EMAIL_ASK_DAYS * 864e5 });
   }
@@ -275,6 +281,7 @@ export async function viewerApi(req, env, url, a, h) {
   if (p === "/api/me/prefs") return setPrefs(req, env, a);
   if (p === "/api/me/widget") return h.widgetScript(url, await widgetKey(env, a.id, req.method === "POST"));
   if (p === "/api/sell") {
+    if (await familyHold(env)) return json({ ok: false, why: "hold", message: HOLD_MSG }, 400);
     const c = await alpacaFor(env, a);
     if (!c) return json({ ok: false, why: "no-keys" }, 503);
     const b = await req.clone().json().catch(() => ({}));
@@ -321,7 +328,7 @@ async function viewerData(env, a) {
   out.watchlist = { lookback: w.lookback, updated: w.updated, buys, sells: [], new: (w.new || []).filter(n => n.action === "BUY") };
   const pol = (d.adaptive && d.adaptive.policy) || {};
   out.adaptive = { policy: { hold_other: pol.hold_other, hold_small: pol.hold_small, sizing: pol.sizing } };
-  out.viewer = { connected: !!a.keys_set_at, auto: a.auto !== false, size: sizeOf(a), terms: termsOk(a), paused: !!a.paused, park: parkOf(a) };
+  out.viewer = { hold: await familyHold(env), connected: !!a.keys_set_at, auto: a.auto !== false, size: sizeOf(a), terms: termsOk(a), paused: !!a.paused, park: parkOf(a) };
   if (port) {
     out.portfolio = port.portfolio || null;
     out.member_sold = port.member_sold || {};
@@ -419,11 +426,13 @@ async function setKeys(req, env, a, h = {}) {
   // owner, Nov 3: buy the current picks right away (family_start.yml), not at the next update. If GitHub won't start
   // the job, the daily update does the same first buys on its next run (accounts.run), and the owner sees why.
   let started = false;
-  if (a.auto !== false && !a.paused && h.dispatch) {
+  const held = await familyHold(env);
+  if (a.auto !== false && !a.paused && !held && h.dispatch) {
     try { await h.dispatch(env, "family_start.yml", { account: a.id }); started = true; }
     catch (e) { if (h.problem) await h.problem(env, "acct-start", `Family account first buys couldn't start right away (${String(e && e.message || e).slice(0, 100)}); the next update does them`); }
   }
   if (started && h.ok) await h.ok(env, "acct-start");
+  if (held) return json({ ok: true, message: "Connected. Trading for family accounts hasn't started yet, so nothing is bought for now. You'll be able to see everything here in the meantime." });
   return json({ ok: true, message: a.auto === false ? "Connected. Automatic buying is off for this account, so nothing is bought until it's turned on."
     : started ? "Connected. Buying the current picks now. You'll get an alert as each order fills (orders placed while the market is closed fill when it opens)."
     : "Connected. Your first buys go in with the next update." });
@@ -433,6 +442,7 @@ async function setKeys(req, env, a, h = {}) {
 // The order is marked as the tool's (cs-more-…), so the extra shares are sold with the rest of the position when
 // the tool sells it. Short on cash: some of the parked T-bill fund is sold first.
 async function buyMore(req, env, a, maxTap) {
+  if (await familyHold(env)) return json({ ok: false, why: "hold", message: HOLD_MSG }, 400);
   if (a.paused) return json({ ok: false, why: "paused", message: "trading is paused for your account. Resume it at the bottom of your Account page to buy" }, 400);
   if (!termsOk(a)) return json({ ok: false, why: "terms", message: "please agree to the Terms of Use first" }, 400);
   const c = await alpacaFor(env, a);
@@ -492,14 +502,14 @@ async function buyMore(req, env, a, maxTap) {
 
 // ---------- owner: the Accounts page ----------
 export async function ownerAccounts(env) {
-  const list = await listAccounts(env);
+  const list = await listAccounts(env), hold = await familyHold(env);
   const rows = await Promise.all(list.map(async a => {
     const port = await r2json(env, `accounts/${a.id}/portfolio.json`, null), p = port && port.portfolio;
     return { ...pub(a), summary: p ? { equity: p.equity, cash: p.cash, day_pl: p.day_pl, positions: (p.positions || []).length,
       invested: (p.positions || []).filter(x => x.sleeve !== "park").reduce((s, x) => s + (x.mv || 0), 0), updated: p.updated } : null,
       problem: port && port.problem || null };
   }));
-  return json({ accounts: rows });
+  return json({ accounts: rows, hold });
 }
 export async function ownerAccount(env, url) {
   const a = await getAccount(env, url.searchParams.get("id"));
@@ -543,6 +553,11 @@ export async function ownerAccountsPost(req, env, url, dispatch) {
     let sent = true;
     try { await queueLink(env, a, url.origin, dispatch); } catch (e) { sent = false; }
     return json({ ok: true, account: pub(a), message: sent ? `Added. A sign-in link is on its way to ${email}.` : "Added, but the email couldn't be queued. Tap Send sign-in link to try again." });
+  }
+  if (act === "hold") {
+    const on = b.on === true;
+    await put(env, "accounts/hold.json", { on, at: new Date().toISOString() });
+    return json({ ok: true, message: on ? "Family trading is on hold: every family account is view-only." : "Family trading is on: the tool trades family accounts at the next update, starting with each connected account's first buys." });
   }
   const a = await getAccount(env, String(b.id || ""));
   if (!a) return json({ ok: false, message: "That account doesn't exist anymore." }, 404);
@@ -914,7 +929,7 @@ async function setPark(req, env, a) {
   if (!PARKS.includes(b.park)) return json({ ok: false, message: "Choose SGOV or cash." }, 400);
   await patchAccount(env, a.id, x => { x.park = b.park; });
   let sold = 0;
-  if (b.park === "cash" && !a.paused) {
+  if (b.park === "cash" && !a.paused && !(await familyHold(env))) {
     const c = await alpacaFor(env, a);
     if (c) {
       const since = new Date(Date.now() - 800 * 864e5).toISOString();

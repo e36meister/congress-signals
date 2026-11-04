@@ -50,6 +50,11 @@ def load(log):
         log("Family accounts: the account list couldn't be read")
         return []
     out, missing = [], 0
+    # family trading hold (owner, Nov 3 2026): on until the owner turns it off on the Accounts page (accounts/hold.json)
+    try:
+        hold_all = (json.loads(cloud_store.get("accounts/hold.json", log=lambda m: None) or b"{}") or {}).get("on", True) is not False
+    except Exception:
+        hold_all = True
     for a in idx if isinstance(idx, list) else []:
         if a.get("status") == "disabled" or not a.get("keys_set_at"):
             continue
@@ -64,7 +69,7 @@ def load(log):
                     # never happened once money arrived); such an account still counts as not started
                     "started": bool(a.get("started_at")) and a.get("started_how") != "0 first buys",
                     # they paused trading (no orders at all), or haven't signed the current Terms of Use
-                    "hold": bool(a.get("paused")) or not (a.get("terms_at") and a.get("terms_v") == TERMS_V)})
+                    "hold": hold_all or bool(a.get("paused")) or not (a.get("terms_at") and a.get("terms_v") == TERMS_V)})
     if missing:
         log(f"Family accounts: {missing} account(s) have keys that couldn't be read (ACCOUNTS_KEY missing or changed? "
             "reset their keys on the Accounts page); they're skipped")
@@ -95,7 +100,7 @@ def run(cfg, buys, new, last_prices, log, trade, msales=None, close_report=None)
     for i, a in enumerate(accts, 1):
         trade_a = trade and not a.get("hold")       # paused or terms not signed: snapshot only, no orders
         if trade and a.get("hold"):
-            log(f"Family account {i}: trading paused (by them, or the current terms aren't signed); no orders")
+            log(f"Family account {i}: no orders (family trading on hold, paused by them, or the current terms aren't signed)")
         if trade_a and not a.get("started"):      # backup: the connect-time start didn't run (or buys were paused then)
             try:
                 start(log, only=a["id"], accts=[a], tag=f"Family account {i}")

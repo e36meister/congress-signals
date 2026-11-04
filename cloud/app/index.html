@@ -716,7 +716,7 @@ document.addEventListener("click", async ev => {
 
 // ---------- Today: a Buy button on each Buy candidate ----------
 function vBuyArea(r) {
-  if (!state.data?.viewer?.connected || state.data.viewer.paused || !state.data.viewer.terms) return "";
+  if (!state.data?.viewer?.connected || state.data.viewer.paused || state.data.viewer.hold || !state.data.viewer.terms) return "";
   const held = (state.data?.portfolio?.positions || []).some(x => x.t === r.t);
   return `<button type="button" class="buybtn vb" data-vbuy="${esc(r.t)}">${VA.open === r.t ? "Close" : held ? "Buy more" : "Buy"}</button>`;
 }
@@ -771,7 +771,8 @@ function renderViewerAccount(d, opts = {}) {
   if (!V.connected && ro) return `<div class="empty">They haven't connected their Alpaca account yet.</div>`;
   if (!p) return `<section class="panel"><div class="ph"><h2>Connected</h2></div>
     ${VA.keyMsg ? `<div class="tapmsg ${VA.keyMsg.ok ? "pos" : "neg"}">${esc(VA.keyMsg.text)}</div>` : ""}
-    <p>${V.paused ? "Your Alpaca account is connected. Trading is paused, so nothing is bought until you resume it."
+    <p>${V.hold ? "Your Alpaca account is connected. Trading for family accounts hasn't started yet, so nothing is bought for now. This page fills in with your account at the next update (within a few hours)."
+      : V.paused ? "Your Alpaca account is connected. Trading is paused, so nothing is bought until you resume it."
       : V.auto === false ? "Your Alpaca account is connected. Automatic buying is turned off for your account for now, so nothing is bought until the Operator turns it on."
       : "Your Alpaca account is connected and the tool is buying the current picks for it now. This page fills in within a few minutes; pull down to refresh. After that the tool buys new picks as they come in" + (V.park === "cash" ? " and keeps spare cash as cash" : " and keeps spare cash in SGOV") + " until picks need it."}
     If your Alpaca account doesn't have money in it yet, deposit in the Alpaca app; the tool buys the current picks once the money shows up.</p></section>${sizePanel(d, ro)}${ro ? "" : pausePanel(V)}`;
@@ -784,7 +785,7 @@ function renderViewerAccount(d, opts = {}) {
     const held = x.sleeve === "park" ? `Cash waiting for picks<div class="foot">${V.park === "cash" ? "Being moved back to cash" : "In SGOV until the tool needs it"}</div>`
       : x.bot ? `${x.sleeve === "small" ? "Small-company pick · " : ""}${x.held ?? 0} of ${x.hold ?? L.hold_days ?? 60} days${x.bought ? `<div class="foot">Tool sells ~${esc(fmtDate(addTradingDays(x.bought, x.hold ?? L.hold_days ?? 60)))}; a winner may be kept longer</div>` : ""}`
       : `Yours<div class="foot">You bought this yourself; the tool leaves it alone</div>`;
-    const btns = ro || x.sleeve === "park" ? "" : `<div class="vbtns">${buyListHas(x.t) && !V.paused ? `<button type="button" class="buybtn vb" data-vbuy="${esc(x.t)}">${VA.open === x.t ? "Close" : "Buy more"}</button>` : ""}<button type="button" class="vsell" data-vsell="${esc(x.t)}">${VA.sellOpen === x.t ? "Close" : "Sell"}</button></div>`;
+    const btns = ro || V.hold || x.sleeve === "park" ? "" : `<div class="vbtns">${buyListHas(x.t) && !V.paused ? `<button type="button" class="buybtn vb" data-vbuy="${esc(x.t)}">${VA.open === x.t ? "Close" : "Buy more"}</button>` : ""}<button type="button" class="vsell" data-vsell="${esc(x.t)}">${VA.sellOpen === x.t ? "Close" : "Sell"}</button></div>`;
     const m = VA.msg[x.t];
     return `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${m && VA.open !== x.t && VA.sellOpen !== x.t ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</td><td class="n">${Number(x.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
       <td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${held}${btns}</td></tr>${ro ? "" : vBuyBox(x.t, true) + vSellRow(x)}`;
@@ -817,7 +818,7 @@ function renderViewerAccount(d, opts = {}) {
     ${ords.length ? `<div class="tbl scroll"><table><thead><tr><th>When</th><th>Ticker</th><th>Side</th><th class="n">Shares</th><th class="n">Fill price</th><th>Status</th></tr></thead><tbody>
     ${ords.filter(o => !/^(SGOV|BIL|SHV|SPY|VOO|IVV)$/.test(o.t) || o.by !== "tool").map(o => `<tr><td class="nw">${esc(fmtET(o.at))}</td><td class="mono">${tkBtn(o.t)}</td><td>${esc(o.side)}</td><td class="n">${shQty(o)}</td><td class="n">${o.filled_px ? money(+o.filled_px, 2) : "–"}</td><td>${esc(String(o.status).replace(/_/g, " "))}</td></tr>`).join("")}
     </tbody></table></div>` : `<div class="empty">No orders yet.</div>`}</section>
-  ${ro ? "" : pausePanel(V)}`;
+  ${ro || V.hold ? "" : pausePanel(V)}`;
 }
 
 // Sell: any position but the parked fund, whenever they want, with a note on what selling early means
@@ -1078,7 +1079,7 @@ const ACC = { list: null, err: null, loading: false, busy: false, msg: null, vie
 function accLoad(force) {
   if (ACC.loading || (ACC.list && !force)) return;
   ACC.loading = true;
-  api("/api/accounts").then(r => { ACC.list = r.js.accounts || []; ACC.err = null; }).catch(e => { ACC.err = e; })
+  api("/api/accounts").then(r => { ACC.list = r.js.accounts || []; ACC.hold = r.js.hold !== false; ACC.err = null; }).catch(e => { ACC.err = e; })
     .finally(() => { ACC.loading = false; if (state.tab === "accounts") render(); });
 }
 async function accPost(body) {
@@ -1136,7 +1137,11 @@ function renderAccounts() {
         ${btn("remove", "Remove")}</div>
     </article>`;
   };
+  const holdBox = list ? `<div class="note ${ACC.hold ? "warn" : ""}" style="display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+      <span>${ACC.hold ? "<b>Family trading is on hold.</b> Every family account is view-only: they can sign the terms and connect Alpaca, but nothing is bought or sold for them and their Buy and Sell buttons are off." : "<b>Family trading is on.</b> The tool trades every connected family account that has signed the terms."}</span>
+      <button type="button" class="btn sm${ACC.hold ? "" : " ghost"}" data-acchold="${ACC.hold ? "0" : "1"}"${ACC.busy ? " disabled" : ""}>${ACC.hold ? "Start family trading" : "Put on hold"}</button></div>` : "";
   return `<section class="panel"><div class="ph"><h2>Accounts</h2><span class="sub">People you've added. They see Today, Members and their own Account only.</span></div>
+    ${holdBox}
     ${m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}
     ${!list ? `<div class="empty">${ACC.err ? esc(errorText(ACC.err)) : "Loading…"}</div>` : list.length ? `<div class="accts">${list.map(card).join("")}</div>` : `<div class="empty">No accounts yet.</div>`}
   </section>
@@ -1160,6 +1165,13 @@ document.addEventListener("click", ev => {
   if (back) { ACC.view = null; ACC.data = null; render(); window.scrollTo(0, 0); return; }
   const v = ev.target.closest("[data-accview]");
   if (v) { accOpen(v.dataset.accview); return; }
+  const hb = ev.target.closest("[data-acchold]");
+  if (hb && !ACC.busy) {
+    const on = hb.dataset.acchold === "1";
+    if (!confirm(on ? "Put family trading on hold? Every family account becomes view-only: the tool stops buying and selling for them and their Buy and Sell buttons turn off."
+      : "Start family trading? At the next update the tool buys the current picks for every connected family account that has signed the terms, then trades them like yours.")) return;
+    accPost({ action: "hold", on }); return;
+  }
   const tv = ev.target.closest("[data-accterms]");
   if (tv) {
     ACC.view = tv.dataset.accterms; ACC.data = null; render(); window.scrollTo(0, 0);
@@ -1292,6 +1304,7 @@ function pausePanel(V) {
 }
 function pausedBanner() {
   const V = (state.data && state.data.viewer) || {};
+  if (isViewer() && V.hold) return `<div class="pausebar"><b>View only for now.</b> Trading for your account hasn't started yet, so the tool isn't buying or selling and the Buy and Sell buttons are off. You'll get a heads-up when it starts.</div>`;
   if (!isViewer() || !V.paused) return "";
   return `<div class="pausebar"><b>Trading paused.</b> The tool isn't buying or selling in your account. <button type="button" class="link" data-tab-go="port">Resume on your Account page</button></div>`;
 }
