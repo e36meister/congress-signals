@@ -63,6 +63,7 @@ for f in glob.glob("social/posts/**/*.jsonl.gz", recursive=True) + glob.glob("wb
         recent.setdefault(key, []).append({
             "d": str(d)[:10], "u": url, "x": (text or "")[:400], "src": s, "t": list(tk or []), "s": list(secs or []), "ag": ag,
             "ty": srt.get("ty") or [], "ins": srt.get("ins") or "", "meet": srt.get("meet") or [],
+            "ins_on": srt.get("ins_on") or [], "insw": srt.get("insw") or "",
             "hit": [x["n"] for x in srt.get("tg", []) if x["k"] == "industry" and x.get("hit")], "rp": bool(rp),
             "cen": [x["n"] for x in srt.get("tg", []) if x["k"] == "industry" and x.get("cen")],
             "lob": S._lobbyist_only(pp, text, names),
@@ -125,8 +126,8 @@ for i, r in enumerate(recs):
                      "other_flag": bool(other.iloc[i]), "u": p["u"], "src": p["src"], "d": p["d"], "x": p["x"],
                      "ty": p["ty"], "old_ty": p.get("old_ty"), "hit": p.get("hit"), "cen": p.get("cen"), "lob": p.get("lob"), "ins": p.get("ins"), "rp": p.get("rp"),
                      "tone": (p.get("st") or {}).get(t if names_co else sec), "names_co": names_co,
-                     "link": (L or {}).get("why"), "lvl": (L or {}).get("lvl"), "why_not": why_not,
-                     "in_worth": bool(L) and ((L.get("lvl") or 0) >= 3 or bool(other.iloc[i]))})
+                     "link": (L or {}).get("why"), "lvl": (L or {}).get("lvl"), "kind": (L or {}).get("kind"), "insw": p.get("insw"), "why_not": why_not,
+                     "in_worth": bool(L) and L.get("kind") != "ind" and ((L.get("lvl") or 0) >= 3 or bool(other.iloc[i]))})
 json.dump({"bsky": bsky_checked, "rows": rows}, open("out/post_link_audit.json", "w"), default=str)
 lk = [x for x in rows if x["link"]]
 print(f"\nlinked post-trade pairs: {len(lk)} (level 3: {sum(1 for x in lk if x['lvl'] == 3)}, industry-only: {sum(1 for x in lk if x['lvl'] == 2)})")

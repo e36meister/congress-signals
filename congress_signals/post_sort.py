@@ -14,7 +14,7 @@ company, which reads tone better). Setting ANTHROPIC_API_KEY and POST_SORTER=hai
 Never raises; a post it can't read gets an empty result."""
 import os, re
 
-SORT_VERSION = 7       # 2: tone toward industries too; 3: 'met with' and 'strong' only when the company is what the sentence is about; 4: alert levels (Oct 19); 5: re-sort after tagger 11 (Nov 3); 6: "urge/calls on" is advocacy, not oversight; per-industry hit wording (Nov 4); 7: industry is the subject (headline or 2+ sentences) (Nov 4)
+SORT_VERSION = 8       # 2: tone toward industries too; 3: 'met with' and 'strong' only when the company is what the sentence is about; 4: alert levels (Oct 19); 5: re-sort after tagger 11 (Nov 3); 6: "urge/calls on" is advocacy, not oversight; per-industry hit wording (Nov 4); 7: industry is the subject (headline or 2+ sentences) (Nov 4); 8: timing hint words need the company, industry or agency within 2 sentences (Nov 4)
 
 TYPE_RX = [
     ("meeting", re.compile(r"\b(met\b.{0,30}\bwith|meet(?:ing|s)?\b.{0,30}\bwith|sat down with|sit down with|hosted|"
@@ -42,14 +42,20 @@ TYPE_RX = [
                              r"slam\w*|scam|corrupt\w*|rip-?off|predatory|reckless|failed to|failing)\b", re.I)),
 ]
 
-INSIDER_RX = re.compile(
+# Nov 4 (owner): two kinds of hint wording. Strong wording points to non-public information wherever it appears.
+# Timing wording ("in the coming weeks", "stay tuned") is everyday language (a release about students heading back to
+# campus "in the coming weeks" was read as a tech hint), so it counts only when a company, an industry or an agency is
+# named in the same sentence or within 2 sentences before or after; otherwise it's kept as context (insw).
+STRONG_HINT_RX = re.compile(
+    r"\b(can(?:'|no)?t (?:say|share) (?:more|much)|behind closed doors|closed[- ]door|classified briefing|"
+    r"private (?:meeting|briefing|conversation)s?|(?:i was|we were|i've been|i have been) briefed|briefed (?:on|by)|"
+    r"i(?:'m| am) told|final stages|close to (?:a |an )?(?:deal|agreement)|(?:ongoing|active) negotiations?|"
+    r"before (?:it'?s|it is) (?:public|announced)|off the record|(?:pending|upcoming) (?:approval|decision|contract|award|merger|deal))\b", re.I)
+TIMING_HINT_RX = re.compile(
     r"\b(stay tuned|coming soon|more (?:to come|soon)|in the coming (?:days|weeks)|(?:big|major|exciting) news (?:coming|soon)|"
-    r"about to (?:announce|be announced)|soon (?:to )?be announced|will be announc\w+|can(?:'|no)?t (?:say|share) (?:more|much)|"
-    r"behind closed doors|closed[- ]door|classified briefing|private (?:meeting|briefing|conversation)s?|"
-    r"(?:i was|we were|i've been|i have been) briefed|briefed (?:on|by)|i(?:'m| am) told|heads[- ]up|"
-    r"expect(?:ing)? (?:an? )?(?:announcement|decision|deal|ruling|approval)|final stages|close to (?:a |an )?(?:deal|agreement)|"
-    r"(?:ongoing|active) negotiations?|before (?:it'?s|it is) (?:public|announced)|first to know|off the record|"
-    r"(?:pending|upcoming) (?:approval|decision|contract|award|merger|deal))\b", re.I)
+    r"about to (?:announce|be announced)|soon (?:to )?be announced|will be announc\w+|heads[- ]up|"
+    r"expect(?:ing)? (?:an? )?(?:announcement|decision|deal|ruling|approval)|first to know)\b", re.I)
+INSIDER_RX = re.compile(STRONG_HINT_RX.pattern[:-3] + "|" + TIMING_HINT_RX.pattern[3:], re.I)     # either kind (older callers)
 
 MEET_RX = TYPE_RX[0][1]
 # wording that points to money or a policy push for an industry (for "post hinted at a boost, then a trade")
@@ -169,7 +175,7 @@ def sort_record(r, names=None):
         text = r[3] or ""
         tk, pp, tone, secs = list(r[5] or []), list(r[6] or []), float(r[7] or 0), list(r[8] or [])
         types = [k for k, rx in TYPE_RX if rx.search(text)] or ["other"]
-        ins = INSIDER_RX.search(text)
+        ins = STRONG_HINT_RX.search(text)
         targets, people_t = [], set()
         for p in pp:
             nm, t, role = (p.split("|") + ["", "", ""])[:3]
@@ -234,7 +240,32 @@ def sort_record(r, names=None):
         for x in targets:
             if x["k"] == "co" and not central(x):
                 x["side"] = True         # mentioned in passing
+        # timing hint words: anchored when a company, industry or agency is named within 2 sentences either side
+        ins_on, insw = [], ""
+        if not ins:
+            def tnames(sn):
+                out = []
+                for x in targets:
+                    if x["k"] == "co" and named_in(sn, x):
+                        out.append(x["t"])
+                    elif x["k"] == "industry":
+                        ws = [w for w in (SECTOR_WORDS.get(x["n"]) or "").split() if len(w) > 2]
+                        if any(re.search(r"\b" + re.escape(w) + r"\b", sn, re.I) for w in ws):
+                            out.append(x["n"])
+                    elif x["k"] == "agency" and AGENCY_RX[x["n"]].search(sn):
+                        out.append(x["n"])
+                return out
+            for i, sn in enumerate(sents):
+                m_ = TIMING_HINT_RX.search(sn)
+                if not m_:
+                    continue
+                near = [t_ for sn2 in sents[max(0, i - 2):i + 3] for t_ in tnames(sn2)]
+                if near:
+                    ins, ins_on = m_, sorted(set(near))
+                    break
+                insw = insw or m_.group(0)
         return {"v": SORT_VERSION, "ty": types[:5], "tg": targets[:12], "ins": ins.group(0) if ins else "",
+                **({"ins_on": ins_on} if ins_on else {}), **({"insw": insw} if insw and not ins else {}),
                 "meet": meet, "strong": bool(strong), "m": model_name()}
     except Exception:
         return {"v": SORT_VERSION, "ty": ["other"], "tg": [], "ins": "", "meet": None, "strong": False, "m": "error"}

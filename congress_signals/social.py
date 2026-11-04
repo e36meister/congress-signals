@@ -1848,6 +1848,7 @@ def build_index(cfg, tg=None, sort_until=None, hard_until=None):
                             "d": str(d)[:10], "u": url, "x": (text or "")[:220], "src": s, "t": list(tk or []),
                             "p": [q.split("|")[0] for q in (pp or [])], "s": list(secs or []), "ag": ag,
                             "ty": srt.get("ty") or [], "ins": srt.get("ins") or "", "meet": srt.get("meet") or [],
+                            "ins_on": srt.get("ins_on") or [], "insw": srt.get("insw") or "",
                             "hit": [x["n"] for x in srt.get("tg", []) if x["k"] == "industry" and x.get("hit")],
                             "cen": [x["n"] for x in srt.get("tg", []) if x["k"] == "industry" and x.get("cen")],
                             "lob": _lobbyist_only(pp, text, names),
@@ -1977,14 +1978,21 @@ def trade_post_links(trades, idx, before_days=90):
                 # only a lobbyist's name matched: the owner checks whether it's the same person (never flags alone)
                 nm, n_ = p["lob"][t]
                 found.append((2, p, f"named {nm}, who lobbies for {r.get('company') or t}, {when}: check it's the same person"
-                              + (f" (that name matches lobbyists for {n_} companies in this post, probably a common name)" if n_ >= 5 else "")))
+                              + (f" (that name matches lobbyists for {n_} companies in this post, probably a common name)" if n_ >= 5 else ""), "lob"))
             elif t in (p.get("t") or []):
                 tone = p.get("st", {}).get(t)
                 verb = f"met with {', '.join(p['meet'][:2])} of" if p.get("meet") else "posted about"
                 found.append((3, p, f"{verb} {r.get('company') or t} {when}" +
-                              (f" ({'positive' if tone >= 0.3 else 'negative' if tone <= -0.3 else 'neutral'} tone)" if tone is not None else "")))
-            elif sec and sec in secs and p.get("ins"):
-                found.append((3, p, f"hinted at something not yet public about {sec.lower()} (\"{p['ins']}\") {when}"))
+                              (f" ({'positive' if tone >= 0.3 else 'negative' if tone <= -0.3 else 'neutral'} tone)" if tone is not None else ""), "co"))
+            elif sec and sec in secs and p.get("ins") and (not p.get("ins_on") or sec in p["ins_on"] or t in p["ins_on"]
+                                                         or any(sec in AGENCY_SECTORS.get(a, []) for a in p["ins_on"])):
+                # strong wording anywhere; timing wording ("in the coming weeks") only with this company, its industry
+                # or an agency over it named within 2 sentences (owner, Nov 4)
+                found.append((3, p, f"hinted at something not yet public about {sec.lower()} (\"{p['ins']}\") {when}", "hint"))
+            elif sec and sec in secs and (p.get("insw") or p.get("ins")):
+                # timing wording that isn't near the company or industry: kept as context, never flags alone
+                found.append((2, p, f"used timing words (\"{p.get('insw') or p['ins']}\") in a post that mentions {sec.lower()}, "
+                                    f"but not near them, {when}", "hintw"))
             elif sec and sec in secs and sec in (p.get("cen") or []) and p["d"] >= lo30 and not p.get("rp"):
                 # Nov 4 (owner, HONA audit): a repost isn't the member's own words, and "against" needs both
                 # oversight/criticism wording in a sentence that names the industry and a negative tone toward it
@@ -1992,14 +2000,14 @@ def trade_post_links(trades, idx, before_days=90):
                 tone = p.get("st", {}).get(sec)
                 ty = set(p.get("ty") or [])
                 if buy and (ty & BOOST_TYPES) and (tone is None or tone >= 0.2):
-                    found.append((2, p, f"posted a {sec.lower()} boost ({', '.join(sorted(ty & BOOST_TYPES))}) {when}"))
+                    found.append((2, p, f"posted a {sec.lower()} boost ({', '.join(sorted(ty & BOOST_TYPES))}) {when}", "ind"))
                 elif not buy and sec in (p.get("hit") or []) and tone is not None and tone <= -0.2:
-                    found.append((2, p, f"posted against {sec.lower()} {when}"))
+                    found.append((2, p, f"posted against {sec.lower()} {when}", "ind"))
         if found:
             found.sort(key=lambda z: (-z[0], z[1]["d"]), reverse=False)
             out[i] = [{"d": p["d"], "u": p.get("u"), "x": p.get("x"), "src": p.get("src"),
-                       "why": w + (" (a repost)" if p.get("rp") else ""), "lvl": lv}
-                      for lv, p, w in found[:3]]
+                       "why": w + (" (a repost)" if p.get("rp") else ""), "lvl": lv, "kind": kd}
+                      for lv, p, w, kd in found[:3]]
     return out
 
 

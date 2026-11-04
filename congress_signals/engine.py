@@ -2171,6 +2171,8 @@ def worth_a_look(scored, cfg, days=None):
     out = {}
     for ix, x in zip(r.sort_values("filed_date", ascending=False).index, r.sort_values("filed_date", ascending=False).to_dict("records")):
         why = [x.get(k) for k in ("spouse_note", "relative_note", "family_note", "volume_note", "event_note") if x.get(k)]
+        # Nov 4 (owner): industry-only links are hidden until the Yea/Nay answers show they're right often enough
+        links[ix] = [p_ for p_ in links.get(ix, []) if p_.get("kind") != "ind"]
         for p_ in links.get(ix, []):
             if p_.get("lvl", 0) >= 3:
                 why.append(f"{str(x['member']).split(',')[0]} {p_['why']}: check the post")
