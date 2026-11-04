@@ -830,7 +830,29 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
         filled = _filled_orders(api) if actions else filled
     except Exception as e:
         log(f"Broker: order history for the snapshot not re-read ({type(e).__name__}); using the one from the start of the run")
+    # Owner, Nov 4: FMAO, bought by the tool at 10:10, showed as "manual" on Account holdings for a refresh, since
+    # Alpaca's filled-order list can lag a just-filled order that the position already counts. Add any filled
+    # order from the recent-orders read that the history is missing, so the position is matched to its buy.
+    try:
+        have = {o.get("id") for o in filled}
+        miss = [o for o in recent or [] if o.get("id") not in have and o.get("filled_at")
+                and float(o.get("filled_qty") or 0) > 0]
+        if miss:
+            filled = sorted(list(filled) + miss, key=lambda o: o.get("filled_at") or "", reverse=True)
+    except Exception as e:
+        log(f"Broker: recent fills not added to the snapshot ({type(e).__name__})")
+    # and a tool buy placed in the last hour always counts as the tool's, even if neither list shows the fill yet
+    cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=1)).isoformat()
+    fresh_tool = {}
+    for o in recent or []:
+        cid = o.get("client_order_id") or ""
+        if (o.get("side") == "buy" and cid.startswith(PREFIX) and not cid.startswith(PARK_PREFIX)
+                and (o.get("submitted_at") or "") >= cutoff[:19] and o.get("status") not in ("canceled", "expired", "rejected")):
+            fresh_tool.setdefault(o["symbol"], o)
     bot = _bot_buys(api, orders=filled)
+    for sym, o in fresh_tool.items():
+        if sym not in bot:
+            bot[sym] = dict(o, filled_at=o.get("filled_at") or o.get("submitted_at"))
     first = _bot_buys(api, any_buyer=True, orders=filled)
     pos = []
     yours_first = _bot_buys(api, owner=True, orders=filled)

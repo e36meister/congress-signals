@@ -369,10 +369,67 @@ def trade_now(scored, px):
     if snap is not None and not DRY_RUN:
         cloud_store.save_reasons(snap.get("this_run"), E.log)       # phone trade alerts say why
         send_manual_emails(bc.get("_manual_alerts"))
+    publish_early_picks(live_p)
     trade_family(bc, None, None, last, msales)
     mins = (E.time.time() - E._RUN_START) / 60
     E.log(f"Trading done {mins:.0f} min after the update started" + (" (test run: no orders)" if DRY_RUN else ""))
     return snap, helpers
+
+
+EARLY_ROWS = []        # fresh main picks put on Today right after trading (kept through the end-of-run upload)
+
+
+def _early_rows(live_p):
+    """Today rows (the app's watchlist format) for the fresh main picks the tool may buy right now."""
+    rows = []
+    for _, r in (live_p.iterrows() if live_p is not None and len(live_p) else []):
+        g = lambda k: E._j(r.get(k)) if k in r else None
+        try:
+            why = E._why_buy(r)
+        except Exception:
+            why = None
+        rows.append({"action": "BUY", "t": g("ticker"), "co": g("company"), "m": g("member"), "sec": g("sector"),
+                     "s": g("score"), "pct": g("prank"), "d": g("filed_date"), "td": g("trade_date"),
+                     "cap": g("market_cap"), "sz": g("size_mult"), "lag": g("lag_days"), "why": why, "early": True})
+    return [x for x in rows if x["t"]]
+
+
+def merge_early(d):
+    """Put this run's fresh picks on Today's Buy candidates (and the New list) unless they're already BUY rows."""
+    if not EARLY_ROWS:
+        return False
+    w = d.setdefault("watchlist", {})
+    buys = w.setdefault("buys", [])
+    have = {x.get("t") for x in buys if x.get("action") == "BUY"}
+    add = [x for x in EARLY_ROWS if x["t"] not in have]
+    if not add:
+        return False
+    w["buys"] = add + [x for x in buys if x.get("t") not in {a["t"] for a in add}]
+    new = w.setdefault("new", [])
+    new += [{"action": "BUY", "t": a["t"]} for a in add if not any(n.get("t") == a["t"] and n.get("action") == "BUY" for n in new)]
+    return True
+
+
+def publish_early_picks(live_p):
+    """Owner, Nov 4: the tool buys right after scoring, but Today only updated when the whole run finished (FMAO
+    was bought at 10:10 and wasn't on Today for over an hour). Put the fresh picks on Today right away, in the
+    app's copy and the Drive copy (the quick check rebuilds the app's copy from Drive)."""
+    global EARLY_ROWS
+    EARLY_ROWS = _early_rows(live_p)
+    if not EARLY_ROWS:
+        return
+    try:
+        d = json.loads(cloud_store.get("dashboard_data.json", log=lambda m: None) or b"{}")
+        if not d or not merge_early(d):
+            return
+        tmp = os.path.join(cfg["DATA_DIR"], "state", "dashboard_early.json")
+        os.makedirs(os.path.dirname(tmp), exist_ok=True)
+        json.dump(d, open(tmp, "w"))
+        upload_to_drive(tmp, "dashboard_data.json")
+        cloud_store.put("dashboard_data.json", tmp, E.log)
+        E.log(f"Today: {len(EARLY_ROWS)} fresh pick(s) shown right away: {', '.join(x['t'] for x in EARLY_ROWS[:8])}")
+    except Exception as e:
+        E.log(f"Today: fresh picks not shown early ({type(e).__name__}); they show when the run finishes")
 
 
 def trade_family(bc, buys, new, last, msales):
@@ -683,6 +740,7 @@ def main():
         d = json.load(open(path))
         if snap is not None:
             d["portfolio"] = snap
+        merge_early(d)          # a stock the tool just bought as a fresh pick stays on Today's Buy candidates
         # members who bought a stock you hold and have since disclosed a sale (shown on My portfolio)
         ms = {}
         for p in (d.get("portfolio") or {}).get("positions") or []:
