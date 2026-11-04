@@ -3,7 +3,7 @@
 // Nothing under /api answers without a valid login cookie (except the login itself).
 
 const COOKIE = "cc_s";
-const SESSION_DAYS = 180;
+const SESSION_DAYS = 30;        // owner, Nov 4 2026: sign in again every month (was 6)
 const MAX_FAILS = 10;            // wrong passcodes allowed per hour from one network address before it's locked out
 const MAX_FAILS_ALL = 200;       // and from everyone together (a spread-out guessing attack); email sign-in still works
 const PREFIX = "cs-", PARK_PREFIX = "cs-park-", PARK_CHOICES = ["SPY", "VOO", "IVV", "SGOV", "BIL", "SHV"];
@@ -352,6 +352,7 @@ async function validSession(req, env) {
   if (!c) return false;
   const [exp, sig] = c.split(".");
   if (!exp || !sig || !(+exp > Date.now() / 1000)) return false;
+  if (+exp > Date.now() / 1000 + (SESSION_DAYS + 1) * 86400) return false;      // made before the 1-month rule
   return timingSafeEqual(sig, await sign(env, "s." + exp));
 }
 function timingSafeEqual(a, b) {

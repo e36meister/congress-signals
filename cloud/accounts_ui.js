@@ -906,7 +906,7 @@ function signInPanel() {
   pkLoad();
   const L = PK.items || [];
   return `<section class="panel"><div class="ph"><h2>Sign-in</h2><span class="sub">${esc(PK_NAME === "a passkey" ? "Passkeys" : PK_NAME)}</span></div>
-    <p class="foot" style="margin:0 0 8px">You sign in with your email and password plus a code we email you, and stay signed in for a month. On a device with ${esc(PK_NAME)}, you can use it instead.</p>
+    <p class="foot" style="margin:0 0 8px">You sign in with your email and password plus a code we email you${isViewer() ? "" : " (or your passcode)"}, and stay signed in for a month. On a device with ${esc(PK_NAME)}, you can use it instead. To change your password, sign out and tap Forgot password? on the sign-in screen.</p>
     ${L.length ? `<ul class="vrules">${L.map(k => `<li><span>${esc(k.device || "Device")} · set up ${esc(fmtDate(String(k.at).slice(0, 10)))}</span><button type="button" class="link" data-pkdel="${esc(k.id)}">Remove</button></li>`).join("")}</ul>` : ""}
     ${PK.can === false ? `<p class="foot">This device doesn't have ${esc(PK_NAME)} or a passkey; keep using your password and code here.</p>`
       : `<button type="button" class="btn sm" data-pkadd="1"${PK.busy ? " disabled" : ""}>Set up ${esc(PK_NAME)} on this device</button>`}
