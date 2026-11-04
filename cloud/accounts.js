@@ -564,7 +564,8 @@ export async function ownerAccountsPost(req, env, url, dispatch) {
   }
   if (act === "reset-keys") {
     await env.DATA.delete(`accounts/${a.id}/keys.json`);
-    await patchAccount(env, a.id, x => { delete x.keys_set_at; delete x.key_hint; });
+    // new keys may be a different Alpaca account: its first buys happen again when they reconnect
+    await patchAccount(env, a.id, x => { delete x.keys_set_at; delete x.key_hint; delete x.started_at; delete x.started_how; });
     return json({ ok: true, message: "Keys removed. They'll be asked to connect Alpaca again next time they open the app. Nothing they hold was sold." });
   }
   if (act === "remove") {
@@ -626,6 +627,18 @@ export async function checkFillsAll(env, sendAll, reasons, dispatch) {
           if (msgs.length > 3) out.push({ kind: "fills", title: `${msgs.length} trades filled`, body: msgs.map(m => m.s).join(", ").replace(/^./, x => x.toUpperCase()) + ".",
             url: "/#port", items: msgs.map(m => ({ l: `${m.title}: ${m.body}`, u: `/#port/${m.t}` })) });
           else for (const m of msgs) out.push({ kind: "fills", title: m.title, body: m.body, url: `/#port/${m.t}` });
+        }
+      }
+      // 1b. first buys still waiting for money (Nov 4: the first family account was connected before it was funded):
+      // once there's cash, start them (family_start.yml), at most once an hour per account
+      if (!startedOk(a) && termsOk(a) && !a.paused && a.auto !== false && dispatch) {
+        const acc2 = acct && acct.ok ? acct : await c.get("/v2/account");
+        if (acc2.ok && acc2.data && +acc2.data.cash >= 20) {
+          const sk = `accounts/${a.id}/start_kick.json`, last = (await r2json(env, sk, {})).at || 0;
+          if (Date.now() - last > 3600e3) {
+            await put(env, sk, { at: Date.now() });
+            try { await dispatch(env, "family_start.yml", { account: a.id }); } catch (e) { fails.push(`${a.label}: first buys couldn't start (${String(e.message || e).slice(0, 60)})`); }
+          }
         }
       }
       // 2. their account-value alerts, each at most once a day
@@ -822,6 +835,8 @@ export const TERMS = { v: "2026-11-03", title: "Capitol Capital Terms of Use",
     ["Governing law", "These Terms are governed by the laws of the State of Florida."],
   ],
   attest: "By signing, you confirm that you are at least 18 years old and have read and agree to these Terms and the Privacy Policy." };
+// first buys done ("0 first buys" was written for an account that had no money in it yet: not done)
+export const startedOk = a => !!(a && a.started_at && a.started_how !== "0 first buys");
 export function termsOk(a) { return !!(a && a.terms_at && a.terms_v === TERMS.v); }
 const initialsOf = name => name.split(/\s+/).filter(Boolean).map(w => w[0].toUpperCase()).join("").slice(0, 4);
 
@@ -838,6 +853,11 @@ async function signTerms(req, env, a, dispatch) {
     place: [cf.city, cf.region, cf.country].filter(Boolean).join(", "), text: TERMS };
   await put(env, `accounts/${a.id}/terms.json`, rec);
   await patchAccount(env, a.id, x => { x.terms_at = rec.at; x.terms_v = TERMS.v; });
+  // already connected (they connected before the Terms existed, or re-signed new terms): trading was on hold until
+  // now, so the first buys start right away if they haven't happened yet (Nov 4)
+  if (a.keys_set_at && !startedOk(a) && a.auto !== false && !a.paused && dispatch) {
+    try { await dispatch(env, "family_start.yml", { account: a.id }); } catch (e) {}
+  }
   const html = termsHtml(rec);
   const fmt = new Date(rec.at).toLocaleString("en-US", { timeZone: "America/New_York", dateStyle: "long", timeStyle: "short" });
   let queued = false;
@@ -870,7 +890,9 @@ async function setPause(req, env, a) {
     const c = await alpacaFor(env, a);
     if (c) {
       const r = await c.get("/v2/orders?status=open&limit=200");
-      for (const o of (r.data || []).filter(o => /^cs-/.test(o.client_order_id || ""))) {    // the tool's orders only
+      // the tool's orders only: not their own Buy / Buy more orders (cs-more-, Nov 4 click-through: Pause cancelled
+      // those too) nor their Sell orders (tap-sell-)
+      for (const o of (r.data || []).filter(o => /^cs-/.test(o.client_order_id || "") && !(o.client_order_id || "").startsWith(MORE_PREFIX))) {
         try { const x = await c.del(`/v2/orders/${o.id}`); if (x.ok || x.status === 204) cancelled++; } catch (e) {}
       }
     }

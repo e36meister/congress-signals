@@ -114,7 +114,9 @@ function applyLive(L) {
 }
 async function loadLive() {
   clearTimeout(liveTimer);
-  if (document.visibilityState === "visible" && state.data && !window.__CTD_SAMPLE) {
+  // a family account with no Alpaca keys yet has no live account to read (it only showed "Couldn't get live prices")
+  const noKeys = typeof isViewer === "function" && isViewer() && !(state.data && state.data.viewer && state.data.viewer.connected);
+  if (document.visibilityState === "visible" && state.data && !window.__CTD_SAMPLE && !noKeys) {
     try {
       try {                                       // flagged positions of yours (Keep); redraw when they change
         const m = (await api("/api/manual")).js, was = JSON.stringify(state.manual || null);

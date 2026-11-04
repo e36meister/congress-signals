@@ -136,9 +136,9 @@ nav.tabs button{overflow:hidden}
 src = sub("@media (max-width: 760px){\n  body{padding-bottom", phonecss + "@media (max-width: 760px){\n  body{padding-bottom", src)
 
 # tapping a tab starts that tab at the top of the page (bottom bar on phones)
-src = sub("""  try { localStorage.setItem("ctd-tab", state.tab); } catch (e) {}
+src = sub("""  if (typeof clearViewerMsgs === "function") clearViewerMsgs();
   render();
-}));""", """  try { localStorage.setItem("ctd-tab", state.tab); } catch (e) {}
+}));""", """  if (typeof clearViewerMsgs === "function") clearViewerMsgs();
   render();
   window.scrollTo(0, 0);
 }));""", src)

@@ -32,6 +32,9 @@ function myPhoto() {
 function buyListHas(t) { return ((state.data?.watchlist?.buys) || []).some(r => r.t === t && r.action === "BUY"); }
 const tip = html => `<div class="vtip">${html}</div>`;
 
+// messages from an earlier tap (a sent order, a saved size) are cleared when they go to another page, so old ones
+// don't pile up under new ones (Nov 4 click-through)
+function clearViewerMsgs() { VA.msg = {}; VA.sizeMsg = null; VA.pauseMsg = null; VA.prefsMsg = null; VA.photoMsg = null; VA.bugMsg = null; if (VA.keyMsg && VA.keyMsg.ok) VA.keyMsg = null; }
 const VA = { open: null, sellOpen: null, sellMode: {}, amt: {}, msg: {}, busy: false, keyMsg: null, keyBusy: false,
   prefs: null, prefsErr: null, prefsMsg: null, photoMsg: null, photoBusy: false, bugMsg: null, bugBusy: false, bugFrom: null, bugKind: "bug" };
 
@@ -184,7 +187,12 @@ function renderViewerAccount(d, opts = {}) {
   if (!V.terms && !ro) return renderTermsSign(true);
   if (!V.connected && !ro) return renderConnect();
   if (!V.connected && ro) return `<div class="empty">They haven't connected their Alpaca account yet.</div>`;
-  if (!p) return `<section class="panel"><div class="ph"><h2>Connected</h2></div><p>Your Alpaca account is connected and the tool is buying the current picks for it now. This page fills in within a few minutes; pull down to refresh. After that the tool buys new picks as they come in and parks spare cash in a Treasury-bill fund until picks need it.</p></section>${sizePanel(d, ro)}`;
+  if (!p) return `<section class="panel"><div class="ph"><h2>Connected</h2></div>
+    ${VA.keyMsg ? `<div class="tapmsg ${VA.keyMsg.ok ? "pos" : "neg"}">${esc(VA.keyMsg.text)}</div>` : ""}
+    <p>${V.paused ? "Your Alpaca account is connected. Trading is paused, so nothing is bought until you resume it."
+      : V.auto === false ? "Your Alpaca account is connected. Automatic buying is turned off for your account for now, so nothing is bought until the Operator turns it on."
+      : "Your Alpaca account is connected and the tool is buying the current picks for it now. This page fills in within a few minutes; pull down to refresh. After that the tool buys new picks as they come in and parks spare cash in a Treasury-bill fund until picks need it."}
+    If your Alpaca account doesn't have money in it yet, deposit in the Alpaca app; the tool buys the current picks once the money shows up.</p></section>${sizePanel(d, ro)}${ro ? "" : pausePanel(V)}`;
   const pos = p.positions || [], ords = p.orders || [], L = p.limits || {};
   const picks = pos.filter(x => x.bot && x.sleeve !== "park"), park = pos.filter(x => x.sleeve === "park"), own = pos.filter(x => !x.bot && x.sleeve !== "park");
   const invested = picks.reduce((a, x) => a + (x.mv || 0), 0), gain = picks.reduce((a, x) => a + (x.pl || 0), 0), parked = park.reduce((a, x) => a + (x.mv || 0), 0);
@@ -199,8 +207,13 @@ function renderViewerAccount(d, opts = {}) {
     return `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${m && VA.open !== x.t && VA.sellOpen !== x.t ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</td><td class="n">${Number(x.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
       <td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${held}${btns}</td></tr>${ro ? "" : vBuyBox(x.t, true) + vSellRow(x)}`;
   };
+  // Nov 4: the first family account was connected with nothing in it, and its page just said "Nothing bought yet"
+  const empty = !(p.equity >= 1) && !pos.length;
+  const why = empty ? `<div class="note warn"><b>${ro ? "This Alpaca account has no money in it yet." : "Your Alpaca account doesn't have any money in it yet."}</b> ${ro ? "The tool buys the current picks once they deposit." : "Deposit money in the Alpaca app (Banking → Deposit). The tool buys the current picks as soon as the money shows up during market hours, or at the next update."}</div>`
+    : V.auto === false && !V.paused ? `<div class="note">${ro ? "Auto-buying is off for this account." : "The Operator has turned off automatic buying for your account for now. The tool still sells what it holds on its usual schedule."}</div>` : "";
   return `${ro ? "" : tip("<b>Your Account.</b> Everything here is your own real-money Alpaca account. The tool buys new picks for you as they're found, each with a share of your balance set by your buy size; spare cash waits in a Treasury-bill fund (it earns about what short-term Treasury bills pay). Tap a ticker for its chart.")}
   <div class="filters"><span class="chip SHORT">Real money</span>${auto}<span class="foot">Updated ${esc(ago(p.updated))} (${esc(fmtET(p.updated))}) · market ${p.market_open ? "open" : "closed"}</span></div>
+  ${why}
   <div class="tiles">
     <div class="tile"><span class="v">${money(p.equity)}</span><span class="l">Account value</span><span class="c">Cash ${money(p.cash)}</span></div>
     <div class="tile"><span class="v ${cls(p.day_pl)}">${p.day_pl == null ? "–" : (p.day_pl > 0 ? "+" : "") + money(p.day_pl)}</span><span class="l">${esc(dayLabel(p))}</span></div>
@@ -214,7 +227,7 @@ function renderViewerAccount(d, opts = {}) {
     ${pos.length ? `<div class="tbl"><table><thead><tr><th>Ticker</th><th class="n">Shares</th><th class="n">Avg cost</th><th class="n">Value</th><th class="n">Gain</th><th>Held</th></tr></thead><tbody>
     ${[...picks, ...own, ...park].map(row).join("")}</tbody></table></div>
     <p class="foot">The tool buys each new pick with an equal share of the account, sells it at the end of its hold (or keeps a winner while it's ahead of the S&amp;P 500), and keeps spare cash in a Treasury-bill fund. Most picks are held about ${(d.adaptive?.policy?.hold_other) ?? L.hold_days ?? 60} trading days.${ro ? "" : " Buy more shows on stocks that are on today's Buy list."}</p>`
-    : `<div class="empty">Nothing bought yet. New picks are bought as they come in.</div>`}</section>
+    : `<div class="empty">${empty ? "Nothing bought yet: there's no money in the account yet." : "Nothing bought yet. New picks are bought as they come in."}</div>`}</section>
   ${vDaysSection(d)}
   ${divSection({ ...p, mode: "live" })}
   <section class="panel"><div class="ph"><h2>Recent orders</h2></div>
@@ -713,7 +726,9 @@ document.addEventListener("change", async ev => {
 document.addEventListener("click", ev => {
   const g = ev.target.closest && ev.target.closest("[data-tab-go]");
   if (!g || !isViewer()) return;
-  state.tab = g.dataset.tabGo; location.hash = state.tab; render(); scrollTo(0, document.body.scrollHeight);
+  state.tab = g.dataset.tabGo; location.hash = state.tab; render();
+  // after the page has drawn (the hash change redraws it once more): straight to the Pause switch
+  setTimeout(() => { const el = document.querySelector("[data-vpause]"); if (el) el.scrollIntoView({ block: "center" }); else scrollTo(0, document.body.scrollHeight); }, 120);
 });
 
 

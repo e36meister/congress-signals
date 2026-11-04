@@ -58,7 +58,10 @@ def load(log):
             missing += 1
             continue
         out.append({"id": a["id"], "auto": a.get("auto", True) is not False, "key": k["key"], "secret": k["secret"],
-                    "size": a.get("size") or "standard", "started": bool(a.get("started_at")),
+                    "size": a.get("size") or "standard",
+                    # Nov 4: "0 first buys" was written for an account with no money in it yet (its first buys then
+                    # never happened once money arrived); such an account still counts as not started
+                    "started": bool(a.get("started_at")) and a.get("started_how") != "0 first buys",
                     # they paused trading (no orders at all), or haven't signed the current Terms of Use
                     "hold": bool(a.get("paused")) or not (a.get("terms_at") and a.get("terms_v") == TERMS_V)})
     if missing:
@@ -203,6 +206,13 @@ def start(log, only=None, accts=None, tag="Family account"):
             continue
         bought = [x for x in (snap.get("this_run") or []) if x.get("side") == "buy" and x.get("ok")]
         _save(a["id"], snap, log)
+        per_pick = ((snap.get("limits") or {}).get("per_pick") or 0)
+        if not bought and per_pick < 1:
+            # Nov 4: the first family account was connected before any money was in it; its first buys were marked
+            # done with nothing bought, so the current picks were never bought once it was funded. Now it waits:
+            # the app's server starts this again when money shows up, and every daily update retries.
+            log(f"{tag}: first buys wait: the account has no money to invest yet (bought once it's funded)")
+            continue
         _mark_started(a["id"], f"{len(bought)} first buys")
         log(f"{tag}: first buys placed: {len(bought)} of {len(df)} on the Buy list (size {a.get('size') or 'standard'})")
         done += 1

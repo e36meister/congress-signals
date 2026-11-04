@@ -702,6 +702,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
                                                                # isn't a pick: a family account that only parked so far
                                                                # still starts from the list)
             order = [t for t in rows["ticker"] if first_time or t in new_buys] if rows is not None and len(rows) else []
+        if rows is not None and len(rows) and order and main_cap < 1:
+            log("Broker: no new picks bought: the account has no money to invest yet")   # (no amounts: the log is public)
         if rows is not None and len(rows):
             for t in order:
                 if slots <= 0 or inv_main + dollars * 0.5 > main_cap:

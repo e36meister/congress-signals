@@ -463,6 +463,8 @@ document.querySelectorAll("nav.tabs button").forEach(b => b.addEventListener("cl
   state.tab = b.dataset.tab;
   if (typeof MEM !== "undefined") MEM.missing = null;
   try { localStorage.setItem("ctd-tab", state.tab); } catch (e) {}
+  try { history.replaceState(history.state, "", location.pathname + location.search + "#" + state.tab); } catch (e) {}   // see goTab
+  if (typeof clearViewerMsgs === "function") clearViewerMsgs();
   render();
 }));
 
@@ -488,6 +490,10 @@ function goTab(t) {
   if (t === "tax") { TAX.js = null; TAX.err = null; TAX.sales = {}; }
   if (typeof MEM !== "undefined") MEM.missing = null;
   try { localStorage.setItem("ctd-tab", t); } catch (e) {}
+  // the address follows the page, so a reload (or pull to refresh) doesn't jump back to an older #page (Nov 4: a
+  // family member on More → Notifications was sent back to their Account page)
+  try { history.replaceState(history.state, "", location.pathname + location.search + "#" + t); } catch (e) {}
+  if (typeof clearViewerMsgs === "function") clearViewerMsgs();
   render(); window.scrollTo(0, 0);
 }
 // ---------- Data health: every source's open problems (from each job and the app's server), and recent fixes ----------
