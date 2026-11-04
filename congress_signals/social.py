@@ -1846,6 +1846,8 @@ def build_index(cfg, tg=None, sort_until=None, hard_until=None):
                             "p": [q.split("|")[0] for q in (pp or [])], "s": list(secs or []), "ag": ag,
                             "ty": srt.get("ty") or [], "ins": srt.get("ins") or "", "meet": srt.get("meet") or [],
                             "hit": [x["n"] for x in srt.get("tg", []) if x["k"] == "industry" and x.get("hit")],
+                            "cen": [x["n"] for x in srt.get("tg", []) if x["k"] == "industry" and x.get("cen")],
+                            "lob": _lobbyist_only(pp, text, names),
                             "rp": bool(rp),
                             "st": {(x.get("t") if x["k"] == "co" else x.get("n")): x.get("s") for x in srt.get("tg", [])
                                    if x.get("s") is not None}})
@@ -1920,6 +1922,26 @@ AGENCY_SECTORS = {"FDA": ["Healthcare"], "HHS": ["Healthcare"], "Pentagon": ["In
                   "DHS": ["Industrials", "Technology"], "VA": ["Healthcare"], "Justice Dept": []}
 
 
+def _lobbyist_only(pp, text, names):
+    """Companies a post is tagged with only because it names someone with the same name as one of their lobbyists
+    (owner, Nov 4: a release quoting an author named John Green was tagged with all 57 companies a lobbyist of that
+    name works for). {ticker: [name, how many companies that name lobbies for in this post]}; the company itself
+    named in the text, or the person tagged as an executive, keeps it a normal company mention."""
+    lob, other = {}, set()
+    for q in pp or []:
+        nm, t, role = (str(q).split("|") + ["", "", ""])[:3]
+        (lob.setdefault(nm, []).append(t) if role == "lobbyist" else other.add(t))
+    low = " " + re.sub(r"[^a-z0-9]+", " ", (text or "").lower()) + " "
+    out = {}
+    for nm, ts in lob.items():
+        for t in ts:
+            words = [w for w in ((names or {}).get(t) or []) if len(w) > 2]
+            if t in other or (words and (" " + " ".join(words) + " ") in low):
+                continue
+            out[t] = [nm, len(set(ts))]
+    return out
+
+
 def trade_post_links(trades, idx, before_days=90):
     """Posts by the same member that line up with a trade (owner, Oct 16: "if Gottheimer posts hinting at a boost
     in an industry, then trades a company in that industry, flag it and tell me to check the post").
@@ -1948,14 +1970,19 @@ def trade_post_links(trades, idx, before_days=90):
                 continue
             secs = set(p.get("s") or []) | {x for a in p.get("ag") or [] for x in AGENCY_SECTORS.get(a, [])}
             when = "before the trade" if p["d"] <= td.strftime("%Y-%m-%d") else "after the trade, before it was disclosed"
-            if t in (p.get("t") or []):
+            if t in (p.get("lob") or {}):
+                # only a lobbyist's name matched: the owner checks whether it's the same person (never flags alone)
+                nm, n_ = p["lob"][t]
+                found.append((2, p, f"named {nm}, who lobbies for {r.get('company') or t}, {when}: check it's the same person"
+                              + (f" (that name matches lobbyists for {n_} companies in this post, probably a common name)" if n_ >= 5 else "")))
+            elif t in (p.get("t") or []):
                 tone = p.get("st", {}).get(t)
                 verb = f"met with {', '.join(p['meet'][:2])} of" if p.get("meet") else "posted about"
                 found.append((3, p, f"{verb} {r.get('company') or t} {when}" +
                               (f" ({'positive' if tone >= 0.3 else 'negative' if tone <= -0.3 else 'neutral'} tone)" if tone is not None else "")))
             elif sec and sec in secs and p.get("ins"):
                 found.append((3, p, f"hinted at something not yet public about {sec.lower()} (\"{p['ins']}\") {when}"))
-            elif sec and sec in secs and p["d"] >= lo30 and not p.get("rp"):
+            elif sec and sec in secs and sec in (p.get("cen") or []) and p["d"] >= lo30 and not p.get("rp"):
                 # Nov 4 (owner, HONA audit): a repost isn't the member's own words, and "against" needs both
                 # oversight/criticism wording in a sentence that names the industry and a negative tone toward it
                 # (a +0.67 hearing release and a funding release were read as against industrials)

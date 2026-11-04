@@ -14,7 +14,7 @@ company, which reads tone better). Setting ANTHROPIC_API_KEY and POST_SORTER=hai
 Never raises; a post it can't read gets an empty result."""
 import os, re
 
-SORT_VERSION = 6       # 2: tone toward industries too; 3: 'met with' and 'strong' only when the company is what the sentence is about; 4: alert levels (Oct 19); 5: re-sort after tagger 11 (Nov 3); 6: "urge/calls on" is advocacy, not oversight; per-industry hit wording (Nov 4)
+SORT_VERSION = 7       # 2: tone toward industries too; 3: 'met with' and 'strong' only when the company is what the sentence is about; 4: alert levels (Oct 19); 5: re-sort after tagger 11 (Nov 3); 6: "urge/calls on" is advocacy, not oversight; per-industry hit wording (Nov 4); 7: industry is the subject (headline or 2+ sentences) (Nov 4)
 
 TYPE_RX = [
     ("meeting", re.compile(r"\b(met\b.{0,30}\bwith|meet(?:ing|s)?\b.{0,30}\bwith|sat down with|sit down with|hosted|"
@@ -197,6 +197,13 @@ def sort_record(r, names=None):
             if words and any(rx.search(sn) and any(re.search(r"\b" + re.escape(w) + r"\b", sn, re.I) for w in words)
                              for sn in _sentences(text) for rx in hit_rx):
                 x["hit"] = True
+            # Nov 4 (owner): the industry is what the post is about when the headline names it or 2+ sentences do
+            # (a sewer grant that says "infrastructure" once isn't an industrials post)
+            if words:
+                sl = _sentences(text)
+                named = [sn for sn in sl if any(re.search(r"\b" + re.escape(w) + r"\b", sn, re.I) for w in words)]
+                if named and (named[0] == sl[0] or len(named) >= 2):
+                    x["cen"] = True
             targets.append(x)
         # "met with": the company or person must be in the same sentence as the meeting or visit words (Oct 18:
         # a Memphis roundtable post that listed FedEx among the city's employers was flagged as meeting FedEx)

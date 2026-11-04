@@ -64,6 +64,8 @@ for f in glob.glob("social/posts/**/*.jsonl.gz", recursive=True) + glob.glob("wb
             "d": str(d)[:10], "u": url, "x": (text or "")[:400], "src": s, "t": list(tk or []), "s": list(secs or []), "ag": ag,
             "ty": srt.get("ty") or [], "ins": srt.get("ins") or "", "meet": srt.get("meet") or [],
             "hit": [x["n"] for x in srt.get("tg", []) if x["k"] == "industry" and x.get("hit")], "rp": bool(rp),
+            "cen": [x["n"] for x in srt.get("tg", []) if x["k"] == "industry" and x.get("cen")],
+            "lob": S._lobbyist_only(pp, text, names),
             "st": {(x.get("t") if x["k"] == "co" else x.get("n")): x.get("s") for x in srt.get("tg", []) if x.get("s") is not None},
             "old_ty": (r[11] or {}).get("ty") if len(r) > 11 and isinstance(r[11], dict) else None})
 for k in recent:
@@ -110,6 +112,8 @@ for i, r in enumerate(recs):
                 why_not = "company named but not linked (outside window?)"
             elif p.get("rp"):
                 why_not = "repost"
+            elif sec not in (p.get("cen") or []):
+                why_not = "industry isn't the post's subject (not in the headline or 2+ sentences)"
             elif p["d"] < lo30:
                 why_not = "industry post older than 30 days before the trade"
             elif buy:
@@ -119,7 +123,7 @@ for i, r in enumerate(recs):
         rows.append({"member": r.get("member"), "b": b, "t": t, "co": r.get("company"), "sector": sec,
                      "tx": r.get("tx_type"), "td": td.strftime("%Y-%m-%d"), "fd": fd.strftime("%Y-%m-%d"),
                      "other_flag": bool(other.iloc[i]), "u": p["u"], "src": p["src"], "d": p["d"], "x": p["x"],
-                     "ty": p["ty"], "old_ty": p.get("old_ty"), "hit": p.get("hit"), "rp": p.get("rp"),
+                     "ty": p["ty"], "old_ty": p.get("old_ty"), "hit": p.get("hit"), "cen": p.get("cen"), "lob": p.get("lob"), "ins": p.get("ins"), "rp": p.get("rp"),
                      "tone": (p.get("st") or {}).get(t if names_co else sec), "names_co": names_co,
                      "link": (L or {}).get("why"), "lvl": (L or {}).get("lvl"), "why_not": why_not,
                      "in_worth": bool(L) and ((L.get("lvl") or 0) >= 3 or bool(other.iloc[i]))})
