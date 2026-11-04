@@ -126,7 +126,7 @@ function pub(a) {
   return { id: a.id, label: a.label, email: a.email, status: a.status, auto: a.auto !== false, created: a.created,
            last_login: a.last_login || null, keys: !!a.keys_set_at, keys_set_at: a.keys_set_at || null, key_hint: a.key_hint || null,
            link_sent: a.link_sent || null, size: sizeOf(a), started_at: a.started_at || null,
-           terms_at: termsOk(a) ? a.terms_at : null, paused: !!a.paused, paused_at: a.paused_at || null, park: parkOf(a) };
+           build: a.build || null, terms_at: termsOk(a) ? a.terms_at : null, paused: !!a.paused, paused_at: a.paused_at || null, park: parkOf(a) };
 }
 
 // ---------- sign-in links ----------
@@ -261,8 +261,11 @@ export async function viewerApi(req, env, url, a, h) {
   if (p === "/api/session") {
     // the first time they open the app is remembered, so a few days in they're asked once whether they want emails too
     if (!a.first_seen) { a.first_seen = new Date().toISOString(); await patchAccount(env, a.id, x => { if (!x.first_seen) x.first_seen = a.first_seen; }); }
+    // which app version they last opened (shown on the owner's Accounts page)
+    const bv = String(url.searchParams.get("b") || "").slice(0, 40);
+    if (/^0\.\d+\.[\w-]+$/.test(bv) && bv !== a.build) await patchAccount(env, a.id, x => { x.build = bv; x.build_at = new Date().toISOString(); });
     return json({ ok: true, role: "viewer", connected: !!a.keys_set_at, auto: a.auto !== false, mode: "live", size: sizeOf(a),
-      terms: termsOk(a), paused: !!a.paused, hold: await familyHold(env), initials: nameInitials(a.name || a.label),
+      terms: termsOk(a), paused: !!a.paused, hold: await familyHold(env), build: env.APP_BUILD || null, initials: nameInitials(a.name || a.label),
       photo: a.photo_at || null, photo_prompted: !!(a.photo_at || a.photo_skipped),
       ask_email: !a.email_asked && Date.now() - Date.parse(a.first_seen) >= EMAIL_ASK_DAYS * 864e5 });
   }

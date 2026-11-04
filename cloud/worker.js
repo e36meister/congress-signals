@@ -164,7 +164,7 @@ async function api(req, env, url, ctx) {
     env = Object.assign(Object.create(env), { __quiet: true });   // the shared handlers below don't file Data health items for them
   }
 
-  if (p === "/api/session") return json({ ok: true, role: "owner", mode: (env.TRADING_MODE || "paper") });
+  if (p === "/api/session") return json({ ok: true, role: "owner", mode: (env.TRADING_MODE || "paper"), build: env.APP_BUILD || null });
   if (p === "/api/accounts" && req.method === "GET") return ownerAccounts(env);
   if (p === "/api/accounts/view" && req.method === "GET") return ownerAccount(env, url);
   if (p === "/api/accounts/live" && req.method === "GET") return ownerAccountLive(env, url, live);

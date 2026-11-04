@@ -359,7 +359,7 @@ document.addEventListener("click", async ev => {
 function vBack() { return `<button type="button" class="moreback" data-vok="1" data-more="more">‹ More</button>`; }
 function renderViewerMore() {
   return `<section class="panel"><div class="morelist">${VIEWER_MORE.map(m => `<button type="button" class="moreitem" data-vok="1" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}</div></section>
-  <div class="legal"><button type="button" class="link" data-vok="1" data-more="terms">Terms of Use</button><span aria-hidden="true">·</span><button type="button" class="link" data-vok="1" data-more="privacy">Privacy Policy</button></div>`;
+  <div class="legal"><button type="button" class="link" data-vok="1" data-more="terms">Terms of Use</button><span aria-hidden="true">·</span><button type="button" class="link" data-vok="1" data-more="privacy">Privacy Policy</button></div>${versionLine()}`;
 }
 function renderViewerPage() {
   if (state.tab === "more") return renderViewerMore();
@@ -561,7 +561,7 @@ function renderAccounts() {
     const btn = (act, l, extra = "") => `<button type="button" class="btn ghost sm" data-acc="${act}" data-id="${esc(a.id)}"${ACC.busy ? " disabled" : ""}${extra}>${l}</button>`;
     return `<article class="acct">
       <div class="acct-h"><b>${esc(a.label)}</b>${st}${a.paused ? `<span class="chip avoid">They paused trading</span>` : a.keys ? (a.auto ? `<span class="chip BUY">Auto-buying on</span>` : `<span class="chip avoid">Auto-buying paused</span>`) : ""}${a.terms_at ? `<span class="chip watch">Terms signed</span>` : `<span class="chip avoid">Terms not signed</span>`}</div>
-      <div class="foot">${esc(a.email)} · ${conn}${a.last_login ? ` · last sign-in ${esc(ago(a.last_login))}` : a.link_sent ? ` · link sent ${esc(ago(a.link_sent))}` : ""}</div>
+      <div class="foot">${esc(a.email)} · ${conn}${a.build ? ` · app ${esc(a.build)}${SERVER_BUILD && a.build !== SERVER_BUILD ? " (older)" : " (latest)"}` : ""}${a.last_login ? ` · last sign-in ${esc(ago(a.last_login))}` : a.link_sent ? ` · link sent ${esc(ago(a.link_sent))}` : ""}</div>
       ${S ? `<div class="acct-s"><span><b>${money(S.equity)}</b> value</span><span class="${cls(S.day_pl)}">${S.day_pl == null ? "–" : (S.day_pl > 0 ? "+" : "") + money(S.day_pl)} today</span><span>${money(S.invested)} in picks</span><span>${S.positions} position${S.positions === 1 ? "" : "s"}</span><span class="foot">updated ${esc(ago(S.updated))}</span></div>` : ""}
       ${a.problem ? `<div class="foot neg">${esc(a.problem)}</div>` : ""}
       <div class="acct-b">${a.keys ? `<button type="button" class="btn sm" data-accview="${esc(a.id)}">View portfolio</button>` : ""}
@@ -854,3 +854,25 @@ function renderVTax() {
     return `<section class="panel"><div class="ph"><h2>Taxes</h2></div><div class="empty">No trades yet. This fills in after the market closes on a day the tool buys or sells for you: every sale's gain or loss, your Form 8949 statement and what to file.</div></section>`;
   return html;
 }
+
+
+// ---------- version: shown at the bottom of More; an app showing an older page offers to update ----------
+let SERVER_BUILD = null;
+function versionLine() {
+  const when = (() => { try { return new Date(APP_BUILT).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); } catch (e) { return ""; } })();
+  return `<p class="verline">Alpha · version ${esc(APP_BUILD)}${when ? ` · ${esc(when)} ET` : ""}${SERVER_BUILD && SERVER_BUILD !== APP_BUILD ? ` · <b>newer: ${esc(SERVER_BUILD)}</b>` : ""}</p>`;
+}
+function checkBuild(js) { if (js && js.build) SERVER_BUILD = js.build; }
+function updateBanner() {
+  if (!SERVER_BUILD || SERVER_BUILD === APP_BUILD || /dev/.test(APP_BUILD)) return "";
+  return `<div class="updbar"><span><b>A newer version is ready</b> (${esc(SERVER_BUILD)}; you have ${esc(APP_BUILD)}).</span><button type="button" class="btn sm" data-appupdate="1">Update</button></div>`;
+}
+document.addEventListener("click", ev => {
+  if (!(ev.target.closest && ev.target.closest("[data-appupdate]"))) return;
+  try { location.reload(); } catch (e) {}
+});
+// when the app comes back to the screen, check for a newer version (a home-screen app can stay open for days)
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  api("/api/session?b=" + encodeURIComponent(APP_BUILD)).then(r => { const had = SERVER_BUILD; checkBuild(r.js); if (SERVER_BUILD !== had) render(); }, () => {});
+});

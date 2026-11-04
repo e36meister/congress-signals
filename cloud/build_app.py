@@ -186,7 +186,20 @@ src = src[:start] + open(os.path.join(HERE, "data_layer.js"), encoding="utf-8").
 
 # ---- family accounts (owner, Nov 2 2026): one app, two roles (accounts_ui.js) ----
 # The family-account code goes first inside the app's script, so render() can use it from the start.
-src = sub("<script>\n(() => {\n", "<script>\n(() => {\n" + open(os.path.join(HERE, "accounts_ui.js"), encoding="utf-8").read() + "\n", src)
+# ---- version (owner, Nov 4 2026): "Alpha 0.1.<deploy number>", shown at the bottom of More; the server is told the
+# same number at deploy (wrangler --var APP_BUILD from cloud/.build), so an app still showing an older page knows
+# to reload, and the owner sees which version each family account last opened ----
+import datetime as _dt, subprocess as _sp
+_run = os.environ.get("GITHUB_RUN_NUMBER")
+try:
+    _sha = (os.environ.get("GITHUB_SHA") or _sp.run(["git", "rev-parse", "HEAD"], cwd=HERE, capture_output=True, text=True).stdout).strip()[:7]
+except Exception:
+    _sha = ""
+APP_BUILD = f"0.1.{_run}" if _run else f"0.1.dev-{_sha or 'local'}"
+APP_BUILT = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="minutes")
+open(os.path.join(HERE, ".build"), "w").write(APP_BUILD)
+src = sub("<script>\n(() => {\n", "<script>\n(() => {\n" + f"const APP_BUILD = {APP_BUILD!r}, APP_BUILT = {APP_BUILT!r}, APP_SHA = {_sha!r};\n"
+          + open(os.path.join(HERE, "accounts_ui.js"), encoding="utf-8").read() + "\n", src)
 # a family account only ever renders Today, Members, Alerts and its own Account
 src = sub("function render() {\n  setHeaderHeight();", "function render() {\n  guardTab();\n  vMeButton();\n  setHeaderHeight();", src)
 src = sub('  if (state.tab === "port") html += renderPortfolio(d);',
@@ -205,7 +218,10 @@ src = sub('        const m = (await api("/api/manual")).js, was = JSON.stringify
 src = sub('  const b = ev.target.closest("[data-buy],[data-send],[data-cancel]");\n  if (!b) return;',
           '  const b = ev.target.closest("[data-buy],[data-send],[data-cancel]");\n  if (!b || isViewer()) return;', src)
 # who's signed in decides the app (owner or family account)
-src = sub('api("/api/session").then(() => { loadData();', 'api("/api/session").then(r => { applyRole(r.js); render(); loadData();', src)
+src = sub('api("/api/session").then(() => { loadData();', 'api("/api/session?b=" + encodeURIComponent(APP_BUILD)).then(r => { applyRole(r.js); checkBuild(r.js); render(); loadData();', src)
+# owner's More page: the version line at the bottom too
+src = sub('  ${MORE_TABS.filter(m => !["search", "small", "defense"].includes(m.k)).map(m => `<button type="button" class="moreitem" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}\n  </div></section>`;',
+          '  ${MORE_TABS.filter(m => !["search", "small", "defense"].includes(m.k)).map(m => `<button type="button" class="moreitem" data-more="${m.k}"><span class="ml">${esc(m.l)}</span><span class="md">${esc(m.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}\n  </div></section>${versionLine()}`;', src)
 # signed out: the server's login page has both ways in (email link and passcode)
 src = sub('function showLogin(msg) {\n  $("#login").hidden = false;',
           'function showLogin(msg) {\n  if (!window.__CTD_SAMPLE) { location.replace("/"); return; }\n  $("#login").hidden = false;', src)
@@ -234,7 +250,7 @@ src = sub('  if (state.tab === "tax") html += renderTax();', '  if (state.tab ==
 src = sub('<div class="ph"><h2>What to file</h2><span class="sub">Federal only: Florida has no state income tax</span></div>',
           '<div class="ph"><h2>What to file</h2><span class="sub">${isViewer() ? "Federal, plus your state\'s rules" : "Federal only: Florida has no state income tax"}</span></div>', src)
 # a paused family account sees a banner at the top of every page
-src = sub('  let html = "";\n  if (d.version === 1)', '  let html = "";\n  if (isViewer()) html += pausedBanner();\n  if (d.version === 1)', src)
+src = sub('  let html = "";\n  if (d.version === 1)', '  let html = "";\n  html += updateBanner();\n  if (isViewer()) html += pausedBanner();\n  if (d.version === 1)', src)
 # your trades on a stock's chart show your own picture
 n = src.count('<img src="/me.jpg" alt="" onerror="this.style.display=\'none\'"></button>`).join("")}')
 assert n == 1, n
@@ -252,6 +268,8 @@ html.viewer [data-jump="today-worth"],html.viewer [data-jump="today-unusual"]{di
 .vtip{display:none}html.tips .vtip{display:block;background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:12px}
 .vbtns{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
 .meini{display:grid;place-items:center;width:100%;height:100%;font:600 15px var(--body);color:var(--accent);background:var(--accent-soft)}
+.verline{text-align:center;color:var(--muted);font-size:12px;margin:-6px 0 18px}
+.updbar{background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent);border-radius:10px;padding:10px 12px;margin:0 0 12px;font-size:14px;display:flex;gap:10px;align-items:center;justify-content:space-between}
 /* spare cash choice */
 .parkopts{display:grid;gap:10px}
 .parkopt{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;align-items:start;text-align:left;background:var(--surface);border:1.5px solid var(--rule);border-radius:12px;padding:12px;color:var(--ink);font:15px/1.45 var(--body);cursor:pointer}
