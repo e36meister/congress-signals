@@ -1727,7 +1727,7 @@ def build_index(cfg, tg=None, sort_until=None, hard_until=None):
     recent = {}          # each member's posts of the last ~15 months that name a company, person, industry or agency
     recent_from = (dt.date.today() - dt.timedelta(days=450)).isoformat()
     names = getattr(tg, "names", None)
-    n_sorted = n_unsorted = 0
+    n_sorted = n_unsorted = n_retag_left = 0
     n = 0
     press_seen = set()
     from congress_signals.press_backfill import norm_url
@@ -1750,7 +1750,11 @@ def build_index(cfg, tg=None, sort_until=None, hard_until=None):
                 recs = keep
             for r in recs:
                 cands_now = None
-                if tg is not None and (len(r) < 11 or r[10] not in (tg.version, tg.version + PRESS_FULL)):  # re-tag, once
+                stale_tag = tg is not None and (len(r) < 11 or r[10] not in (tg.version, tg.version + PRESS_FULL))
+                if stale_tag and hard_until is not None and time.time() >= hard_until:
+                    n_retag_left += 1           # past the hard stop: keeps its older tags; the next run re-tags it
+                    stale_tag = False
+                if stale_tag:  # re-tag, once
                     tk2, pp2, secs2, tone2 = tg.tag(r[3])
                     cands_now = [c for c in tg.last_cands if 0.45 <= c["c"] < 0.75]
                     r[:] = (r + [""] * 10)[:10]
@@ -1840,11 +1844,12 @@ def build_index(cfg, tg=None, sort_until=None, hard_until=None):
            "mentions": {k: {t: sorted(v) for t, v in m.items()} for k, m in mentions.items()},
            "sectors": {k: {s: to_np(v) for s, v in m.items()} for k, m in sectors.items()},
            "crowd": {t: sorted(v) for t, v in crowd.items()}, "x_counts": xc,
-           "built": dt.datetime.utcnow().isoformat(), "posts": n, "unsorted": n_unsorted}
+           "built": dt.datetime.utcnow().isoformat(), "posts": n, "unsorted": n_unsorted + n_retag_left}
     pd.to_pickle(idx, _dir(cfg, "index.pkl"))
     _log(f"Posts index: {n:,} posts from {len(pages):,} members and offices; "
          f"{sum(len(v) for m in mentions.values() for v in m.values()):,} company mentions; "
-         f"sorted {n_sorted:,} posts this run" + (f", {n_unsorted:,} still to sort (next run)" if n_unsorted else ""))
+         f"sorted {n_sorted:,} posts this run" + (f", {n_unsorted:,} still to sort (next run)" if n_unsorted else "")
+         + (f", {n_retag_left:,} still to re-tag (next run)" if n_retag_left else ""))
     return idx
 
 
@@ -2052,8 +2057,12 @@ def update_all(cfg, minutes, history=True):
             _log(f"Latest press releases: failed ({type(e).__name__}: {e})")
     _save_state(cfg, st)
     # sorting every stored post the first time takes a few long runs; a daily run sorts for at least 5 minutes
+    # Nov 4: the history run had no hard stop here. Once its sort time ran out it kept sorting every post of the
+    # last 15 months (3.6M were waiting after the sort rules changed), ran into the job's 350-minute limit, was
+    # cancelled, never wrote the index or the "needs more runs" marker, and the chain of history runs stopped. Both
+    # modes now stop sorting and re-tagging at a hard time; what's left waits for the next run.
     idx = build_index(cfg, tg, sort_until=(deadline - 120) if history else max(deadline, time.time() + 300),
-                      hard_until=None if history else max(deadline, time.time() + 300) + 8 * 60)
+                      hard_until=(deadline + 10 * 60) if history else max(deadline, time.time() + 300) + 8 * 60)
     if idx.get("unsorted") and not history:
         _log(f"Social: {idx['unsorted']:,} posts not sorted yet (time limit); the next runs continue")
     if idx.get("unsorted"):
