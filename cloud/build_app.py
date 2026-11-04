@@ -243,6 +243,13 @@ html.viewer [data-jump="today-avoid"],html.viewer [data-jump="today-also"],html.
 html.viewer [data-jump="today-worth"],html.viewer [data-jump="today-unusual"]{display:none!important}
 .vtip{display:none}html.tips .vtip{display:block;background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:12px}
 .vbtns{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
+/* spare cash choice */
+.parkopts{display:grid;gap:10px}
+.parkopt{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;align-items:start;text-align:left;background:var(--surface);border:1.5px solid var(--rule);border-radius:12px;padding:12px;color:var(--ink);font:15px/1.45 var(--body);cursor:pointer}
+.parkopt b{display:block;margin-bottom:3px}.parkopt .foot{display:block}
+.parkopt .pr{width:18px;height:18px;border-radius:50%;border:2px solid var(--muted);margin-top:2px;box-sizing:border-box}
+.parkopt.on{border-color:var(--accent);background:var(--accent-soft)}.parkopt.on .pr{border:6px solid var(--accent)}
+.parkopt:disabled{cursor:default;opacity:.85}
 /* table headers stay in view: a pinned copy below the top bar (data_layer.js), and inside boxes that scroll */
 .stickyhead{position:fixed;z-index:4;overflow:hidden;pointer-events:none;background:var(--sunken);box-shadow:0 2px 6px rgba(0,0,0,.10);border-radius:0 0 6px 6px}
 .stickyhead table{border-collapse:collapse;table-layout:fixed;font-size:13.5px}.stickyhead th{border-bottom:1px solid var(--rule)}

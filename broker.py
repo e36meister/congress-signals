@@ -67,7 +67,7 @@ def settings(hold_days):
         return {"mode": "live", "key": a["key"], "secret": a["secret"], "auto": bool(a.get("auto", True)),
                 "dollars": None, "max_positions": None, "max_invested": float(env("MAX_INVESTED_PCT") or 90) / 100,
                 "hold_days": int(hold_days), "account": a["id"], "size": str(a.get("size") or "standard"),
-                "size_k": size_mult(a.get("size"))}
+                "size_k": size_mult(a.get("size")), "park_mode": str(a.get("park") or "sgov")}
     mode = (env("TRADING_MODE") or "paper").strip().lower()
     mode = mode if mode in BASE else "paper"
     up = mode.upper()
@@ -448,6 +448,8 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
 
     is_park = lambda sym: (bot.get(sym, {}).get("client_order_id") or "").startswith(PARK_PREFIX)
     park = next((x for x in park_choices(s["mode"]) if x not in others), None)
+    if s.get("park_mode") == "cash":
+        park = None          # a family account that keeps spare cash as cash: nothing parked, old parking sold below
 
     # price rules the weekly check can turn on, set separately for main picks and the small-company portfolio
     is_sm = lambda o: (o.get("client_order_id") or "").startswith(PREFIX + "sm-")

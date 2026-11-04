@@ -164,7 +164,7 @@ function sizePanel(d, ro) {
   const opt = (k, l) => `<button type="button" class="seg1" data-vsize="${k}" aria-pressed="${cur === k}"${ro ? " disabled" : ""}>${l}</button>`;
   return `<section class="panel"><div class="ph"><h2>Buy size</h2></div>
     <div class="seg" role="group" aria-label="Buy size">${opt("low", "Low")}${opt("standard", "Standard")}${opt("high", "High")}</div>
-    <p class="foot" style="margin-top:8px">How much each pick gets, from your account balance. <b>Low</b> is half the standard amount${est("low")}; <b>Standard</b> is an equal share of the account across the picks a holding period needs${est("standard")}; <b>High</b> is one and a half times${est("high")}. The tool never invests more than ${Math.round(L.max_invested_pct || 90)}% of the account whatever the size, so with High the account fills up with fewer picks and later picks wait for money to free up; with Low more of it stays in the Treasury-bill fund. ${V.connected ? "A change applies to new buys; positions already bought keep their size." : "You can change it any time later."}</p>
+    <p class="foot" style="margin-top:8px">How much each pick gets, from your account balance. <b>Low</b> is half the standard amount${est("low")}; <b>Standard</b> is an equal share of the account across the picks a holding period needs${est("standard")}; <b>High</b> is one and a half times${est("high")}. The tool never invests more than ${Math.round(L.max_invested_pct || 90)}% of the account whatever the size, so with High the account fills up with fewer picks and later picks wait for money to free up; with Low more of it stays as spare cash. ${V.connected ? "A change applies to new buys; positions already bought keep their size." : "You can change it any time later."}</p>
     ${VA.sizeMsg ? `<div class="tapmsg ${VA.sizeMsg.ok ? "pos" : "neg"}">${esc(VA.sizeMsg.text)}</div>` : ""}</section>`;
 }
 document.addEventListener("click", async ev => {
@@ -191,7 +191,7 @@ function renderViewerAccount(d, opts = {}) {
     ${VA.keyMsg ? `<div class="tapmsg ${VA.keyMsg.ok ? "pos" : "neg"}">${esc(VA.keyMsg.text)}</div>` : ""}
     <p>${V.paused ? "Your Alpaca account is connected. Trading is paused, so nothing is bought until you resume it."
       : V.auto === false ? "Your Alpaca account is connected. Automatic buying is turned off for your account for now, so nothing is bought until the Operator turns it on."
-      : "Your Alpaca account is connected and the tool is buying the current picks for it now. This page fills in within a few minutes; pull down to refresh. After that the tool buys new picks as they come in and parks spare cash in a Treasury-bill fund until picks need it."}
+      : "Your Alpaca account is connected and the tool is buying the current picks for it now. This page fills in within a few minutes; pull down to refresh. After that the tool buys new picks as they come in" + (V.park === "cash" ? " and keeps spare cash as cash" : " and keeps spare cash in SGOV") + " until picks need it."}
     If your Alpaca account doesn't have money in it yet, deposit in the Alpaca app; the tool buys the current picks once the money shows up.</p></section>${sizePanel(d, ro)}${ro ? "" : pausePanel(V)}`;
   const pos = p.positions || [], ords = p.orders || [], L = p.limits || {};
   const picks = pos.filter(x => x.bot && x.sleeve !== "park"), park = pos.filter(x => x.sleeve === "park"), own = pos.filter(x => !x.bot && x.sleeve !== "park");
@@ -199,7 +199,7 @@ function renderViewerAccount(d, opts = {}) {
   const C = d.close_report;
   const auto = V.paused ? `<span class="chip avoid">Trading paused</span>` : V.auto !== false ? `<span class="chip BUY">Auto-buying on</span>` : `<span class="chip avoid">Auto-buying paused</span>`;
   const row = x => {
-    const held = x.sleeve === "park" ? `Cash waiting for picks<div class="foot">In a Treasury-bill fund until the tool needs it</div>`
+    const held = x.sleeve === "park" ? `Cash waiting for picks<div class="foot">${V.park === "cash" ? "Being moved back to cash" : "In SGOV until the tool needs it"}</div>`
       : x.bot ? `${x.sleeve === "small" ? "Small-company pick · " : ""}${x.held ?? 0} of ${x.hold ?? L.hold_days ?? 60} days${x.bought ? `<div class="foot">Tool sells ~${esc(fmtDate(addTradingDays(x.bought, x.hold ?? L.hold_days ?? 60)))}; a winner may be kept longer</div>` : ""}`
       : `Yours<div class="foot">You bought this yourself; the tool leaves it alone</div>`;
     const btns = ro || x.sleeve === "park" ? "" : `<div class="vbtns">${buyListHas(x.t) && !V.paused ? `<button type="button" class="buybtn vb" data-vbuy="${esc(x.t)}">${VA.open === x.t ? "Close" : "Buy more"}</button>` : ""}<button type="button" class="vsell" data-vsell="${esc(x.t)}">${VA.sellOpen === x.t ? "Close" : "Sell"}</button></div>`;
@@ -211,17 +211,18 @@ function renderViewerAccount(d, opts = {}) {
   const empty = !(p.equity >= 1) && !pos.length;
   const why = empty ? `<div class="note warn"><b>${ro ? "This Alpaca account has no money in it yet." : "Your Alpaca account doesn't have any money in it yet."}</b> ${ro ? "The tool buys the current picks once they deposit." : "Deposit money in the Alpaca app (Banking → Deposit). The tool buys the current picks as soon as the money shows up during market hours, or at the next update."}</div>`
     : V.auto === false && !V.paused ? `<div class="note">${ro ? "Auto-buying is off for this account." : "The Operator has turned off automatic buying for your account for now. The tool still sells what it holds on its usual schedule."}</div>` : "";
-  return `${ro ? "" : tip("<b>Your Account.</b> Everything here is your own real-money Alpaca account. The tool buys new picks for you as they're found, each with a share of your balance set by your buy size; spare cash waits in a Treasury-bill fund (it earns about what short-term Treasury bills pay). Tap a ticker for its chart.")}
+  return `${ro ? "" : tip("<b>Your Account.</b> Everything here is your own real-money Alpaca account. The tool buys new picks for you as they're found, each with a share of your balance set by your buy size; spare cash waits the way you chose under Spare cash. Tap a ticker for its chart.")}
   <div class="filters"><span class="chip SHORT">Real money</span>${auto}<span class="foot">Updated ${esc(ago(p.updated))} (${esc(fmtET(p.updated))}) · market ${p.market_open ? "open" : "closed"}</span></div>
   ${why}
   <div class="tiles">
     <div class="tile"><span class="v">${money(p.equity)}</span><span class="l">Account value</span><span class="c">Cash ${money(p.cash)}</span></div>
     <div class="tile"><span class="v ${cls(p.day_pl)}">${p.day_pl == null ? "–" : (p.day_pl > 0 ? "+" : "") + money(p.day_pl)}</span><span class="l">${esc(dayLabel(p))}</span></div>
     <div class="tile"><span class="v ${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain)}</span><span class="l">Gain on the tool's picks</span><span class="c">${money(invested)} in ${picks.length} pick${picks.length === 1 ? "" : "s"}</span></div>
-    <div class="tile"><span class="v">${money(parked)}</span><span class="l">Waiting for picks</span><span class="c">In a Treasury-bill fund</span></div>
+    <div class="tile"><span class="v">${money(V.park === "cash" ? Math.max(0, +p.cash || 0) + parked : parked)}</span><span class="l">${V.park === "cash" ? "Cash waiting for picks" : "Waiting for picks"}</span><span class="c">${V.park === "cash" ? "Kept as cash" : "In SGOV"}</span></div>
     ${C && C.since_start != null ? `<div class="tile"><span class="v ${cls(C.gain ?? C.since_start)}">${C.gain != null ? (C.gain > 0 ? "+" : "") + money(C.gain) : pct(C.since_start, 2)}</span><span class="l">Gain since ${esc(fmtDate(C.start))}</span><span class="c">${pct(C.since_start, 2)}${C.net_in ? ` · deposits not counted` : ""} · last close ${esc(fmtDate(C.date))}</span></div>` : ""}
     ${C && C.since_start != null && C.spy_since_start != null ? `<div class="tile"><span class="v ${cls(C.since_start - C.spy_since_start)}">${pnum((C.since_start - C.spy_since_start) * 100, 2)}</span><span class="l">${C.since_start >= C.spy_since_start ? "Ahead of" : "Behind"} the S&amp;P since start</span><span class="c">You ${pct(C.since_start, 2)} · S&amp;P ${pct(C.spy_since_start, 2)}</span></div>` : ""}
   </div>
+  ${parkPanel(d, ro)}
   ${sizePanel(d, ro)}
   <section class="panel"><div class="ph"><h2>Positions</h2></div>
     ${pos.length ? `<div class="tbl"><table><thead><tr><th>Ticker</th><th class="n">Shares</th><th class="n">Avg cost</th><th class="n">Value</th><th class="n">Gain</th><th>Held</th></tr></thead><tbody>
@@ -259,7 +260,7 @@ function vSellRow(x) {
 function renderConnect() {
   const m = VA.keyMsg;
   return `<section class="panel"><div class="ph"><h2>Connect your Alpaca account</h2></div>
-  <p>The tool trades your own real-money Alpaca account: it buys the current picks as soon as you connect, then each new pick as it comes in, sized from your balance (pick a buy size below), sells on its schedule and keeps spare cash in a Treasury-bill fund. It needs a key from Alpaca to do that. You do this once.</p>
+  <p>The tool trades your own real-money Alpaca account: it buys the current picks as soon as you connect, then each new pick as it comes in, sized from your balance (pick a buy size below), sells on its schedule, and handles your spare cash the way you choose below. It needs a key from Alpaca to do that. You do this once.</p>
   <ol class="steps">
     <li>On a computer or phone browser, sign in at <b>app.alpaca.markets</b> and make sure you're in your <b>Live</b> account (not Paper) at the top left.</li>
     <li>On the home page, find <b>API Keys</b> on the right and tap <b>Generate New Keys</b>.</li>
@@ -271,7 +272,7 @@ function renderConnect() {
     <button type="submit" class="buybtn go"${VA.keyBusy ? " disabled" : ""}>${VA.keyBusy ? "Checking with Alpaca…" : "Connect"}</button>
   </form>
   ${m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}
-  <p class="foot">The key is stored encrypted and is never shown again, here or anywhere else. It lets the tool place trades; it can't move money out of your account. To stop the tool, delete the key in Alpaca at any time.</p></section>${sizePanel(state.data || {}, false)}`;
+  <p class="foot">The key is stored encrypted and is never shown again, here or anywhere else. It lets the tool place trades; it can't move money out of your account. To stop the tool, delete the key in Alpaca at any time.</p></section>${parkPanel(state.data || {}, false)}${sizePanel(state.data || {}, false)}`;
 }
 
 document.addEventListener("submit", async ev => {
@@ -281,11 +282,12 @@ document.addEventListener("submit", async ev => {
   // Nov 3: the boxes were read after render() had redrawn the form, so they were always empty and every try came back
   // "Neither box looks like an Alpaca key". Read them first; put them back if Alpaca says no, so they needn't re-paste.
   const key = $("#vk").value, secret = $("#vs").value;
+  if (!VA.park) { VA.keyMsg = { ok: false, text: "Choose what happens to your spare cash (below) before connecting." }; render(); const k = $("#vk"), s2 = $("#vs"); if (k) k.value = key; if (s2) s2.value = secret; return; }
   VA.keyBusy = true; VA.keyMsg = null; render();
   let ok = false;
   try {
     const { js } = await api("/api/me/keys", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key, secret, size: VA.size || "standard" }) });
+      body: JSON.stringify({ key, secret, size: VA.size || "standard", park: VA.park || "" }) });
     ok = true;
     VA.keyMsg = { ok: true, text: js.message || "Connected." };
     if (state.data) state.data.viewer = { ...(state.data.viewer || {}), connected: true };
@@ -447,7 +449,7 @@ function renderFaq() {
     ["What does the tool do?", "Members of Congress have to report their stock trades. The tool reads every report, scores each purchase on dozens of signals (the member's track record, their committees, the size and timing of the trade and more) and puts the ones that score near the top of all past purchases on the Buy list. It buys those for you automatically."],
     ["How much does it buy?", "Every pick gets the same share of your account. The weekly check keeps testing that against giving stronger picks more, and same-size has stayed ahead. About 30% of the money goes to a separate group of small-company picks held longer."],
     ["When does it sell?", `Most picks are held about ${hold} trading days (roughly ${Math.round(hold / 21)} months). At the end, a pick that's ahead of the S&P 500 is kept and checked every day, and sold once it falls behind. These rules change only when the weekly check finds something clearly better.`],
-    ["Where's my cash?", "Money not in a pick waits in a Treasury-bill fund (SGOV), which earns about what short-term Treasury bills pay and barely moves in price. The tool sells some of it when a new pick needs the money."],
+    ["Where's my cash?", "You choose, under Spare cash on your Account page. SGOV: money not in a pick waits in SGOV, a fund of short-term U.S. Treasury bills that earns about what they pay and barely moves in price; the tool sells some when a new pick needs the money. Cash: it stays as cash in your Alpaca account (turn on Alpaca's High-Yield Cash in your Alpaca dashboard to earn interest on it). You can switch any time."],
     ["Can I buy or sell myself?", "You can buy a stock that's on today's Buy list (it's then handled like the tool's own buy) and sell anything you hold, any time, from Account. Both show a note first: the tool's results come from sticking to its rules."],
     ["What if I sell a pick early?", "It's sold right away (or at the next open). The tool won't buy that stock back for the same pick for 45 days. If you sell part, the rest stays under the tool's rules."],
     ["What do I see on a chart?", "The stock's price with every member's buys and sales on it, your own buys and sales (with your picture, if you added one), and \"What's going on\": a recent big move explained and the latest headlines."],
@@ -759,4 +761,35 @@ document.addEventListener("click", ev => {
   const k = b.dataset.vday, i = VDAYS.sel.indexOf(k);
   if (i >= 0) { if (VDAYS.sel.length > 1) VDAYS.sel.splice(i, 1); } else VDAYS.sel.push(k);
   const y = window.scrollY; render(); window.scrollTo(0, y);
+});
+
+
+// ---------- spare cash: parked in SGOV, or kept as cash (their choice; nothing preselected) ----------
+const PARK_TXT = {
+  sgov: ["Park spare cash in SGOV",
+    "Your available balance is kept in SGOV, a fund of short-term U.S. Treasury bills, until it's needed for buying. It earns about what short-term Treasury bills pay (roughly 3 to 4% a year lately) and its price barely moves. The tool sells some whenever a new pick needs the money, so those trades show in your orders and on your tax forms. Interest from Treasury bills isn't taxed by states."],
+  cash: ["Keep spare cash as cash",
+    "Your available balance stays as cash in your Alpaca account until it's needed for buying, with no extra trades. It earns nothing unless you turn on Alpaca's High-Yield Cash in your Alpaca dashboard, which pays interest on uninvested cash (variable, about 3.5% a year lately) and keeps it available to use at any time."] };
+function parkPanel(d, ro) {
+  const V = d.viewer || {}, cur = V.connected ? (V.park || "sgov") : VA.park || null;
+  const opt = k => `<button type="button" class="parkopt${cur === k ? " on" : ""}" data-vpark="${k}" aria-pressed="${cur === k}"${ro ? " disabled" : ""}>
+      <span class="pr" aria-hidden="true"></span><span><b>${PARK_TXT[k][0]}</b><span class="foot">${PARK_TXT[k][1]}</span></span></button>`;
+  return `<section class="panel"><div class="ph"><h2>Spare cash</h2>${V.connected ? "" : `<span class="sub">Choose one to continue</span>`}</div>
+    <div class="parkopts">${opt("sgov")}${opt("cash")}</div>
+    ${V.connected && !ro ? `<p class="foot">Switching to cash sells the SGOV the tool holds for you${V.paused ? " once you resume trading" : ""}; switching to SGOV parks spare cash at the next update.</p>` : ""}
+    ${VA.parkMsg ? `<div class="tapmsg ${VA.parkMsg.ok ? "pos" : "neg"}">${esc(VA.parkMsg.text)}</div>` : ""}</section>`;
+}
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest && ev.target.closest("[data-vpark]");
+  if (!b || !isViewer() || VA.parkBusy) return;
+  const park = b.dataset.vpark, d = state.data || {};
+  if (!(d.viewer && d.viewer.connected)) { VA.park = park; VA.keyMsg = null; const y = scrollY, k = $("#vk")?.value, s2 = $("#vs")?.value; render(); if ($("#vk")) $("#vk").value = k || ""; if ($("#vs")) $("#vs").value = s2 || ""; scrollTo(0, y); return; }
+  if ((d.viewer.park || "sgov") === park) return;
+  if (!confirm(park === "cash" ? "Keep spare cash as cash? The SGOV the tool holds for you is sold and stays as cash." : "Park spare cash in SGOV? The tool buys SGOV with your spare cash at the next update.")) return;
+  VA.parkBusy = true; VA.parkMsg = null;
+  try {
+    const { js } = await api("/api/me/park", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ park }) });
+    d.viewer.park = js.park; VA.parkMsg = { ok: true, text: js.message };
+  } catch (e) { VA.parkMsg = { ok: false, text: e.message || "Couldn't change it. Try again." }; }
+  VA.parkBusy = false; render();
 });

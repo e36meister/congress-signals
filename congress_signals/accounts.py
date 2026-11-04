@@ -59,6 +59,7 @@ def load(log):
             continue
         out.append({"id": a["id"], "auto": a.get("auto", True) is not False, "key": k["key"], "secret": k["secret"],
                     "size": a.get("size") or "standard",
+                    "park": a.get("park") if a.get("park") in ("sgov", "cash") else "sgov",   # their spare-cash choice
                     # Nov 4: "0 first buys" was written for an account with no money in it yet (its first buys then
                     # never happened once money arrived); such an account still counts as not started
                     "started": bool(a.get("started_at")) and a.get("started_how") != "0 first buys",

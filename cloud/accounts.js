@@ -120,7 +120,7 @@ function pub(a) {
   return { id: a.id, label: a.label, email: a.email, status: a.status, auto: a.auto !== false, created: a.created,
            last_login: a.last_login || null, keys: !!a.keys_set_at, keys_set_at: a.keys_set_at || null, key_hint: a.key_hint || null,
            link_sent: a.link_sent || null, size: sizeOf(a), started_at: a.started_at || null,
-           terms_at: termsOk(a) ? a.terms_at : null, paused: !!a.paused, paused_at: a.paused_at || null };
+           terms_at: termsOk(a) ? a.terms_at : null, paused: !!a.paused, paused_at: a.paused_at || null, park: parkOf(a) };
 }
 
 // ---------- sign-in links ----------
@@ -244,7 +244,7 @@ const VIEWER_GET = new Set(["/api/session", "/api/data", "/api/members", "/api/m
   "/api/movers", "/api/news", "/api/about", "/api/context", "/api/notifications", "/api/live", "/api/push/key", "/api/me/photo",
   "/api/me/prefs", "/api/me/widget", "/api/me/terms"]);
 const VIEWER_POST = new Set(["/api/logout", "/api/notifications/clear", "/api/push/subscribe", "/api/buy-more", "/api/sell",
-  "/api/me/keys", "/api/me/photo", "/api/bug", "/api/me/prefs", "/api/me/widget", "/api/me/email-ask", "/api/me/size", "/api/me/terms", "/api/me/pause"]);
+  "/api/me/keys", "/api/me/photo", "/api/bug", "/api/me/prefs", "/api/me/widget", "/api/me/email-ask", "/api/me/size", "/api/me/terms", "/api/me/pause", "/api/me/park"]);
 export function viewerAllowed(method, path) {
   return method === "GET" ? VIEWER_GET.has(path) : method === "POST" ? VIEWER_POST.has(path) : false;
 }
@@ -291,6 +291,7 @@ export async function viewerApi(req, env, url, a, h) {
   if (p === "/api/me/terms" && req.method === "GET") return json({ terms: TERMS, signed: await r2json(env, `accounts/${a.id}/terms.json`, null) });
   if (p === "/api/me/terms") return signTerms(req, env, a, h.dispatch);
   if (p === "/api/me/pause") return setPause(req, env, a);
+  if (p === "/api/me/park") return setPark(req, env, a);
   if (p === "/api/push/key") return json({ key: (await h.vapid(env)).pub, phones: (await h.getSubs(env, subsKey(a.id))).length });
   if (p === "/api/push/subscribe") {
     const b = await body(req);
@@ -320,7 +321,7 @@ async function viewerData(env, a) {
   out.watchlist = { lookback: w.lookback, updated: w.updated, buys, sells: [], new: (w.new || []).filter(n => n.action === "BUY") };
   const pol = (d.adaptive && d.adaptive.policy) || {};
   out.adaptive = { policy: { hold_other: pol.hold_other, hold_small: pol.hold_small, sizing: pol.sizing } };
-  out.viewer = { connected: !!a.keys_set_at, auto: a.auto !== false, size: sizeOf(a), terms: termsOk(a), paused: !!a.paused };
+  out.viewer = { connected: !!a.keys_set_at, auto: a.auto !== false, size: sizeOf(a), terms: termsOk(a), paused: !!a.paused, park: parkOf(a) };
   if (port) {
     out.portfolio = port.portfolio || null;
     out.member_sold = port.member_sold || {};
@@ -390,6 +391,7 @@ async function setKeys(req, env, a, h = {}) {
   if (a.keys_set_at) return json({ ok: false, why: "already-set", message: "Your account is already connected. Email the Operator if it needs to change." }, 409);
   if (!termsOk(a)) return json({ ok: false, why: "terms", message: "Please review and agree to the Terms of Use first." }, 400);
   const b = await body(req);
+  if (!PARKS.includes(b.park)) return json({ ok: false, why: "park", message: "Choose what happens to your spare cash before connecting." }, 400);
   // Nov 3: a family member got "Those don't look like Alpaca keys" for keys copied from Alpaca. The check only trimmed
   // the ends, so anything a phone paste carries along (a line break or space in the middle, an invisible character,
   // the "API Key ID" / "Secret Key" label, quotes) failed it, and so did keys pasted into the wrong boxes. The pasted
@@ -412,7 +414,7 @@ async function setKeys(req, env, a, h = {}) {
   if (r.data.status && r.data.status !== "ACTIVE") return json({ ok: false, why: "inactive", message: `Your Alpaca account isn't open for trading yet (it says "${String(r.data.status).toLowerCase()}"). Try again once it's approved.` }, 400);
   const size = SIZES[b.size] ? b.size : sizeOf(a);
   await saveKeys(env, a.id, key, secret);
-  await patchAccount(env, a.id, x => { x.keys_set_at = new Date().toISOString(); x.key_hint = "…" + key.slice(-4); x.size = size; });
+  await patchAccount(env, a.id, x => { x.keys_set_at = new Date().toISOString(); x.key_hint = "…" + key.slice(-4); x.size = size; x.park = b.park; });
   await env.DATA.put(`accounts/${a.id}/fills_state.json`, JSON.stringify({ seen: [], fresh: true }));
   // owner, Nov 3: buy the current picks right away (family_start.yml), not at the next update. If GitHub won't start
   // the job, the daily update does the same first buys on its next run (accounts.run), and the owner sees why.
@@ -899,4 +901,36 @@ async function setPause(req, env, a) {
   }
   return json({ ok: true, paused: on, cancelled,
     message: on ? `Trading paused. The tool won't buy or sell anything in your account until you resume.${cancelled ? ` ${cancelled} waiting order${cancelled === 1 ? " was" : "s were"} cancelled.` : ""}` : "Trading resumed. The tool goes back to buying and selling on its usual schedule." });
+}
+
+
+// ---------- spare cash: "sgov" (parked in the T-bill fund) or "cash" (left as cash); chosen when connecting ----------
+// congress_signals/accounts.py passes it to broker.settings: with "cash" the tool parks nothing and sells what it had
+// parked. Switching to cash here sells the parked fund right away (unless trading is paused).
+const PARKS = ["sgov", "cash"];
+export function parkOf(a) { return PARKS.includes(a && a.park) ? a.park : "sgov"; }
+async function setPark(req, env, a) {
+  const b = await body(req);
+  if (!PARKS.includes(b.park)) return json({ ok: false, message: "Choose SGOV or cash." }, 400);
+  await patchAccount(env, a.id, x => { x.park = b.park; });
+  let sold = 0;
+  if (b.park === "cash" && !a.paused) {
+    const c = await alpacaFor(env, a);
+    if (c) {
+      const since = new Date(Date.now() - 800 * 864e5).toISOString();
+      const ph = await c.get(`/v2/orders?status=closed&limit=500&direction=desc&symbols=${PARK_CHOICES.join(",")}&after=${encodeURIComponent(since)}`);
+      const syms = [...new Set((ph.data || []).filter(o => o.side === "buy" && o.filled_at && (o.client_order_id || "").startsWith(PARK_PREFIX)).map(o => o.symbol))];
+      for (const sym of syms) {
+        const pp = await c.get(`/v2/positions/${sym}`);
+        if (!pp.ok || !pp.data || !(+pp.data.qty > 0)) continue;
+        const r = await c.post("/v2/orders", { symbol: sym, side: "sell", qty: String(pp.data.qty), type: "market", time_in_force: "day",
+          client_order_id: `${PARK_PREFIX}tocash-${Date.now()}-${sym}`.slice(0, 48) });
+        if (r.ok) sold++;
+      }
+    }
+  }
+  return json({ ok: true, park: b.park, message: b.park === "cash"
+    ? (a.paused ? "Spare cash will be kept as cash. Trading is paused, so the SGOV the tool holds is sold when you resume."
+      : sold ? "Spare cash is now kept as cash. The SGOV the tool held is being sold (it fills now, or at the next open)." : "Spare cash is now kept as cash.")
+    : "Spare cash will be parked in SGOV, starting at the next update." });
 }
