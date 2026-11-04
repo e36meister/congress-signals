@@ -1,5 +1,5 @@
 """Sends the emails the app's server queued in R2 (mail/outbox/*.json: {to, subject, html}), oldest first, then
-deletes each one. Sign-in links expire in 20 minutes, so older ones are dropped unsent (other emails: 6 hours).
+deletes each one. Sign-in codes expire in 10 minutes, so older ones are dropped unsent (other emails: 6 hours).
 "to": "owner" means the owner's own address (bug reports from family accounts).
 The log shows counts only, never an address or a link (the run log can be public)."""
 import json, os, time
@@ -18,7 +18,7 @@ for k in keys:
         made = int(k.rsplit("/", 1)[-1].split("-", 1)[0]) / 1000
     except Exception:
         msg, made = None, 0
-    life = 20 * 60 if "sign-in" in str((msg or {}).get("subject", "")) else 6 * 3600    # links expire in 20 min
+    life = 10 * 60 if "is your Capitol Capital code" in str((msg or {}).get("subject", "")) else 6 * 3600    # codes expire in 10 min
     if not msg or not msg.get("to") or time.time() - made > life:
         dropped += 1
     elif mail.send(str(msg.get("subject", ""))[:140], str(msg.get("html", "")), quiet,

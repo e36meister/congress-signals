@@ -1,4 +1,4 @@
-// Family accounts (owner, Nov 2 2026): people the owner adds get their own login (an emailed sign-in link), their own
+// Family accounts (owner, Nov 2 2026): people the owner adds get their own login (email + password + an emailed code), their own
 // real-money Alpaca account that the tool trades like the owner's, and a read-only app: Today, Members and their own
 // Account. The owner sees every account on the Accounts page. Viewers can't reach anything else: the allowlist
 // below is checked on the server for every request, whatever the app page shows.
@@ -8,12 +8,12 @@
 //   accounts/<id>/keys.json        their Alpaca keys, AES-GCM encrypted; never sent back to any page
 //   accounts/<id>/portfolio.json   the daily run's snapshot of their account (same shape as the owner's)
 //   accounts/<id>/alerts.json      their alert list; cleared.json, subs.json (their phones), fills_state.json
-//   auth/links/<hash>.json         one-time sign-in links (only a hash of the link is kept), 20 minutes
+//   auth/codes/<id>.json           one-time sign-in codes (only a hash of the code is kept), 10 minutes
 //   mail/outbox/*.json             emails waiting for the GitHub mail job (only when sending straight through Resend failed)
 
 const enc = new TextEncoder();
 const IDX = "accounts/index.json";
-const LINK_MIN = 20, SESSION_DAYS = 30;     // owner, Nov 4 2026: family accounts sign in again every month (was 6)
+const SESSION_DAYS = 30;     // owner, Nov 4 2026: family accounts sign in again every month (was 6)
 const LIVE = "https://api.alpaca.markets", DATA = "https://data.alpaca.markets";
 const PREFIX = "cs-", PARK_PREFIX = "cs-park-", MORE_PREFIX = "cs-more-", PARK_CHOICES = ["SPY", "VOO", "IVV", "SGOV", "BIL", "SHV"];
 const ID_RX = /^[a-z0-9]{12}$/;
@@ -130,7 +130,7 @@ function pub(a) {
            build: a.build || null, terms_at: termsOk(a) ? a.terms_at : null, paused: !!a.paused, paused_at: a.paused_at || null, park: parkOf(a) };
 }
 
-// ---------- sign-in links ----------
+// ---------- email ----------
 // Emails go out straight away through Resend, from admin@capitolcapital.cc. If that fails (or the RESEND_API_KEY
 // secret isn't set), the email waits in R2 for the GitHub mail job, which tries again (Resend, then Gmail).
 // Returns true when it was sent here; false means it was queued and the mail job needs starting.
@@ -148,102 +148,12 @@ async function sendMail(env, msg) {
   await put(env, `mail/outbox/${Date.now()}-${rand(6)}.json`, msg);
   return false;
 }
-async function queueLink(env, a, origin, dispatch) {
-  const t = rand(32);
-  await put(env, `auth/links/${hex(await sha("link|" + t))}.json`, { id: a.id, gen: a.gen || 1, exp: Date.now() + LINK_MIN * 60e3, ...(a.owner ? { owner: true } : {}) });
-  const link = `${env.APP_HOST ? "https://" + env.APP_HOST : origin}/signin#${t}`;
-  const html = `<div style="font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:#152033;max-width:480px">
-<h2 style="font-weight:600;margin:0 0 12px">Sign in to Capitol Capital</h2>
-<p>Tap the button on the device you want to use. It works once and expires in ${LINK_MIN} minutes.</p>
-<p style="margin:24px 0"><a href="${esc(link)}" style="background:#1D4F91;color:#fff;padding:12px 22px;border-radius:10px;text-decoration:none;font-weight:600">Sign in</a></p>
-<p style="color:#46536A;font-size:14px">After you sign in, use Share → Add to Home Screen to keep the app on your phone or computer. It stays signed in for 6 months.<br>
-Didn't ask for this? You can ignore it.</p></div>`;
-  const sent = await sendMail(env, { to: a.email, subject: "Your Capitol Capital sign-in link", html });
-  if (!a.owner) await patchAccount(env, a.id, x => { x.link_sent = new Date().toISOString(); });
-  if (!sent) await dispatch(env, "mail.yml", {});
-}
-
-// POST /api/login/email {email}: always the same answer, so the page doesn't reveal who has an account
-// The work happens after the answer (ctx.waitUntil), so a real account and a made-up one answer equally fast.
-// Limits: 10 requests an hour per network address, and 4 links an hour per real account (junk addresses can't use
-// up anyone's allowance). Counts are per hour bucket, one small file each.
-export async function requestLink(req, env, url, dispatch, ctx) {
-  const b = await body(req);
-  const email = String(b.email || "").trim().toLowerCase();
-  if (!EMAIL_RX.test(email)) return json({ error: "bad-email", message: "That doesn't look like an email address." }, 400);
-  const ip = req.headers.get("CF-Connecting-IP") || "local", hour = Math.floor(Date.now() / 3600e3);
-  const work = (async () => {
-    if (await bump(env, `auth/rate/${hour}/ip-${hex(await sha("ip|" + ip)).slice(0, 24)}.json`) > 10) return;
-    // the owner can sign in with an email link too (backup for the passcode)
-    if (env.OWNER_EMAIL && email === String(env.OWNER_EMAIL).trim().toLowerCase()) {
-      if (await bump(env, `auth/rate/${hour}/acct-owner.json`) > 4) return;
-      return queueLink(env, { id: "owner", gen: 1, email, owner: true }, url.origin, dispatch);
-    }
-    const a = (await listAccounts(env)).find(x => x.email === email && x.status !== "disabled");
-    if (!a || await bump(env, `auth/rate/${hour}/acct-${a.id}.json`) > 4) return;
-    await queueLink(env, a, url.origin, dispatch);
-  })().catch(() => {});
-  if (ctx && ctx.waitUntil) ctx.waitUntil(work); else await work;
-  return json({ ok: true, message: "If that email has an account, a sign-in link is on its way. It should arrive within a minute." });
-}
 async function bump(env, key) {
   const n = ((await r2json(env, key, { n: 0 })).n || 0) + 1;
   await put(env, key, { n });
   return n;
 }
 
-// POST /api/login/link {t}: trade a one-time link for a session cookie
-export async function redeemLink(req, env, sign, cookieName, ownerCookie) {
-  const b = await body(req);
-  const t = String(b.t || "");
-  const bad = json({ error: "link", message: "That sign-in link has expired or was already used. Ask for a new one." }, 401);
-  if (!/^[A-Za-z0-9_-]{40,50}$/.test(t)) return bad;
-  const key = `auth/links/${hex(await sha("link|" + t))}.json`;
-  const o = await env.DATA.get(key);
-  if (!o) return bad;
-  const L = await o.json();
-  if (L.used) return bad;
-  // mark it used only if nobody else did in between (two taps at once: only one wins)
-  const won = await env.DATA.put(key, JSON.stringify({ used: true }), { onlyIf: { etagMatches: o.etag } });
-  if (!won || !(L.exp > Date.now())) return bad;
-  if (L.owner) return json({ ok: true }, 200, { "Set-Cookie": await ownerCookie() });
-  const a = await patchAccount(env, L.id, x => { if (String(x.gen || 1) !== String(L.gen || 1) || x.status === "disabled") return;
-    if (x.status === "invited") x.status = "active"; x.last_login = new Date().toISOString(); });
-  if (!a || a.status === "disabled" || String(a.gen || 1) !== String(L.gen || 1)) return bad;
-  const c = await viewerCookie(sign, a);
-  return json({ ok: true }, 200, { "Set-Cookie": `${cookieName}=${c.value}; Path=/; Max-Age=${c.maxAge}; HttpOnly; Secure; SameSite=Strict` });
-}
-
-// The page an emailed link opens: the token stays in the #fragment (never sent to the server or kept in logs) until
-// the person taps Sign in, so email scanners that open links can't use it up.
-export const SIGNIN_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="robots" content="noindex,nofollow">
-<meta name="referrer" content="no-referrer"><link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icon-180.png">
-<title>Capitol Capital</title><style>
-:root{--ground:#F3F5F8;--ink:#152033;--ink2:#46536A;--accent:#1D4F91;--on:#fff}
-@media (prefers-color-scheme:dark){:root{--ground:#0E131A;--ink:#E6EBF2;--ink2:#B4BECC;--accent:#7FAEEA;--on:#0E131A}}
-html,body{margin:0;height:100%;background:var(--ground);color:var(--ink);font:16px system-ui,-apple-system,"Segoe UI",sans-serif}
-main{min-height:100%;display:grid;place-items:center;padding:24px 16px;box-sizing:border-box}
-div.c{width:100%;max-width:340px;display:grid;gap:14px;text-align:center}
-img{width:84px;height:84px;border-radius:20px;justify-self:center}h1{margin:0;font-weight:600;font-size:26px}p{margin:0;color:var(--ink2);font-size:14px}
-button{font:600 16px inherit;padding:12px;border-radius:10px;border:0;background:var(--accent);color:var(--on);cursor:pointer}button:disabled{opacity:.6}
-.msg{min-height:1.2em;font-size:14px;color:#C0392B}
-</style></head><body><main><div class="c"><img src="/icon-180.png" alt=""><h1>Capitol Capital</h1>
-<p>Tap Sign in to use the app on this device.</p><button type="button" id="go">Sign in</button><div class="msg" id="msg" role="alert"></div></div></main>
-<script>
-const t = location.hash.slice(1); history.replaceState(null, "", "/signin");
-const go = document.getElementById("go"), msg = document.getElementById("msg");
-if (!t) { go.disabled = true; msg.textContent = "This link is missing its code. Open it again from the email."; }
-go.addEventListener("click", async () => {
-  go.disabled = true; msg.textContent = "";
-  try {
-    const r = await fetch("/api/login/link", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify({ t }) });
-    if (r.ok) { location.replace("/"); return; }
-    let j = {}; try { j = await r.json(); } catch (x) {}
-    msg.textContent = j.message || "Couldn't sign in. Ask for a new link.";
-  } catch (x) { msg.textContent = "No connection. Try again."; go.disabled = false; }
-});
-</script></body></html>`;
 
 // ---------- what a viewer may call ----------
 // Anything not listed answers 403, whatever the page asks for.
@@ -588,7 +498,7 @@ export async function ownerAccountsPost(req, env, url, dispatch) {
   }
   if (act === "disable" || act === "enable") {
     await patchAccount(env, a.id, x => { x.status = act === "disable" ? "disabled" : (x.last_login ? "active" : "invited"); x.gen = (x.gen || 1) + 1; });
-    return json({ ok: true, message: act === "disable" ? "Turned off: signed out everywhere and the tool stops trading this account." : "Turned back on. Send a sign-in link so they can log in again." });
+    return json({ ok: true, message: act === "disable" ? "Turned off: signed out everywhere and the tool stops trading this account." : "Turned back on. They can sign in again with their email and password." });
   }
   if (act === "signout") {
     await patchAccount(env, a.id, x => { x.gen = (x.gen || 1) + 1; });

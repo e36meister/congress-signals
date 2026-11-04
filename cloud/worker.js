@@ -9,7 +9,7 @@ const MAX_FAILS_ALL = 200;       // and from everyone together (a spread-out gue
 const PREFIX = "cs-", PARK_PREFIX = "cs-park-", PARK_CHOICES = ["SPY", "VOO", "IVV", "SGOV", "BIL", "SHV"];
 const enc = new TextEncoder();
 import { vapid, saveSub, sendAll, getSubs } from "./push.js";
-import { readViewer, viewerAllowed, viewerApi, requestLink, redeemLink, SIGNIN_PAGE, ownerAccounts, ownerAccount, ownerAccountLive,
+import { readViewer, viewerAllowed, viewerApi, ownerAccounts, ownerAccount, ownerAccountLive,
          ownerAccountTerms, ownerAccountsPost, authStart, authVerify, passkeyLoginOptions, passkeyLogin,
          passkeyRegOptions, passkeyRegister, passkeyRemove, passkeyList, viewerCookie, checkFillsAll, deliverTo, viewerWidget } from "./accounts.js";
 
@@ -20,7 +20,7 @@ export default {
     if (url.protocol === "http:" && !/^(127\.0\.0\.1|localhost)$/.test(url.hostname))
       return Response.redirect(`https://${url.host}${url.pathname}${url.search}`, 301);
     // the app lives at capitolcapital.cc; the old workers.dev address sends pages there (its /api/ still answers,
-    // so widgets and shortcuts set up with the old address keep working). A sign-in link's #token survives the hop.
+    // so widgets and shortcuts set up with the old address keep working).
     // www.capitolcapital.cc → capitolcapital.cc (everything, so a sign-in only ever happens on one address)
     if (env.APP_HOST && url.hostname === "www." + env.APP_HOST)
       return Response.redirect(`https://${env.APP_HOST}${url.pathname}${url.search}`, 301);
@@ -64,9 +64,8 @@ const PUBLIC_FILES = new Set(["/manifest.webmanifest", "/icon-180.png", "/icon-1
 const VIEWER_FILES = new Set(["/", "/index.html", ...PUBLIC_FILES]);
 async function page(req, env, url) {
   if (PUBLIC_FILES.has(url.pathname)) return env.ASSETS.fetch(req);
-  if (url.pathname === "/signin") return new Response(SIGNIN_PAGE, { status: 200, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
-    "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-    "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer" } });
+  // Nov 4: emailed sign-in links are gone (email + password + code now); an old link just opens the sign-in screen
+  if (url.pathname === "/signin") return Response.redirect(url.origin + "/", 302);
   const who = await whoIs(req, env);
   if (who && who.role === "viewer" && !VIEWER_FILES.has(url.pathname)) return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
   if (who) {
@@ -234,7 +233,6 @@ async function api(req, env, url, ctx) {
     if (!(req.headers.get("Content-Type") || "").startsWith("application/json")) return json({ error: "content-type" }, 415);
   }
   if (p === "/api/login" && req.method === "POST") return login(req, env);
-  if (p === "/api/login/email" && req.method === "POST") return requestLink(req, env, url, dispatch, ctx);
   // sign-in (owner, Nov 4 2026): email + password → emailed code, or a passkey
   const cookieFor = async a => {
     if (!a) return await ownerCookie(env);
@@ -245,7 +243,6 @@ async function api(req, env, url, ctx) {
   if (p === "/api/auth/verify" && req.method === "POST") return authVerify(req, env, cookieFor);
   if (p === "/api/auth/pk/options" && req.method === "GET") return passkeyLoginOptions(env, url);
   if (p === "/api/auth/pk/login" && req.method === "POST") return passkeyLogin(req, env, url, cookieFor);
-  if (p === "/api/login/link" && req.method === "POST") return redeemLink(req, env, m => sign(env, m), COOKIE, () => ownerCookie(env));
   if (p === "/api/logout" && req.method === "POST") return json({ ok: true }, 200, { "Set-Cookie": `${COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict` });
   if (p === "/api/widget" && req.method === "GET") return widget(req, env, url);   // its own read-only key
   if (p === "/api/senate-import" && req.method === "POST") return senateImport(req, env);   // iPhone Shortcut, its own key
