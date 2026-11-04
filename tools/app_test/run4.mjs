@@ -102,12 +102,14 @@ for (const h of ["#works", "#record", "#defense", "#small", "#reality", "#accoun
   const t = (await txt("main")).slice(0, 60);
   note(`go to ${h} → ${new URL(p.url()).hash || "(none)"} · "${t}"`);
 }
-for (const [path, m] of [["/api/posts"], ["/api/notes"], ["/api/bonds"], ["/api/health"], ["/api/tax"], ["/api/manual"], ["/api/accounts"], ["/api/accounts/view?id=" + acctId],
+for (const [path, m] of [["/api/posts"], ["/api/notes"], ["/api/bonds"], ["/api/health"], ["/api/manual"], ["/api/accounts"], ["/api/accounts/view?id=" + acctId],
   ["/api/tie-reviews"], ["/api/people-review"], ["/api/senate-import/setup"], ["/api/widget/script"], ["/api/buy", "POST"], ["/api/manual/keep", "POST"], ["/api/accounts", "POST"]]) {
   const r = await call(path, m || "GET", m ? { action: "add", label: "x", email: "x@x.test", t: "GS", dollars: 5 } : undefined);
   note(`${m || "GET"} ${path} → ${r[0]}`);
   if (r[0] !== 403) problem(`${path} answered ${r[0]} to a family account`);
 }
+// their own tax page is allowed (accounts/<id>/tax/): no file yet answers 404, never the owner's
+{ const r = await call("/api/tax"); note(`GET /api/tax (their own) → ${r[0]}`); if (![200, 404].includes(r[0])) problem(`/api/tax answered ${r[0]}`); }
 for (const f of ["/me.jpg", "/index.html", "/sw.js", "/icon.svg", "/something-else.js"]) { const r = await fetch(BASE + f, { headers: { Cookie: (await fam.cookies()).map(c => `${c.name}=${c.value}`).join("; ") } }); note(`file ${f} → ${r.status}`); }
 const data = await call("/api/data");
 const leaks = ["OWNER_ONLY", "OWNERSELL", "OWNERWORTH", "987654", "AVOIDME"].filter(w => data[1].includes(w) || false);

@@ -1,5 +1,5 @@
 // Part 5: the owner's Accounts page for this family account (every button), and what the family member sees after each.
-import { chromium, devices, BASE, ctl, r2get, r2put, step, note, problem, watch, shot, settle, save, inventory, sleep, LOG } from "./lib.mjs";
+import { chromium, devices, BASE, ctl, r2get, r2put, step, note, problem, watch, shot, settle, save, inventory, sleep, LOG, uiSignIn, codeCount } from "./lib.mjs";
 import fs from "node:fs";
 const acctId = fs.readFileSync("out/acct_id.txt", "utf8").trim();
 const browser = await chromium.launch();
@@ -36,21 +36,19 @@ note("family sees: " + await famSees());
 await shot(p, "family-auto-off");
 await tap("auto"); note(`owner turns it back on: "${await msgs(op)}" · auto=${(await acct()).auto}`);
 
-step("owner: Send sign-in link, Sign out everywhere");
+step("owner: Send invite, Sign out everywhere");
+await ctl("/outbound?clear=1");
 await tap("link"); note(`owner: "${await msgs(op)}"`);
+const inv = (await ctl("/outbound")).filter(x => x.url.includes("resend")).map(x => JSON.parse(x.body)).find(m => /invited/i.test(m.subject || ""));
+note("invite re-sent: " + (inv ? "yes" : "NO"));
+if (!inv) problem("Send invite didn't email the invite");
 await tap("signout"); note(`owner: "${await msgs(op)}"`);
 note("family after Sign out everywhere: " + await famSees());
 await shot(p, "family-signed-out-everywhere");
 
-// family signs in again for the next checks
-const signInAgain = async () => {
-  await ctl("/outbound?clear=1");
-  await op.evaluate(async id => fetch("/api/accounts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "link", id }) }), acctId);
-  const html = (await ctl("/outbound")).filter(x => x.url.includes("resend")).map(x => JSON.parse(x.body).html).join("");
-  const t = (html.match(/signin#([A-Za-z0-9_-]+)/) || [])[1];
-  await p.goto("/signin#" + t); await p.click("#go"); await settle(p, 1200);
-};
-await signInAgain();
+// family signs in again for the next checks (email + password + code)
+const again = await uiSignIn(p, "testmom@example.test");
+if (!again.ok) problem("family couldn't sign in again: " + (again.why || again.msg));
 note("family signed in again: " + await famSees());
 
 step("owner: Reset keys → family sees");
@@ -64,8 +62,11 @@ note("account after reset: started_at=" + a1.started_at + " size=" + a1.size + "
 step("owner: Turn off → family; Turn back on");
 await tap("disable"); note(`owner: "${await msgs(op)}"`);
 note("family sees: " + await famSees());
-const r = await p.evaluate(async () => (await fetch("/api/login/email", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "testmom@example.test" }) })).status);
-note("family asks for a link while turned off: " + r + " · emails sent: " + (await ctl("/outbound")).filter(x => x.url.includes("resend")).length);
+const codes0 = await codeCount("testmom@example.test");
+const off = await uiSignIn(p, "testmom@example.test");
+note("family tries to sign in while turned off: " + JSON.stringify({ ok: off.ok, msg: off.msg }));
+if (off.ok && !off.already) problem("a turned-off account could sign in");
+if (await codeCount("testmom@example.test") > codes0) problem("a turned-off account was emailed a code");
 await tap("enable"); note(`owner: "${await msgs(op)}" · status ${(await acct()).status}`);
 
 step("owner: Remove (wrong email typed, then right)");

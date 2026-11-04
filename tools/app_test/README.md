@@ -6,8 +6,9 @@ logging what each button sends to the server and what comes back (out/log-runN.j
 
     cd tools/app_test && npm i miniflare@4 && python3 ../../cloud/build_app.py
     node server.mjs &            # app on :8787, test controls on :8788
-    node run1.mjs && node run2.mjs && node run3.mjs && node run4.mjs && node run5.mjs   # run6: re-checks of the Nov 4 fixes
+    node run1.mjs && node run2.mjs && node run3.mjs && node run4.mjs && node run6.mjs && node run7.mjs && node run5.mjs
+    # run5 goes last: it signs the family member out, turns the account off and removes it
 
-run1 owner adds an account, sign-in link · run2 first screens, Today, chart, Members, More pages, Terms, Connect ·
+run1 owner adds an account, invite, password setup with the emailed code, sign-in on a second device · run2 first screens, Today, chart, Members, More pages, Terms, Connect ·
 run3 Account page, buy size, Buy / Buy more, Sell, Pause · run4 Alerts, Notifications, Settings, bug report, search,
 email question, everything that must stay out of reach · run5 the owner's Accounts buttons · run6 Nov 4 fixes. · run7 the owner's Yea/Nay buttons on Worth a look post links.

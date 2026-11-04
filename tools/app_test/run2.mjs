@@ -84,6 +84,11 @@ step("family: Connect page, buy size before connecting");
 note("Connect buttons: " + JSON.stringify(await inventory(p)));
 await p.click('[data-vsize="high"]'); await settle(p, 300);
 note("size buttons pressed: " + JSON.stringify(await p.$$eval("[data-vsize]", b => b.map(x => x.dataset.vsize + "=" + x.getAttribute("aria-pressed")))));
+// Nov 3: spare cash (SGOV or cash) has to be chosen before Connect works; first check that it's asked, then choose SGOV
+await p.fill("#vk", "AKGOODKEY00000000000"); await p.fill("#vs", "g".repeat(40));
+await p.click('#vkeys button[type="submit"]'); await settle(p, 800);
+note(`Connect before choosing spare cash: "${await txt(".tapmsg")}"`);
+await p.click('[data-vpark="sgov"]'); await settle(p, 400);
 const tries = [
   ["empty boxes", "", ""],
   ["junk", "hello", "world"],

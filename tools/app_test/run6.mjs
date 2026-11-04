@@ -4,6 +4,8 @@ import { chromium, devices, BASE, ctl, r2get, r2put, step, note, problem, watch,
 import { viewerPortfolio } from "./seed.mjs";
 import fs from "node:fs";
 const acctId = fs.readFileSync("out/acct_id.txt", "utf8").trim();
+// family trading starts on hold (view-only, Nov 3); these checks need the Buy, Sell and Pause buttons, so turn it off here
+await r2put("accounts/hold.json", { on: false });
 const browser = await chromium.launch();
 const fam = await browser.newContext({ ...devices["iPhone 13"], baseURL: BASE, storageState: "out/family_state.json" });
 const p = await fam.newPage(); watch(p, "family");

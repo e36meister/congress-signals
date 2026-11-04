@@ -55,3 +55,42 @@ export async function inventory(page) {
     });
   });
 }
+
+// ---- sign-in (Nov 4): email + password, then the 6-digit code from the (fake) email ----
+export const TEST_PW = "test-password-42!";
+// the newest code emailed to `to` since `since` (ms), read from the outbound log
+export async function lastCode(to, since = 0) {
+  for (let i = 0; i < 20; i++) {
+    const mails = (await ctl("/outbound")).filter(x => x.url.includes("resend")).map(x => JSON.parse(x.body))
+      .filter(m => (m.to || []).includes(to) && /is your Capitol Capital code/.test(m.subject || ""));
+    const m = mails[mails.length - 1];
+    const code = m && (String(m.subject).match(/^(\d{6})/) || [])[1];
+    if (code && (!since || mails.length > since)) return { code, n: mails.length };
+    await sleep(250);
+  }
+  return { code: null, n: 0 };
+}
+export const codeCount = async to => (await ctl("/outbound")).filter(x => x.url.includes("resend")).map(x => JSON.parse(x.body))
+  .filter(m => (m.to || []).includes(to) && /is your Capitol Capital code/.test(m.subject || "")).length;
+// the sign-in screen's "First time? Set up your account": email → code + new password → signed in
+export async function uiSetup(page, email, pw = TEST_PW, purpose = "setup") {
+  await page.goto("/?s=" + Date.now()); await settle(page, 800);
+  const before = await codeCount(email);
+  await page.click(`[data-go="${purpose}"]`); await page.fill("#em", email); await page.click("#go"); await settle(page, 800);
+  const { code } = await lastCode(email, before);
+  if (!code) return { ok: false, why: "no code emailed", msg: await page.textContent("#msg") };
+  await page.fill("#cd", code); await page.fill("#np", pw); await page.fill("#np2", pw); await page.click("#go"); await settle(page, 1500);
+  return { ok: !(await page.$("#f")), code, msg: (await page.$("#msg")) ? await page.textContent("#msg") : "" };
+}
+// "Sign in": email + password → code → signed in
+export async function uiSignIn(page, email, pw = TEST_PW) {
+  await page.goto("/?s=" + Date.now()); await settle(page, 800);
+  if (!(await page.$("#f"))) return { ok: true, already: true };
+  const before = await codeCount(email);
+  await page.fill("#em", email); await page.fill("#pw", pw); await page.click("#go"); await settle(page, 800);
+  const m1 = await page.textContent("#msg");
+  const { code } = await lastCode(email, before);
+  if (!code) return { ok: false, why: "no code emailed", msg: m1 };
+  await page.fill("#cd", code); await page.click("#go"); await settle(page, 1500);
+  return { ok: !(await page.$("#f")), code, msg: (await page.$("#msg")) ? await page.textContent("#msg") : "" };
+}

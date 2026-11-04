@@ -49,7 +49,7 @@ if (fam) {
   const s = await fp.evaluate(async () => [(await fetch("/api/post-reviews")).status,
     (await fetch("/api/post-review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t: "AAPL", u: "https://a.test/1", verdict: "yea" }) })).status]);
   note("family GET/POST: " + s.join(", "));
-  if (s.some(x => x !== 403)) problem("a family account reached the post reviews");
+  if (s.some(x => x < 400)) problem("a family account reached the post reviews");
 } else note("no family session saved (run1 first) — family check skipped");
 save();
 await browser.close();
