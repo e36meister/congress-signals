@@ -325,6 +325,7 @@ async function viewerData(env, a) {
     out.portfolio = port.portfolio || null;
     out.member_sold = port.member_sold || {};
     out.close_report = port.close_report || null;
+    out.close_history = dayRows(port.close_history);
   }
   return json(out, 200, { "Cache-Control": "private, no-cache" });
 }
@@ -503,7 +504,11 @@ export async function ownerAccount(env, url) {
   if (!a) return json({ error: "not-found" }, 404);
   const port = await r2json(env, `accounts/${a.id}/portfolio.json`, null);
   return json({ account: pub(a), portfolio: port && port.portfolio || null, member_sold: port && port.member_sold || {},
-                close_report: port && port.close_report || null, problem: port && port.problem || null });
+                close_report: port && port.close_report || null, close_history: dayRows(port && port.close_history), problem: port && port.problem || null });
+}
+// the daily closes for their Pick days cards: value, that day's change and gain since start (no S&P)
+function dayRows(h) {
+  return (Array.isArray(h) ? h : []).slice(-400).map(x => ({ date: x.date, equity: x.equity, day_pl: x.day_pl ?? null, since: x.since ?? (x.idx != null ? x.idx - 1 : null) }));
 }
 export async function ownerAccountTerms(env, url) {
   const a = await getAccount(env, url.searchParams.get("id"));

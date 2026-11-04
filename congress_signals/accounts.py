@@ -304,11 +304,16 @@ def _since_start(hist, flows):
         return {"since_start": None, "spy_since_start": None, "gain": None, "net_in": 0.0, "start": None}
     idx, prev = 1.0, hist[0]
     hist[0]["idx"] = 1.0
+    hist[0]["since"] = 0.0
     for h in hist[1:]:
         f = sum(v for d, v in flows.items() if prev["date"] < d <= h["date"])
         if prev["equity"]:
             idx *= (h["equity"] - f) / prev["equity"]
         h["idx"] = round(idx, 6)
+        # for the Pick days cards on their Account page: that day's change (money put in or taken out left out)
+        # and the gain since the start
+        h["day_pl"] = round(h["equity"] - f - prev["equity"], 2)
+        h["since"] = round(idx - 1, 6)
         prev = h
     net_in = sum(v for d, v in flows.items() if d > hist[0]["date"])
     last, s0 = hist[-1], hist[0].get("spy")

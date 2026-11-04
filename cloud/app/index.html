@@ -784,6 +784,8 @@ function renderViewerAccount(d, opts = {}) {
     ${[...picks, ...own, ...park].map(row).join("")}</tbody></table></div>
     <p class="foot">The tool buys each new pick with an equal share of the account, sells it at the end of its hold (or keeps a winner while it's ahead of the S&amp;P 500), and keeps spare cash in a Treasury-bill fund. Most picks are held about ${(d.adaptive?.policy?.hold_other) ?? L.hold_days ?? 60} trading days.${ro ? "" : " Buy more shows on stocks that are on today's Buy list."}</p>`
     : `<div class="empty">Nothing bought yet. New picks are bought as they come in.</div>`}</section>
+  ${vDaysSection(d)}
+  ${divSection({ ...p, mode: "live" })}
   <section class="panel"><div class="ph"><h2>Recent orders</h2></div>
     ${ords.length ? `<div class="tbl scroll"><table><thead><tr><th>When</th><th>Ticker</th><th>Side</th><th class="n">Shares</th><th class="n">Fill price</th><th>Status</th></tr></thead><tbody>
     ${ords.filter(o => !/^(SGOV|BIL|SHV|SPY|VOO|IVV)$/.test(o.t) || o.by !== "tool").map(o => `<tr><td class="nw">${esc(fmtET(o.at))}</td><td class="mono">${tkBtn(o.t)}</td><td>${esc(o.side)}</td><td class="n">${shQty(o)}</td><td class="n">${o.filled_px ? money(+o.filled_px, 2) : "–"}</td><td>${esc(String(o.status).replace(/_/g, " "))}</td></tr>`).join("")}
@@ -1083,7 +1085,7 @@ function renderAccounts() {
     if (D.error) return head + `<div class="note err">${esc(D.error)}</div>`;
     return head + `<section class="panel"><div class="ph"><h2>${esc(a.label)}</h2><span class="sub">${esc(a.email)} · view only</span></div>
       ${D.problem ? `<div class="note warn">${esc(D.problem)}</div>` : ""}</section>` +
-      renderViewerAccount({ viewer: { connected: a.keys, auto: a.auto, size: a.size, paused: a.paused, terms: !!a.terms_at }, portfolio: D.portfolio, close_report: D.close_report, adaptive: state.data?.adaptive }, { readOnly: true });
+      renderViewerAccount({ viewer: { connected: a.keys, auto: a.auto, size: a.size, paused: a.paused, terms: !!a.terms_at }, portfolio: D.portfolio, close_report: D.close_report, close_history: D.close_history, adaptive: state.data?.adaptive }, { readOnly: true });
   }
   const m = ACC.msg;
   const list = ACC.list;
@@ -1145,6 +1147,12 @@ document.addEventListener("click", ev => {
     if (typed == null) return;
     accPost({ action: "remove", id, confirm: typed.trim().toLowerCase() }); return;
   }
+  const ask = { auto: b.dataset.on === "1" ? `Turn automatic buying back on for ${a.label}? The tool starts buying new picks in their account again.`
+      : `Pause automatic buying for ${a.label}? The tool stops buying new picks in their account (it still sells on schedule).`,
+    link: `Email a new sign-in link to ${a.label} (${a.email})?`,
+    signout: `Sign ${a.label} out on every device? They'll need a new sign-in link to get back in.`,
+    enable: `Turn ${a.label}'s account back on? You can then send them a sign-in link.` }[act];
+  if (ask && !confirm(ask)) return;
   if (act === "reset-keys" && !confirm(`Remove ${a.label}'s saved Alpaca keys? The tool stops trading their account until they connect again. Nothing is sold.`)) return;
   if (act === "disable" && !confirm(`Turn off ${a.label}'s account? They're signed out and the tool stops trading it. Nothing is sold.`)) return;
   accPost({ action: act, id, on: b.dataset.on === "1" });
@@ -1275,6 +1283,36 @@ document.addEventListener("click", ev => {
   const g = ev.target.closest && ev.target.closest("[data-tab-go]");
   if (!g || !isViewer()) return;
   state.tab = g.dataset.tabGo; location.hash = state.tab; render(); scrollTo(0, document.body.scrollHeight);
+});
+
+
+// ---------- Pick days on their Account page: like the owner's, without the S&P ----------
+const VDAYS = { sel: null };
+function vDaysSection(d) {
+  const hist = (d.close_history || []).filter(x => x.date).slice().reverse();
+  if (!hist.length) return "";
+  if (!VDAYS.sel || !VDAYS.sel.some(x => hist.find(h => h.date === x))) VDAYS.sel = [hist[0].date];
+  const short = x => new Date(x + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const ords = (d.portfolio?.orders || []);
+  const card = date => {
+    const x = hist.find(h => h.date === date); if (!x) return "";
+    const dayOrds = ords.filter(o => o.at && fmtETDate(o.at) === date && o.filled_px && !/^(SGOV|BIL|SHV)$/.test(o.t));
+    return `<div class="dayc"><h3>${esc(fmtDate(x.date))}</h3>
+      <div class="r"><span>Account</span><span>${money(x.equity)}</span></div>
+      <div class="r"><span>That day</span><span class="${cls(x.day_pl)}">${x.day_pl == null ? "–" : (x.day_pl > 0 ? "+" : "") + money(x.day_pl)}</span></div>
+      <div class="r"><span>Since start</span><span class="${cls(x.since)}">${x.since == null ? "–" : pct(x.since, 2)}</span></div>
+      ${dayOrds.length ? `<div class="ords">${dayOrds.map(o => `<div>${esc(o.side === "buy" ? "Bought" : "Sold")} ${tkBtn(o.t)} ${esc(o.qty ?? "")} at ${money(+o.filled_px, 2)}</div>`).join("")}</div>` : ""}
+    </div>`;
+  };
+  return `<section class="panel"><div class="ph"><h2>Pick days</h2><span class="sub">Tap one or more dates to compare them side by side. Deposits and withdrawals aren't counted as gains.</span></div>
+  <div class="daypick">${hist.map(h => `<button type="button" data-vday="${esc(h.date)}" aria-pressed="${VDAYS.sel.includes(h.date)}">${esc(short(h.date))}</button>`).join("")}</div>
+  <div class="days">${hist.filter(h => VDAYS.sel.includes(h.date)).reverse().map(h => card(h.date)).join("")}</div></section>`;
+}
+document.addEventListener("click", ev => {
+  const b = ev.target.closest && ev.target.closest("[data-vday]"); if (!b) return;
+  const k = b.dataset.vday, i = VDAYS.sel.indexOf(k);
+  if (i >= 0) { if (VDAYS.sel.length > 1) VDAYS.sel.splice(i, 1); } else VDAYS.sel.push(k);
+  const y = window.scrollY; render(); window.scrollTo(0, y);
 });
 
 "use strict";
