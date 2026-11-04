@@ -2189,12 +2189,26 @@ function openChart(t, back) {
       else if (ev.target.closest(".mback")) { const p = (pop.hist || []).pop(); if (p) openChart(p, true); } });
     document.body.appendChild(bg);
   }
-  bg.hidden = false; document.body.style.overflow = "hidden";
+  bg.hidden = false; if (!TOUCH) document.body.style.overflow = "hidden";
   drawPopup();
   if (!pop.charts) loadCharts().then(() => { ensureOne(t); drawPopup(); }, e => { pop.err = e; ensureOne(t); drawPopup(); });
   else ensureOne(t);
 }
-function closeChart() { const bg = document.getElementById("mbg"); if (bg) { bg.hidden = true; bg.innerHTML = ""; } document.body.style.overflow = ""; pop.t = null; pop.hist = []; }
+function closeChart() { const bg = document.getElementById("mbg"); if (bg) { bg.hidden = true; bg.innerHTML = ""; } document.body.style.overflow = ""; pop.t = null; pop.hist = []; fixTabBar(); }
+const TOUCH = matchMedia("(pointer: coarse)").matches;
+// iPhone sometimes leaves the fixed bottom tab bar mid-screen after a popup or a jump between pages; if it isn't at
+// the bottom of the screen, hide and show it once so the browser places it again (owner, Nov 4 2026)
+function fixTabBar() {
+  setTimeout(() => {
+    const nav = document.querySelector("nav.tabs");
+    if (!nav || !matchMedia("(max-width: 760px)").matches) return;
+    const vh = (window.visualViewport && window.visualViewport.height) || innerHeight, r = nav.getBoundingClientRect();
+    if (Math.abs(r.bottom - vh) > 12) { nav.style.display = "none"; void nav.offsetHeight; nav.style.display = ""; }
+  }, 80);
+}
+addEventListener("scroll", (() => { let t; return () => { clearTimeout(t); t = setTimeout(fixTabBar, 150); }; })(), { passive: true });
+["hashchange", "popstate", "pageshow", "orientationchange", "resize"].forEach(e => addEventListener(e, fixTabBar));
+document.addEventListener("click", () => setTimeout(fixTabBar, 200), true);
 addEventListener("keydown", ev => { if (ev.key === "Escape" && pop.t) closeChart(); });
 document.addEventListener("click", ev => { const b = ev.target.closest("[data-chart]"); if (b) { ev.preventDefault(); openChart(b.dataset.chart); } });
 

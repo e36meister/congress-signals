@@ -281,6 +281,7 @@ html.covered #vcover{display:grid;place-items:center;position:fixed;inset:0;z-in
 #vcover img{width:84px;height:84px;border-radius:20px}
 html.viewer body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 html.viewer input,html.viewer textarea{-webkit-user-select:text;user-select:text}
+.mbg{overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
 .verline{text-align:center;color:var(--muted);font-size:12px;margin:-6px 0 18px}
 .updbar{background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent);border-radius:10px;padding:10px 12px;margin:0 0 12px;font-size:14px;display:flex;gap:10px;align-items:center;justify-content:space-between}
 /* spare cash choice */
