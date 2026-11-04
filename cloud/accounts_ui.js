@@ -551,27 +551,36 @@ function renderAccounts() {
     if (D.error) return head + `<div class="note err">${esc(D.error)}</div>`;
     return head + `<section class="panel"><div class="ph"><h2>${esc(a.label)}</h2><span class="sub">${esc(a.email)} · view only</span></div>
       ${D.problem ? `<div class="note warn">${esc(D.problem)}</div>` : ""}</section>` +
-      renderViewerAccount({ viewer: { connected: a.keys, auto: a.auto, size: a.size, paused: a.paused, terms: !!a.terms_at }, portfolio: D.portfolio, close_report: D.close_report, close_history: D.close_history, adaptive: state.data?.adaptive }, { readOnly: true });
+      renderViewerAccount({ viewer: { connected: a.keys, auto: a.auto, size: a.size, paused: a.paused, terms: !!a.terms_at, hold: ACC.hold, park: a.park }, portfolio: D.portfolio, close_report: D.close_report, close_history: D.close_history, adaptive: state.data?.adaptive }, { readOnly: true });
   }
   const m = ACC.msg;
   const list = ACC.list;
   const card = a => {
     const S = a.summary, st = a.status === "disabled" ? `<span class="chip avoid">Off</span>` : a.status === "invited" ? `<span class="chip watch">Invited</span>` : `<span class="chip BUY">Active</span>`;
     const conn = a.keys ? `Alpaca connected ${esc(a.key_hint || "")}` : "Hasn't connected Alpaca yet";
-    const btn = (act, l, extra = "") => `<button type="button" class="btn ghost sm" data-acc="${act}" data-id="${esc(a.id)}"${ACC.busy ? " disabled" : ""}${extra}>${l}</button>`;
+    // kind: "go" = the next step / turn something on, "" = neutral, "warn" = stops something, "danger" = can't be undone easily
+    const btn = (act, l, extra = "", kind = "") => `<button type="button" class="btn sm ${kind === "go" ? "" : kind === "warn" ? "ghost bwarn" : kind === "danger" ? "ghost bdanger" : "ghost"}" data-acc="${act}" data-id="${esc(a.id)}"${ACC.busy ? " disabled" : ""}${extra}>${l}</button>`;
+    // what the tool will do for them right now (the family hold comes first)
+    const ready = a.keys && a.terms_at && a.status !== "disabled";
+    const trade = a.paused ? `<span class="chip avoid">They paused trading</span>`
+      : !a.keys ? "" : ACC.hold ? (a.auto ? `<span class="chip watch">On hold · ready${ready ? "" : " once terms are signed"}</span>` : `<span class="chip avoid">On hold · auto-buying off</span>`)
+      : a.auto ? `<span class="chip BUY">Auto-buying on</span>` : `<span class="chip avoid">Auto-buying paused</span>`;
+    const seenAgo = a.seen_at ? (Date.now() - Date.parse(a.seen_at)) / 60000 : null;
+    const seen = seenAgo != null && seenAgo < 5 ? `<span class="chip BUY">Online now</span>` : "";
+    const active = a.seen_at ? ` · last active ${esc(ago(a.seen_at))}` : "";
     return `<article class="acct">
-      <div class="acct-h"><b>${esc(a.label)}</b>${st}${a.paused ? `<span class="chip avoid">They paused trading</span>` : a.keys ? (a.auto ? `<span class="chip BUY">Auto-buying on</span>` : `<span class="chip avoid">Auto-buying paused</span>`) : ""}${a.terms_at ? `<span class="chip watch">Terms signed</span>` : `<span class="chip avoid">Terms not signed</span>`}</div>
-      <div class="foot">${esc(a.email)} · ${conn}${a.build ? ` · app ${esc(a.build)}${SERVER_BUILD && a.build !== SERVER_BUILD ? " (older)" : " (latest)"}` : ""}${a.last_login ? ` · last sign-in ${esc(ago(a.last_login))}` : a.link_sent ? ` · link sent ${esc(ago(a.link_sent))}` : ""}</div>
+      <div class="acct-h"><b>${esc(a.label)}</b>${seen}${st}${trade}${a.terms_at ? `<span class="chip watch">Terms signed</span>` : `<span class="chip avoid">Terms not signed</span>`}</div>
+      <div class="foot">${esc(a.email)} · ${conn}${a.build ? ` · app ${esc(a.build)}${SERVER_BUILD && a.build !== SERVER_BUILD ? " (older)" : " (latest)"}` : ""}${seen ? "" : active}${a.last_login ? ` · signed in with a link ${esc(ago(a.last_login))}` : a.link_sent ? ` · link sent ${esc(ago(a.link_sent))}` : ""}</div>
       ${S ? `<div class="acct-s"><span><b>${money(S.equity)}</b> value</span><span class="${cls(S.day_pl)}">${S.day_pl == null ? "–" : (S.day_pl > 0 ? "+" : "") + money(S.day_pl)} today</span><span>${money(S.invested)} in picks</span><span>${S.positions} position${S.positions === 1 ? "" : "s"}</span><span class="foot">updated ${esc(ago(S.updated))}</span></div>` : ""}
       ${a.problem ? `<div class="foot neg">${esc(a.problem)}</div>` : ""}
       <div class="acct-b">${a.keys ? `<button type="button" class="btn sm" data-accview="${esc(a.id)}">View portfolio</button>` : ""}
         ${a.terms_at ? `<button type="button" class="btn ghost sm" data-accterms="${esc(a.id)}">Signed terms</button>` : ""}
-        ${a.keys ? btn("auto", a.auto ? "Pause auto-buying" : "Turn auto-buying on", ` data-on="${a.auto ? "0" : "1"}"`) : ""}
+        ${a.keys ? btn("auto", a.auto ? (ACC.hold ? "Keep paused at launch" : "Pause auto-buying") : (ACC.hold ? "Start with everyone at launch" : "Turn auto-buying on"), ` data-on="${a.auto ? "0" : "1"}"`, a.auto ? "warn" : "go") : ""}
         ${a.status !== "disabled" ? btn("link", "Send sign-in link") : ""}
-        ${a.status !== "disabled" ? btn("signout", "Sign out everywhere") : ""}
-        ${a.keys ? btn("reset-keys", "Reset keys") : ""}
-        ${btn(a.status === "disabled" ? "enable" : "disable", a.status === "disabled" ? "Turn back on" : "Turn off")}
-        ${btn("remove", "Remove")}</div>
+        ${a.status !== "disabled" ? btn("signout", "Sign out everywhere", "", "warn") : ""}
+        ${a.keys ? btn("reset-keys", "Reset keys", "", "warn") : ""}
+        ${a.status === "disabled" ? btn("enable", "Turn back on", "", "go") : btn("disable", "Turn off", "", "danger")}
+        ${btn("remove", "Remove", "", "danger")}</div>
     </article>`;
   };
   const holdBox = list ? `<div class="note ${ACC.hold ? "warn" : ""}" style="display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap">
@@ -624,8 +633,8 @@ document.addEventListener("click", ev => {
     if (typed == null) return;
     accPost({ action: "remove", id, confirm: typed.trim().toLowerCase() }); return;
   }
-  const ask = { auto: b.dataset.on === "1" ? `Turn automatic buying back on for ${a.label}? The tool starts buying new picks in their account again.`
-      : `Pause automatic buying for ${a.label}? The tool stops buying new picks in their account (it still sells on schedule).`,
+  const ask = { auto: b.dataset.on === "1" ? (ACC.hold ? `Start ${a.label} with everyone when family trading starts?` : `Turn automatic buying back on for ${a.label}? The tool starts buying new picks in their account again.`)
+      : (ACC.hold ? `Keep ${a.label}'s automatic buying paused when family trading starts? You can turn it on any time.` : `Pause automatic buying for ${a.label}? The tool stops buying new picks in their account (it still sells on schedule).`),
     link: `Email a new sign-in link to ${a.label} (${a.email})?`,
     signout: `Sign ${a.label} out on every device? They'll need a new sign-in link to get back in.`,
     enable: `Turn ${a.label}'s account back on? You can then send them a sign-in link.` }[act];
@@ -871,6 +880,12 @@ document.addEventListener("click", ev => {
   if (!(ev.target.closest && ev.target.closest("[data-appupdate]"))) return;
   try { location.reload(); } catch (e) {}
 });
+// family accounts: a light check-in every 2 minutes while the app is on screen, so the owner's Accounts page can
+// show "Online now" (and a newer version is noticed while it's open)
+setInterval(() => {
+  if (!isViewer() || document.visibilityState !== "visible") return;
+  api("/api/session?b=" + encodeURIComponent(APP_BUILD)).then(r => { const had = SERVER_BUILD; checkBuild(r.js); if (SERVER_BUILD !== had) render(); }, () => {});
+}, 120000);
 // when the app comes back to the screen, check for a newer version (a home-screen app can stay open for days)
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible") return;

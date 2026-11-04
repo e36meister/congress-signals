@@ -268,6 +268,9 @@ html.viewer [data-jump="today-worth"],html.viewer [data-jump="today-unusual"]{di
 .vtip{display:none}html.tips .vtip{display:block;background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:12px}
 .vbtns{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
 .meini{display:grid;place-items:center;width:100%;height:100%;font:600 15px var(--body);color:var(--accent);background:var(--accent-soft)}
+.btn.ghost.bwarn{color:#9A5B00;border-color:#E9C27A}.btn.ghost.bdanger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
+/* Members: the time-window bar sits right under the top bar, whatever its height */
+.mwin{top:calc(env(safe-area-inset-top,0px) + var(--hdr,92px))!important}
 .verline{text-align:center;color:var(--muted);font-size:12px;margin:-6px 0 18px}
 .updbar{background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent);border-radius:10px;padding:10px 12px;margin:0 0 12px;font-size:14px;display:flex;gap:10px;align-items:center;justify-content:space-between}
 /* spare cash choice */

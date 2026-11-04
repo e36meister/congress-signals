@@ -258,6 +258,7 @@ export function viewerAllowed(method, path) {
 // usual; these are answered here with the viewer's own data.
 export async function viewerApi(req, env, url, a, h) {
   const p = url.pathname;
+  if (p === "/api/session") { try { await noteSeen(env, a); } catch (e) {} }
   if (p === "/api/session") {
     // the first time they open the app is remembered, so a few days in they're asked once whether they want emails too
     if (!a.first_seen) { a.first_seen = new Date().toISOString(); await patchAccount(env, a.id, x => { if (!x.first_seen) x.first_seen = a.first_seen; }); }
@@ -275,6 +276,7 @@ export async function viewerApi(req, env, url, a, h) {
     await patchAccount(env, a.id, x => { x.email_asked = yes ? "yes" : "no"; });
     return json({ ok: true });
   }
+  if (p === "/api/data" || p === "/api/live") { try { await noteSeen(env, a); } catch (e) {} }
   if (p === "/api/data") return viewerData(env, a);
   if (p === "/api/tax") { const idx = await r2json(env, `accounts/${a.id}/tax/index.json`, null); return idx ? json(idx) : json({ error: "no-file" }, 404); }
   if (p === "/api/tax/file") return viewerTaxFile(env, a, url);
@@ -510,7 +512,8 @@ export async function ownerAccounts(env) {
   const list = await listAccounts(env), hold = await familyHold(env);
   const rows = await Promise.all(list.map(async a => {
     const port = await r2json(env, `accounts/${a.id}/portfolio.json`, null), p = port && port.portfolio;
-    return { ...pub(a), summary: p ? { equity: p.equity, cash: p.cash, day_pl: p.day_pl, positions: (p.positions || []).length,
+    const seen = await r2json(env, `accounts/${a.id}/seen.json`, null);
+    return { ...pub(a), seen_at: seen && seen.at || null, summary: p ? { equity: p.equity, cash: p.cash, day_pl: p.day_pl, positions: (p.positions || []).length,
       invested: (p.positions || []).filter(x => x.sleeve !== "park").reduce((s, x) => s + (x.mv || 0), 0), updated: p.updated } : null,
       problem: port && port.problem || null };
   }));
@@ -970,4 +973,12 @@ async function viewerTaxFile(env, a, url) {
   if (!o) return json({ error: "no-file" }, 404);
   return new Response(o.body, { headers: { "Content-Type": VTAX[f], "Cache-Control": "private, no-store",
     ...(f === "sales.json" ? {} : { "Content-Disposition": `attachment; filename="capitol-capital-${y}-${f.replace(".", "-").replace("-pdf", ".pdf").replace("-csv", ".csv")}"` }) } });
+}
+
+
+// ---------- last active (owner's Accounts page: "Online now" within 5 minutes) ----------
+async function noteSeen(env, a) {
+  const k = `accounts/${a.id}/seen.json`, cur = await r2json(env, k, null);
+  if (cur && Date.now() - Date.parse(cur.at) < 60e3) return;
+  await put(env, k, { at: new Date().toISOString() });
 }

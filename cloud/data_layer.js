@@ -424,7 +424,13 @@ api("/api/session").then(() => { loadData(); alertsState(); refreshAlerts(); }, 
   bar.className = "stickyhead"; bar.hidden = true; bar.setAttribute("aria-hidden", "true");
   document.body.appendChild(bar);
   let cur = null, raf = 0;
-  const topEdge = () => { const h = document.querySelector("header.top"); return h ? Math.max(0, h.getBoundingClientRect().bottom) : 0; };
+  const topEdge = () => {
+    const h = document.querySelector("header.top");
+    let t = h ? Math.max(0, h.getBoundingClientRect().bottom) : 0;
+    const mw = main.querySelector(".mwin");                   // Members: its time-window bar is pinned too
+    if (mw && mw.offsetParent) { const r = mw.getBoundingClientRect(); if (r.top <= t + 2) t = Math.max(t, r.bottom); }
+    return t;
+  };
   function update() {
     raf = 0;
     const top = topEdge();
@@ -460,3 +466,7 @@ api("/api/session").then(() => { loadData(); alertsState(); refreshAlerts(); }, 
   document.addEventListener("scroll", queue, { capture: true, passive: true });    // sideways scrolling inside a table
   new MutationObserver(() => { cur = null; queue(); }).observe(main, { childList: true, subtree: true });
 })();
+
+// the top bar's height changes when its status line wraps (phones): keep --hdr current so pinned bars (Members'
+// time window) sit right under it (owner, Nov 4 2026: they were cut off when scrolling)
+try { const hb = document.querySelector("header.top"); if (hb && "ResizeObserver" in window) new ResizeObserver(() => setHeaderHeight()).observe(hb); } catch (e) {}
