@@ -29,7 +29,7 @@ def activities(api, types):
             break
         tok = page[-1]["id"]
     else:
-        fails.append("Taxes: account history is longer than 20,000 entries; only the first 20,000 were read")
+        fails.append("Taxes: an account history is longer than 20,000 entries; only the first 20,000 were read")
     return out
 
 
@@ -104,8 +104,25 @@ def main():
     mode = s["mode"]
     if not (s["key"] and s["secret"]):
         problems.append(f"Taxes: no Alpaca {mode} keys set, so the Taxes page can't be updated")
-        return
-    api = broker.Alpaca(s)
+    else:
+        build(broker.Alpaca(s), mode, f"tax/{mode}", "Taxes", florida=True)
+    # family accounts (owner, Nov 4 2026): the same Taxes page for each, from their own account, saved under
+    # accounts/<id>/tax/. Numbered in the log; one failing doesn't stop the others.
+    try:
+        from congress_signals import accounts
+        accts = accounts.load(lambda m: None)
+    except Exception as e:
+        accts = []
+        fails.append(f"Taxes: family accounts couldn't be read ({type(e).__name__})")
+    for i, a in enumerate(accts, 1):
+        try:
+            with broker.use_account(a):
+                build(broker.Alpaca(broker.settings(0)), "live", f"accounts/{a['id']}/tax", f"Taxes, family account {i}", florida=False)
+        except Exception as e:
+            fails.append(f"Taxes: family account {i} failed ({type(e).__name__})")
+
+
+def build(api, mode, root, tag, florida=True):
     raw = activities(api, "FILL")
     fills = [{"date": ny_date(a["transaction_time"]), "time": a["transaction_time"], "t": broker.from_alpaca(a["symbol"]),
               "side": a["side"], "qty": float(a["qty"]), "px": float(a["price"]), "id": a["id"]}
@@ -128,7 +145,7 @@ def main():
         amt = lambda types: sum(float(a.get("net_amount") or 0) for a in yo if str(a.get("activity_type")) in types)
         div = amt(("DIV", "DIVCGL", "DIVCGS", "DIVFT", "DIVNRA", "DIVROC", "DIVTXEX"))
         summ = T.summarize(sales, y, dividends=div, interest=amt(("INT",)), fees=-amt(("FEE",)),
-                           estimated_dividends=(est or {}).get("by_year", {}).get(y) if est else None)
+                           estimated_dividends=(est or {}).get("by_year", {}).get(y) if est else None, florida=florida)
         rows = T.form8949_rows(sales, y)
         buf = io.StringIO()
         w = csv.writer(buf)
@@ -137,21 +154,21 @@ def main():
         for r in rows:
             w.writerow([r["box"], r["term"], r["desc"], r["acq"], r["sold"], f"{r['proceeds']:.2f}", f"{r['cost']:.2f}",
                         r["code"], f"{r['adj']:.2f}" if r["adj"] else "", f"{r['gain']:.2f}"])
-        base = f"tax/{mode}/{y}"
+        base = f"{root}/{y}"
         ok = cloud_store.put(f"{base}/form8949.csv", buf.getvalue(), log, content_type="text/csv")
         ok &= cloud_store.put(f"{base}/sales.json", json.dumps({"rows": rows}), log)
         try:
             ok &= cloud_store.put(f"{base}/statement.pdf", statement_pdf(mode, y, rows, summ), log, content_type="application/pdf")
             summ["files"] = ["statement.pdf", "form8949.csv"]
         except Exception as e:
-            fails.append(f"Taxes: the {y} PDF statement failed ({type(e).__name__}: {e})")
+            fails.append(f"{tag}: the {y} PDF statement failed ({type(e).__name__}: {e})")
             summ["files"] = ["form8949.csv"]
         if not ok:
-            fails.append(f"Taxes: the {y} files didn't all upload to Cloudflare")
+            fails.append(f"{tag}: the {y} files didn't all upload to Cloudflare")
         index["years"][y] = summ
-    if not cloud_store.put(f"tax/{mode}/index.json", json.dumps(index), log):
-        problems.append("Taxes: couldn't save the Taxes page to Cloudflare")
-    log(f"Taxes: {mode} account, {len(fills)} fills, {len(sales)} sales over {len(years)} year(s) saved")
+    if not cloud_store.put(f"{root}/index.json", json.dumps(index), log):
+        problems.append(f"{tag}: couldn't save the Taxes page to Cloudflare")
+    log(f"{tag}: {mode} account, {len(fills)} fills, {len(sales)} sales over {len(years)} year(s) saved")
 
 
 if __name__ == "__main__":

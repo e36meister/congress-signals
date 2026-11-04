@@ -139,7 +139,7 @@ def _wash(rec, loss, k, day, fs, sale_fill, lots, repl_left, pending, sold_lot):
         rec["code"] = "W"
 
 
-def summarize(sales, year, dividends=None, interest=0.0, fees=0.0, estimated_dividends=None):
+def summarize(sales, year, dividends=None, interest=0.0, fees=0.0, estimated_dividends=None, florida=True):
     """Totals for one tax year (by the sale date) and what to file."""
     ys = [s for s in sales if s["sold"][:4] == str(year)]
     tot = {}
@@ -166,7 +166,12 @@ def summarize(sales, year, dividends=None, interest=0.0, fees=0.0, estimated_div
         todo.append({"form": "Form 1040-ES (estimated tax)", "why": "With a large gain and no tax withheld, the IRS "
                      "expects quarterly payments (Apr 15, Jun 15, Sep 15, Jan 15) to avoid an underpayment penalty. "
                      "Usually safe if this year's payments + withholding cover last year's total tax.", "file": ""})
-    todo.append({"form": "Florida", "why": "No state income tax return needed for investment income.", "file": ""})
+    if florida:
+        todo.append({"form": "Florida", "why": "No state income tax return needed for investment income.", "file": ""})
+    else:       # family accounts (owner, Nov 4 2026): their state isn't known
+        todo.append({"form": "Your state's return", "why": "Most states tax these gains, dividends and interest too (a few, "
+                     "like Florida and Texas, have no income tax). Interest from U.S. Treasury bills, such as SGOV's, "
+                     "isn't taxed by states.", "file": ""})
     wash = [s for s in ys if s["code"] == "W"]
     return {"year": int(year), "short": tot["short"], "long": tot["long"], "net": net,
             "wash": {"n": len(wash), "disallowed": round(sum(s["adj"] for s in wash), 2)},

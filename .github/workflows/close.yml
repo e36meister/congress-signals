@@ -68,4 +68,5 @@ jobs:
           TRADING_MODE: ${{ vars.TRADING_MODE }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ACCOUNTS_KEY: ${{ secrets.ACCOUNTS_KEY }}      # family accounts' Taxes pages
         run: python tax_report.py

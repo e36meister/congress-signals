@@ -5,17 +5,18 @@
 // The owner gets the Accounts page (under More) to add people and see each portfolio.
 let ROLE = "owner", SESSION_ME = null;
 const isViewer = () => ROLE === "viewer";
-const VIEWER_TABS = new Set(["today", "members", "port", "alerts", "more", "search", "vnotif", "vset", "faq", "bug", "terms", "privacy"]);
+const VIEWER_TABS = new Set(["today", "members", "port", "alerts", "more", "search", "vnotif", "vset", "faq", "bug", "terms", "privacy", "tax"]);
 const VIEWER_MORE = [
   { k: "search", l: "Company search", d: "Any ticker or company: its chart, what's going on, and every member's trades" },
   { k: "vnotif", l: "Notifications", d: "Push and email: trades, the daily close, big moves, your own account alerts" },
+  { k: "tax", l: "Taxes", d: "Every sale's gain or loss, your Form 8949 statement and what to file" },
   { k: "vset", l: "Settings", d: "Profile picture, extra explanations, home-screen widget, sign out" },
   { k: "faq", l: "Questions and answers", d: "How the tool picks, buys, sells and sizes, and what you can do" },
   { k: "bug", l: "Report a bug or suggest a feature", d: "Something broken, or an idea for the app? It goes straight to the Operator" },
 ];
 // Today sections a family account sees; the jump bar shows once there are two or more (owner, Nov 3 2026)
 const VIEWER_SECTIONS = new Set(["today-buy"]);
-const VIEWER_SUB = new Set(["search", "vnotif", "vset", "faq", "bug", "terms", "privacy"]);
+const VIEWER_SUB = new Set(["search", "vnotif", "vset", "faq", "bug", "terms", "privacy", "tax"]);
 function applyRole(s) {
   ROLE = s && s.role === "viewer" ? "viewer" : "owner";
   SESSION_ME = s || null;
@@ -368,6 +369,7 @@ function renderViewerPage() {
   if (state.tab === "bug") return vBack() + renderBug();
   if (state.tab === "terms") return vBack() + renderTermsPage();
   if (state.tab === "privacy") return vBack() + renderPrivacy();
+  if (state.tab === "tax") return vBack() + renderVTax();
   return "";
 }
 
@@ -842,3 +844,13 @@ document.getElementById("mebtn")?.addEventListener("click", ev => {
   ev.stopImmediatePropagation();
   state.tab = state.tab === "vset" ? "today" : "vset"; try { location.hash = state.tab; } catch (e) {} render(); scrollTo(0, 0);
 }, true);
+
+
+// ---------- their Taxes page: like the owner's; until there's a trade it just says so ----------
+function renderVTax() {
+  const html = renderTax();
+  const J = TAX.js;
+  if ((TAX.err && TAX.err.code === "no_file") || (J && !J.fills))
+    return `<section class="panel"><div class="ph"><h2>Taxes</h2></div><div class="empty">No trades yet. This fills in after the market closes on a day the tool buys or sells for you: every sale's gain or loss, your Form 8949 statement and what to file.</div></section>`;
+  return html;
+}

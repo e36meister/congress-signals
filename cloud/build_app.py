@@ -229,6 +229,10 @@ src = sub('  if (state.tab === "today") html += renderToday(d);',
 src = sub('function todayJump(d, nb, nAvoid, nAlso) {\n  const notable', 'function todayJump(d, nb, nAvoid, nAlso) {\n  if (isViewer() && VIEWER_SECTIONS.size < 2) return "";\n  const notable', src)
 src = sub('    .filter(([id, , n]) => n !== null && (id === "today-buy" || id === "posts" || n > 0));\n  return `<nav class="jump"',
           '    .filter(([id, , n]) => n !== null && (id === "today-buy" || id === "posts" || n > 0))\n    .filter(([id]) => !isViewer() || VIEWER_SECTIONS.has(id));\n  return `<nav class="jump"', src)
+# Taxes for a family account: their own state, not the owner's (Florida)
+src = sub('  if (state.tab === "tax") html += renderTax();', '  if (state.tab === "tax" && !isViewer()) html += renderTax();', src)
+src = sub('<div class="ph"><h2>What to file</h2><span class="sub">Federal only: Florida has no state income tax</span></div>',
+          '<div class="ph"><h2>What to file</h2><span class="sub">${isViewer() ? "Federal, plus your state\'s rules" : "Federal only: Florida has no state income tax"}</span></div>', src)
 # a paused family account sees a banner at the top of every page
 src = sub('  let html = "";\n  if (d.version === 1)', '  let html = "";\n  if (isViewer()) html += pausedBanner();\n  if (d.version === 1)', src)
 # your trades on a stock's chart show your own picture

@@ -248,7 +248,7 @@ go.addEventListener("click", async () => {
 // Anything not listed answers 403, whatever the page asks for.
 const VIEWER_GET = new Set(["/api/session", "/api/data", "/api/members", "/api/member", "/api/chart", "/api/charts", "/api/search",
   "/api/movers", "/api/news", "/api/about", "/api/context", "/api/notifications", "/api/live", "/api/push/key", "/api/me/photo",
-  "/api/me/prefs", "/api/me/widget", "/api/me/terms"]);
+  "/api/me/prefs", "/api/me/widget", "/api/me/terms", "/api/tax", "/api/tax/file"]);
 const VIEWER_POST = new Set(["/api/logout", "/api/notifications/clear", "/api/push/subscribe", "/api/buy-more", "/api/sell",
   "/api/me/keys", "/api/me/photo", "/api/bug", "/api/me/prefs", "/api/me/widget", "/api/me/email-ask", "/api/me/size", "/api/me/terms", "/api/me/pause", "/api/me/park"]);
 export function viewerAllowed(method, path) {
@@ -273,6 +273,8 @@ export async function viewerApi(req, env, url, a, h) {
     return json({ ok: true });
   }
   if (p === "/api/data") return viewerData(env, a);
+  if (p === "/api/tax") { const idx = await r2json(env, `accounts/${a.id}/tax/index.json`, null); return idx ? json(idx) : json({ error: "no-file" }, 404); }
+  if (p === "/api/tax/file") return viewerTaxFile(env, a, url);
   if (p === "/api/movers") return viewerMovers(env, a);
   if (p === "/api/me/photo" && req.method === "GET") return getPhoto(env, a);
   if (p === "/api/me/photo") return setPhoto(req, env, a);
@@ -953,4 +955,16 @@ async function setPark(req, env, a) {
     ? (a.paused ? "Spare cash will be kept as cash. Trading is paused, so the SGOV the tool holds is sold when you resume."
       : sold ? "Spare cash is now kept as cash. The SGOV the tool held is being sold (it fills now, or at the next open)." : "Spare cash is now kept as cash.")
     : "Spare cash will be parked in SGOV, starting at the next update." });
+}
+
+
+// ---------- their Taxes page: the same files the owner gets, from their own account (tax_report.py) ----------
+const VTAX = { "statement.pdf": "application/pdf", "form8949.csv": "text/csv", "sales.json": "application/json" };
+async function viewerTaxFile(env, a, url) {
+  const y = String(url.searchParams.get("y") || ""), f = String(url.searchParams.get("f") || "");
+  if (!/^20\d\d$/.test(y) || !VTAX[f]) return json({ error: "bad-request" }, 400);
+  const o = await env.DATA.get(`accounts/${a.id}/tax/${y}/${f}`);
+  if (!o) return json({ error: "no-file" }, 404);
+  return new Response(o.body, { headers: { "Content-Type": VTAX[f], "Cache-Control": "private, no-store",
+    ...(f === "sales.json" ? {} : { "Content-Disposition": `attachment; filename="capitol-capital-${y}-${f.replace(".", "-").replace("-pdf", ".pdf").replace("-csv", ".csv")}"` }) } });
 }
