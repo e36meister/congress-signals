@@ -57,3 +57,7 @@ def walk(x, path):
                 print("AT", f"{path}[{i}]", "(bare ticker)")
             walk(v, f"{path}[{i}]")
 walk(d, "data")
+P = d.get("portfolio") or {}
+print("FILLS", json.dumps((P.get("fills") or {}).get(T)), "| portfolio updated", P.get("updated"))
+w = d.get("watchlist") or {}
+print("WATCHLIST has T:", [r.get("action") for r in (w.get("buys") or []) + (w.get("sells") or []) if r.get("t") == T])
