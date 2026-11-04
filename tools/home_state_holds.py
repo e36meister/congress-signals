@@ -51,8 +51,9 @@ for gname, gmask in (("all", slice(None)), ("under $2B", picks.under2b), ("$2B a
     print(f"\n{gname}:  hold | WITH signal: n  avg  vs S&P  median  beat S&P  t | WITHOUT: n  vs S&P")
     for h, a, b in zip(H, out["groups"][gname]["with"], out["groups"][gname]["without"]):
         f = lambda v, p=True: "–" if v is None else (f"{v * 100:+.1f}%" if p else f"{v:.1f}")
+        win = "–" if a.get("win") is None else format(a["win"] * 100, ".0f") + "%"
         print(f"  {h:>3}d | {a['n']:4d} {f(a.get('ret'))} {f(a.get('ex'))} {f(a.get('med'))} "
-              f"{"–" if a.get("win") is None else format(a["win"] * 100, ".0f") + "%"} {f(a.get('t'), False)} | {b['n']:4d} {f(b.get('ex'))}")
+              f"{win} {f(a.get('t'), False)} | {b['n']:4d} {f(b.get('ex'))}")
 y = picks[picks.sig & picks["c60"]].groupby(pd.to_datetime(picks["filed_date"]).dt.year)["x60"].agg(["count", "mean"])
 out["by_year_60"] = {int(k): {"n": int(v["count"]), "ex": float(v["mean"])} for k, v in y.iterrows()}
 print("\nWith signal, 60-day vs S&P by filing year:", {k: f"{v['ex'] * 100:+.1f}% (n {v['n']})" for k, v in out["by_year_60"].items()})
