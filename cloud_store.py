@@ -163,7 +163,9 @@ def notify(title, body="", tag="", url="/", log=print, items=None, account=None)
     if account:                    # a family account's own phones and Alerts list instead of the owner's
         msg["acct"] = account
     if items:
-        msg["items"] = [{k: str(v)[:500] for k, v in it.items() if v} for it in items[:20]]
+        # xs: several outside links for one item ([{"l": label, "x": link}], e.g. each post before one trade)
+        msg["items"] = [{k: ([{"l": str(z.get("l", ""))[:60], "x": str(z.get("x", ""))[:500]} for z in v[:6] if z.get("x")]
+                             if k == "xs" else str(v)[:500]) for k, v in it.items() if v} for it in items[:20]]
     return put(key, json.dumps(msg), log=lambda m: log(m.replace(key, "a phone alert")))
 
 

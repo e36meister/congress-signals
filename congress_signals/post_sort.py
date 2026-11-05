@@ -14,7 +14,7 @@ company, which reads tone better). Setting ANTHROPIC_API_KEY and POST_SORTER=hai
 Never raises; a post it can't read gets an empty result."""
 import os, re
 
-SORT_VERSION = 8       # 2: tone toward industries too; 3: 'met with' and 'strong' only when the company is what the sentence is about; 4: alert levels (Oct 19); 5: re-sort after tagger 11 (Nov 3); 6: "urge/calls on" is advocacy, not oversight; per-industry hit wording (Nov 4); 7: industry is the subject (headline or 2+ sentences) (Nov 4); 8: timing hint words need the company, industry or agency within 2 sentences (Nov 4)
+SORT_VERSION = 9       # 2: tone toward industries too; 3: 'met with' and 'strong' only when the company is what the sentence is about; 4: alert levels (Oct 19); 5: re-sort after tagger 11 (Nov 3); 6: "urge/calls on" is advocacy, not oversight; per-industry hit wording (Nov 4); 7: industry is the subject (headline or 2+ sentences) (Nov 4); 8: timing hint words need the company, industry or agency within 2 sentences (Nov 4); 9: which industry words matched (Nov 5)
 
 TYPE_RX = [
     ("meeting", re.compile(r"\b(met\b.{0,30}\bwith|meet(?:ing|s)?\b.{0,30}\bwith|sat down with|sit down with|hosted|"
@@ -197,7 +197,8 @@ def sort_record(r, names=None):
         hit_rx = [rx for k, rx in TYPE_RX if k in HIT_TYPES]
         for s in secs[:4]:
             words = [w for w in (SECTOR_WORDS.get(s) or "").split() if len(w) > 2]
-            x = {"k": "industry", "n": s, "s": _target_tone(text, words, tone) if words else None}
+            x = {"k": "industry", "n": s, "s": _target_tone(text, words, tone) if words else None,
+                 "w": sorted({w for w in words if re.search(r"\b" + re.escape(w) + r"\b", text or "", re.I)})[:8]}
             # Nov 4: oversight or criticism counts against an industry only in a sentence that names it (a release
             # criticizing a foreign government that also mentions "military" isn't against industrials)
             if words and any(rx.search(sn) and any(re.search(r"\b" + re.escape(w) + r"\b", sn, re.I) for w in words)

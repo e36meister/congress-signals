@@ -1058,7 +1058,9 @@ async function taxFile(env, url) {
 async function deliver(env, msg, quiet = false) {
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const items = (Array.isArray(msg.items) ? msg.items : []).slice(0, 20)
-    .map(x => ({ l: String(x.l || "").slice(0, 160), u: String(x.u || "").slice(0, 200), x: x.x ? String(x.x).slice(0, 500) : undefined }))
+    .map(x => ({ l: String(x.l || "").slice(0, 240), u: String(x.u || "").slice(0, 200), x: x.x ? String(x.x).slice(0, 500) : undefined,
+                 xs: Array.isArray(x.xs) ? x.xs.slice(0, 6).filter(z => z && /^https?:\/\//.test(String(z.x || "")))
+                   .map(z => ({ l: String(z.l || "Post").slice(0, 60), x: String(z.x).slice(0, 500) })) : undefined }))
     .filter(x => x.l);
   let url = msg.url && msg.url !== "/" ? msg.url : "";
   if (!url) url = items.length === 1 && items[0].u ? items[0].u : items.length > 1 ? "/#alerts/" + id : "/#alerts/" + id;

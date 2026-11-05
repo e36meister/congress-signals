@@ -82,6 +82,81 @@ SECTOR_WORDS = {
     "Consumer Cyclical": "retail retailers automakers auto autos electric vehicles ev cars",
     "Basic Materials": "steel aluminum mining minerals lithium copper chemicals",
 }
+# Nov 5 (owner, Salazar/PG alert): a sector is too broad to link a post to a company (farm-relief posts were matched to
+# Procter & Gamble because both are "Consumer Defensive"). Each industry word points to the company industries it's
+# about (Yahoo industry names, matched as parts); a word with no entry ("tech", "manufacturing", "energy", "health")
+# is too broad to narrow down and links nothing by itself.
+WORD_INDUSTRIES = {
+    "oil": ["oil & gas"], "crude": ["oil & gas"], "petroleum": ["oil & gas"], "opec": ["oil & gas"], "drilling": ["oil & gas"],
+    "fracking": ["oil & gas"], "gas": ["oil & gas", "utilities - regulated gas"], "pipeline": ["oil & gas midstream", "oil & gas integrated"],
+    "pipelines": ["oil & gas midstream", "oil & gas integrated"], "keystone": ["oil & gas midstream"], "lng": ["oil & gas midstream", "oil & gas integrated"],
+    "refinery": ["refining"], "refineries": ["refining"], "gasoline": ["refining", "oil & gas integrated"],
+    "utility": ["utilities"], "utilities": ["utilities"], "electricity": ["utilities"], "grid": ["utilities"],
+    "ratepayers": ["utilities"], "powerplant": ["utilities"], "nuclear": ["utilities", "uranium"],
+    "drug": ["drug manufacturers", "biotechnology", "pharmaceutical retailers"], "drugs": ["drug manufacturers", "biotechnology", "pharmaceutical retailers"],
+    "pharmaceutical": ["drug manufacturers", "biotechnology"], "pharma": ["drug manufacturers", "biotechnology"],
+    "prescription": ["drug manufacturers", "pharmaceutical retailers", "healthcare plans"], "insulin": ["drug manufacturers"],
+    "vaccine": ["drug manufacturers", "biotechnology"], "vaccines": ["drug manufacturers", "biotechnology"], "biotech": ["biotechnology"],
+    "fda": ["drug manufacturers", "biotechnology", "medical devices", "medical instruments", "diagnostics"],
+    "medicare": ["healthcare plans", "medical care facilities"], "medicaid": ["healthcare plans", "medical care facilities"],
+    "insurers": ["healthcare plans", "insurance"], "hospital": ["medical care facilities"], "hospitals": ["medical care facilities"],
+    "semiconductor": ["semiconductor"], "semiconductors": ["semiconductor"], "chips": ["semiconductor"], "chip": ["semiconductor"],
+    "microchips": ["semiconductor"], "ai": ["semiconductor", "software", "information technology services", "internet content", "computer hardware"],
+    "artificial": ["semiconductor", "software", "information technology services", "internet content", "computer hardware"],
+    "software": ["software"], "cyber": ["software - infrastructure", "information technology services"],
+    "cybersecurity": ["software - infrastructure", "information technology services"], "privacy": ["internet content", "software"],
+    "tiktok": ["internet content", "entertainment"], "broadband": ["telecom services"], "telecom": ["telecom services"],
+    "wireless": ["telecom services", "communication equipment"], "spectrum": ["telecom services"], "5g": ["telecom services", "communication equipment"],
+    "media": ["internet content", "entertainment", "broadcasting", "publishing"], "streaming": ["entertainment"],
+    "bank": ["banks"], "banks": ["banks"], "banking": ["banks"], "fdic": ["banks"], "lending": ["banks", "credit services", "mortgage finance"],
+    "crypto": ["capital markets", "financial data"], "cryptocurrency": ["capital markets", "financial data"], "bitcoin": ["capital markets", "financial data"],
+    "stablecoin": ["capital markets", "financial data", "credit services"], "sec": ["capital markets", "financial data", "asset management"], "mortgage": ["mortgage finance", "banks", "reit - mortgage"],
+    "insurance": ["insurance"], "fintech": ["credit services", "financial data", "software - infrastructure"],
+    "defense": ["aerospace & defense"], "pentagon": ["aerospace & defense"], "military": ["aerospace & defense"], "ndaa": ["aerospace & defense"],
+    "missile": ["aerospace & defense"], "missiles": ["aerospace & defense"], "contractor": ["aerospace & defense"],
+    "contractors": ["aerospace & defense"], "shipbuilding": ["aerospace & defense", "marine"], "aircraft": ["aerospace & defense"],
+    "airline": ["airlines"], "airlines": ["airlines"], "railroad": ["railroads"], "rail": ["railroads"],
+    "infrastructure": ["engineering & construction", "infrastructure operations", "building materials", "farm & heavy construction machinery"],
+    "housing": ["residential construction", "reit - residential", "real estate"], "homebuyers": ["residential construction", "real estate", "mortgage finance"],
+    "rent": ["reit - residential", "real estate services"], "landlords": ["reit - residential", "real estate services"],
+    "food": ["packaged foods", "food distribution", "grocery stores", "farm products", "confectioners"],
+    "grocery": ["grocery stores", "food distribution", "discount stores"], "groceries": ["grocery stores", "food distribution", "discount stores"],
+    "farm": ["farm products", "agricultural inputs", "farm & heavy construction machinery"],
+    "farmers": ["farm products", "agricultural inputs", "farm & heavy construction machinery"],
+    "agriculture": ["farm products", "agricultural inputs", "farm & heavy construction machinery"], "tobacco": ["tobacco"],
+    "retail": ["retail", "department stores", "discount stores"], "retailers": ["retail", "department stores", "discount stores"],
+    "automakers": ["auto manufacturers", "auto parts"], "auto": ["auto manufacturers", "auto parts", "auto & truck dealerships"],
+    "autos": ["auto manufacturers", "auto parts"], "cars": ["auto manufacturers", "auto parts", "auto & truck dealerships"],
+    "ev": ["auto manufacturers", "auto parts"],
+    "steel": ["steel"], "aluminum": ["aluminum"], "mining": ["metals & mining", "gold", "silver", "copper", "coking coal", "uranium"],
+    "minerals": ["metals & mining", "gold", "silver", "copper", "uranium"], "lithium": ["other industrial metals", "specialty chemicals"],
+    "copper": ["copper"], "chemicals": ["chemicals", "agricultural inputs"],
+}
+_IND_META = {}
+
+
+def company_industry(t, data_dir="data"):
+    """The company's industry (Yahoo's name, lower case) from the ticker cache; "" when it isn't known."""
+    if "m" not in _IND_META:
+        try:
+            _IND_META["m"] = json.load(open(os.path.join(data_dir, "cache", "ticker_meta.json")))
+        except Exception:
+            _IND_META["m"] = {}
+    m = _IND_META["m"].get(t) or {}
+    return str(m.get("industry") or "").lower() if isinstance(m, dict) else ""
+
+
+def industry_fits(t, words, data_dir="data"):
+    """True when the post's industry words are about this company's own industry (farm relief is about farm products,
+    not household products). A company whose industry isn't known falls back to the sector match (True) so nothing is
+    lost to a missing field; broad words alone ("tech", "manufacturing") don't fit anything."""
+    ci = company_industry(t, data_dir)
+    if not ci:
+        return True
+    parts = {p for w in (words or []) for p in WORD_INDUSTRIES.get(str(w).lower(), [])}
+    return any(p in ci for p in parts)
+
+
 COMMON_NAMES = set("frontline compass alamo allot deluxe plexus prudential apple target visa meta intel oracle amazon delta southern general block square ford gap ball crown "
                    "united american progressive alliance dominion carrier fortune shell select global national first "
                    "equity public service health capital energy power river valley summit pioneer frontier liberty "
@@ -1851,6 +1926,7 @@ def build_index(cfg, tg=None, sort_until=None, hard_until=None):
                             "ins_on": srt.get("ins_on") or [], "insw": srt.get("insw") or "",
                             "hit": [x["n"] for x in srt.get("tg", []) if x["k"] == "industry" and x.get("hit")],
                             "cen": [x["n"] for x in srt.get("tg", []) if x["k"] == "industry" and x.get("cen")],
+                            "iw": {x["n"]: x.get("w") or [] for x in srt.get("tg", []) if x["k"] == "industry"},
                             "lob": _lobbyist_only(pp, text, names),
                             "rp": bool(rp),
                             "st": {(x.get("t") if x["k"] == "co" else x.get("n")): x.get("s") for x in srt.get("tg", [])
@@ -1985,7 +2061,8 @@ def trade_post_links(trades, idx, before_days=90):
                 found.append((3, p, f"{verb} {r.get('company') or t} {when}" +
                               (f" ({'positive' if tone >= 0.3 else 'negative' if tone <= -0.3 else 'neutral'} tone)" if tone is not None else ""), "co"))
             elif sec and sec in secs and p.get("ins") and (not p.get("ins_on") or sec in p["ins_on"] or t in p["ins_on"]
-                                                         or any(sec in AGENCY_SECTORS.get(a, []) for a in p["ins_on"])):
+                                                         or any(sec in AGENCY_SECTORS.get(a, []) for a in p["ins_on"])) \
+                    and (sec not in (p.get("iw") or {}) or industry_fits(t, p["iw"][sec])):
                 # strong wording anywhere; timing wording ("in the coming weeks") only with this company, its industry
                 # or an agency over it named within 2 sentences (owner, Nov 4)
                 found.append((3, p, f"hinted at something not yet public about {sec.lower()} (\"{p['ins']}\") {when}", "hint"))

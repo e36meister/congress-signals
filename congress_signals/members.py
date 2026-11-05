@@ -257,8 +257,12 @@ def export_members(cfg, scored, px, data, log=print, put=None, photos=None, post
         cids = {c for s in g.get("cids", pd.Series([""])).fillna("") for c in str(s).split(";") if c}
         trades = []
         sig_rows = []
-        for rr in g[sigc + notec].to_dict("records") if sigc or notec else [{}] * len(g):
-            sg = [SIG_LABELS[c[2:]] for c in sigc if pd.notna(rr.get(c)) and float(rr.get(c) or 0) > 0]
+        tys = list(g["tx_type"]) if "tx_type" in g else [""] * len(g)
+        for rr, ty_ in zip(g[sigc + notec].to_dict("records") if sigc or notec else [{}] * len(g), tys):
+            # Nov 5: "sold the whole position" is 0.5 (not known) on every buy and on sales of unknown kind; only a
+            # sale reported as a full sale (1.0) gets the chip
+            sg = [SIG_LABELS[c[2:]] for c in sigc if pd.notna(rr.get(c)) and float(rr.get(c) or 0) > 0
+                  and not (c == "f_full_sale" and (ty_ != "sell" or float(rr.get(c) or 0) < 1))]
             sg += [str(rr.get(c)) for c in notec if rr.get(c)]
             sig_rows.append(sg[:16])
         for i, r in enumerate(g.itertuples()):

@@ -2881,7 +2881,7 @@ function renderAlerts() {
     return `<div class="alw" data-alw="${esc(a.id)}"><div class="alx" aria-hidden="true">Clear</div><div class="al ${Date.parse(a.at) > before ? "unread" : ""} ${isOpen ? "open" : ""}" data-hl="alert:${esc(a.id)}" data-alert="${esc(a.id)}" role="button" tabindex="0">
       <div class="at">${alertTags(a).map(([l, c]) => `<span class="chip ${c}">${esc(l)}</span>`).join("")}${esc(ago(a.at))} · ${esc(fmtET(a.at))}</div>
       <div class="tt">${esc(a.title)}</div>${a.body && !(many && isOpen) ? `<div class="bd">${esc(a.body)}</div>` : ""}
-      ${many && isOpen ? `<ul class="ali">${a.items.map(x => `<li><span>${esc(x.l)}</span>${x.u || x.x ? `<span class="alk">${x.u ? `<button type="button" class="tag" data-go="${esc(x.u)}">${a.kind === "posts" || /^\/#post\//.test(x.u) ? "Open in app" : "Open"}</button>` : ""}${x.x ? `<a class="tag go" href="${esc(x.x)}" target="_blank" rel="noopener">Go to post</a>` : ""}</span>` : ""}</li>`).join("")}</ul>` :
+      ${many && isOpen ? `<ul class="ali">${a.items.map(x => `<li><span>${esc(x.l)}</span>${x.u || x.x || (x.xs || []).length ? `<span class="alk">${x.u ? `<button type="button" class="tag" data-go="${esc(x.u)}">${/^\/#t\//.test(x.u) ? "Open " + esc(x.u.slice(4)) : a.kind === "posts" || /^\/#post\//.test(x.u) ? "Open in app" : "Open"}</button>` : ""}${x.x ? `<a class="tag go" href="${esc(x.x)}" target="_blank" rel="noopener">Go to post</a>` : ""}${(x.xs || []).map(z => `<a class="tag go" href="${esc(z.x)}" target="_blank" rel="noopener">${esc(z.l)}</a>`).join("")}</span>` : ""}</li>`).join("")}</ul>` :
         many ? `<div class="foot">${a.items.length} items · tap to see them</div>` : ""}
     </div></div>`;
   };

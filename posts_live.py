@@ -142,6 +142,8 @@ for src, r in fresh:
     lvl, why = PS.significance(r, srt, traded_by, crowd_n, member_sectors)
     items.append({"id": cloud_store.post_id(r[4]), "sv": PS.SORT_VERSION, "d": str(r[0])[:10], "b": r[1], "who": names.get(r[1], r[1]), "src": r[2], "text": (r[3] or "")[:300],
                   "url": r[4], "t": r[5] or [], "ty": srt.get("ty") or [], "ins": srt.get("ins") or "",
+                  "ins_on": srt.get("ins_on") or [], "iw": {x["n"]: x.get("w") or [] for x in srt.get("tg", []) if x["k"] == "industry"},
+                  "lob": S._lobbyist_only(r[6], r[3], getattr(tg, "names", None)),
                   "meet": srt.get("meet") or [], "tg": [[x.get("n") if x["k"] in ("person", "lobbyist", "agency", "industry") else x.get("t"), x["k"], x.get("s")]
                          for x in srt.get("tg", [])][:8],
                   "lvl": lvl, "why": why, "at": dt.datetime.utcnow().isoformat(timespec="seconds")})
@@ -162,7 +164,7 @@ def strong(x):
     return bool(named or x.get("ins") or x.get("meet"))
 for x in items + hidden:
     if strong(x):
-        watch["posts"].append({k: x.get(k) for k in ("id", "d", "b", "who", "url", "t", "ins", "meet", "ty", "text")} |
+        watch["posts"].append({k: x.get(k) for k in ("id", "d", "b", "who", "url", "t", "ins", "ins_on", "iw", "lob", "meet", "ty", "text")} |
                               {"secs": [g[0] for g in x.get("tg") or [] if g[1] == "industry"]})
 cut60 = (today - dt.timedelta(days=60)).isoformat()
 watch["posts"] = [w for w in {w["id"]: w for w in watch["posts"]}.values() if w.get("d", "") >= cut60][-3000:]
@@ -181,18 +183,36 @@ def after_days(n):
     return "the same day" if n == 0 else "1 day" if n == 1 else f"{n} days"
 
 
+def money_range(lo, hi):
+    def k(v):
+        v = float(v)
+        return f"${v / 1e6:g}M" if v >= 1e6 else f"${round(v / 1e3):g}K"
+    try:
+        return f"{k(lo)}-{k(hi)}" if pd.notna(lo) and pd.notna(hi) and float(hi) > 0 else ""
+    except Exception:
+        return ""
+
+
 ptt = []
 if sc_all is not None and len(sc_all):
     st_ = sc_all[pd.to_datetime(sc_all["trade_date"], errors="coerce") >= pd.Timestamp(cut60)]
-    tr_rows = list(zip(st_["bioguide"], st_["member"], st_["ticker"], st_.get("sector", pd.Series(index=st_.index, dtype=object)),
-                       pd.to_datetime(st_["trade_date"], errors="coerce"), st_["tx_type"]))
+    _nan = pd.Series(index=st_.index, dtype=object)
+    tr_rows = list(zip(st_["bioguide"], st_["member"], st_["ticker"], st_.get("sector", _nan),
+                       pd.to_datetime(st_["trade_date"], errors="coerce"), st_["tx_type"], st_.get("amt_lo", _nan), st_.get("amt_hi", _nan)))
     for w in watch["posts"]:
         d0 = pd.Timestamp(w["d"])
-        for b, m, t, sec, td, ty in tr_rows:
+        for b, m, t, sec, td, ty, alo, ahi in tr_rows:
             if not isinstance(b, str) or b == w["b"] or pd.isna(td) or not (d0 <= td <= d0 + pd.Timedelta(days=30)):
                 continue
-            by_co = t in (w.get("t") or [])
-            by_sec = bool(w.get("ins")) and isinstance(sec, str) and sec in (w.get("secs") or [])
+            # Nov 5 (owner, Salazar/PG): a company "named" only through a lobbyist's name doesn't count; an industry hint
+            # counts only when the hint is near that industry (or an agency over it) and the post's industry words are
+            # about this company's own industry (farm-relief posts aren't about Procter & Gamble). Posts saved before
+            # these fields existed don't match on industry.
+            by_co = t in (w.get("t") or []) and t not in (w.get("lob") or {})
+            by_sec = (bool(w.get("ins")) and isinstance(sec, str) and sec in (w.get("secs") or []) and "iw" in w
+                      and (not w.get("ins_on") or sec in w["ins_on"] or t in w["ins_on"]
+                           or any(sec in S.AGENCY_SECTORS.get(a, []) for a in w["ins_on"]))
+                      and S.industry_fits(t, (w.get("iw") or {}).get(sec) or []))
             if not (by_co or by_sec):
                 continue
             key = f"{w['id']}|{b}|{t}|{td:%Y-%m-%d}"
@@ -205,14 +225,33 @@ if sc_all is not None and len(sc_all):
                 a_, p_ = str(m).split(",")[0], w["who"]
             ptt.append({"w": w, "line": f"{a_} {'bought' if ty == 'buy' else 'sold'} {t} "
                                          + (f"{after_days(days)} after {p_}'s post" if days else f"the same day as {p_}'s post")
-                                         + ("" if by_co else f" hinting at {sec.lower()}")})
+                                         + ("" if by_co else f" hinting at {sec.lower()}"),
+                        "tk": f"{b}|{t}|{td:%Y-%m-%d}|{ty}", "a": a_, "p": p_, "t": t, "ty": ty, "td": td, "days": days,
+                        "co": by_co, "sec": sec, "amt": money_range(alo, ahi)})
+# one line per trade for the alert, however many posts came before it (Nov 5: five posts before one $1K-$15K PG buy
+# read as five separate alerts)
+ptt_groups = {}
+for h in ptt:
+    ptt_groups.setdefault(h["tk"], []).append(h)
+def group_line(hs):
+    h0 = hs[0]
+    act = f"{h0['a']} {'bought' if h0['ty'] == 'buy' else 'sold'} {h0['t']}" + (f" ({h0['amt']})" if h0["amt"] else "")
+    ds = sorted({h["days"] for h in hs})
+    when = (after_days(ds[0]) if ds[0] == ds[-1] else f"{ds[0]}-{ds[-1]} days") + " after"
+    if ds == [0]:
+        when = "the same day as"
+    who = [h["p"] for h in hs]
+    who_s = who[0] if len(who) == 1 else ", ".join(who[:-1]) + " and " + who[-1]
+    kind = "" if all(h["co"] for h in hs) else (f" about {hs[0]['sec'].lower()}" if not any(h["co"] for h in hs) else "")
+    return f"{act} on {h0['td']:%b %-d}, {when} {'posts' if len(hs) > 1 else 'a post'} by {who_s}{kind}"
 watch["hit"] = sorted(seen_hits)[-5000:]
 cloud_store.put("posts/watch.json", json.dumps(watch, default=str), E.log)
 for h in ptt:          # the post goes in the feed (even a non-trader's), with what happened after it
     w = h["w"]
     items.append({"id": w["id"], "sv": PS.SORT_VERSION, "d": w["d"], "b": w["b"], "who": w["who"], "src": "Post, then trade",
                   "text": w.get("text") or "", "url": w["url"], "t": w.get("t") or [], "ty": w.get("ty") or [], "ins": w.get("ins") or "",
-                  "meet": w.get("meet") or [], "tg": [], "lvl": 3, "why": [h["line"]], "at": dt.datetime.utcnow().isoformat(timespec="seconds")})
+                  "meet": w.get("meet") or [], "tg": [], "lvl": 3, "why": [h["line"]], "tk": h["tk"],
+                  "at": dt.datetime.utcnow().isoformat(timespec="seconds")})
 if ptt:
     E.log(f"Live posts: {len(ptt)} trade(s) by other members after a watched post")
 E.log(f"Live posts: {len(hidden)} new post(s) from members with no disclosed trades kept out of the feed; "
@@ -285,16 +324,26 @@ top = sorted([x for x in items if x["lvl"] >= 3], key=lambda x: -x["lvl"])     #
 if top and not first:
     # Nov 5 (owner): one short line per post (a "post, then trade" line already names both people; others start with
     # the poster's last name), one per row in the notification, and in the app each line sits with its own links
-    def aline(x):
-        return x["why"][0] if x.get("src") == "Post, then trade" else f"{short_name(x['who'])}: {x['why'][0]}"
-    lines = [aline(x) for x in top]
-    n_pt = sum(1 for x in top if x.get("src") == "Post, then trade")
-    title = ((f"{len(top)} trades after members' posts" if n_pt == len(top) else f"{len(top)} notable posts") if len(top) > 1
-             else ("Trade after a member's post" if n_pt else f"Post: {top[0]['who']}"))[:120]
-    body = "\n".join(lines[:3]) + (f"\n+{len(top) - 3} more" if len(top) > 3 else "")
-    links = [{"l": aline(x), "u": f"/#post/{x['id']}", "x": x.get("url")} for x in top[:20]]
-    # one post: tapping opens it in the app; several: the alert opens in the Alerts tab with each post listed
-    cloud_store.notify(title, body[:600], "posts", links[0]["u"] if len(top) == 1 else "", E.log, items=links)
+    entries, done_tk = [], set()
+    for x in top:
+        tk_ = x.get("tk")
+        if x.get("src") == "Post, then trade" and tk_ in ptt_groups:
+            if tk_ in done_tk:
+                continue
+            done_tk.add(tk_)
+            hs = ptt_groups[tk_]
+            entries.append({"l": group_line(hs), "u": f"/#t/{hs[0]['t']}", "pt": True,
+                            "xs": [{"l": f"{h['p']}'s post", "x": h["w"]["url"]} for h in hs][:6]})
+        else:
+            entries.append({"l": f"{short_name(x['who'])}: {x['why'][0]}", "u": f"/#post/{x['id']}", "x": x.get("url")})
+    n_pt = sum(1 for e in entries if e.get("pt"))
+    n = len(entries)
+    title = ((f"{n} trades after members' posts" if n_pt == n else f"{n} notable posts") if n > 1
+             else ("Trade after members' posts" if n_pt else f"Post: {top[0]['who']}"))[:120]
+    body = "\n".join(e["l"] for e in entries[:3]) + (f"\n+{n - 3} more" if n > 3 else "")
+    links = [{k: v for k, v in e.items() if k != "pt"} for e in entries[:20]]
+    # one entry: tapping opens it in the app; several: the alert opens in the Alerts tab with each one listed
+    cloud_store.notify(title, body[:600], "posts", links[0]["u"] if n == 1 else "", E.log, items=links)
     E.log(f"Live posts: alert sent for {len(top)} notable post(s)")
 elif first:
     E.log("Live posts: first run; learned what's already out there, no alert")
