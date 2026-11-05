@@ -126,6 +126,59 @@ def _spy_now(api):
         return None
 
 
+def _last_trade(api, sym):
+    try:
+        r = requests.get(f"https://data.alpaca.markets/v2/stocks/{sym}/trades/latest", headers=api.h,
+                         params={"feed": "iex"}, timeout=30)
+        return float(r.json()["trade"]["p"])
+    except Exception:
+        return None
+
+
+# Owner, Nov 5 2026: live test, no extra trades. From the Nov 5 close, track an account that keeps 70% in an S&P 100
+# fund (the biggest companies) and 30% in this paper account (the picks), rebalanced to 70/30 at the first close of
+# each month, next to the paper account alone and the S&P from the same day. Review: next year (date to be set).
+# Rebuilt from the start every run (adjusted prices, so the fund's dividends count), so nothing drifts.
+MIX_START, MIX_FUND, MIX_W = "2026-11-05", "OEF", 0.7
+
+
+def sp100_mix(api, pts, flows, spy, today):
+    days = [(d, e) for d, e in pts if d >= MIX_START]
+    if not days or days[0][0] != MIX_START:
+        raise ValueError(f"no account value on file for the start day {MIX_START}")
+    fund = _closes(api, MIX_FUND, (dt.date.fromisoformat(MIX_START) - dt.timedelta(days=7)).isoformat(), "all")
+    if today not in fund:                    # today's daily bar arrives later in the evening
+        p = _last_trade(api, MIX_FUND)
+        if p:
+            fund[today] = p
+    oef_part, acct_part = MIX_W, 1 - MIX_W
+    acct_cum = 1.0
+    f0, s0 = _on_or_before(fund, MIX_START), _on_or_before(spy, MIX_START)
+    if not (f0 and s0):
+        raise ValueError(f"no {MIX_FUND} or SPY price for {MIX_START}")
+    out = {"dates": [MIX_START], "mix": [0.0], "account": [0.0], "spy": [0.0]}
+    (prev_d, prev_e), prev_f = days[0], f0
+    for d, e in days[1:]:
+        f, s = _on_or_before(fund, d), _on_or_before(spy, d)
+        if not (f and s and prev_e):
+            raise ValueError(f"missing price for {d}")
+        ra = (e - flows.get(d, 0.0)) / prev_e - 1          # the account's own return that day, new money left out
+        oef_part *= f / prev_f
+        acct_part *= 1 + ra
+        acct_cum *= 1 + ra
+        nav = oef_part + acct_part
+        if d[:7] != prev_d[:7]:                             # first close of a new month: back to 70/30
+            oef_part, acct_part = MIX_W * nav, (1 - MIX_W) * nav
+        out["dates"].append(d)
+        out["mix"].append(round((nav - 1) * 100, 3))
+        out["account"].append(round((acct_cum - 1) * 100, 3))
+        out["spy"].append(round((s / s0 - 1) * 100, 3))
+        prev_d, prev_e, prev_f = d, e, f
+    return {"start": MIX_START, "fund": MIX_FUND, "fund_pct": round(MIX_W * 100), "review": "next year (date to be set)",
+            "series": out, "mix": out["mix"][-1], "account": out["account"][-1], "spy": out["spy"][-1],
+            "trading_days": len(out["dates"]) - 1}
+
+
 def _expected(horizons, group, days):
     """What the backtest's average trade in this group did vs the S&P after about `days` trading days."""
     rows = [h for h in horizons or [] if h.get("Group") == group and h.get("Holding period") in HORIZON_DAYS]
@@ -201,6 +254,7 @@ def main():
               "today's numbers include the S&P parking as it actually happened")
     pts = [(d, e + adj.get(d, 0.0)) for d, e in pts]
     shadow_now = None
+    mix, mix_err = None, None
     if pts:
         e0 = pts[0][1]
         before = [k for k in spy if k <= pts[0][0]]           # the last S&P close on or before the start (weekends)
@@ -255,6 +309,12 @@ def main():
             series["account"].append(round((e / put_in - 1) * 100, 3))
             series["spy"].append(round((shadow / put_in - 1) * 100, 3) if shadow else None)
         shadow_now = units * last_s if last_s else None
+        if today >= MIX_START:
+            try:
+                mix = sp100_mix(api, pts, flows, spy, today)
+            except Exception as e:
+                mix_err = f"{type(e).__name__}: {str(e)[:120]}"
+                E.log(f"Close report: the S&P 100 + picks live test FAILED ({mix_err}); the next close tries again")
 
     # each strategy's open positions: return since bought vs the S&P over the same days, vs the backtest
     snap = broker.sync({"HOLD_DAYS": 60, "_hold_policy": (data.get("adaptive") or {}).get("policy")},
@@ -301,7 +361,9 @@ def main():
               "park_adjust": round(adj.get(today, 0.0), 2) if adj else 0.0, "park_adjust_error": adj_err,
               "counted_equity": pts[-1][1] if pts else None, "shadow_spy": shadow_now,
               "vs_spy_dollars": (pts[-1][1] - shadow_now) if (pts and shadow_now) else None,
-              "put_in": (pts[-1][1] / (1 + series["account"][-1] / 100)) if pts and series["account"] else None}
+              "put_in": (pts[-1][1] / (1 + series["account"][-1] / 100)) if pts and series["account"] else None,
+              "sp100_mix": mix if mix is not None else (data.get("close_report") or {}).get("sp100_mix"),
+              "sp100_mix_error": mix_err}
     data["close_report"] = report
     data["portfolio"] = {**snap, "limits": (data.get("portfolio") or {}).get("limits") or snap["limits"]}
     hist_list = [h for h in data.get("close_history", []) if h.get("date") != today]
@@ -431,6 +493,20 @@ def build_email(rep, mode, snap, data, chart=False):
            f"<b>Bought today:</b> " + (", ".join(bought) or "none"),
            f"<b>On the dashboard:</b> {n_buy} buy candidate{'s' if n_buy != 1 else ''}" + (f", {n_worth} worth a look" if n_worth else "")]
 
+    # live test (owner, Nov 5): 70% S&P 100 fund + 30% this account, vs the account alone and the S&P
+    mx = rep.get("sp100_mix")
+    live_test = ""
+    if mx and mx.get("trading_days"):
+        ms = dt.date.fromisoformat(mx["start"])
+        live_test = (f"<table cellspacing='0' cellpadding='0' style='font-size:14px'>"
+                     + "".join(f"<tr><td style='padding:3px 12px 3px 0'>{lab}</td><td align='right' style='font-family:Menlo,Consolas,monospace;color:{col(v)}'>{pct(v)}</td></tr>"
+                               for lab, v in ((f"{mx['fund_pct']}% S&amp;P 100 fund + {100 - mx['fund_pct']}% picks", mx["mix"]),
+                                              ("Paper account alone", mx["account"]), ("S&amp;P 500", mx["spy"])))
+                     + f"</table><div style='font-size:12px;color:{grey};margin-top:4px'>Since {ms:%b} {ms.day}, {ms.year} · "
+                     f"{mx['trading_days']} trading day{'s' if mx['trading_days'] != 1 else ''} · tracked, not traded · review {mx['review']}</div>")
+    elif rep.get("sp100_mix_error"):
+        live_test = f"<div style='color:{red}'>The live test couldn't be updated today ({rep['sp100_mix_error']}).</div>"
+
     from congress_signals import mail
     chart_link, has_chart = mail.app_url("/#port"), chart
     h = lambda t: f"<div style='font:600 12px Arial;letter-spacing:.8px;color:{grey};text-transform:uppercase;margin:22px 0 6px'>{t}</div>"
@@ -445,6 +521,7 @@ def build_email(rep, mode, snap, data, chart=False):
             + f"<p style='margin:10px 2px 0'>{luck}</p>"
             f"{h('Today’s biggest moves')}<table cellspacing='0' cellpadding='0' style='font-size:14px'>{movers}</table>"
             f"{h('Each strategy') + strat if strat else ''}"
+            f"{h('Live test: S&amp;P 100 fund + picks') + live_test if live_test else ''}"
             f"{h('Coming up')}" + "".join(f"<div style='margin:3px 0'>{x}</div>" for x in nxt) +
             f"<p style='font-size:12px;color:{grey};margin:16px 2px 0'>“Since {start_txt}” is the whole account, including "
             f"your own buys and Buy/Sell-button trades, not only the tool’s. The tool’s buys usually fill in the evening or "

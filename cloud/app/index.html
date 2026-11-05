@@ -600,7 +600,7 @@ nav.tabs button{overflow:hidden}
 
 <script>
 (() => {
-const APP_BUILD = '0.1.dev-f296831', APP_BUILT = '2026-11-05T17:56+00:00', APP_SHA = 'f296831';
+const APP_BUILD = '0.1.dev-a34f034', APP_BUILT = '2026-11-05T18:36+00:00', APP_SHA = 'a34f034';
 // ---------- family accounts (owner, Nov 2 2026) ----------
 // A family account sees Today (Buy candidates only), Members, Alerts, its own Account and a short More menu (company
 // search, notifications, settings, questions, bug report). The server only answers those (cloud/accounts.js); this
@@ -2763,6 +2763,21 @@ function heldCell(x, L) {
   const when = addTradingDays(x.bought, s.days), due = (x.held ?? 0) >= s.days;
   return `${x.held ?? 0} of ${s.days} days<div class="foot ${due ? "neg" : ""}">${due ? "Past the suggested hold" : "Suggested sell ~" + esc(fmtDate(when))} · bought before Oct 30, the tool doesn't sell it</div>`;
 }
+// live test (owner, Nov 5 2026): 70% S&P 100 fund + 30% this account, tracked from the close report, not traded
+function mixSection(c) {
+  const m = c.sp100_mix;
+  if (!m && !c.sp100_mix_error) return "";
+  if (!m) return `<div class="empty">Live test: S&amp;P 100 fund + picks couldn't be updated today (${esc(c.sp100_mix_error)}).</div>`;
+  const pc = v => `<span class="${cls(v)}">${pnum(v, 2)}</span>`;
+  return `<h3 style="margin:18px 0 6px">Live test: ${m.fund_pct}% S&amp;P 100 fund + ${100 - m.fund_pct}% picks</h3>
+  <div class="tiles">
+    <div class="tile"><span class="v ${cls(m.mix - m.spy)}">${pnum(m.mix - m.spy, 2)}</span><span class="l">Mix vs the S&amp;P</span><span class="c">Mix ${pnum(m.mix, 2)} · S&amp;P ${pnum(m.spy, 2)}</span></div>
+    <div class="tile"><span class="v ${cls(m.account - m.spy)}">${pnum(m.account - m.spy, 2)}</span><span class="l">Account alone vs the S&amp;P</span><span class="c">Account ${pnum(m.account, 2)}</span></div>
+    <div class="tile"><span class="v">${m.trading_days}</span><span class="l">Trading days</span><span class="c">since ${esc(fmtDate(m.start))}</span></div>
+  </div>
+  ${m.series?.dates?.length > 1 ? `<div class="chart" id="mixchart"></div>` : ""}
+  <p class="foot">Tracked, not traded: an account keeping ${m.fund_pct}% in an S&amp;P 100 fund (${esc(m.fund)}, the biggest companies) and ${100 - m.fund_pct}% in this paper account, rebalanced to ${m.fund_pct}/${100 - m.fund_pct} at the first close of each month, from the same day as the S&amp;P. In the backtest this mix was ahead of the S&amp;P in every period, but not by enough to be sure. Review ${esc(m.review)}.</p>`;
+}
 function closeSection(d) {
   const c = d.close_report;
   if (!c) return `<section class="panel"><div class="ph"><h2>Paper account vs the backtest</h2></div><div class="empty">The first market-close report arrives after today's close (about 4:15 PM ET).</div></section>`;
@@ -2779,6 +2794,7 @@ function closeSection(d) {
   ${c.sleeves.map(x => `<tr><td>${esc(x.name)}</td><td class="n">${x.positions}</td><td class="n">${x.avg_days}</td><td class="n ${cls(x.ret)}">${pct(x.ret)}</td><td class="n">${pct(x.spy)}</td><td class="n ${cls(x.diff)}">${pct(x.diff)}</td><td class="n">${expCell(x.expected)}</td></tr>`).join("")}
   </tbody></table></div>` : ""}
   <p class="foot">"Backtest expects" is how the backtest's average pick in that group did against the S&amp;P after about the same number of days. Over the first few weeks, day-to-day swings swamp any edge, so the comparison means more with time.</p>
+  ${mixSection(c)}
   ${daysSection(d)}
   </section>`;
 }
@@ -3251,7 +3267,7 @@ function renderWorks(d) {
 }
 
 // ---------- chart ----------
-const SERIES_VAR = { "Never-seen-years picks": "--s1", "Regular backtest, same years": "--s4", "Paper account": "--s1", "Small-company picks": "--s1", "Small-company index (IWM)": "--s3", "Long picks": "--s1", "Short picks": "--s2", "Copy every purchase": "--s4", "Defense fund (ITA)": "--s3", "S&P 500 (SPY)": "--spy" };
+const SERIES_VAR = { "S&P 100 fund + picks": "--s4", "Never-seen-years picks": "--s1", "Regular backtest, same years": "--s4", "Paper account": "--s1", "Small-company picks": "--s1", "Small-company index (IWM)": "--s3", "Long picks": "--s1", "Short picks": "--s2", "Copy every purchase": "--s4", "Defense fund (ITA)": "--s3", "S&P 500 (SPY)": "--spy" };
 function drawChart(b = state.data?.backtest, sel = "#chart") {
   const host = $(sel);
   if (!host || !b?.curve?.dates?.length) { if (host) host.innerHTML = `<div class="empty">No growth curve in this data.</div>`; return; }
@@ -3314,6 +3330,7 @@ function bind() {
   if (state.tab === "small" && state.data?.small) drawChart(state.data.small, "#schart");
   if (state.tab === "real" && state.data?.walk_forward) drawChart(state.data.walk_forward, "#wchart");
   if (state.tab === "port" && state.data?.close_report?.series?.dates?.length) drawChart(portCurve(), "#pchart");
+  if (state.tab === "port" && state.data?.close_report?.sp100_mix?.series?.dates?.length > 1) drawChart(mixCurve(), "#mixchart");
   if (state.tab === "me" && state.data?.close_report?.series?.dates?.length) drawChart(portCurve(), "#mechart");
   if (state.tab === "record") {
     drawChart();
@@ -3323,8 +3340,9 @@ function bind() {
   }
 }
 const LUCK_TE = 0.15; // how far the account typically drifts from the S&P in a year by chance alone (from the backtest)
+function mixCurve() { const m = state.data.close_report.sp100_mix.series; return { curve: { dates: m.dates, series: { "S&P 100 fund + picks": m.mix, "Paper account": m.account, "S&P 500 (SPY)": m.spy } } }; }
 function portCurve() { const c = state.data.close_report.series; return { curve: { dates: c.dates, series: { "Paper account": c.account, "S&P 500 (SPY)": c.spy } }, band: { around: "S&P 500 (SPY)", te: state.data.close_report.luck_te ?? LUCK_TE, z: 1.96 } }; }
-function redraw() { if (state.tab === "me" && state.data?.close_report?.series?.dates?.length) drawChart(portCurve(), "#mechart"); if (state.tab === "port" && state.data?.close_report?.series?.dates?.length) drawChart(portCurve(), "#pchart"); if (state.tab === "record") drawChart(); if (state.tab === "defense" && state.data?.defense) drawChart(state.data.defense, "#dchart"); if (state.tab === "small" && state.data?.small) drawChart(state.data.small, "#schart"); if (state.tab === "real" && state.data?.walk_forward) drawChart(state.data.walk_forward, "#wchart"); }
+function redraw() { if (state.tab === "me" && state.data?.close_report?.series?.dates?.length) drawChart(portCurve(), "#mechart"); if (state.tab === "port" && state.data?.close_report?.series?.dates?.length) drawChart(portCurve(), "#pchart"); if (state.tab === "port" && state.data?.close_report?.sp100_mix?.series?.dates?.length > 1) drawChart(mixCurve(), "#mixchart"); if (state.tab === "record") drawChart(); if (state.tab === "defense" && state.data?.defense) drawChart(state.data.defense, "#dchart"); if (state.tab === "small" && state.data?.small) drawChart(state.data.small, "#schart"); if (state.tab === "real" && state.data?.walk_forward) drawChart(state.data.walk_forward, "#wchart"); }
 let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => redraw(), 150); });
 matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => redraw());
 new MutationObserver(() => redraw()).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
