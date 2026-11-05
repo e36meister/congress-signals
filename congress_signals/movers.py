@@ -29,6 +29,27 @@ ITEMS = {"1.01": "material agreement", "1.02": "agreement ended", "1.03": "bankr
          "7.01": "investor disclosure", "8.01": "other event"}
 PARK = {"SPY", "VOO", "IVV", "SGOV", "BIL", "SHV"}
 UA_WEB = {"User-Agent": "Mozilla/5.0 (compatible; CapitolCapital research)"}
+
+# Oct 30, Nov 3 and Nov 4: Google News answered every request of one run with 503 or 429 (up to 22 tickers read 4 at
+# a time), and the next run worked. Its reads now go 2 at a time and a 429/5xx answer is retried after 3 then 10 s
+# (Retry-After when given, up to 30 s) before it counts as failed.
+import threading
+_GN_GATE = threading.Semaphore(2)
+
+
+def _google_news(url):
+    r = None
+    for wait in (3, 10, None):
+        with _GN_GATE:
+            r = requests.get(url, headers=UA_WEB, timeout=30)
+        if r.status_code != 429 and r.status_code < 500 or wait is None:
+            break
+        try:
+            wait = min(30, max(wait, int(r.headers.get("Retry-After") or 0)))
+        except ValueError:
+            pass
+        time.sleep(wait)
+    return r
 # headlines that explain a move rank first; ownership notices, charts and boilerplate rank last
 WHY_WORDS = re.compile(r"\b(why|falls?|fell|drops?|dropped|slides?|slid|sinks?|sank|slumps?|plunges?|tumbles?|tanks?|"
                        r"jumps?|jumped|rises?|rose|surges?|soars?|rall(?:y|ies)|climbs?|gains?|sell-?off|selloff|"
@@ -135,8 +156,7 @@ def news(api_h, t, co, log, days=3, direction=0):
         name = re.sub(r",? (inc|corp|corporation|plc|ltd|co|company|holdings?|group)\.?$", "", (co or "").strip(), flags=re.I)
         q = quote(f'("{name}" OR {t}) stock' if name else f"{t} stock")
         try:
-            r = requests.get(f"https://news.google.com/rss/search?q={q}+when:{days}d&hl=en-US&gl=US&ceid=US:en",
-                             headers=UA_WEB, timeout=30)
+            r = _google_news(f"https://news.google.com/rss/search?q={q}+when:{days}d&hl=en-US&gl=US&ceid=US:en")
             r.raise_for_status()
             for m in re.finditer(r"<item>(.*?)</item>", r.text, re.S):
                 it = m.group(1)
