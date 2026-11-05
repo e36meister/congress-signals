@@ -170,8 +170,11 @@ def send_weekly_summary():
     # weekly check
     a = d.get("adaptive") or {}
     ch_ = [h for h in a.get("history") or [] if str(h.get("date", "")) >= since.isoformat()]
+    sg_ = [x for x in a.get("suggestions") or [] if x.get("status") == "pending" and str(x.get("date", "")) >= since.isoformat()]
     parts.append("<h3>Weekly check</h3><p>" + ("<br>".join(f"{esc(h['change'])}: {esc(h.get('from'))} → {esc(h.get('to'))}" for h in ch_)
-                                              if ch_ else "No settings changed.") + "</p>")
+                                              if ch_ else "No settings changed.")
+                 + ("<br><b>Suggested, waiting for your OK:</b><br>" + "<br>".join(
+                     f"{esc(x['setting'])}: {esc(x.get('from'))} → {esc(x.get('to'))}" for x in sg_) if sg_ else "") + "</p>")
     # backtest headline
     def vs(block, name):
         for r in (block or {}).get("perf") or []:
@@ -298,6 +301,71 @@ def bill_hold_lookup(scored):
 
 
 LIVE_TRADED = False
+
+
+# Owner, Nov 5 2026: the weekly check (and the real-trades stop check) only SUGGEST changes. Whatever they would
+# switch is recorded as a suggestion (state + Cloudflare strategy/suggestions.json, read by the weekly quality
+# report) and the setting is put back. Changes the owner chose (policy_overrides.json, "by": "owner") stand.
+# Approve a suggestion by adding it to policy_overrides.json; the next run applies it and starts a new version.
+SUGGEST_ONLY = True
+
+
+def _suggest_start():
+    import copy
+    a = E.load_adaptive(cfg)
+    return {"policy": copy.deepcopy(a["policy"]), "use_tuned": a.get("use_tuned"), "hist": len(a.get("history") or [])}
+
+
+def _suggest_end(snap, source):
+    """Put back whatever changed since _suggest_start (except the owner's own choices) and record it as suggestions."""
+    if not SUGGEST_ONLY or snap is None:
+        return []
+    a = E.load_adaptive(cfg)
+    new_hist = (a.get("history") or [])[snap["hist"]:]
+    owner_keys = {h.get("key") for h in new_hist if h.get("by") == "owner"}
+    pol, old = a["policy"], snap["policy"]
+    changed = [k for k in sorted(set(pol) | set(old)) if pol.get(k) != old.get(k) and k not in owner_keys]
+    tuned_changed = bool(a.get("use_tuned")) != bool(snap["use_tuned"])
+    if not changed and not tuned_changed:
+        return []
+    today = dt.date.today().isoformat()
+    sugg, used = [], set()
+
+    def _match(k):           # the history line that explains this change (by key, by wording, else the next unused)
+        cands = [(i, x) for i, x in enumerate(new_hist) if x.get("by") != "owner" and i not in used]
+        pick = next(((i, x) for i, x in reversed(cands) if x.get("key") == k), None)
+        if pick is None and k == "use_tuned":
+            pick = next(((i, x) for i, x in reversed(cands) if "Tuned" in str(x.get("change"))), None)
+        if pick is None and k != "use_tuned":
+            pick = next(((i, x) for i, x in cands if not x.get("key") and "Tuned" not in str(x.get("change"))), None)
+        if pick is None:
+            return {}
+        used.add(pick[0])
+        return pick[1]
+    for k in changed + (["use_tuned"] if tuned_changed else []):
+        h = _match(k)
+        frm, to = (snap["use_tuned"], a.get("use_tuned")) if k == "use_tuned" else (old.get(k), pol.get(k))
+        sugg.append({"date": today, "key": k, "setting": h.get("change") or k, "from": frm, "to": to,
+                     "gain_per_year": h.get("gain_per_year"), "sureness": h.get("sureness"), "note": h.get("note"),
+                     "source": source, "status": "pending"})
+        if k == "use_tuned":
+            a["use_tuned"] = snap["use_tuned"]
+        elif k in old:
+            pol[k] = old[k]
+        else:
+            pol.pop(k, None)
+    # the history keeps only what actually changed (owner choices); the rest moves to suggestions
+    a["history"] = (a.get("history") or [])[:snap["hist"]] + [h for h in new_hist if h.get("by") == "owner"]
+    prev = [x for x in a.get("suggestions") or [] if x.get("key") not in {y["key"] for y in sugg}]
+    a["suggestions"] = (prev + sugg)[-50:]
+    E.save_adaptive(cfg, a)
+    E.log(f"Suggestions ({source}): {len(sugg)} change(s) suggested, not applied: "
+          + "; ".join(f"{x['key']}: {x['from']} -> {x['to']}" for x in sugg)[:400])
+    try:
+        cloud_store.put("strategy/suggestions.json", json.dumps(a["suggestions"], indent=1, default=str), E.log)
+    except Exception as e:
+        E.log(f"Suggestions: FAILED to save to Cloudflare ({type(e).__name__})")
+    return sugg
 
 
 def trade_now(scored, px):
@@ -513,6 +581,11 @@ def main():
             cloud_store.put("reports/research_buys.csv.gz", rp, E.log, content_type="application/gzip")
     except Exception as e:
         E.log(f"Research export skipped ({type(e).__name__}: {e})")
+    try:
+        _snap = _suggest_start()
+    except Exception as e:
+        _snap = None
+        E.log(f"Suggestions: FAILED to note the settings before the weekly check ({type(e).__name__}); its changes apply as before")
     tuned_path = os.path.join(cfg["DATA_DIR"], "state", "tuned_weights.json")
     now = dt.datetime.utcnow()
     if (now.weekday() == 6 and now.hour < 16) or not os.path.exists(tuned_path):   # retune Sunday mornings
@@ -578,9 +651,9 @@ def main():
                  and r["signal"] not in (rt.get("reported") or [])) or r.get("switched")]
         if fresh and not DRY_RUN:
             import html
-            what = lambda r: ("Switched on automatically." if r.get("switched") == "on" else
-                              ("Switched off: trades filed since it was switched on didn't beat similar purchases."
-                               if r.get("recheck") == "failed" else "Switched off again: it no longer passes.")
+            what = lambda r: ("Suggested: switch it on (waits for your OK in the weekly report)." if r.get("switched") == "on" else
+                              ("Suggested: switch it off (trades filed since it was switched on didn't beat similar purchases)."
+                               if r.get("recheck") == "failed" else "Suggested: switch it off again (it no longer passes).")
                               if r.get("switched") == "off" else
                               "Already counts in the score." if r.get("in_score") else
                               "Not a score signal, shown for information.")
@@ -590,7 +663,7 @@ def main():
                 f"({r['n']} trades; earlier years {(r['lift_early'] or 0) * 100:+.2f}%, sureness {(r['t_early'] or 0):.1f}; "
                 f"last 3 years {(r['lift_recent'] or 0) * 100:+.2f}%). {what(r)}</li>" for r in fresh) + "</ul>"
             ons = [r for r in fresh if r.get("switched") == "on"]
-            ok_ = cloud_store.notify(("Signal switched on: " if ons else "Rare signal passed: ")
+            ok_ = cloud_store.notify(("Signal suggested: " if ons else "Rare signal passed: ")
                                      + ", ".join(r["label"][:40] for r in (ons or fresh)[:2]),
                                      " ".join(f"{r['label'][:50]}: {(r['lift'] or 0) * 100:+.2f}%/trade. {what(r)}"
                                               for r in fresh[:3]), "rare", "/#works/rare", E.log)
@@ -614,6 +687,10 @@ def main():
         E.check_sale_discount_once(scored, px, cfg)
     except Exception as e:
         E.log(f"Adjustments: weak-sales check skipped ({e})")
+    try:
+        _suggest_end(_snap, "weekly check")
+    except Exception as e:
+        E.log(f"Suggestions: FAILED after the weekly check ({type(e).__name__}: {str(e)[:150]})")
     try:        # one email when a full House re-read has finished
         rp = os.path.join(cfg["DATA_DIR"], "state", "house_reread.json")
         rr = json.load(open(rp)) if os.path.exists(rp) else {"version": E.HOUSE_PARSER_VERSION}
@@ -731,10 +808,15 @@ def main():
                 E.log(f"Stop check: {sm_['n']} stop sale(s), {sm_['n_done']} past their planned hold")   # no amounts: the log is public
                 if not DRY_RUN:
                     def _tell(title, msg):
+                        title = ("Suggested: " + title.replace("Stop turned", "turn the stop").replace(" back on", " back on")) if SUGGEST_ONLY else title
+                        msg = msg + (" Not changed: it's in the weekly report for your OK." if SUGGEST_ONLY else "")
                         cloud_store.notify(title, msg, "stop", "/#port/stops", E.log)
                         _send_email("Capitol Capital: " + title, f"<p>{msg}</p><p>You can see every stop sale on the "
                                     "Account page, under Stop check.</p>", "Email: sent stop-switch notice")
+                    _snap2 = _suggest_start()
                     ch = stop_check.apply(cfg, sc, E, _tell, E.log)
+                    if ch and _suggest_end(_snap2, "real-trades stop check"):
+                        ch = None
                     if ch:
                         sc["rule"] = ch["to"]
                         sc["switched"] = dict(ch, date=dt.date.today().isoformat())

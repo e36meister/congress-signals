@@ -10605,8 +10605,12 @@ def _apply_overrides(cfg, a):
         if o.get("id") in done:
             continue
         for k, v in (o.get("set") or {}).items():
-            old = a["policy"].get(k)
-            a["policy"][k] = v
+            if k == "use_tuned":                    # top-level setting, not part of the policy
+                old = a.get("use_tuned")
+                a["use_tuned"] = bool(v)
+            else:
+                old = a["policy"].get(k)
+                a["policy"][k] = v
             lab = {"price_exit": (PRICE_EXIT_LABEL, PRICE_EXITS), "extend": (EXTEND_LABEL, EXTENDS)}.get(k)
             a.setdefault("history", []).append({
                 "date": dt.date.today().isoformat(), "change": (lab[0] if lab else k) + " (your choice)",
