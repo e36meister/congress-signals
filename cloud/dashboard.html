@@ -2197,18 +2197,29 @@ function openChart(t, back) {
 }
 function closeChart() { const bg = document.getElementById("mbg"); if (bg) { bg.hidden = true; bg.innerHTML = ""; } document.body.style.overflow = ""; pop.t = null; pop.hist = []; fixTabBar(); }
 const TOUCH = matchMedia("(pointer: coarse)").matches;
-// iPhone sometimes leaves the fixed bottom tab bar mid-screen after a popup or a jump between pages; if it isn't at
-// the bottom of the screen, hide and show it once so the browser places it again (owner, Nov 4 2026)
-function fixTabBar() {
-  setTimeout(() => {
-    const nav = document.querySelector("nav.tabs");
-    if (!nav || !matchMedia("(max-width: 760px)").matches) return;
-    const vh = (window.visualViewport && window.visualViewport.height) || innerHeight, r = nav.getBoundingClientRect();
-    if (Math.abs(r.bottom - vh) > 12) { nav.style.display = "none"; void nav.offsetHeight; nav.style.display = ""; }
-  }, 80);
+// iPhone sometimes leaves the fixed bottom tab bar mid-screen: after a popup, or after coming back from a link
+// that opened in Safari's in-app browser (Go to post), it can scroll with the page (owner, Nov 4-5 2026). The bar
+// gets its own layer (styles), and when the app comes back to the screen it's re-attached so the browser lays it
+// out again; while scrolling, if it isn't at the bottom of the screen, it's re-attached too.
+function resetTabBar() {
+  const nav = document.querySelector("nav.tabs");
+  if (!nav || !matchMedia("(max-width: 760px)").matches) return;
+  const y = scrollY; nav.remove(); document.body.appendChild(nav); if (scrollY !== y) scrollTo(0, y);
 }
-addEventListener("scroll", (() => { let t; return () => { clearTimeout(t); t = setTimeout(fixTabBar, 150); }; })(), { passive: true });
-["hashchange", "popstate", "pageshow", "orientationchange", "resize"].forEach(e => addEventListener(e, fixTabBar));
+function fixTabBar() {
+  const nav = document.querySelector("nav.tabs");
+  if (!nav || !matchMedia("(max-width: 760px)").matches) return;
+  const vh = Math.min(innerHeight, (window.visualViewport && window.visualViewport.height + window.visualViewport.offsetTop) || innerHeight);
+  const r = nav.getBoundingClientRect();
+  if (Math.abs(r.bottom - vh) > 12 && Math.abs(r.bottom - innerHeight) > 12) resetTabBar();
+}
+let tabRaf = 0;
+addEventListener("scroll", () => { if (!tabRaf) tabRaf = requestAnimationFrame(() => { tabRaf = 0; fixTabBar(); }); }, { passive: true });
+["hashchange", "popstate", "orientationchange", "resize"].forEach(e => addEventListener(e, () => setTimeout(fixTabBar, 80)));
+// back from Safari's in-app browser (or another app): re-attach the bar every time, then check again a moment later
+const tabBack = () => { resetTabBar(); setTimeout(fixTabBar, 300); };
+addEventListener("pageshow", tabBack); addEventListener("focus", tabBack);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") tabBack(); });
 document.addEventListener("click", () => setTimeout(fixTabBar, 200), true);
 addEventListener("keydown", ev => { if (ev.key === "Escape" && pop.t) closeChart(); });
 document.addEventListener("click", ev => { const b = ev.target.closest("[data-chart]"); if (b) { ev.preventDefault(); openChart(b.dataset.chart); } });

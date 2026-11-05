@@ -20,6 +20,7 @@ html.covered #vcover{display:grid;place-items:center;position:fixed;inset:0;z-in
 html.viewer body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 html.viewer input,html.viewer textarea{-webkit-user-select:text;user-select:text}
 .mbg{overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+@media (max-width: 760px){ nav.tabs{-webkit-transform:translate3d(0,0,0);transform:translate3d(0,0,0);-webkit-backface-visibility:hidden;backface-visibility:hidden} }
 .verline{text-align:center;color:var(--muted);font-size:12px;margin:-6px 0 18px}
 .updbar{background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent);border-radius:10px;padding:10px 12px;margin:0 0 12px;font-size:14px;display:flex;gap:10px;align-items:center;justify-content:space-between}
 /* spare cash choice */
@@ -595,7 +596,7 @@ nav.tabs button{overflow:hidden}
 
 <script>
 (() => {
-const APP_BUILD = '0.1.dev-ec39564', APP_BUILT = '2026-11-05T14:30+00:00', APP_SHA = 'ec39564';
+const APP_BUILD = '0.1.dev-24bc3e3', APP_BUILT = '2026-11-05T15:10+00:00', APP_SHA = '24bc3e3';
 // ---------- family accounts (owner, Nov 2 2026) ----------
 // A family account sees Today (Buy candidates only), Members, Alerts, its own Account and a short More menu (company
 // search, notifications, settings, questions, bug report). The server only answers those (cloud/accounts.js); this
@@ -3352,18 +3353,29 @@ function openChart(t, back) {
 }
 function closeChart() { const bg = document.getElementById("mbg"); if (bg) { bg.hidden = true; bg.innerHTML = ""; } document.body.style.overflow = ""; pop.t = null; pop.hist = []; fixTabBar(); }
 const TOUCH = matchMedia("(pointer: coarse)").matches;
-// iPhone sometimes leaves the fixed bottom tab bar mid-screen after a popup or a jump between pages; if it isn't at
-// the bottom of the screen, hide and show it once so the browser places it again (owner, Nov 4 2026)
-function fixTabBar() {
-  setTimeout(() => {
-    const nav = document.querySelector("nav.tabs");
-    if (!nav || !matchMedia("(max-width: 760px)").matches) return;
-    const vh = (window.visualViewport && window.visualViewport.height) || innerHeight, r = nav.getBoundingClientRect();
-    if (Math.abs(r.bottom - vh) > 12) { nav.style.display = "none"; void nav.offsetHeight; nav.style.display = ""; }
-  }, 80);
+// iPhone sometimes leaves the fixed bottom tab bar mid-screen: after a popup, or after coming back from a link
+// that opened in Safari's in-app browser (Go to post), it can scroll with the page (owner, Nov 4-5 2026). The bar
+// gets its own layer (styles), and when the app comes back to the screen it's re-attached so the browser lays it
+// out again; while scrolling, if it isn't at the bottom of the screen, it's re-attached too.
+function resetTabBar() {
+  const nav = document.querySelector("nav.tabs");
+  if (!nav || !matchMedia("(max-width: 760px)").matches) return;
+  const y = scrollY; nav.remove(); document.body.appendChild(nav); if (scrollY !== y) scrollTo(0, y);
 }
-addEventListener("scroll", (() => { let t; return () => { clearTimeout(t); t = setTimeout(fixTabBar, 150); }; })(), { passive: true });
-["hashchange", "popstate", "pageshow", "orientationchange", "resize"].forEach(e => addEventListener(e, fixTabBar));
+function fixTabBar() {
+  const nav = document.querySelector("nav.tabs");
+  if (!nav || !matchMedia("(max-width: 760px)").matches) return;
+  const vh = Math.min(innerHeight, (window.visualViewport && window.visualViewport.height + window.visualViewport.offsetTop) || innerHeight);
+  const r = nav.getBoundingClientRect();
+  if (Math.abs(r.bottom - vh) > 12 && Math.abs(r.bottom - innerHeight) > 12) resetTabBar();
+}
+let tabRaf = 0;
+addEventListener("scroll", () => { if (!tabRaf) tabRaf = requestAnimationFrame(() => { tabRaf = 0; fixTabBar(); }); }, { passive: true });
+["hashchange", "popstate", "orientationchange", "resize"].forEach(e => addEventListener(e, () => setTimeout(fixTabBar, 80)));
+// back from Safari's in-app browser (or another app): re-attach the bar every time, then check again a moment later
+const tabBack = () => { resetTabBar(); setTimeout(fixTabBar, 300); };
+addEventListener("pageshow", tabBack); addEventListener("focus", tabBack);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") tabBack(); });
 document.addEventListener("click", () => setTimeout(fixTabBar, 200), true);
 addEventListener("keydown", ev => { if (ev.key === "Escape" && pop.t) closeChart(); });
 document.addEventListener("click", ev => { const b = ev.target.closest("[data-chart]"); if (b) { ev.preventDefault(); openChart(b.dataset.chart); } });
