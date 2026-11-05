@@ -2,7 +2,7 @@
 while the price falls and buy once it bounces a set amount off its lowest price since the open ("trailing buy").
 
 Picks: the tool's own (main picks by the backtest rule + the small-company portfolio's buys), bought from 2016 on
-(minute prices start then), held to the same sell day as now. Prices: Alpaca 1-minute bars, regular hours only.
+(minute prices start then), held to the same sell day as now. Prices: Alpaca 1-minute bars (split-adjusted), regular hours only.
 
 Variants (32): bounce 0.5/1/2/3% off the low | max wait 1/2/3/5 trading days (not bounced by then: buy at that
 day's close) | "rising: buy now" gate on/off (on: if the first open is at or above the previous close, buy at the
@@ -45,7 +45,7 @@ FEED = ["sip"]
 def bars(sym, start, end):
     out, tok = [], None
     for _ in range(6):
-        p = {"timeframe": "1Min", "start": start, "end": end, "limit": 10000, "adjustment": "raw", "feed": FEED[0]}
+        p = {"timeframe": "1Min", "start": start, "end": end, "limit": 10000, "adjustment": "split", "feed": FEED[0]}
         if tok:
             p["page_token"] = tok
         for a in range(5):
@@ -121,6 +121,7 @@ def summ(d, k):
     qm = x.groupby(d["q"]).mean()
     se = qm.std() / np.sqrt(len(qm)) if len(qm) > 2 else np.nan
     return {"n": int(len(x)), "gain": float(x.mean()), "t": float(x.mean() / se) if se else None,
+            "median": float(x.median()), "trim": float(x.clip(x.quantile(0.01), x.quantile(0.99)).mean()), "max": float(x.max()),
             "better": float((x > 1e-9).mean()), "paid_more": float(d[k].map(lambda z: z[1]).mean()),
             "days": float(d[k].map(lambda z: z[2]).mean())}
 
@@ -134,7 +135,8 @@ print("\nAll variants (gain per trade vs buying at the open, percentage points; 
 for k in sorted(keys, key=lambda k: -(table[k]["train"] or {}).get("gain", -9)):
     a, b_ = table[k]["train"] or {}, table[k]["test"] or {}
     print(f"  {lab(k):45s} 2016-21 {a.get('gain', np.nan) * 100:+.2f} (t {a.get('t') or np.nan:.1f}) | "
-          f"2022-now {b_.get('gain', np.nan) * 100:+.2f} (t {b_.get('t') or np.nan:.1f}) | paid more than the open "
+          f"2022-now {b_.get('gain', np.nan) * 100:+.2f} (t {b_.get('t') or np.nan:.1f}, median {b_.get('median', np.nan) * 100:+.2f}, "
+          f"1%-trimmed {b_.get('trim', np.nan) * 100:+.2f}, biggest {b_.get('max', np.nan) * 100:+.0f}) | paid more than the open "
           f"{(b_.get('paid_more') or 0) * 100:.0f}% | avg wait {b_.get('days') or 0:.1f}d")
 tb = table[best]["test"] or {}
 print(f"\nChosen on 2016-2021: {lab(best)}  ->  2022-now {tb.get('gain', np.nan) * 100:+.2f} pts a trade "
