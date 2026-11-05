@@ -1,6 +1,5 @@
 """One-time and every-deploy Cloudflare setup, run by the 'Deploy phone app' workflow:
-makes sure the private R2 bucket and the workers.dev address exist, and copies the current data
-from Google Drive the first time so the app isn't empty. Prints the app's address (no data)."""
+makes sure the private R2 bucket and the workers.dev address exist. Prints the app's address (no data)."""
 import os, sys, json, random, string
 import requests
 
@@ -53,21 +52,5 @@ print("App address saved for the email (not printed here, since the run log is p
 with open(os.environ.get("GITHUB_OUTPUT", os.devnull), "a") as f:
     f.write(f"url={url}\n")
 
-# 3. first time only: copy the current data from Drive so the app has something to show
-missing = [n for n in FILES if requests.head(f"{API}/r2/buckets/{BUCKET}/objects/{n}", headers=H, timeout=30).status_code != 200]
-if missing and os.environ.get("GDRIVE_SERVICE_ACCOUNT_JSON") and os.environ.get("GDRIVE_FOLDER_ID"):
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-    creds = service_account.Credentials.from_service_account_info(
-        json.loads(os.environ["GDRIVE_SERVICE_ACCOUNT_JSON"]), scopes=["https://www.googleapis.com/auth/drive"])
-    drive = build("drive", "v3", credentials=creds, cache_discovery=False)
-    folder = os.environ["GDRIVE_FOLDER_ID"]
-    for n in missing:
-        found = drive.files().list(q=f"name = '{n}' and '{folder}' in parents and trashed = false", fields="files(id)",
-                                   supportsAllDrives=True, includeItemsFromAllDrives=True).execute().get("files", [])
-        if not found:
-            continue
-        body = drive.files().get_media(fileId=found[0]["id"], supportsAllDrives=True).execute()
-        p = requests.put(f"{API}/r2/buckets/{BUCKET}/objects/{n}", headers={**H, "Content-Type": "application/json"},
-                         data=body, timeout=120)
-        print(f"Copied {n} from Drive" if p.status_code < 300 else f"Couldn't copy {n}: {errs(p)}")
+# 3. (removed Nov 5 2026) the first-time copy of the data from Google Drive: Drive is retired, and its copy is no
+# longer updated, so a passing R2 error here must never let an old Drive copy overwrite the app's data.

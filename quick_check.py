@@ -85,67 +85,19 @@ def start_full_update():
     return r.status_code == 204
 
 
-def _drive():
-    sa, folder = os.environ.get("GDRIVE_SERVICE_ACCOUNT_JSON"), os.environ.get("GDRIVE_FOLDER_ID")
-    if not (sa and folder):
-        return None, None
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-    creds = service_account.Credentials.from_service_account_info(json.loads(sa), scopes=["https://www.googleapis.com/auth/drive"])
-    return build("drive", "v3", credentials=creds, cache_discovery=False), folder
-
-
-TAP = re.compile(r"^order_request_([A-Z][A-Z0-9\-]{0,6})_(\d+(?:\.\d+)?)_(\d{10,14})\.json$")
-
-
-def process_order_requests():
-    """Orders you approved with the Buy button on the dashboard (saved as small files in your Drive folder)."""
-    import broker
-    drive, folder = _drive()
-    if drive is None:
-        return
-    q = f"name contains 'order_request_' and '{folder}' in parents and trashed = false"
-    files = drive.files().list(q=q, fields="files(id,name)", supportsAllDrives=True,
-                               includeItemsFromAllDrives=True).execute().get("files", [])
-    for f in files:
-        m = TAP.match(f["name"])
-        if not m:
-            new_name, ok = f["name"].replace("order_request_", "order_failed_", 1).replace(".json", "_bad-request.json"), False
-        else:
-            t, dollars, ms = m.group(1), float(m.group(2)), int(m.group(3))
-            age_h = (dt.datetime.now(dt.timezone.utc).timestamp() * 1000 - ms) / 3.6e6
-            if age_h > 48:
-                ok, why = False, "expired"
-            else:
-                ok, why = broker.place_tap_order(t, dollars, m.group(3), E.log)
-            new_name = (f"order_done_{t}_{m.group(2)}_{m.group(3)}.json" if ok
-                        else f"order_failed_{t}_{m.group(2)}_{m.group(3)}_{why}.json")
-        drive.files().update(fileId=f["id"], body={"name": new_name}, supportsAllDrives=True).execute()
-    if files:
-        E.log(f"Quick check: handled {len(files)} order request(s) from the dashboard")
-
-
-# Nov 4-5: "portfolio refresh failed (HttpError)" three times in a day, each time the Google Drive save of
-# dashboard_data.json answering a passing server error; the next run 5 minutes later worked. Drive calls here now
-# retry 5xx / 429 answers with backoff (Google's client: 1, 2, 4, 8 s) before the step counts as failed.
-DRIVE_RETRIES = 4
+# Nov 5 (owner): nothing uses Google Drive any more (the app reads Cloudflare; the old claude.ai dashboard page and
+# its Drive Buy-button order files are retired; the app's own Buy button goes through the Worker). The app's copy
+# of dashboard_data.json in Cloudflare is now the only one: Drive's passing errors failed this step 3 times Nov 4-5.
 
 
 def refresh_portfolio():
     """Read-only: update the dashboard's My portfolio tab from Alpaca. Never trades."""
     import broker
+    import cloud_store
     snap = broker.sync({"HOLD_DAYS": int(os.environ.get("HOLD_DAYS", "60"))}, None, None, {}, E.log, trade=False)
-    drive, folder = _drive()
-    if snap is None or drive is None:
+    if snap is None:
         return
-    from googleapiclient.http import MediaIoBaseUpload
-    import io
-    q = f"name = 'dashboard_data.json' and '{folder}' in parents and trashed = false"
-    found = drive.files().list(q=q, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute(num_retries=DRIVE_RETRIES).get("files", [])
-    if not found:
-        return
-    fid = found[0]["id"]
-    data = json.loads(drive.files().get_media(fileId=fid, supportsAllDrives=True).execute(num_retries=DRIVE_RETRIES))
+    data = cloud_store.read_dashboard()         # ReadError -> "portfolio refresh failed (...)"; nothing saved
     try:                                        # undo a waiting cleanup sale that no longer applies
         w = data.get("watchlist") or {}
         caps = {broker.to_alpaca(r["t"]): r.get("cap") for r in (w.get("buys") or []) + (w.get("sells") or []) if r.get("t")}
@@ -183,17 +135,13 @@ def refresh_portfolio():
     # the file meanwhile, writing our older copy back would undo them. Re-read it and change only our two parts.
     mine = {"portfolio": data.get("portfolio"), **({"stop_check": sc_new} if sc_new is not None else {})}
     try:
-        fresh = json.loads(drive.files().get_media(fileId=fid, supportsAllDrives=True).execute(num_retries=DRIVE_RETRIES))
+        fresh = cloud_store.read_dashboard()
         fresh.update(mine)
         data = fresh
-    except Exception as e:
-        E.log(f"Quick check: couldn't re-read the dashboard before saving ({type(e).__name__}); saving the copy read at the start")
-    body = io.BytesIO(json.dumps(data).encode())
-    drive.files().update(fileId=fid, media_body=MediaIoBaseUpload(body, mimetype="application/json"),
-                         supportsAllDrives=True).execute(num_retries=DRIVE_RETRIES)
-    E.log("Quick check: portfolio refreshed on the dashboard")
-    import cloud_store
-    cloud_store.put("dashboard_data.json", body.getvalue(), E.log)   # phone app
+    except cloud_store.ReadError as e:
+        E.log(f"Quick check: couldn't re-read the dashboard before saving ({e}); saving the copy read at the start")
+    if cloud_store.save_dashboard(data, E.log):
+        E.log("Quick check: portfolio refreshed on the dashboard")
 
 
 def why_it_moved(force=(), dry=False):
@@ -252,10 +200,6 @@ if __name__ == "__main__":
     try:
         main()
     finally:
-        try:
-            process_order_requests()
-        except Exception as e:
-            E.log(f"Quick check: order requests skipped ({type(e).__name__})")
         try:
             refresh_portfolio()
         except Exception as e:

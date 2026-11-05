@@ -595,7 +595,7 @@ nav.tabs button{overflow:hidden}
 
 <script>
 (() => {
-const APP_BUILD = '0.1.dev-0b16e0a', APP_BUILT = '2026-11-04T17:35+00:00', APP_SHA = '0b16e0a';
+const APP_BUILD = '0.1.dev-ec39564', APP_BUILT = '2026-11-05T14:30+00:00', APP_SHA = 'ec39564';
 // ---------- family accounts (owner, Nov 2 2026) ----------
 // A family account sees Today (Buy candidates only), Members, Alerts, its own Account and a short More menu (company
 // search, notifications, settings, questions, bug report). The server only answers those (cloud/accounts.js); this
@@ -2568,7 +2568,7 @@ function renderRecord(d) {
     ${perfRows}
   </section>
   <section class="panel">
-    <div class="ph"><h2>Every pick the strategy would have made</h2><span class="sub">Bought the trading day after each trade was disclosed${total > (b[side] || []).length ? ` · latest ${(b[side] || []).length} of ${total} shown; the full list is in your Drive reports folder` : ""}</span></div>
+    <div class="ph"><h2>Every pick the strategy would have made</h2><span class="sub">Bought the trading day after each trade was disclosed${total > (b[side] || []).length ? ` · latest ${(b[side] || []).length} of ${total} shown` : ""}</span></div>
     <div class="filters">
       ${b.shorts && b.shorts.length ? `<div class="seg" role="group" aria-label="Side"><button type="button" data-side="longs" aria-pressed="${side === "longs"}">Buys</button><button type="button" data-side="shorts" aria-pressed="${side === "shorts"}">Shorts</button></div>` : ""}
       <div class="seg" role="group" aria-label="Result"><button type="button" data-f="all" aria-pressed="${state.tradeFilter === "all"}">All</button><button type="button" data-f="won" aria-pressed="${state.tradeFilter === "won"}">Beat S&amp;P</button><button type="button" data-f="lost" aria-pressed="${state.tradeFilter === "lost"}">Lagged</button><button type="button" data-f="open" aria-pressed="${state.tradeFilter === "open"}">Still open</button></div>

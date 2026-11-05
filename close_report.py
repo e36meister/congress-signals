@@ -148,15 +148,14 @@ def main():
     if clock.get("is_open"):
         E.log("Close report: market still open; skipping")
         return
-    drive, folder = Q._drive()
-    if drive is None:
-        return
-    q = f"name = 'dashboard_data.json' and '{folder}' in parents and trashed = false"
-    found = drive.files().list(q=q, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute().get("files", [])
-    if not found:
-        return
-    fid = found[0]["id"]
-    data = json.loads(drive.files().get_media(fileId=fid, supportsAllDrives=True).execute())
+    import cloud_store
+    # Nov 5 (owner): Google Drive is retired; the app's Cloudflare copy is the only dashboard_data.json. A read that
+    # fails raises (the job's crash check reports it) instead of building a report on an empty file.
+    try:
+        data = cloud_store.read_dashboard()
+    except cloud_store.ReadError as e:
+        E.log(f"Close report: failed: couldn't read the dashboard from Cloudflare ({e}); the next run tries again")
+        raise
     today = dt.date.today().isoformat()
     if os.environ.get("CLOSE_EMAIL_ONLY") == "1":        # re-send the last close email; nothing else changes
         rep = data.get("close_report")
@@ -316,12 +315,17 @@ def main():
         if acct_day.get(h.get("date")) is not None:
             h["since_start"] = acct_day[h["date"]]
     data["close_history"] = hist_list[-2000:]          # keep the start: "since start" must not roll forward
-    from googleapiclient.http import MediaIoBaseUpload
-    drive.files().update(fileId=fid, media_body=MediaIoBaseUpload(io.BytesIO(json.dumps(data).encode()),
-                         mimetype="application/json"), supportsAllDrives=True).execute()
-    E.log("Close report: saved to the dashboard")
-    import cloud_store
-    cloud_store.put("dashboard_data.json", json.dumps(data).encode(), E.log)   # phone app
+    # the steps above take a minute or more; if the quick check saved the file meanwhile, keep its other parts and
+    # change only the close report's own three
+    mine = {k: data[k] for k in ("close_report", "close_history", "portfolio")}
+    try:
+        fresh = cloud_store.read_dashboard()
+        fresh.update(mine)
+        data = fresh
+    except cloud_store.ReadError as e:
+        E.log(f"Close report: couldn't re-read the dashboard before saving ({e}); saving the copy read at the start")
+    if cloud_store.save_dashboard(data, E.log):
+        E.log("Close report: saved to the dashboard")
     pushed = False
     try:      # phone alert: same headline as the email
         subject = build_email(report, snap["mode"], snap, data)[0]

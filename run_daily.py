@@ -1,5 +1,5 @@
 """Daily run on GitHub: collect new filings, score, backtest, build the watchlist,
-and update dashboard_data.json in your Google Drive so the dashboard refreshes."""
+and update dashboard_data.json in the app's Cloudflare storage so the app refreshes."""
 import os, json, datetime as dt, traceback
 import congress_signals.engine as E
 import broker
@@ -25,60 +25,24 @@ cfg = {**E.DEFAULT_CONFIG,
 os.makedirs(cfg["DATA_DIR"], exist_ok=True)
 
 
-def upload_to_drive(local_path, title, mimetype="application/json"):
-    """Retries Google's temporary errors (502/503/500/429) and never stops the update: the phone app (Cloudflare),
-    member pages and charts still get their copies if Drive is down."""
-    import time
-    for attempt in range(4):
-        try:
-            return _upload_to_drive(local_path, title, mimetype)
-        except Exception as e:
-            code = getattr(getattr(e, "resp", None), "status", None)
-            if attempt < 3 and (code is None or int(code) in (429, 500, 502, 503, 504)):
-                # not a failure line on its own: if every retry is refused, the "couldn't update" line below is the
-                # one the Data health check records (Nov 1 2026: a single 502 that the retry fixed stayed OPEN)
-                E.log(f"Drive: {title} upload got a temporary {code or type(e).__name__} from Google; "
-                      f"retrying in {30 * (attempt + 1)} s")
-                time.sleep(30 * (attempt + 1))
-                continue
-            E.log(f"Drive: couldn't update {title} ({code or type(e).__name__}); the next update tries again")
-            return None
-
-
-def _upload_to_drive(local_path, title, mimetype="application/json"):
-    sa = env("GDRIVE_SERVICE_ACCOUNT_JSON")
-    folder = env("GDRIVE_FOLDER_ID")
-    if not sa or not folder:
-        E.log("Drive upload skipped: GDRIVE_SERVICE_ACCOUNT_JSON / GDRIVE_FOLDER_ID not set")
-        return
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-    from googleapiclient.http import MediaFileUpload
-    creds = service_account.Credentials.from_service_account_info(
-        json.loads(sa), scopes=["https://www.googleapis.com/auth/drive"])
-    drive = build("drive", "v3", credentials=creds, cache_discovery=False)
-    q = f"name = '{title}' and '{folder}' in parents and trashed = false"
-    found = drive.files().list(q=q, fields="files(id, modifiedTime)", supportsAllDrives=True,
-                               includeItemsFromAllDrives=True).execute().get("files", [])
-    if found and title == "dashboard_data.json":
-        # keep what the market-close report wrote to Drive since this run started
-        try:
-            remote = json.loads(drive.files().get_media(fileId=found[0]["id"], supportsAllDrives=True).execute())
-            local = json.load(open(local_path))
-            for k in ("close_report", "close_history"):
-                if k in remote:
-                    local[k] = remote[k]
-            json.dump(local, open(local_path, "w"))
-        except Exception as e:
-            E.log(f"Drive: couldn't merge the close report ({type(e).__name__})")
-    media = MediaFileUpload(local_path, mimetype=mimetype, resumable=False)
-    if found:
-        drive.files().update(fileId=found[0]["id"], media_body=media, supportsAllDrives=True).execute()
-        E.log(f"Drive: updated {title}")
-    else:
-        drive.files().create(body={"name": title, "parents": [folder]}, media_body=media,
-                             supportsAllDrives=True).execute()
-        E.log(f"Drive: created {title}")
+def save_dashboard_file(path):
+    """Save the run's dashboard_data.json to the app (Cloudflare R2, its only home since Nov 5: the owner uses no
+    Google Drive). The market-close report saves into the same file, so its two parts are always taken from the app's
+    copy (the Drive upload used to do this merge)."""
+    if not (os.environ.get("CLOUDFLARE_API_TOKEN") and os.environ.get("CLOUDFLARE_ACCOUNT_ID")):
+        return False                # test runs (dry_run) have no Cloudflare keys and save nothing
+    try:
+        remote = cloud_store.read_dashboard()
+        local = json.load(open(path))
+        for k in ("close_report", "close_history"):
+            if k in remote:
+                local[k] = remote[k]
+        json.dump(local, open(path, "w"))
+    except cloud_store.ReadError as e:
+        E.log(f"Dashboard: couldn't read the app's copy to keep the close report ({e}); saving this run's copy")
+    except Exception as e:
+        E.log(f"Dashboard: couldn't merge the close report ({type(e).__name__})")
+    return cloud_store.save_dashboard(path, E.log)
 
 
 DASHBOARD_URL = "https://capitolcapital.cc/"
@@ -413,7 +377,7 @@ def merge_early(d):
 def publish_early_picks(live_p):
     """Owner, Nov 4: the tool buys right after scoring, but Today only updated when the whole run finished (FMAO
     was bought at 10:10 and wasn't on Today for over an hour). Put the fresh picks on Today right away, in the
-    app's copy and the Drive copy (the quick check rebuilds the app's copy from Drive)."""
+    app's copy (Cloudflare)."""
     global EARLY_ROWS
     EARLY_ROWS = _early_rows(live_p)
     if not EARLY_ROWS:
@@ -425,8 +389,7 @@ def publish_early_picks(live_p):
         tmp = os.path.join(cfg["DATA_DIR"], "state", "dashboard_early.json")
         os.makedirs(os.path.dirname(tmp), exist_ok=True)
         json.dump(d, open(tmp, "w"))
-        upload_to_drive(tmp, "dashboard_data.json")
-        cloud_store.put("dashboard_data.json", tmp, E.log)
+        cloud_store.save_dashboard(tmp, E.log)
         E.log(f"Today: {len(EARLY_ROWS)} fresh pick(s) shown right away: {', '.join(x['t'] for x in EARLY_ROWS[:8])}")
     except Exception as e:
         E.log(f"Today: fresh picks not shown early ({type(e).__name__}); they show when the run finishes")
@@ -540,7 +503,7 @@ def main():
     try:
         rp = E.export_research(scored, px, cfg)
         if rp:
-            upload_to_drive(rp, "research_buys.csv.gz", mimetype="application/gzip")
+            cloud_store.put("reports/research_buys.csv.gz", rp, E.log, content_type="application/gzip")
     except Exception as e:
         E.log(f"Research export skipped ({type(e).__name__}: {e})")
     tuned_path = os.path.join(cfg["DATA_DIR"], "state", "tuned_weights.json")
@@ -785,8 +748,8 @@ def main():
         json.dump(d, open(path, "w"))
     except Exception as e:
         E.log(f"Broker: skipped this run ({type(e).__name__})")
-    upload_to_drive(os.path.join(cfg["DATA_DIR"], "dashboard_data.json"), "dashboard_data.json")
-    cloud_store.put("dashboard_data.json", os.path.join(cfg["DATA_DIR"], "dashboard_data.json"), E.log)   # phone app
+    save_dashboard_file(os.path.join(cfg["DATA_DIR"], "dashboard_data.json"))
+    cloud_store.backup_dashboard(E.log)        # dated copy under backups/ (Drive used to be the second copy)
     try:
         send_weekly_summary()
     except Exception as e:
@@ -812,7 +775,6 @@ def main():
         ts |= {r.get("t") for r in ((d.get("defense") or {}).get("longs") or [])}
         ts |= {p.get("t") for p in ((d.get("portfolio") or {}).get("positions") or [])}
         charts_path = E.export_ticker_charts(cfg, scored, px, ts)
-        upload_to_drive(charts_path, "ticker_charts.json")
         cloud_store.put("ticker_charts.json", charts_path, E.log)
     except Exception as e:
         E.log(f"Ticker charts: skipped ({type(e).__name__}: {e})")

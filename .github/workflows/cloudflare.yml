@@ -43,16 +43,13 @@ jobs:
           node-version: "22"
 
       - name: Install libraries
-        run: pip install --retries 5 requests google-auth google-api-python-client
+        run: pip install --retries 5 requests
 
       - name: Build the app page
         run: python cloud/build_app.py
 
       - name: Set up storage and the app address
         id: setup
-        env:
-          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
-          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: python cloud/setup.py
 
       - name: Deploy

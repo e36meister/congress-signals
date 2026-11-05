@@ -1,7 +1,9 @@
-"""Copies the dashboard's data files to Cloudflare R2, where the Capitol Capital phone app reads them.
-Google Drive keeps its copy too. Does nothing until CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are set.
-Never raises: a failed upload only logs a line (no balances or positions are ever logged)."""
-import os
+"""The app's data files in Cloudflare R2, where the Capitol Capital app (phone and capitolcapital.cc) reads them.
+Since Nov 5 2026 (owner: nothing uses Google Drive) R2 is the only home of dashboard_data.json, so the jobs that
+change it read it with read_dashboard() (never mistakes an outage for an empty file) and save it with
+save_dashboard(). Does nothing until CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are set.
+put/get never raise: a failed upload only logs a line (no balances or positions are ever logged)."""
+import os, json, time, datetime as dt
 import requests
 
 BUCKET = "capitol-capital-data"
@@ -17,15 +19,23 @@ def put(name, data, log=print, content_type="application/json"):
         elif isinstance(data, str):
             data = data.encode()
         url = f"https://api.cloudflare.com/client/v4/accounts/{acc}/r2/buckets/{BUCKET}/objects/{name}"
-        for attempt in range(3):
-            r = requests.put(url, data=data, timeout=120,
-                             headers={"Authorization": f"Bearer {tok}", "Content-Type": content_type})
+        why = None
+        for attempt in range(4):
+            if attempt:
+                time.sleep(5 * 2 ** (attempt - 1))         # 5, 10, 20 s
+            try:
+                r = requests.put(url, data=data, timeout=120,
+                                 headers={"Authorization": f"Bearer {tok}", "Content-Type": content_type})
+            except requests.RequestException as e:
+                why = type(e).__name__
+                continue
             if r.status_code < 300:
                 log(f"Cloudflare: updated {name}")
                 return True
-            if r.status_code < 500:
+            why = f"HTTP {r.status_code}"
+            if r.status_code < 500 and r.status_code != 429:
                 break
-        log(f"Cloudflare: couldn't update {name} (HTTP {r.status_code})")
+        log(f"Cloudflare: couldn't update {name} ({why})")
     except Exception as e:
         log(f"Cloudflare: couldn't update {name} ({type(e).__name__})")
     return False
@@ -45,6 +55,75 @@ def get(name, log=print):
         return None
 
 
+
+class ReadError(Exception):
+    """R2 didn't answer (outage, timeout, 5xx): the file may well exist, so nothing may be written over it."""
+
+
+def get_strict(name):
+    """Bytes of one R2 object; None only when R2 says it doesn't exist (404). Any other answer is retried
+    (5, 10, 20 s) and then raises ReadError, so a passing outage is never taken for an empty file."""
+    tok, acc = os.environ.get("CLOUDFLARE_API_TOKEN"), os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+    if not (tok and acc):
+        raise ReadError("Cloudflare keys not set")
+    why = None
+    for attempt in range(4):
+        if attempt:
+            time.sleep(5 * 2 ** (attempt - 1))
+        try:
+            r = requests.get(f"https://api.cloudflare.com/client/v4/accounts/{acc}/r2/buckets/{BUCKET}/objects/{name}",
+                             headers={"Authorization": f"Bearer {tok}"}, timeout=60)
+        except requests.RequestException as e:
+            why = type(e).__name__
+            continue
+        if r.status_code == 200:
+            return r.content
+        if r.status_code == 404:
+            return None
+        why = f"HTTP {r.status_code}"
+        if r.status_code < 500 and r.status_code != 429:
+            break
+    raise ReadError(why)
+
+
+DASH = "dashboard_data.json"
+
+
+def read_dashboard():
+    """The app's dashboard_data.json as a dict. Raises ReadError when R2 can't be read or the copy is missing or
+    damaged, so a job stops instead of saving a near-empty file over the real one."""
+    raw = get_strict(DASH)
+    if not raw:
+        raise ReadError("dashboard_data.json is missing in Cloudflare")
+    try:
+        d = json.loads(raw)
+    except ValueError as e:
+        raise ReadError(f"dashboard_data.json doesn't read as JSON ({e})")
+    if not isinstance(d, dict) or not d:
+        raise ReadError("dashboard_data.json is empty")
+    return d
+
+
+def save_dashboard(d, log=print):
+    """Save the app's dashboard_data.json (dict, bytes or a file path). True when saved."""
+    if isinstance(d, dict):
+        d = json.dumps(d).encode()
+    return put(DASH, d, log)
+
+
+def backup_dashboard(log=print):
+    """A dated copy of dashboard_data.json under backups/ (once a day, from the daily update): with Google Drive
+    retired, this is what to restore from if the main copy is ever damaged."""
+    if not (os.environ.get("CLOUDFLARE_API_TOKEN") and os.environ.get("CLOUDFLARE_ACCOUNT_ID")):
+        return False                # test runs have no Cloudflare keys
+    try:
+        raw = get_strict(DASH)
+    except ReadError as e:
+        log(f"Cloudflare: dashboard backup failed (couldn't read it: {e})")
+        return False
+    if not raw:
+        return False
+    return put(f"backups/dashboard_data_{dt.date.today().isoformat()}.json", raw, log)
 
 def delete(name, log=print):
     """Remove one object from R2. True when it's gone."""

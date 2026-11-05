@@ -6050,7 +6050,7 @@ def prepare(cfg):
 
 
 # ============================================================================
-# Dashboard data file (read by the dashboard link through Google Drive)
+# Dashboard data file (the app reads it from Cloudflare R2)
 # ============================================================================
 def _j(v):
     if v is None:

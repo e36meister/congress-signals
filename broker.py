@@ -805,7 +805,7 @@ def sync(cfg, buys, new, last_prices, log, trade=True):
     else:
         log(f"Broker ({s['mode']}): connected, portfolio refreshed")
 
-    # 3. snapshot for the dashboard (written to your private Drive, never to the log)
+    # 3. snapshot for the dashboard (saved to the app's private storage, never to the log)
     try:
         positions = api.get("/v2/positions")
         acct = api.get("/v2/account")
