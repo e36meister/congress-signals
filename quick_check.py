@@ -125,6 +125,12 @@ def process_order_requests():
         E.log(f"Quick check: handled {len(files)} order request(s) from the dashboard")
 
 
+# Nov 4-5: "portfolio refresh failed (HttpError)" three times in a day, each time the Google Drive save of
+# dashboard_data.json answering a passing server error; the next run 5 minutes later worked. Drive calls here now
+# retry 5xx / 429 answers with backoff (Google's client: 1, 2, 4, 8 s) before the step counts as failed.
+DRIVE_RETRIES = 4
+
+
 def refresh_portfolio():
     """Read-only: update the dashboard's My portfolio tab from Alpaca. Never trades."""
     import broker
@@ -135,11 +141,11 @@ def refresh_portfolio():
     from googleapiclient.http import MediaIoBaseUpload
     import io
     q = f"name = 'dashboard_data.json' and '{folder}' in parents and trashed = false"
-    found = drive.files().list(q=q, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute().get("files", [])
+    found = drive.files().list(q=q, fields="files(id)", supportsAllDrives=True, includeItemsFromAllDrives=True).execute(num_retries=DRIVE_RETRIES).get("files", [])
     if not found:
         return
     fid = found[0]["id"]
-    data = json.loads(drive.files().get_media(fileId=fid, supportsAllDrives=True).execute())
+    data = json.loads(drive.files().get_media(fileId=fid, supportsAllDrives=True).execute(num_retries=DRIVE_RETRIES))
     try:                                        # undo a waiting cleanup sale that no longer applies
         w = data.get("watchlist") or {}
         caps = {broker.to_alpaca(r["t"]): r.get("cap") for r in (w.get("buys") or []) + (w.get("sells") or []) if r.get("t")}
@@ -177,14 +183,14 @@ def refresh_portfolio():
     # the file meanwhile, writing our older copy back would undo them. Re-read it and change only our two parts.
     mine = {"portfolio": data.get("portfolio"), **({"stop_check": sc_new} if sc_new is not None else {})}
     try:
-        fresh = json.loads(drive.files().get_media(fileId=fid, supportsAllDrives=True).execute())
+        fresh = json.loads(drive.files().get_media(fileId=fid, supportsAllDrives=True).execute(num_retries=DRIVE_RETRIES))
         fresh.update(mine)
         data = fresh
     except Exception as e:
         E.log(f"Quick check: couldn't re-read the dashboard before saving ({type(e).__name__}); saving the copy read at the start")
     body = io.BytesIO(json.dumps(data).encode())
     drive.files().update(fileId=fid, media_body=MediaIoBaseUpload(body, mimetype="application/json"),
-                         supportsAllDrives=True).execute()
+                         supportsAllDrives=True).execute(num_retries=DRIVE_RETRIES)
     E.log("Quick check: portfolio refreshed on the dashboard")
     import cloud_store
     cloud_store.put("dashboard_data.json", body.getvalue(), E.log)   # phone app
@@ -253,7 +259,7 @@ if __name__ == "__main__":
         try:
             refresh_portfolio()
         except Exception as e:
-            E.log(f"Quick check: portfolio refresh failed ({type(e).__name__})")
+            E.log(f"Quick check: portfolio refresh failed ({type(e).__name__}: {str(e)[:150]})")
         try:
             why_it_moved()
         except Exception as e:
