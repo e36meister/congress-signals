@@ -517,7 +517,7 @@ const ACC = { list: null, err: null, loading: false, busy: false, msg: null, vie
 function accLoad(force) {
   if (ACC.loading || (ACC.list && !force)) return;
   ACC.loading = true;
-  api("/api/accounts").then(r => { ACC.list = r.js.accounts || []; ACC.hold = r.js.hold !== false; ACC.err = null; }).catch(e => { ACC.err = e; })
+  api("/api/accounts").then(r => { ACC.list = r.js.accounts || []; ACC.hold = r.js.hold !== false; ACC.maint = r.js.maint || { on: true }; ACC.err = null; }).catch(e => { ACC.err = e; })
     .finally(() => { ACC.loading = false; if (state.tab === "accounts") render(); });
 }
 async function accPost(body) {
@@ -587,7 +587,14 @@ function renderAccounts() {
   const holdBox = list ? `<div class="note ${ACC.hold ? "warn" : ""}" style="display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap">
       <span>${ACC.hold ? "<b>Family trading is on hold.</b> Every family account is view-only: they can sign the terms and connect Alpaca, but nothing is bought or sold for them and their Buy and Sell buttons are off." : "<b>Family trading is on.</b> The tool trades every connected family account that has signed the terms."}</span>
       <button type="button" class="btn sm${ACC.hold ? "" : " ghost"}" data-acchold="${ACC.hold ? "0" : "1"}"${ACC.busy ? " disabled" : ""}>${ACC.hold ? "Start family trading" : "Put on hold"}</button></div>` : "";
+  const M = ACC.maint || { on: true };
+  const maintBox = list ? `<div class="note ${M.on ? "err" : ""}" style="display:grid;gap:8px">
+      <div style="display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+        <span>${M.on ? "<b>Maintenance is on.</b> Family accounts see a \"Down for maintenance\" screen instead of the app. Your app isn't affected." : "<b>Maintenance is off.</b> Family accounts can use the app."}</span>
+        <button type="button" class="btn sm${M.on ? "" : " ghost bwarn"}" data-accmaint="${M.on ? "0" : "1"}"${ACC.busy ? " disabled" : ""}>${M.on ? "End maintenance" : "Start maintenance"}</button></div>
+      ${M.on ? `<span class="foot">${M.msg ? `Their screen also says: "${esc(M.msg)}"` : "Optional: a note on their screen, like when you expect to be back."} <button type="button" class="link" data-accmaintmsg="1">${M.msg ? "Change note" : "Add a note"}</button></span>` : ""}</div>` : "";
   return `<section class="panel"><div class="ph"><h2>Accounts</h2><span class="sub">People you've added. They see Today, Members and their own Account only.</span></div>
+    ${maintBox}
     ${holdBox}
     ${m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}
     ${!list ? `<div class="empty">${ACC.err ? esc(errorText(ACC.err)) : "Loading…"}</div>` : list.length ? `<div class="accts">${list.map(card).join("")}</div>` : `<div class="empty">No accounts yet.</div>`}
@@ -612,6 +619,14 @@ document.addEventListener("click", ev => {
   if (back) { ACC.view = null; ACC.data = null; render(); window.scrollTo(0, 0); return; }
   const v = ev.target.closest("[data-accview]");
   if (v) { accOpen(v.dataset.accview); return; }
+  const mb = ev.target.closest("[data-accmaint],[data-accmaintmsg]");
+  if (mb && !ACC.busy) {
+    const M = ACC.maint || { on: true };
+    if (mb.dataset.accmaintmsg) { const t = prompt("A note on the maintenance screen (leave empty for none):", M.msg || ""); if (t == null) return; accPost({ action: "maint", on: true, msg: t }); return; }
+    const on = mb.dataset.accmaint === "1";
+    if (!confirm(on ? "Start maintenance? Every family account sees a maintenance screen instead of the app until you end it." : "End maintenance? Family accounts can use the app again right away.")) return;
+    accPost({ action: "maint", on, msg: M.msg || "" }); return;
+  }
   const hb = ev.target.closest("[data-acchold]");
   if (hb && !ACC.busy) {
     const on = hb.dataset.acchold === "1";

@@ -33,6 +33,10 @@ function json(obj, status = 200, headers = {}) {
 // it off on the Accounts page), family accounts are view-only: they can sign the terms and connect Alpaca, but the
 // tool places no orders for them (congress_signals/accounts.py) and their Buy and Sell buttons are off.
 export async function familyHold(env) { const h = await r2json(env, "accounts/hold.json", null); return !h || h.on !== false; }
+// ---------- maintenance (owner, Nov 5 2026): family accounts see a maintenance screen instead of the app ----------
+// accounts/maintenance.json {on, msg}. Like the hold, it counts as ON when the file is missing or can't be read, so a
+// glitch can only keep family accounts out, never let them back in early. The owner turns it off on the Accounts page.
+export async function maintenance(env) { const m = await r2json(env, "accounts/maintenance.json", null); return !m || m.on !== false ? (m || { on: true }) : null; }
 const HOLD_MSG = "Trading for family accounts hasn't started yet; the app is view-only for now";
 async function r2json(env, key, dflt) { try { const o = await env.DATA.get(key); if (o) return await o.json(); } catch (e) {} return dflt; }
 const put = (env, key, v) => env.DATA.put(key, JSON.stringify(v), { httpMetadata: { contentType: "application/json" } });
@@ -426,7 +430,7 @@ async function buyMore(req, env, a, maxTap) {
 
 // ---------- owner: the Accounts page ----------
 export async function ownerAccounts(env) {
-  const list = await listAccounts(env), hold = await familyHold(env);
+  const list = await listAccounts(env), hold = await familyHold(env), maint = await maintenance(env);
   const rows = await Promise.all(list.map(async a => {
     const port = await r2json(env, `accounts/${a.id}/portfolio.json`, null), p = port && port.portfolio;
     const seen = await r2json(env, `accounts/${a.id}/seen.json`, null);
@@ -434,7 +438,7 @@ export async function ownerAccounts(env) {
       invested: (p.positions || []).filter(x => x.sleeve !== "park").reduce((s, x) => s + (x.mv || 0), 0), updated: p.updated } : null,
       problem: port && port.problem || null };
   }));
-  return json({ accounts: rows, hold });
+  return json({ accounts: rows, hold, maint: maint ? { on: true, msg: maint.msg || "" } : { on: false } });
 }
 export async function ownerAccount(env, url) {
   const a = await getAccount(env, url.searchParams.get("id"));
@@ -478,6 +482,11 @@ export async function ownerAccountsPost(req, env, url, dispatch) {
     let sent = true;
     try { await sendInvite(env, a, url.origin, dispatch); } catch (e) { sent = false; }
     return json({ ok: true, account: pub(a), message: sent ? `Added. An invite is on its way to ${email}: how to add the app and set up a password.` : "Added, but the email couldn't be sent. Tap Send invite to try again." });
+  }
+  if (act === "maint") {
+    const on = b.on === true, msg = String(b.msg || "").trim().slice(0, 300);
+    await put(env, "accounts/maintenance.json", { on, msg, at: new Date().toISOString() });
+    return json({ ok: true, message: on ? "Maintenance is on: family accounts see the maintenance screen." : "Maintenance is off: family accounts can use the app again." });
   }
   if (act === "hold") {
     const on = b.on === true;
@@ -1099,4 +1108,29 @@ export async function sendInvite(env, a, origin, dispatch) {
   const sent = await sendMail(env, { to: a.email, subject: "You're invited to Capitol Capital", html });
   await patchAccount(env, a.id, x => { x.link_sent = new Date().toISOString(); });
   if (!sent) await dispatch(env, "mail.yml", {});
+}
+
+
+// the screen family accounts see during maintenance (checks every minute and opens the app once it's over)
+export function maintPage(msg) {
+  const esc2 = t => String(t || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="robots" content="noindex,nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Capitol Capital">
+<link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icon-180.png"><title>Capitol Capital</title><style>
+:root{--ground:#F3F5F8;--ink:#152033;--ink2:#46536A;--accent:#1D4F91;--on:#fff}
+@media (prefers-color-scheme:dark){:root{--ground:#0E131A;--ink:#E6EBF2;--ink2:#B4BECC;--accent:#7FAEEA;--on:#0E131A}}
+html,body{margin:0;min-height:100%;background:var(--ground);color:var(--ink);font:16px system-ui,-apple-system,"Segoe UI",sans-serif}
+main{min-height:100vh;display:grid;place-items:center;padding:24px 16px;box-sizing:border-box}
+div.c{max-width:360px;display:grid;gap:14px;text-align:center}
+img{width:84px;height:84px;border-radius:20px;justify-self:center;box-shadow:0 6px 20px rgba(0,0,0,.15)}
+h1{margin:0;font-weight:600;font-size:24px}p{margin:0;color:var(--ink2);font-size:15px;line-height:1.5}
+.note{background:rgba(29,79,145,.08);border-radius:10px;padding:10px 12px;color:var(--ink)}
+button{font:600 16px inherit;padding:12px;border-radius:10px;border:0;background:var(--accent);color:var(--on);cursor:pointer}
+</style></head><body><main><div class="c"><img src="/icon-180.png" alt="">
+<h1>Down for maintenance</h1>
+<p>Capitol Capital is being improved and will be back soon. Your Alpaca account and everything in it aren't affected.</p>
+${msg ? `<p class="note">${esc2(msg)}</p>` : ""}
+<button type="button" onclick="location.reload()">Check again</button>
+</div></main><script>setInterval(() => fetch("/api/maint", { credentials: "same-origin" }).then(r => r.json()).then(j => { if (!j.on) location.reload(); }).catch(() => {}), 60000);</script></body></html>`;
 }

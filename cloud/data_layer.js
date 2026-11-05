@@ -59,6 +59,7 @@ async function api(path, opts = {}) {
   let js = null;
   try { js = await r.json(); } catch (e) { if (r.ok) throw { code: "bad_json", message: "the results file is incomplete; try Refresh in a minute" }; }
   if (r.status === 404 && js?.error === "no-file") throw { code: "no_file" };
+  if (r.status === 503 && js?.error === "maintenance") { location.reload(); throw { code: "maintenance" }; }
   if (!r.ok) throw { code: js?.error || "http", why: js?.why, message: js?.message || ("error " + r.status), status: r.status };
   return { js, headers: r.headers };
 }

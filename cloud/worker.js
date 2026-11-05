@@ -10,7 +10,7 @@ const PREFIX = "cs-", PARK_PREFIX = "cs-park-", PARK_CHOICES = ["SPY", "VOO", "I
 const enc = new TextEncoder();
 import { vapid, saveSub, sendAll, getSubs } from "./push.js";
 import { readViewer, viewerAllowed, viewerApi, ownerAccounts, ownerAccount, ownerAccountLive,
-         ownerAccountTerms, ownerAccountsPost, authStart, authVerify, passkeyLoginOptions, passkeyLogin,
+         ownerAccountTerms, ownerAccountsPost, maintenance, maintPage, authStart, authVerify, passkeyLoginOptions, passkeyLogin,
          passkeyRegOptions, passkeyRegister, passkeyRemove, passkeyList, viewerCookie, checkFillsAll, deliverTo, viewerWidget } from "./accounts.js";
 
 export default {
@@ -80,6 +80,12 @@ async function page(req, env, url) {
   if (url.pathname === "/signin") return Response.redirect(url.origin + "/", 302);
   const who = await whoIs(req, env);
   if (who && who.role === "viewer" && !VIEWER_FILES.has(url.pathname)) return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
+  // maintenance: family accounts get the maintenance screen instead of the app (icons still load)
+  if (who && who.role === "viewer" && !PUBLIC_FILES.has(url.pathname)) {
+    const m = await maintenance(env);
+    if (m) return new Response(maintPage(m.msg), { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Retry-After": "300",
+      "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" } });
+  }
   if (who) {
     const r = await env.ASSETS.fetch(req);
     const h = new Headers(r.headers);
@@ -263,6 +269,10 @@ async function api(req, env, url, ctx) {
   // family accounts: only the routes on their allowlist; their own data is answered in accounts.js, the shared
   // read-only data (members, posts, charts, company facts) by the handlers below
   if (who.role === "viewer") {
+    // maintenance: nothing but the check the maintenance screen makes (and signing out)
+    const m = await maintenance(env);
+    if (p === "/api/maint") return json({ on: !!m });
+    if (m && p !== "/api/logout") return json({ error: "maintenance", message: "Down for maintenance" }, 503);
     if (!viewerAllowed(req.method, p)) return json({ error: "forbidden" }, 403);
     const quiet = Object.assign(Object.create(env), { __quiet: true });
     const r = await viewerApi(req, env, url, who.a, { live, vapid, getSubs, saveSub, sendAll, dispatch, fromR2, problem: wProblem, ok: wOk,
