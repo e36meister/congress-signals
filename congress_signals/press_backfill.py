@@ -222,6 +222,22 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
         return res
 
     unchecked = []
+    capped = []
+
+    # Nov 4-5: around 03:00 ET a handful of House sites stop answering (30-second read timeouts on every page and
+    # on the backup reader, ~13 tries each). Those few held the 4 House slots for minutes, so 271 then 363 other
+    # sites were never reached before the time limit. In the fast pass a House site now gets at most 60 s inside
+    # its slot; past that it gives the slot back and is retried in the slow pass below (one at a time), so one slow
+    # site can no longer starve the rest. Normal sites answer in about a second.
+    def fetch_capped(name, cap=60):
+        box = {}
+        t = threading.Thread(target=lambda: box.__setitem__("r", fetch(name)), daemon=True)
+        t.start()
+        t.join(cap)
+        if t.is_alive():
+            capped.append(name)
+            return None
+        return box.get("r")
 
     def one(name, slow=False):
         if not slow and time.time() > deadline:
@@ -229,7 +245,7 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
             return name, None, []
         if _is_house(name) and not slow:
             with house_gate:
-                res = fetch(name)
+                res = fetch_capped(name)
         else:
             res = fetch(name)
         if res is None:
@@ -278,9 +294,18 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
                  f"pages and feeds); {len(sen)} senator sites not read this run (their releases still come from "
                  f"Congress Press when it has them)")
 
+    # start at a different place each hour, so when the time limit is short it is not always the same
+    # alphabetical tail of sites that waits for the next run
+    if len(names) > 1 and only is None:
+        k = (int(time.time() // 3600) * 97) % len(names)
+        names = names[k:] + names[:k]
+
     added = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
         results = list(ex.map(one, names))
+    if capped:
+        _log(f"Latest press releases: {len(capped)} slow House site(s) took over 60 s and were moved to the "
+             f"one-at-a-time pass: " + ", ".join(sorted(capped)[:10]))
     # Oct 22: 7 then 23 House sites failed every hour with 12 readers at once (timeouts from the House firewall).
     # Sites that failed get a second, slow pass one at a time before they count as failed.
     again = [n for n, b, out in results if out is None]
