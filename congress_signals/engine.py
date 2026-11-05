@@ -4612,15 +4612,17 @@ def _portfolio(picks, px, idx, sign=1):
 
 
 def _select(rows, score_col, pct, per_week, blocked=None, short=False, per_member=None, skip_late=False,
-            net_sell=False, start=None):
+            net_sell=False, start=None, held_from=None):
     """Picks as filings arrive: each day's filings must clear the percentile of all EARLIER scores, best first,
     no re-buying an open ticker, at most `per_week` picks per week (used up day by day, first come first served,
     so a Monday pick never depends on what gets filed later that week), at most `per_member` per member each
-    week, and (optionally) no trades filed past the 45-day deadline."""
+    week, and (optionally) no trades filed past the 45-day deadline. held_from (live tool only): an earlier pick
+    blocks re-picking its ticker only if it was bought on/after this date; older picks the live account may never
+    have bought don't (the broker skips whatever the account really holds)."""
     rows = rows.sort_values("filed_date")
     rows = rows.assign(week=rows["filed_date"].dt.to_period("W-FRI"), day=rows["filed_date"].dt.normalize())
     hist = np.array([])
-    picks, held = [], {}
+    picks, held, held_in = [], {}, {}
     blocked = blocked or {}
     taken, by_member, cur_wk = 0, {}, None
     for (wk, day), g in rows.groupby(["week", "day"], sort=True):
@@ -4647,7 +4649,8 @@ def _select(rows, score_col, pct, per_week, blocked=None, short=False, per_membe
             if per_member and by_member.get(mk, 0) >= per_member:
                 continue
             t = r["ticker"]
-            if (held.get(t) is not None and r["entry_date"] <= held[t]) or \
+            if (held.get(t) is not None and r["entry_date"] <= held[t]
+                    and (held_from is None or held_in.get(t, held_from) >= held_from)) or \
                (blocked.get(t) is not None and r["entry_date"] <= blocked[t]):
                 continue
             r = r.copy()
@@ -4655,6 +4658,7 @@ def _select(rows, score_col, pct, per_week, blocked=None, short=False, per_membe
             r["prank"] = float(np.searchsorted(prev, r[score_col], side="left") / max(len(prev), 1) * 100)
             picks.append(r)
             held[t] = r["exit_date"]
+            held_in[t] = pd.Timestamp(r["entry_date"])
             taken += 1
             by_member[mk] = by_member.get(mk, 0) + 1
     return pd.DataFrame(picks).reset_index(drop=True), held
@@ -4682,9 +4686,11 @@ def live_picks(scored, px, cfg, grace_days=2, today=None):
         b.loc[newish, "exit_date"] = [d + BD(int(h)) for d, h in zip(b.loc[newish, "entry_date"], hold)]
     b = b[b["entry_px"].notna() | newish]           # the same rows the backtest picks from, plus the newest
     earliest = today - BD(grace_days)
+    # Owner, Nov 5: MSFT's Sep/Oct filings scored in the top 1% but were never bought, because the backtest still
+    # counted MSFT as held from a May pick the account never bought. Only picks in the buying window block now.
     picks, _ = _select(b, "score", cfg["PICK_PERCENTILE"], cfg["PICKS_PER_WEEK"],
                        per_member=cfg.get("MAX_PICKS_PER_MEMBER_WEEK"), skip_late=cfg.get("SKIP_LATE_FILINGS"),
-                       net_sell=cfg.get("NET_SELL_FILTER"))
+                       net_sell=cfg.get("NET_SELL_FILTER"), held_from=earliest)
     if not len(picks):
         return picks
     fresh = picks[pd.to_datetime(picks["entry_date"]) >= earliest].copy()
@@ -4704,7 +4710,8 @@ def fresh_small_rows(scored, cfg, grace_days=2, today=None):
     if "entry_px" in b:                    # newest filings have no price yet; small_cap_rows needs one
         b.loc[b["entry_px"].isna() & (b["filed_date"] >= today - pd.Timedelta(days=10)), "entry_px"] = 1.0
     pol = load_adaptive(cfg)["policy"]
-    rows = small_cap_rows(b, bool(pol.get("sleeve_coverage")), hold=int(pol.get("hold_sleeve", 250)))
+    rows = small_cap_rows(b, bool(pol.get("sleeve_coverage")), hold=int(pol.get("hold_sleeve", 250)),
+                          since=today - BD(grace_days + 1))
     if not len(rows):
         return rows
     first_entry = rows["filed_date"] + BD(1)
@@ -11195,7 +11202,7 @@ def analyst_features(tx, data):
 SMALL_ETF = "IWM"          # Russell 2000, the usual small-company benchmark
 
 
-def small_cap_rows(scored, coverage=False, hold=None):
+def small_cap_rows(scored, coverage=False, hold=None, since=None):
     """Purchases of companies under $2B (at the time), filed on time, at most one entry per stock per 30 days.
     With coverage=True, only companies at least one Wall Street analyst covered when the member bought."""
     b = scored[(scored["tx_type"] == "buy") & scored["entry_px"].notna()]
@@ -11208,7 +11215,8 @@ def small_cap_rows(scored, coverage=False, hold=None):
     keep, last = [], {}
     gap = max(30, int(hold * 7 / 5)) if hold else 30      # not again while the earlier position is still held
     for i, (t, d) in enumerate(zip(b["ticker"], b["filed_date"])):
-        if t in last and (d - last[t]).days < gap:
+        # since (live tool only): only entries in the buying window block a repeat; the broker skips real holdings
+        if t in last and (d - last[t]).days < gap and (since is None or last[t] >= since):
             continue
         last[t] = d
         keep.append(i)
