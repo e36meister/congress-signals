@@ -35,6 +35,7 @@ UA_WEB = {"User-Agent": "Mozilla/5.0 (compatible; CapitolCapital research)"}
 # (Retry-After when given, up to 30 s) before it counts as failed.
 import threading
 _GN_GATE = threading.Semaphore(2)
+_GN_WAITS = []          # (status) of each answer that was retried, for one summary line per run
 
 
 def _google_news(url):
@@ -44,6 +45,7 @@ def _google_news(url):
             r = requests.get(url, headers=UA_WEB, timeout=30)
         if r.status_code != 429 and r.status_code < 500 or wait is None:
             break
+        _GN_WAITS.append(r.status_code)
         try:
             wait = min(30, max(wait, int(r.headers.get("Retry-After") or 0)))
         except ValueError:
@@ -452,4 +454,8 @@ def run(api_h, holdings, candidates, info, member_trades, log, dry=False, force=
                            items=[{"l": f"{r['t']} {_fmt(r['move'])}: " + " ".join(r["lines"][1:2]), "u": f"/#movers/{r['t']}"} for r in new[:20]],
                            log=log)
     log(f"Why it moved: {len(items)} explanation(s) on file, {len(new)} new" + (" (alert sent)" if new else ""))
+    if _GN_WAITS:       # not a failure line: a request that still fails logs "Google News failed" on its own
+        log(f"Why it moved: Google News asked for a pause {len(_GN_WAITS)} time(s) "
+            f"({', '.join(sorted({str(c) for c in _GN_WAITS}))}); waited and asked again")
+        _GN_WAITS.clear()
     return res
