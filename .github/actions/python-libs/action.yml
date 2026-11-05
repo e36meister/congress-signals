@@ -1,0 +1,62 @@
+name: Python and the app's libraries
+description: >
+  Python 3.11 with requirements.txt (and requirements-ml.txt when ml is true) in a ready-made virtual environment.
+  Owner, Nov 5 2026: don't spend resources for nothing. The quick check ran ~200 times a day and spent 24 s of its
+  ~45 s re-installing the same libraries every time (the hourly posts job: 56 s). Now the installed environment is
+  reused: on GitHub's machines it is restored from the Actions cache (a few seconds), and on a home PC runner it
+  stays on disk when CC_VENV_ROOT is set (no download at all). It is rebuilt only when a requirements file or the
+  Python version changes, plus once a week so the library installed from GitHub (python-statement) stays current.
+inputs:
+  ml:
+    description: "true: also the sentiment model's libraries (torch, transformers)"
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - id: env
+      shell: bash
+      run: |
+        files="requirements.txt"; name=base
+        if [ "${{ inputs.ml }}" = "true" ]; then files="$files requirements-ml.txt"; name=ml; fi
+        py=$(python -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')
+        stamp="$(cat $files | sha256sum | cut -c1-16)-$py-$(date -u +%G-%V)"
+        if [ -n "${CC_VENV_ROOT:-}" ]; then dir="$CC_VENV_ROOT/cc-venv-$name"; local=1
+        else dir="$RUNNER_TEMP/cc-venv-$name"; local=0; fi
+        echo "files=$files" >> "$GITHUB_OUTPUT"
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+        echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+        echo "local=$local" >> "$GITHUB_OUTPUT"
+        echo "key=venv-$name-${{ runner.os }}-${{ runner.arch }}-$stamp" >> "$GITHUB_OUTPUT"
+
+    - if: steps.env.outputs.local == '0'
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.env.outputs.dir }}
+        key: ${{ steps.env.outputs.key }}
+
+    - shell: bash
+      run: |
+        dir="${{ steps.env.outputs.dir }}"; stamp="${{ steps.env.outputs.stamp }}"
+        mkdir -p "$(dirname "$dir")"
+        (
+          flock 9      # a home PC can start two jobs at once; only one builds
+          if [ -x "$dir/bin/python" ] && [ "$(cat "$dir/.stamp" 2>/dev/null)" = "$stamp" ] && "$dir/bin/python" -c "import requests, pandas" 2>/dev/null; then
+            echo "Libraries: reusing the ready environment ($stamp)"
+          else
+            echo "Libraries: building the environment ($stamp)"
+            python -m venv --clear "$dir"
+            req=""; for f in ${{ steps.env.outputs.files }}; do req="$req -r $f"; done
+            ok=0
+            for i in 1 2 3 4; do       # retry: the package server occasionally hiccups
+              "$dir/bin/pip" install -q --retries 5 --timeout 60 $req && { ok=1; break; }; sleep $((i * 20))
+            done
+            [ $ok = 1 ] || { echo "::error::Libraries couldn't be installed"; exit 1; }
+            echo "$stamp" > "$dir/.stamp"
+          fi
+        ) 9>"$dir.lock"
+        echo "$dir/bin" >> "$GITHUB_PATH"
+        echo "VIRTUAL_ENV=$dir" >> "$GITHUB_ENV"

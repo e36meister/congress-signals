@@ -1,7 +1,8 @@
 """The app's data files in Cloudflare R2, where the Capitol Capital app (phone and capitolcapital.cc) reads them.
 Since Nov 5 2026 (owner: nothing uses Google Drive) R2 is the only home of dashboard_data.json, so the jobs that
 change it read it with read_dashboard() (never mistakes an outage for an empty file) and save it with
-save_dashboard(). Does nothing until CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are set.
+save_dashboard(). The daily backup (backups/dashboard_data_<date>.json) is made by the Worker at 05:41 UTC,
+inside Cloudflare. Does nothing until CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are set.
 put/get never raise: a failed upload only logs a line (no balances or positions are ever logged)."""
 import os, json, time, datetime as dt
 import requests
@@ -110,20 +111,6 @@ def save_dashboard(d, log=print):
         d = json.dumps(d).encode()
     return put(DASH, d, log)
 
-
-def backup_dashboard(log=print):
-    """A dated copy of dashboard_data.json under backups/ (once a day, from the daily update): with Google Drive
-    retired, this is what to restore from if the main copy is ever damaged."""
-    if not (os.environ.get("CLOUDFLARE_API_TOKEN") and os.environ.get("CLOUDFLARE_ACCOUNT_ID")):
-        return False                # test runs have no Cloudflare keys
-    try:
-        raw = get_strict(DASH)
-    except ReadError as e:
-        log(f"Cloudflare: dashboard backup failed (couldn't read it: {e})")
-        return False
-    if not raw:
-        return False
-    return put(f"backups/dashboard_data_{dt.date.today().isoformat()}.json", raw, log)
 
 def delete(name, log=print):
     """Remove one object from R2. True when it's gone."""

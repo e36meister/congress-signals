@@ -13,11 +13,8 @@ jobs:
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-      - run: for i in 1 2 3; do pip install -q -r requirements.txt && exit 0; sleep 20; done; exit 1
+      - name: Python and libraries (ready-made, reused)
+        uses: ./.github/actions/python-libs
       - name: Restore the saved data (read-only; nothing is saved back)
         uses: actions/cache/restore@v4
         with:

@@ -749,7 +749,6 @@ def main():
     except Exception as e:
         E.log(f"Broker: skipped this run ({type(e).__name__})")
     save_dashboard_file(os.path.join(cfg["DATA_DIR"], "dashboard_data.json"))
-    cloud_store.backup_dashboard(E.log)        # dated copy under backups/ (Drive used to be the second copy)
     try:
         send_weekly_summary()
     except Exception as e:

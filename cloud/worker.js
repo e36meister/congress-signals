@@ -53,8 +53,20 @@ export default {
     await step("senate-reminder", "Sending the Senate filings reminder", () => senateReminder(env, new Date(ev.scheduledTime)));
     await step("digest", "Sending the data-health summary", () => sendDigest(env, new Date(ev.scheduledTime)));
     if (min === 7) await step("posts", "Starting the hourly posts job", () => dispatch(env, "posts.yml", {}));
+    // Nov 5 (owner): one backup a day, done where the data already is (R2 to R2, no GitHub runner), at a quiet time:
+    // 05:41 UTC (00:41 ET) is after the close report and before the morning update
+    const t = new Date(ev.scheduledTime);
+    if (t.getUTCHours() === 5 && min === 41) await step("backup", "Saving the daily backup of the app's data", () => backupDashboard(env, t));
   },
 };
+
+async function backupDashboard(env, t) {
+  const o = await env.DATA.get("dashboard_data.json");
+  if (!o) throw new Error("dashboard_data.json isn't there to back up");
+  const body = await o.arrayBuffer();
+  if (body.byteLength < 1000) throw new Error(`dashboard_data.json is only ${body.byteLength} bytes; not saved over a backup`);
+  await env.DATA.put(`backups/dashboard_data_${t.toISOString().slice(0, 10)}.json`, body, { httpMetadata: { contentType: "application/json" } });
+}
 
 // ---------- the app itself: only the icon, manifest and alert worker are public ----------
 // Everything else (the app page, its code, the profile photo) needs the login cookie.
