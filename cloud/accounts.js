@@ -464,7 +464,7 @@ export async function ownerAccountLive(env, url, live) {
   return live(env, c, true);
 }
 // POST /api/accounts {action, ...}
-export async function ownerAccountsPost(req, env, url, dispatch) {
+export async function ownerAccountsPost(req, env, url, dispatch, sendAll) {
   const b = await body(req), act = String(b.action || "");
   if (act === "add") {
     const label = String(b.label || "").trim().slice(0, 40), email = String(b.email || "").trim().toLowerCase();
@@ -485,8 +485,16 @@ export async function ownerAccountsPost(req, env, url, dispatch) {
   }
   if (act === "maint") {
     const on = b.on === true, msg = String(b.msg || "").trim().slice(0, 300);
+    const was = await maintenance(env);
     await put(env, "accounts/maintenance.json", { on, msg, at: new Date().toISOString() });
-    return json({ ok: true, message: on ? "Maintenance is on: family accounts see the maintenance screen." : "Maintenance is off: family accounts can use the app again." });
+    // over: tell every family account (push to their phones, and kept in their Alerts list)
+    let told = 0;
+    if (!on && was && sendAll) {
+      for (const a of (await listAccounts(env)).filter(x => x.status !== "disabled")) {
+        try { await deliverTo(env, a.id, { title: "Capitol Capital is back", body: "Maintenance is over. Open the app to see the latest.", tag: "maint", url: "/" }, sendAll, true); told++; } catch (e) {}
+      }
+    }
+    return json({ ok: true, message: on ? "Maintenance is on: family accounts see the maintenance screen." : `Maintenance is off: family accounts can use the app again.${told ? ` A notification went to ${told} account${told === 1 ? "" : "s"}.` : ""}` });
   }
   if (act === "hold") {
     const on = b.on === true;
@@ -1129,8 +1137,7 @@ h1{margin:0;font-weight:600;font-size:24px}p{margin:0;color:var(--ink2);font-siz
 button{font:600 16px inherit;padding:12px;border-radius:10px;border:0;background:var(--accent);color:var(--on);cursor:pointer}
 </style></head><body><main><div class="c"><img src="/icon-180.png" alt="">
 <h1>Down for maintenance</h1>
-<p>Capitol Capital is being improved and will be back soon. Your Alpaca account and everything in it aren't affected.</p>
+<p>Capitol Capital is being improved and will be back soon. Your Alpaca account and everything in it aren't affected. We'll send you a notification when it's back.</p>
 ${msg ? `<p class="note">${esc2(msg)}</p>` : ""}
-<button type="button" onclick="location.reload()">Check again</button>
 </div></main><script>setInterval(() => fetch("/api/maint", { credentials: "same-origin" }).then(r => r.json()).then(j => { if (!j.on) location.reload(); }).catch(() => {}), 60000);</script></body></html>`;
 }

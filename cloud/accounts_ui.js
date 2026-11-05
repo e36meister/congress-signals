@@ -624,7 +624,7 @@ document.addEventListener("click", ev => {
     const M = ACC.maint || { on: true };
     if (mb.dataset.accmaintmsg) { const t = prompt("A note on the maintenance screen (leave empty for none):", M.msg || ""); if (t == null) return; accPost({ action: "maint", on: true, msg: t }); return; }
     const on = mb.dataset.accmaint === "1";
-    if (!confirm(on ? "Start maintenance? Every family account sees a maintenance screen instead of the app until you end it." : "End maintenance? Family accounts can use the app again right away.")) return;
+    if (!confirm(on ? "Start maintenance? Every family account sees a maintenance screen instead of the app until you end it." : "End maintenance? Family accounts can use the app again right away, and each gets a notification that it's back.")) return;
     accPost({ action: "maint", on, msg: M.msg || "" }); return;
   }
   const hb = ev.target.closest("[data-acchold]");

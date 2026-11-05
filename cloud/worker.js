@@ -292,7 +292,7 @@ async function api(req, env, url, ctx) {
   if (p === "/api/me/passkey" && req.method === "POST") return passkeyRegister(req, env, url, "owner");
   if (p === "/api/me/passkey/remove" && req.method === "POST") return passkeyRemove(req, env, "owner");
   if (p === "/api/me/passkeys" && req.method === "GET") return passkeyList(env, "owner");
-  if (p === "/api/accounts" && req.method === "POST") return ownerAccountsPost(req, env, url, dispatch);
+  if (p === "/api/accounts" && req.method === "POST") return ownerAccountsPost(req, env, url, dispatch, sendAll);
   if (p === "/api/data" && req.method === "GET") return fromR2(req, env, "dashboard_data.json");
   if (p === "/api/charts" && req.method === "GET") return fromR2(req, env, "ticker_charts.json");
   if (p === "/api/members" && req.method === "GET") return fromR2(req, env, "members/index.json");
