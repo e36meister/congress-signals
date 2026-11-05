@@ -19,10 +19,13 @@ H = {"APCA-API-KEY-ID": os.environ.get("ALPACA_PAPER_KEY_ID", ""), "APCA-API-SEC
 def daily(sym):
     out, tok = [], None
     while True:
-        p = {"timeframe": "1Day", "start": "2015-12-01", "end": "2026-11-05", "limit": 10000, "adjustment": "all", "feed": "sip"}
+        p = {"timeframe": "1Day", "start": "2015-12-01", "end": (pd.Timestamp.now(tz="America/New_York").normalize() - pd.Timedelta(days=1)).strftime("%Y-%m-%d"), "limit": 10000, "adjustment": "all", "feed": "sip"}
         if tok:
             p["page_token"] = tok
-        js = requests.get(f"https://data.alpaca.markets/v2/stocks/{sym}/bars", headers=H, params=p, timeout=60).json()
+        r = requests.get(f"https://data.alpaca.markets/v2/stocks/{sym}/bars", headers=H, params=p, timeout=60)
+        if not r.ok:
+            raise RuntimeError(f"{sym} prices: HTTP {r.status_code} {r.text[:120]}")
+        js = r.json()
         out += js.get("bars") or []
         tok = js.get("next_page_token")
         if not tok:
