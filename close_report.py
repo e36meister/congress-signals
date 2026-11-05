@@ -179,6 +179,94 @@ def sp100_mix(api, pts, flows, spy, today):
             "trading_days": len(out["dates"]) - 1}
 
 
+def _et(ts):
+    """An Alpaca UTC time as New York (date, minutes after midnight)."""
+    t = dt.datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=dt.timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        t = t.astimezone(ZoneInfo("America/New_York"))
+    except Exception:
+        t = t - dt.timedelta(hours=5)
+    return t.date().isoformat(), t.hour * 60 + t.minute
+
+
+def _spy_at(bars, ts):
+    """SPY at the moment of a fill: the open if it filled during market hours, the last close before it if it filled
+    before the open (pre-market), that day's close if after hours."""
+    d, m = _et(ts)
+    days = sorted(bars)
+    if d in bars and 570 <= m < 960:
+        return bars[d]["o"]
+    if d in bars and m >= 960:
+        return bars[d]["c"]
+    prior = [x for x in days if x < d]
+    return bars[prior[-1]]["c"] if prior else None
+
+
+def version_results(api, today, spy_now):
+    """Owner, Nov 5: the tool's live results per strategy version. Each holding the tool started (buys until the
+    share count is back to zero) belongs to the version in force at its first fill; its result is everything sold
+    plus what's still held, against the money put in, next to SPY over the same days (fills priced at the open,
+    pre-market at the prior close). Money-weighted. Dividends aren't counted (small)."""
+    import cloud_store, strategy_versions as SV
+    vs = SV.load(cloud_store)
+    if not vs:
+        return None
+    orders = broker._filled_orders(api)
+    held = {p["symbol"]: float(p.get("current_price") or 0) for p in api.get("/v2/positions") or []}
+    start = min(o["filled_at"] for o in orders)[:10] if orders else today
+    r = requests.get("https://data.alpaca.markets/v2/stocks/SPY/bars", headers=api.h, timeout=30,
+                     params={"timeframe": "1Day", "start": start, "feed": "iex", "limit": 1000, "adjustment": "all"})
+    bars = {b["t"][:10]: {"o": float(b["o"]), "c": float(b["c"])} for b in r.json().get("bars") or []}
+    by = {}
+    for o in sorted(orders, key=lambda o: o["filled_at"]):
+        by.setdefault(o["symbol"], []).append(o)
+    segs = []
+    for sym, os_ in by.items():
+        qty, seg = 0.0, None
+        for o in os_:
+            q, px = float(o["filled_qty"]), float(o["filled_avg_price"])
+            if o["side"] == "buy":
+                if qty <= 1e-6:
+                    seg = {"sym": sym, "first": o, "cost": 0.0, "proceeds": 0.0, "spy_cost": 0.0, "open": True}
+                    segs.append(seg)
+                qty += q
+                seg["cost"] += q * px
+                s0 = _spy_at(bars, o["filled_at"])
+                seg["spy_cost"] += q * px / s0 if s0 else 0.0          # SPY units the same money would buy
+            elif seg is not None:
+                qty -= q
+                seg["proceeds"] += q * px
+                s1 = _spy_at(bars, o["filled_at"])
+                seg["spy_sold"] = seg.get("spy_sold", 0.0) + (seg["spy_cost"] * min(1.0, q / max(qty + q, 1e-9))) * (s1 or 0)
+                seg["spy_cost"] *= max(0.0, 1 - min(1.0, q / max(qty + q, 1e-9)))
+                if qty <= 1e-6:
+                    seg["open"], qty = False, 0.0
+        if seg is not None and seg["open"]:
+            seg["proceeds"] += qty * held.get(sym, 0.0)
+            seg["spy_sold"] = seg.get("spy_sold", 0.0) + seg["spy_cost"] * (spy_now or 0)
+            seg["spy_cost"] = 0.0
+    out = []
+    for v in [None] + [x["v"] for x in vs]:
+        rows = [s for s in segs
+                if (s["first"].get("client_order_id") or "").startswith(broker.PREFIX)
+                and not (s["first"].get("client_order_id") or "").startswith(broker.PARK_PREFIX)
+                and SV.version_at(vs, s["first"]["filled_at"]) == v]
+        meta = next((x for x in vs if x["v"] == v), None)
+        cost = sum(s["cost"] for s in rows)
+        if not rows and v is None:
+            continue
+        ret = (sum(s["proceeds"] for s in rows) / cost - 1) if cost else None
+        spy = (sum(s.get("spy_sold", 0.0) for s in rows) / cost - 1) if cost else None
+        out.append({"v": v, "label": f"v{v}" if v else "Before version stamps",
+                    "start": meta["start"] if meta else None, "by": meta["by"] if meta else None,
+                    "what": meta["what"] if meta else ["buys before Nov 5 2026"],
+                    "trades": len(rows), "open": sum(1 for s in rows if s["open"]),
+                    "ret": None if ret is None else round(ret * 100, 2), "spy": None if spy is None else round(spy * 100, 2),
+                    "diff": None if ret is None or spy is None else round((ret - spy) * 100, 2)})
+    return out
+
+
 def _expected(horizons, group, days):
     """What the backtest's average trade in this group did vs the S&P after about `days` trading days."""
     rows = [h for h in horizons or [] if h.get("Group") == group and h.get("Holding period") in HORIZON_DAYS]
@@ -351,6 +439,12 @@ def main():
         sleeves.append({"name": label, "positions": len(rows), "avg_days": held, "ret": r, "spy": spr,
                         "diff": (r - spr) if spr is not None else None, "expected": _expected(horizons, hgroup, held)})
 
+    versions, ver_err = None, None
+    try:
+        versions = version_results(api, today, spy_now)
+    except Exception as e:
+        ver_err = f"{type(e).__name__}: {str(e)[:120]}"
+        E.log(f"Close report: results per strategy version FAILED ({ver_err}); the next close tries again")
     acct = series["account"][-1] if series["account"] else 0.0
     spyc = series["spy"][-1] if series["spy"] else None
     report = {"date": today, "equity": snap["equity"], "day_pl": snap.get("day_pl"), "since_start": acct,
@@ -363,7 +457,9 @@ def main():
               "vs_spy_dollars": (pts[-1][1] - shadow_now) if (pts and shadow_now) else None,
               "put_in": (pts[-1][1] / (1 + series["account"][-1] / 100)) if pts and series["account"] else None,
               "sp100_mix": mix if mix is not None else (data.get("close_report") or {}).get("sp100_mix"),
-              "sp100_mix_error": mix_err}
+              "sp100_mix_error": mix_err,
+              "versions": versions if versions is not None else (data.get("close_report") or {}).get("versions"),
+              "versions_error": ver_err}
     data["close_report"] = report
     data["portfolio"] = {**snap, "limits": (data.get("portfolio") or {}).get("limits") or snap["limits"]}
     hist_list = [h for h in data.get("close_history", []) if h.get("date") != today]
@@ -507,6 +603,16 @@ def build_email(rep, mode, snap, data, chart=False):
     elif rep.get("sp100_mix_error"):
         live_test = f"<div style='color:{red}'>The live test couldn't be updated today ({rep['sp100_mix_error']}).</div>"
 
+    vrows = ""
+    for v in rep.get("versions") or []:
+        vrows += (f"<tr><td style='padding:3px 12px 3px 0'>{v['label']}</td>"
+                  f"<td align='right' style='padding:3px 12px 3px 0;color:{grey}'>{v['trades']}</td>"
+                  f"<td align='right' style='padding:3px 12px 3px 0;font-family:Menlo,Consolas,monospace'>{pct(v['ret'], 1)}</td>"
+                  f"<td align='right' style='font-family:Menlo,Consolas,monospace;color:{col(v['diff'])}'>{pct(v['diff'], 1)}</td></tr>")
+    ver_tbl = (f"<table cellspacing='0' cellpadding='0' style='font-size:14px'><tr style='color:{grey};font-size:12px'>"
+               f"<td style='padding-bottom:4px'>Version</td><td align='right' style='padding:0 12px 4px 0'>Buys</td>"
+               f"<td align='right' style='padding:0 12px 4px 0'>Return</td><td align='right' style='padding-bottom:4px'>vs S&amp;P</td></tr>{vrows}</table>") if vrows else ""
+
     from congress_signals import mail
     chart_link, has_chart = mail.app_url("/#port"), chart
     h = lambda t: f"<div style='font:600 12px Arial;letter-spacing:.8px;color:{grey};text-transform:uppercase;margin:22px 0 6px'>{t}</div>"
@@ -522,6 +628,7 @@ def build_email(rep, mode, snap, data, chart=False):
             f"{h('Today’s biggest moves')}<table cellspacing='0' cellpadding='0' style='font-size:14px'>{movers}</table>"
             f"{h('Each strategy') + strat if strat else ''}"
             f"{h('Live test: S&amp;P 100 fund + picks') + live_test if live_test else ''}"
+            f"{h('Tool’s buys by strategy version') + ver_tbl if ver_tbl else ''}"
             f"{h('Coming up')}" + "".join(f"<div style='margin:3px 0'>{x}</div>" for x in nxt) +
             f"<p style='font-size:12px;color:{grey};margin:16px 2px 0'>“Since {start_txt}” is the whole account, including "
             f"your own buys and Buy/Sell-button trades, not only the tool’s. The tool’s buys usually fill in the evening or "

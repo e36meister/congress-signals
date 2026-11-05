@@ -313,6 +313,13 @@ def trade_now(scored, px):
         .set_index("ticker")["market_cap"].dropna().to_dict() if "market_cap" in scored else {}
     helpers = {"last": last, "msales": msales, "phist": phist, "caps": caps, "bill_hold": bill_hold_lookup(scored),
                "manual_eval": manual_eval(scored, px)}
+    # Owner, Nov 5: log a new strategy version whenever the rules changed (by hand or by the weekly check), before
+    # any buy, so every buy belongs to the version that picked it
+    try:
+        import strategy_versions as SV, cloud_store as CS
+        SV.stamp(cfg, E.load_adaptive(cfg), float(os.environ.get("SMALL_SLEEVE_PCT") or 30), CS, E.log)
+    except Exception as e:
+        E.log(f"Strategy versions: FAILED ({type(e).__name__}: {str(e)[:150]})")
     try:
         live_p, small_f = E.live_picks(scored, px, cfg), E.fresh_small_rows(scored, cfg)
         E.log(f"Live picks: {len(live_p)} fresh main pick(s) {list(live_p['ticker'])[:8] if len(live_p) else ''}, "

@@ -600,7 +600,7 @@ nav.tabs button{overflow:hidden}
 
 <script>
 (() => {
-const APP_BUILD = '0.1.dev-a34f034', APP_BUILT = '2026-11-05T18:36+00:00', APP_SHA = 'a34f034';
+const APP_BUILD = '0.1.dev-5a881e0', APP_BUILT = '2026-11-05T21:23+00:00', APP_SHA = '5a881e0';
 // ---------- family accounts (owner, Nov 2 2026) ----------
 // A family account sees Today (Buy candidates only), Members, Alerts, its own Account and a short More menu (company
 // search, notifications, settings, questions, bug report). The server only answers those (cloud/accounts.js); this
@@ -2778,6 +2778,18 @@ function mixSection(c) {
   ${m.series?.dates?.length > 1 ? `<div class="chart" id="mixchart"></div>` : ""}
   <p class="foot">Tracked, not traded: an account keeping ${m.fund_pct}% in an S&amp;P 100 fund (${esc(m.fund)}, the biggest companies) and ${100 - m.fund_pct}% in this paper account, rebalanced to ${m.fund_pct}/${100 - m.fund_pct} at the first close of each month, from the same day as the S&amp;P. In the backtest this mix was ahead of the S&amp;P in every period, but not by enough to be sure. Review ${esc(m.review)}.</p>`;
 }
+// owner, Nov 5 2026: the tool's live results per strategy version (each version = the rules between two changes)
+function versionSection(c) {
+  const V = c.versions || [];
+  if (!V.length) return c.versions_error ? `<div class="empty">Results by strategy version couldn't be updated today (${esc(c.versions_error)}).</div>` : "";
+  const row = v => `<tr><td><b>${esc(v.label)}</b>${v.start ? `<div class="foot">from ${esc(fmtDate(v.start.slice(0, 10)))} · ${esc(v.by || "")}</div>` : ""}<div class="foot">${(v.what || []).map(esc).join("; ")}</div></td>
+    <td class="n">${v.trades}${v.open ? `<div class="foot">${v.open} open</div>` : ""}</td><td class="n ${cls(v.ret)}">${v.ret == null ? "–" : pnum(v.ret, 2)}</td>
+    <td class="n">${v.spy == null ? "–" : pnum(v.spy, 2)}</td><td class="n ${cls(v.diff)}">${v.diff == null ? "–" : pnum(v.diff, 2)}</td></tr>`;
+  return `<h3 style="margin:18px 0 6px">Tool's buys by strategy version</h3>
+  <div class="tbl"><table><thead><tr><th>Version</th><th class="n">Buys</th><th class="n">Return</th><th class="n">S&amp;P same days</th><th class="n">Difference</th></tr></thead><tbody>
+  ${V.slice().reverse().map(row).join("")}</tbody></table></div>
+  <p class="foot">A new version starts whenever the rules change, whether you change them or the weekly check switches a setting on its own. Each buy counts toward the version that picked it, so changes never mix into earlier versions' records. Money-weighted, sold plus still held, next to the same money in the S&amp;P over the same days; dividends not counted. A new version needs months of buys before its number means much.</p>`;
+}
 function closeSection(d) {
   const c = d.close_report;
   if (!c) return `<section class="panel"><div class="ph"><h2>Paper account vs the backtest</h2></div><div class="empty">The first market-close report arrives after today's close (about 4:15 PM ET).</div></section>`;
@@ -2795,6 +2807,7 @@ function closeSection(d) {
   </tbody></table></div>` : ""}
   <p class="foot">"Backtest expects" is how the backtest's average pick in that group did against the S&amp;P after about the same number of days. Over the first few weeks, day-to-day swings swamp any edge, so the comparison means more with time.</p>
   ${mixSection(c)}
+  ${versionSection(c)}
   ${daysSection(d)}
   </section>`;
 }
