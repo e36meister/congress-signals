@@ -212,7 +212,11 @@ header.top .brand{padding-right:96px}
 .al.unread{border-left:4px solid var(--accent)}
 .al .at{font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center}
 .al .tt{font-weight:600}
-.al .bd{font-size:13.5px;color:var(--ink2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.al .bd{font-size:13.5px;color:var(--ink2);white-space:pre-line;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.al ul.ali{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:8px}.al ul.ali li{display:grid;gap:4px;padding-top:8px;border-top:1px solid var(--rule)}
+.al ul.ali .alk{display:flex;gap:8px;flex-wrap:wrap}
+.al ul.ali .alk .tag{font:600 12.5px var(--body);padding:6px 12px;border-radius:999px;border:1px solid var(--rule);background:var(--sunken);color:var(--ink2);text-decoration:none;min-height:32px;display:inline-flex;align-items:center}
+.al ul.ali .alk .tag.go{background:var(--accent);color:var(--surface);border-color:var(--accent)}
 .al.open .bd{-webkit-line-clamp:unset;display:block}
 .al ul{margin:4px 0 0;padding:0;list-style:none;display:grid;gap:4px}
 .al li a,.al li button{font:inherit;font-size:13.5px;color:var(--accent);background:none;border:0;padding:4px 0;text-align:left;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
@@ -2876,8 +2880,8 @@ function renderAlerts() {
     const isOpen = ALERTS.open === a.id, many = (a.items || []).length > 1;
     return `<div class="alw" data-alw="${esc(a.id)}"><div class="alx" aria-hidden="true">Clear</div><div class="al ${Date.parse(a.at) > before ? "unread" : ""} ${isOpen ? "open" : ""}" data-hl="alert:${esc(a.id)}" data-alert="${esc(a.id)}" role="button" tabindex="0">
       <div class="at">${alertTags(a).map(([l, c]) => `<span class="chip ${c}">${esc(l)}</span>`).join("")}${esc(ago(a.at))} · ${esc(fmtET(a.at))}</div>
-      <div class="tt">${esc(a.title)}</div>${a.body ? `<div class="bd">${esc(a.body)}</div>` : ""}
-      ${many && isOpen ? `<ul>${a.items.map(x => `<li>${x.u ? `<button type="button" data-go="${esc(x.u)}">${esc(x.l)}</button>` : esc(x.l)}${x.x ? ` · <a href="${esc(x.x)}" target="_blank" rel="noopener">Go to post</a>` : ""}</li>`).join("")}</ul>` :
+      <div class="tt">${esc(a.title)}</div>${a.body && !(many && isOpen) ? `<div class="bd">${esc(a.body)}</div>` : ""}
+      ${many && isOpen ? `<ul class="ali">${a.items.map(x => `<li><span>${esc(x.l)}</span>${x.u || x.x ? `<span class="alk">${x.u ? `<button type="button" class="tag" data-go="${esc(x.u)}">${a.kind === "posts" || /^\/#post\//.test(x.u) ? "Open in app" : "Open"}</button>` : ""}${x.x ? `<a class="tag go" href="${esc(x.x)}" target="_blank" rel="noopener">Go to post</a>` : ""}</span>` : ""}</li>`).join("")}</ul>` :
         many ? `<div class="foot">${a.items.length} items · tap to see them</div>` : ""}
     </div></div>`;
   };

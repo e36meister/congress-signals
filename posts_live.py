@@ -167,6 +167,20 @@ for x in items + hidden:
 cut60 = (today - dt.timedelta(days=60)).isoformat()
 watch["posts"] = [w for w in {w["id"]: w for w in watch["posts"]}.values() if w.get("d", "") >= cut60][-3000:]
 seen_hits = set(watch.get("hit") or [])
+# Nov 5 (owner): alert lines name each person once, by last name ("Capito sold ZTS 2 days after Warren's post about
+# healthcare"), not "Elizabeth Warren: Shelley Capito sold ZTS 2 day(s) after Elizabeth Warren's post ..."
+_SUFFIX = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}
+
+
+def short_name(n):
+    parts = [p for p in str(n or "").split(",")[0].split() if p.lower() not in _SUFFIX]
+    return parts[-1] if parts else str(n or "")
+
+
+def after_days(n):
+    return "the same day" if n == 0 else "1 day" if n == 1 else f"{n} days"
+
+
 ptt = []
 if sc_all is not None and len(sc_all):
     st_ = sc_all[pd.to_datetime(sc_all["trade_date"], errors="coerce") >= pd.Timestamp(cut60)]
@@ -186,8 +200,12 @@ if sc_all is not None and len(sc_all):
                 continue
             seen_hits.add(key)
             days = (td - d0).days
-            ptt.append({"w": w, "line": f"{str(m).split(',')[0]} {'bought' if ty == 'buy' else 'sold'} {t} {days} day(s) after "
-                                         f"{w['who']}'s post" + ("" if by_co else f" hinting at {sec.lower()}")})
+            a_, p_ = short_name(m), short_name(w["who"])
+            if a_ == p_:                       # two members with the same last name: full names
+                a_, p_ = str(m).split(",")[0], w["who"]
+            ptt.append({"w": w, "line": f"{a_} {'bought' if ty == 'buy' else 'sold'} {t} "
+                                         + (f"{after_days(days)} after {p_}'s post" if days else f"the same day as {p_}'s post")
+                                         + ("" if by_co else f" hinting at {sec.lower()}")})
 watch["hit"] = sorted(seen_hits)[-5000:]
 cloud_store.put("posts/watch.json", json.dumps(watch, default=str), E.log)
 for h in ptt:          # the post goes in the feed (even a non-trader's), with what happened after it
@@ -265,11 +283,18 @@ cloud_store.put("posts/feed.json", json.dumps(feed, default=str), E.log)
 # one phone alert for this hour's notable posts (none on the very first run, which only learns what exists)
 top = sorted([x for x in items if x["lvl"] >= 3], key=lambda x: -x["lvl"])     # push: the four alert kinds only
 if top and not first:
-    lines = [f"{x['who']}: {x['why'][0]}" for x in top[:3]]
-    title = (f"{len(top)} notable post(s)" if len(top) > 1 else f"Post: {top[0]['who']}")[:120]
-    links = [{"l": f"{x['who']}: {x['why'][0]}", "u": f"/#post/{x['id']}", "x": x.get("url")} for x in top[:20]]
+    # Nov 5 (owner): one short line per post (a "post, then trade" line already names both people; others start with
+    # the poster's last name), one per row in the notification, and in the app each line sits with its own links
+    def aline(x):
+        return x["why"][0] if x.get("src") == "Post, then trade" else f"{short_name(x['who'])}: {x['why'][0]}"
+    lines = [aline(x) for x in top]
+    n_pt = sum(1 for x in top if x.get("src") == "Post, then trade")
+    title = ((f"{len(top)} trades after members' posts" if n_pt == len(top) else f"{len(top)} notable posts") if len(top) > 1
+             else ("Trade after a member's post" if n_pt else f"Post: {top[0]['who']}"))[:120]
+    body = "\n".join(lines[:3]) + (f"\n+{len(top) - 3} more" if len(top) > 3 else "")
+    links = [{"l": aline(x), "u": f"/#post/{x['id']}", "x": x.get("url")} for x in top[:20]]
     # one post: tapping opens it in the app; several: the alert opens in the Alerts tab with each post listed
-    cloud_store.notify(title, " · ".join(lines)[:600], "posts", links[0]["u"] if len(top) == 1 else "", E.log, items=links)
+    cloud_store.notify(title, body[:600], "posts", links[0]["u"] if len(top) == 1 else "", E.log, items=links)
     E.log(f"Live posts: alert sent for {len(top)} notable post(s)")
 elif first:
     E.log("Live posts: first run; learned what's already out there, no alert")
