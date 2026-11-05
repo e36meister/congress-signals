@@ -2111,8 +2111,10 @@ def post_features(tx, cfg, idx=None):
        days before the trade (at least 3 posts).
     f_post_tone_clash: bought within 60 days after posting critically about the company, or sold after praising it.
     f_post_crowd: 3+ different members named the company in posts in the 14 days before the filing date.
+    f_post_other_named: another member named the company in their own post (not a repost) in the 30 days before the
+       trade (owner, Nov 5: the "trade after another member's post" alert, off until this passes the weekly check).
     Only posts dated before the trade (or the filing, for the crowd signal) count."""
-    for c in ("f_post_named_before", "f_post_sector_burst", "f_post_tone_clash", "f_post_crowd"):
+    for c in ("f_post_named_before", "f_post_sector_burst", "f_post_tone_clash", "f_post_crowd", "f_post_other_named"):
         tx[c] = 0.0
     tx["post_note"] = ""
     root = cfg.get("SOCIAL_DIR") or "social"
@@ -2125,7 +2127,14 @@ def post_features(tx, cfg, idx=None):
     bio = tx["bioguide"] if "bioguide" in tx else pd.Series([None] * len(tx), index=tx.index)
     td = pd.to_datetime(tx["trade_date"].where(tx["trade_date"].notna(), tx["filed_date"]))
     fd = pd.to_datetime(tx["filed_date"])
-    f1, f2, f3, f4 = (np.zeros(len(tx)) for _ in range(4))
+    f1, f2, f3, f4, f5 = (np.zeros(len(tx)) for _ in range(5))
+    by_t = {}                     # ticker -> (dates, members) of members' own posts naming it, by date
+    for mb, m_ in men.items():
+        if isinstance(mb, str) and re.fullmatch(r"[A-Z]\d{6}", mb):
+            for t_, lst in m_.items():
+                by_t.setdefault(t_, []).extend((str(x[0])[:10], mb) for x in lst if not x[2])
+    by_t = {t_: (np.array([pd.Timestamp(x[0]) for x in sorted(v)], dtype="datetime64[ns]"), [x[1] for x in sorted(v)])
+            for t_, v in by_t.items()}
     notes = [[] for _ in range(len(tx))]
     from congress_signals.post_sort import crowd_count
     crowd_np = {t: (np.array([pd.Timestamp(x[0]) for x in v], dtype="datetime64[ns]"), list(v)) for t, v in crowd.items()}
@@ -2154,6 +2163,12 @@ def post_features(tx, cfg, idx=None):
                 if n30 >= 3 and n30 >= 2 * max(n365 / 12.2, 0.5):
                     f2[i] = 1.0
                     notes[i].append(f"{n30} posts about {sec} in the 30 days before (usually {n365 / 12.2:.1f})")
+        O = by_t.get(t)
+        if O is not None:
+            x = np.datetime64(d)
+            a, z = np.searchsorted(O[0], x - np.timedelta64(30, "D")), np.searchsorted(O[0], x)
+            if any(w_ != b for w_ in O[1][a:z]):
+                f5[i] = 1.0
         C = crowd_np.get(t)
         if C is not None and pd.notna(f):
             x = np.datetime64(f)
@@ -2163,6 +2178,7 @@ def post_features(tx, cfg, idx=None):
                 f4[i] = 1.0
                 notes[i].append(f"{n_who} members named the company in posts in the 2 weeks before the filing")
     tx["f_post_named_before"], tx["f_post_sector_burst"], tx["f_post_tone_clash"], tx["f_post_crowd"] = f1, f2, f3, f4
+    tx["f_post_other_named"] = f5
     tx["post_note"] = ["; ".join(n) for n in notes]
     return tx
 

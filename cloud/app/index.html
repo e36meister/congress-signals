@@ -600,7 +600,7 @@ nav.tabs button{overflow:hidden}
 
 <script>
 (() => {
-const APP_BUILD = '0.1.dev-1d9e889', APP_BUILT = '2026-11-05T17:47+00:00', APP_SHA = '1d9e889';
+const APP_BUILD = '0.1.dev-cfb3501', APP_BUILT = '2026-11-05T17:50+00:00', APP_SHA = 'cfb3501';
 // ---------- family accounts (owner, Nov 2 2026) ----------
 // A family account sees Today (Buy candidates only), Members, Alerts, its own Account and a short More menu (company
 // search, notifications, settings, questions, bug report). The server only answers those (cloud/accounts.js); this
@@ -3182,6 +3182,7 @@ const POST_SIG = { post_crowd: "3+ members named the company in posts (2 weeks b
   post_named_before: "Member named the company or its people in a post (30 days before)",
   post_sector_burst: "Member posted about the industry twice as often as usual",
   post_tone_clash: "Bought after criticizing the company in posts (or sold after praising it)",
+  post_other_named: "Another member named the company in a post (30 days before the trade); its phone alert stays off until this is On",
   social_post: "Member posted about the company (older signal)" };
 function postTests(d) {
   const rt = d.rare_test || {}, rows = rt.rows || [], on = new Set(d.adaptive?.policy?.signals_on || []);

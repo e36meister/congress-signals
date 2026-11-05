@@ -4144,6 +4144,7 @@ TRIAL_SIGNALS = {"relative_tie": 0.5, "unusual_volume": 0.4, "reg_action": 0.3, 
                  "short_heavy": -0.3, "short_jump": -0.2, "funds_leaving": -0.2,
                  # members' posts (congress_signals/social.py): press releases, X archive, Bluesky, Mastodon, ...
                  "post_named_before": 0.3, "post_sector_burst": 0.2, "post_tone_clash": 0.2, "post_crowd": 0.2,
+                 "post_other_named": 0.2,      # owner, Nov 5: another member named the company in a post first
                  "committee_staff_lobbyist": 0.3, "family_possible": 0.3,
                  # the same unusual-volume flag, tested the other way round (it did worse per trade): score lower
                  "unusual_volume_low": -0.4,
@@ -4208,6 +4209,7 @@ TRIAL_LABELS = {"relative_tie": "Signal: a relative is a company insider (SEC)",
                 "post_sector_burst": "Signal: the member posted about the industry twice as often as usual before the trade",
                 "post_tone_clash": "Signal: bought after criticizing the company in posts (or sold after praising it)",
                 "post_crowd": "Signal: 3+ members named the company in posts in the 2 weeks before the filing",
+                "post_other_named": "Signal: another member named the company in a post in the 30 days before the trade",
                 "committee_staff_lobbyist": "Signal: a company lobbyist used to work for one of the member's committees",
                 "family_possible": "Signal: possible family tie to the company (SEC name match, not confirmed by state)",
                 "unusual_volume_low": "Signal: score lower when trading volume was unusual before the trade",

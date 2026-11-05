@@ -2002,6 +2002,7 @@ const POST_SIG = { post_crowd: "3+ members named the company in posts (2 weeks b
   post_named_before: "Member named the company or its people in a post (30 days before)",
   post_sector_burst: "Member posted about the industry twice as often as usual",
   post_tone_clash: "Bought after criticizing the company in posts (or sold after praising it)",
+  post_other_named: "Another member named the company in a post (30 days before the trade); its phone alert stays off until this is On",
   social_post: "Member posted about the company (older signal)" };
 function postTests(d) {
   const rt = d.rare_test || {}, rows = rt.rows || [], on = new Set(d.adaptive?.policy?.signals_on || []);

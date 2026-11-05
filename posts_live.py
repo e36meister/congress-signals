@@ -246,11 +246,19 @@ def group_line(hs):
     return f"{act} on {h0['td']:%b %-d}, {when} {'posts' if len(hs) > 1 else 'a post'} by {who_s}{kind}"
 watch["hit"] = sorted(seen_hits)[-5000:]
 cloud_store.put("posts/watch.json", json.dumps(watch, default=str), E.log)
+# Owner, Nov 5: "trade after another member's post" didn't pass a backtest (tools/post_then_trade_audit.py: the edge
+# was which stocks get posted about, +0.01% within the same stock). Those stay in the Posts feed but aren't pushed
+# until the weekly check switches the matching signal (post_other_named) on.
+try:
+    _pt_on = "post_other_named" in ((E.load_adaptive(cfg).get("policy") or {}).get("signals_on") or [])
+except Exception as e:
+    _pt_on = False
+    E.log(f"Live posts: switched-on signals not read ({type(e).__name__}); trade-after-post alerts stay off")
 for h in ptt:          # the post goes in the feed (even a non-trader's), with what happened after it
     w = h["w"]
     items.append({"id": w["id"], "sv": PS.SORT_VERSION, "d": w["d"], "b": w["b"], "who": w["who"], "src": "Post, then trade",
                   "text": w.get("text") or "", "url": w["url"], "t": w.get("t") or [], "ty": w.get("ty") or [], "ins": w.get("ins") or "",
-                  "meet": w.get("meet") or [], "tg": [], "lvl": 3, "why": [h["line"]], "tk": h["tk"],
+                  "meet": w.get("meet") or [], "tg": [], "lvl": 3, "why": [h["line"] + ("" if _pt_on else " (untested link: not a signal yet)")], "tk": h["tk"],
                   "at": dt.datetime.utcnow().isoformat(timespec="seconds")})
 if ptt:
     E.log(f"Live posts: {len(ptt)} trade(s) by other members after a watched post")
@@ -321,6 +329,11 @@ cloud_store.put("posts/feed.json", json.dumps(feed, default=str), E.log)
 
 # one phone alert for this hour's notable posts (none on the very first run, which only learns what exists)
 top = sorted([x for x in items if x["lvl"] >= 3], key=lambda x: -x["lvl"])     # push: the four alert kinds only
+n_pt_held = sum(1 for x in top if x.get("src") == "Post, then trade")
+if not _pt_on:
+    top = [x for x in top if x.get("src") != "Post, then trade"]
+    if n_pt_held:
+        E.log(f"Live posts: {n_pt_held} trade-after-post item(s) kept in the feed, not pushed (signal not on)")
 if top and not first:
     # Nov 5 (owner): one short line per post (a "post, then trade" line already names both people; others start with
     # the poster's last name), one per row in the notification, and in the app each line sits with its own links
