@@ -355,3 +355,19 @@ jobs:
         with:
           path: social
           key: social-${{ github.run_id }}
+
+      # Nov 6: a big re-sort (new sort rules) is too much for the daily runs; start the history runs for it
+      # (after the posts are saved, so they start from today's copy) unless one is already queued or running
+      - name: Start the posts history runs if many posts wait to be sorted
+        if: always() && steps.social.outcome == 'success' && hashFiles('social/needs_history.txt') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          busy=$(gh api "repos/${{ github.repository }}/actions/workflows/social.yml/runs?per_page=5" \
+                 --jq '[.workflow_runs[] | select(.status != "completed")] | length' || echo 0)
+          if [ "${busy:-0}" -gt 0 ]; then
+            echo "Posts history run already queued or running"
+          else
+            gh workflow run social.yml -R "${{ github.repository }}" -f chain=0 -f minutes=300
+            echo "Started the posts history runs ($(cat social/needs_history.txt) posts to sort)"
+          fi

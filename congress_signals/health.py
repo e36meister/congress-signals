@@ -25,7 +25,8 @@ EXPECT_HOURS = {"daily": 30, "live": 3, "social": 30, "close": 80, "quick": 6, "
 JOB_NAMES = {"daily": "Daily update", "live": "Hourly posts", "social": "Posts (twice daily)", "close": "Market-close report",
              "quick": "Filings and orders check", "institutions": "Institutions", "watchdog": "Job watchdog",
              "scan_senate": "Scanned Senate reports", "scan_house": "Scanned House reports",
-             "backfill_enrich": "Older years and less-traded companies", "tax": "Taxes page"}
+             "backfill_enrich": "Older years and less-traded companies", "tax": "Taxes page",
+             "social_history": "Posts history (sorting)"}
 # hosts that are ours or not data sources
 SKIP_HOSTS = ("github.com", "githubusercontent.com", "pypi.org", "files.pythonhosted.org", "huggingface.co",
               "hf.co", "cdn-lfs.huggingface.co")

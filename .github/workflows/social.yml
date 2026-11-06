@@ -8,6 +8,9 @@ on:
       chain:
         description: "Back-to-back runs so far (leave at 0)"
         default: "0"
+      left:
+        description: "Posts still to sort after the previous run (leave empty)"
+        default: ""
 permissions:
   contents: read
   actions: write          # start the next run while the history is still filling
@@ -73,8 +76,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CHAIN: ${{ github.event.inputs.chain || '0' }}
+          PREV: ${{ github.event.inputs.left || '' }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # Nov 6: a flat 6-run cap ended the chain with 3.4M posts still to sort. Past 6 runs the chain now goes on
+        # while each run shrinks the backlog (up to 20); if it stops unfinished, Data health says so.
         run: |
-          if [ -f social/needs_more_runs ] && [ "$CHAIN" -lt 6 ]; then
-            gh workflow run social.yml -f chain=$((CHAIN + 1)) -f minutes=${{ github.event.inputs.minutes || '300' }}
+          LEFT=$(cat social/unsorted_left.txt 2>/dev/null | tr -cd 0-9)
+          echo "Posts still to sort: ${LEFT:-unknown} (previous run: ${PREV:-unknown})"
+          if [ ! -f social/needs_more_runs ]; then
+            echo "History finished; no next run"
+          elif [ "$CHAIN" -lt 6 ] || { [ "$CHAIN" -lt 20 ] && [ -n "$LEFT" ] && [ -n "$PREV" ] && [ "$LEFT" -lt "$PREV" ]; }; then
+            gh workflow run social.yml -f chain=$((CHAIN + 1)) -f minutes=${{ github.event.inputs.minutes || '300' }} -f left="$LEFT"
             echo "Started run $((CHAIN + 2))"
+            python -c "from congress_signals import health as H; H.finish('social_history', [])" || true
+          else
+            msg="Posts history runs stopped after $((CHAIN + 1)) runs with ${LEFT:-an unknown number of} posts still to sort (no progress or the 20-run limit); the daily update restarts them when the backlog is large"
+            echo "::warning::$msg"
+            python -c "import sys; from congress_signals import health as H; H.finish('social_history', [sys.argv[1]])" "$msg" || true
+          fi
+          if [ ! -f social/needs_more_runs ]; then
+            python -c "from congress_signals import health as H; H.finish('social_history', [])" || true
           fi

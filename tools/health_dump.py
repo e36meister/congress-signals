@@ -10,7 +10,7 @@ def get(k):
     try: return json.loads(raw) if raw else None
     except Exception: return None
 
-names = sorted(set(H.EXPECT_HOURS) | set(H.SCRIPT_JOBS.values()) | {"watchdog"} | {f"archive_{i}" for i in range(8)})
+names = sorted(set(H.EXPECT_HOURS) | set(H.SCRIPT_JOBS.values()) | {"watchdog", "social_history"} | {f"archive_{i}" for i in range(8)})
 out = {"jobs": {}, "app": get("health/app.json") or {}, "sizes": get(H.SIZES_KEY)}
 for n in names:
     j = get(H.JOB_KEY.format(n))

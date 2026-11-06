@@ -2186,8 +2186,15 @@ def post_features(tx, cfg, idx=None):
 # ---------------------------------------------------------------------------
 # run
 # ---------------------------------------------------------------------------
+BIG_BACKLOG = 150_000       # unsorted posts above this need the history runs (a daily run sorts ~11k)
+
+
 def update_all(cfg, minutes, history=True):
     t0 = time.time()
+    try:
+        os.remove(_dir(cfg, "needs_history.txt"))
+    except OSError:
+        pass
     deadline = t0 + minutes * 60
     st = _state(cfg)
     tg = Tagger(cfg)
@@ -2256,8 +2263,21 @@ def update_all(cfg, minutes, history=True):
     # modes now stop sorting and re-tagging at a hard time; what's left waits for the next run.
     idx = build_index(cfg, tg, sort_until=(deadline - 120) if history else max(deadline, time.time() + 300),
                       hard_until=(deadline + 10 * 60) if history else max(deadline, time.time() + 300) + 8 * 60)
+    # Nov 6: after sort rules 9 (Nov 5) 3.4M posts had to be sorted again. The history chain stopped at its 6-run cap
+    # with them still waiting, and the daily runs sort only ~11k each (~300 runs), so the posts index stayed mostly
+    # unsorted with nothing saying so. A big backlog now leaves a marker the daily job uses to start the history
+    # runs again, and the count is kept for the chain's progress check.
+    try:
+        open(_dir(cfg, "unsorted_left.txt"), "w").write(str(int(idx.get("unsorted") or 0)))
+    except Exception:
+        pass
     if idx.get("unsorted") and not history:
-        _log(f"Social: {idx['unsorted']:,} posts not sorted yet (time limit); the next runs continue")
+        if idx["unsorted"] >= BIG_BACKLOG:
+            open(_dir(cfg, "needs_history.txt"), "w").write(str(idx["unsorted"]))
+            _log(f"Social: {idx['unsorted']:,} posts not sorted yet, too many for the daily runs; starting the "
+                 f"history runs to sort them")
+        else:
+            _log(f"Social: {idx['unsorted']:,} posts not sorted yet (time limit); the next runs continue")
     if idx.get("unsorted"):
         ok = False
     if history and ok:
