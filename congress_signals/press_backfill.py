@@ -229,25 +229,30 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
     # sites were never reached before the time limit. In the fast pass a House site now gets at most 60 s inside
     # its slot; past that it gives the slot back and is retried in the slow pass below (one at a time), so one slow
     # site can no longer starve the rest. Normal sites answer in about a second.
-    def fetch_capped(name, cap=60):
+    # Nov 6: with 60 s, 15 slow sites at 03:07 ET still used ~4 of the 5 minutes (15 x 60 s over 4 slots) and 175
+    # sites were never reached. A healthy House site answers in under 2 s (438 sites take ~80 s over 4 slots), so
+    # 20 s is still ten times normal; slower ones go to the slow pass as before.
+    def fetch_capped(name, cap=20, note=True):
         box = {}
         t = threading.Thread(target=lambda: box.__setitem__("r", fetch(name)), daemon=True)
         t.start()
         t.join(cap)
         if t.is_alive():
-            capped.append(name)
+            if note:
+                capped.append(name)
             return None
         return box.get("r")
 
-    def one(name, slow=False):
-        if not slow and time.time() > deadline:
+    def one(name, slow=False, until=None):
+        if not slow and time.time() > (until or deadline):
             unchecked.append(name)
             return name, None, []
         if _is_house(name) and not slow:
             with house_gate:
                 res = fetch_capped(name)
         else:
-            res = fetch(name)
+            # slow pass: one site at a time, but still at most 90 s each so the pass ends near its time limit
+            res = fetch_capped(name, cap=90, note=False)
         if res is None:
             return name, None, None
         b, out = None, []
@@ -304,15 +309,25 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
     with ThreadPoolExecutor(max_workers=workers) as ex:
         results = list(ex.map(one, names))
     if capped:
-        _log(f"Latest press releases: {len(capped)} slow House site(s) took over 60 s and were moved to the "
+        _log(f"Latest press releases: {len(capped)} slow House site(s) took over 20 s and were moved to the "
              f"one-at-a-time pass: " + ", ".join(sorted(capped)[:10]))
+    # Nov 6: sites never reached get a catch-up pass (same 4 House slots) before the slow retries, so a site that
+    # was only waiting its turn is read this hour instead of waiting behind sites that are not answering.
+    if unchecked:
+        retry, unchecked[:] = list(unchecked), []
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            got = {r[0]: r for r in ex.map(lambda n: one(n, until=deadline + 120), retry)}
+        results = [got.get(n, (n, b, out)) for n, b, out in results]
+        if len(retry) > len(unchecked):
+            _log(f"Latest press releases: {len(retry) - len(unchecked)} site(s) read in a catch-up pass after the "
+                 f"time limit")
     # Oct 22: 7 then 23 House sites failed every hour with 12 readers at once (timeouts from the House firewall).
     # Sites that failed get a second, slow pass one at a time before they count as failed.
     again = [n for n, b, out in results if out is None]
     if again:
         second = {}
         for n in again:
-            if time.time() > deadline + 120:
+            if time.time() > deadline + 180:
                 break                   # the rest stay counted as failed
             time.sleep(3)
             second[n] = one(n, slow=True)
