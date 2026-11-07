@@ -4,7 +4,7 @@ Paper (fake money) is the default. Real money needs TRADING_MODE=live, the live 
 Only positions this tool opened (order IDs starting with "cs-") are ever sold by it; anything you buy yourself
 is left alone. Nothing about balances or positions is written to the run log, because the repo is public.
 """
-import os, re, math, json, datetime as dt
+import os, re, math, json, time, datetime as dt
 import numpy as np
 import pandas as pd
 import requests
@@ -140,9 +140,22 @@ class Alpaca:
         self.h = {"APCA-API-KEY-ID": s["key"], "APCA-API-SECRET-KEY": s["secret"]}
 
     def get(self, path, **params):
-        r = requests.get(self.base + path, headers=self.h, params=params, timeout=30)
-        r.raise_for_status()
-        return r.json()
+        # Nov 7: Alpaca's paper API answered one /v2/positions read with a read timeout and then HTTP 500
+        # (13:31 UTC), which failed the whole portfolio refresh. Reads are safe to repeat, so a passing server
+        # error, rate limit or timeout gets two more tries with a short wait. Orders (post/delete) never retry.
+        for k in range(3):
+            try:
+                r = requests.get(self.base + path, headers=self.h, params=params, timeout=30)
+                if r.status_code in (429, 500, 502, 503, 504) and k < 2:
+                    time.sleep((2, 6)[k])
+                    continue
+            except (requests.ConnectionError, requests.Timeout):
+                if k == 2:
+                    raise
+                time.sleep((2, 6)[k])
+                continue
+            r.raise_for_status()
+            return r.json()
 
     def post(self, path, body):
         return requests.post(self.base + path, headers=self.h, json=body, timeout=30)
