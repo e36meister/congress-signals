@@ -149,13 +149,18 @@ def _key(s):
 
 
 def _load(key):
+    """One health file from Cloudflare R2 as a dict; {} only when R2 says it isn't there (or it isn't JSON).
+    Nov 8: this used to turn any failed read into {}, so at 23:59 UTC Nov 7 one unanswered read of the Taxes page's
+    report made the watchdog say it had "never reported" (false alert), and the same blip on a job's own file or the
+    watchdog/Senate files would have saved over their history. A read R2 doesn't answer is now retried
+    (cloud_store.get_strict: 5, 10, 20 s) and then raises cloud_store.ReadError; callers keep what they had."""
+    import cloud_store
+    raw = cloud_store.get_strict(key)
     try:
-        import cloud_store
-        raw = cloud_store.get(key, log=lambda m: None)
         st = json.loads(raw) if raw else {}
-        return st if isinstance(st, dict) else {}
-    except Exception:
+    except ValueError:
         return {}
+    return st if isinstance(st, dict) else {}
 
 
 def _save(key, st):
@@ -213,33 +218,10 @@ def finish(job, problems=(), failures=(), log=None, extra=None):
             j["extra"] = extra
         _save(JOB_KEY.format(job), j)
         # watchdog: any job that has gone quiet for much longer than usual
-        wd = []
-        wj = _load(JOB_KEY.format("watchdog"))
-        since = wj.get("since") or now.isoformat(timespec="seconds")     # when the watchdog first ran
-        for name, hours in EXPECT_HOURS.items():
-            if name == job:
-                continue
-            at = (_load(JOB_KEY.format(name)) or {}).get("at")
-            if at and (now - dt.datetime.fromisoformat(at)).total_seconds() > hours * 3600:
-                wd.append(f"{JOB_NAMES.get(name, name)} hasn't reported in {(now - dt.datetime.fromisoformat(at)).total_seconds() / 3600:.0f} hours "
-                          f"(normally every {hours} or less); it may be stuck or failing to start")
-            elif not at and (now - dt.datetime.fromisoformat(since)).total_seconds() > hours * 3600:
-                # never reported at all (Oct 21: the daily posts update timed out every run and so never reported)
-                wd.append(f"{JOB_NAMES.get(name, name)} hasn't reported in {(now - dt.datetime.fromisoformat(since)).total_seconds() / 3600:.0f} hours "
-                          f"(normally every {hours} or less); it may be stuck, timing out, or missing its Cloudflare settings")
-        wold = {x["k"]: x for x in wj.get("open") or []}
-        wopen = []
-        for text in wd:
-            k = _key(text.split(" hasn't")[0])
-            rec = wold.get(k) or {"k": k, "kind": "watchdog", "first": now.isoformat(timespec="seconds"), "runs": 0}
-            rec = {**rec, "text": text, "last": now.isoformat(timespec="seconds"), "runs": rec.get("runs", 0) + 1}
-            if k not in wold:
-                new.append(rec)
-            wopen.append(rec)
-        wfix = [{"k": k, "job": "watchdog", "text": r["text"], "at": now.isoformat(timespec="seconds")}
-                for k, r in wold.items() if k not in {x["k"] for x in wopen}]
-        _save(JOB_KEY.format("watchdog"), {"job": "watchdog", "at": now.isoformat(timespec="seconds"), "since": since, "open": wopen,
-                                           "fixed": ((wj.get("fixed") or []) + wfix)[-50:]})
+        try:
+            _watchdog(job, now, new, log)
+        except Exception as e:      # watchdog file unreadable: leave it as it was; the next job checks again
+            _log(f"DATA HEALTH: job watchdog not updated this run ({type(e).__name__}: {e})", log)
         senate_watch(log)
         if new:
             _alert(job, new, log)
@@ -249,6 +231,45 @@ def finish(job, problems=(), failures=(), log=None, extra=None):
     except Exception as e:
         _log(f"DATA HEALTH ({job}): couldn't save ({type(e).__name__}: {e})", log)
         return []
+
+
+def _watchdog(job, now, new, log=None):
+    """Flag any job that has gone quiet for much longer than usual (adds newly flagged ones to `new`)."""
+    import cloud_store
+    wd = []
+    wj = _load(JOB_KEY.format("watchdog"))
+    since = wj.get("since") or now.isoformat(timespec="seconds")     # when the watchdog first ran
+    wold = {x["k"]: x for x in wj.get("open") or []}
+    carry = []          # jobs whose report couldn't be read this run: their watchdog line stays as it was
+    for name, hours in EXPECT_HOURS.items():
+        if name == job:
+            continue
+        try:
+            at = (_load(JOB_KEY.format(name)) or {}).get("at")
+        except cloud_store.ReadError as e:
+            _log(f"DATA HEALTH: couldn't read the {JOB_NAMES.get(name, name)} report ({e}); its watchdog check is "
+                 "left as it was this run", log)
+            carry.append(_key(JOB_NAMES.get(name, name)))
+            continue
+        if at and (now - dt.datetime.fromisoformat(at)).total_seconds() > hours * 3600:
+            wd.append(f"{JOB_NAMES.get(name, name)} hasn't reported in {(now - dt.datetime.fromisoformat(at)).total_seconds() / 3600:.0f} hours "
+                      f"(normally every {hours} or less); it may be stuck or failing to start")
+        elif not at and (now - dt.datetime.fromisoformat(since)).total_seconds() > hours * 3600:
+            # never reported at all (Oct 21: the daily posts update timed out every run and so never reported)
+            wd.append(f"{JOB_NAMES.get(name, name)} hasn't reported in {(now - dt.datetime.fromisoformat(since)).total_seconds() / 3600:.0f} hours "
+                      f"(normally every {hours} or less); it may be stuck, timing out, or missing its Cloudflare settings")
+    wopen = [wold[k] for k in carry if k in wold]
+    for text in wd:
+        k = _key(text.split(" hasn't")[0])
+        rec = wold.get(k) or {"k": k, "kind": "watchdog", "first": now.isoformat(timespec="seconds"), "runs": 0}
+        rec = {**rec, "text": text, "last": now.isoformat(timespec="seconds"), "runs": rec.get("runs", 0) + 1}
+        if k not in wold:
+            new.append(rec)
+        wopen.append(rec)
+    wfix = [{"k": k, "job": "watchdog", "text": r["text"], "at": now.isoformat(timespec="seconds")}
+            for k, r in wold.items() if k not in {x["k"] for x in wopen}]
+    _save(JOB_KEY.format("watchdog"), {"job": "watchdog", "at": now.isoformat(timespec="seconds"), "since": since, "open": wopen,
+                                       "fixed": ((wj.get("fixed") or []) + wfix)[-50:]})
 
 
 # owner, Oct 27: only problems that break something alert right away; the rest are held by the app server and sent
@@ -378,7 +399,10 @@ def critical(cfg, part_sizes, px, prev=None):
     """Problems in the data the picks are built from. Empty list = safe to buy."""
     out = []
     try:
-        st = prev if prev is not None else _load(SIZES_KEY)
+        try:
+            st = prev if prev is not None else _load(SIZES_KEY)
+        except Exception:
+            st = {}          # unchanged from before Nov 8: last run's sizes unreadable -> only the zero checks below
         last = st.get("trades") or {}
         # owner, Oct 27: the Senate site blocks automated reads; when FMP's Senate feed answered this run, Senate
         # trades are covered by it (the eFD problem stays open on Data health, but new buys aren't paused for it)
