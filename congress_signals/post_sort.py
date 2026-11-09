@@ -175,6 +175,10 @@ def _target_tone(text, words, fallback):
 TOP_EXEC_RX = re.compile(r"\b(ceo|chief executive|founder|co-founder|chair(?:man|woman|person)?|cob)\b", re.I)
 
 
+EXEC_NEAR_RX = re.compile(r"\b(ceo|chief executive|founder|co-founder|chair(?:man|woman)?|president of|executive|"
+                          r"company|corporation|inc)\b", re.I)
+
+
 def _co_in_text(t, text, names):
     words = [w for w in ((names or {}).get(t) or []) if len(w) > 1]
     low = " " + re.sub(r"[^a-z0-9]+", " ", (text or "").lower()) + " "
@@ -260,6 +264,9 @@ def sort_record(r, names=None):
                 continue                 # Nov 8: a lobbyist's name alone is never a meeting
             if x["k"] == "person" and x["t"] not in direct:
                 continue                 # a look-alike (same name as a company's division head, etc.)
+            if x["k"] == "person" and not _co_in_text(x["t"], text, names) and \
+                    not any(named_in(sn, x) and EXEC_NEAR_RX.search(sn) for sn in sents):
+                continue                 # an executive's name with no sign of the company or an executive title
             if any((MEET_RX.search(sn) or visit_rx.search(sn)) and named_in(sn, x) for sn in sents):
                 who.append(x["n"] if x["k"] != "co" else x["t"])
         meet = who[:4] or None

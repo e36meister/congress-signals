@@ -384,6 +384,10 @@ class Tagger:
                     continue                                    # someone else's handle or a hashtag
                 near_cue = any(abs(k - i) <= 5 for k in cue_at)
                 if kind == "co":
+                    end_ = spans[i + n - 1][1] + len(spans[i + n - 1][0])
+                    if (raw[end_:end_ + 1] == "-" and raw[end_ + 1:end_ + 2].isupper()) or \
+                            (pos >= 2 and raw[pos - 1] == "-" and raw[pos - 2].isalpha()):
+                        continue                                # Nov 8: "Magna-Power Electronics" isn't Magna (MGA)
                     if n == 1 and i > 0 and spans[i - 1][0][:1].isupper() and spans[i - 1][0].isalpha() \
                             and raw[max(0, spans[i - 1][1] - 2):spans[i - 1][1]].strip() not in (".", "!", "?", ":") \
                             and toks[i - 1] not in ("the", "at", "with", "from", "of", "and", "ceo", "inc"):
@@ -533,7 +537,11 @@ _OFF_TITLE = (r"(?:white house |wh |deputy |acting |former |new |incoming |senio
               r"director of national intelligence|border czar|ambassador to [a-z]+(?: [a-z]+)?|un ambassador|"
               r"administrator of the [a-z]+(?: [a-z]+){0,3}|white house (?:counsel|adviser|advisor|aide|official)|"
               r"special envoy|deputy secretary|vice president|speaker of the house|senate majority leader|"
-              r"senate minority leader|house majority leader|house minority leader|governor|judge|justice)")
+              r"senate minority leader|house majority leader|house minority leader|governor|judge|justice|"
+              r"mayor|sheriff|police chief|chief of police|fire chief|county (?:executive|clerk|commissioner|prosecutor)|"
+              r"(?:county|city|town|borough) (?:administrator|manager|council(?:man|woman|member)?)|"
+              r"council(?:man|woman|member)|commissioner|superintendent|prosecutor|freeholder|"
+              r"assembly(?:man|woman|member)|state senator|state representative|lieutenant governor|clerk)")
 _NAME = r"([A-Z][a-z]+)(?:\s+[A-Z]\.)?\s+((?:Mc|Mac|O')?[A-Z][a-z]+(?:-[A-Z][a-z]+)?)"
 _OFF_BEFORE = re.compile(r"\b" + _OFF_TITLE + r"\s+" + _NAME, re.I)
 _OFF_AFTER = re.compile(_NAME + r"(?:'s|’s)?\s*(?:,\s*(?:the\s+)?(?:president's\s+|trump's\s+|our\s+)?|\s+(?:as|to\s+be|to\s+serve\s+as)\s+(?:the\s+)?|"
