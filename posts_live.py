@@ -75,6 +75,7 @@ if officials_doc is not None and not officials_doc.get("names"):
             for nm in S.official_names(x.get("text") or ""):
                 seed.setdefault("|".join(nm), str(x.get("d") or today)[:10])
     officials_doc["names"] = seed
+    officials_doc["seeded"] = True       # saved below even when this run learns nothing new
     E.log(f"Live posts: public officials list started with {len(seed)} name(s) from stored posts")
 if officials_doc is not None:
     json.dump(officials_doc, open(S._dir(cfg, "officials.json"), "w"))
@@ -397,7 +398,8 @@ state = {"seen": {u: d for u, d in seen.items() if d >= (today - dt.timedelta(da
          "crowd": crowd, "last": now.isoformat(timespec="seconds"), "last_new": last_new, "runs": runs}
 cloud_store.put("posts/live_state.json", json.dumps(state), E.log)
 new_off = {**getattr(tg, "officials_new", {}), **getattr(tg_sites, "officials_new", {})}
-if officials_doc is not None and new_off:
+if officials_doc is not None and (new_off or officials_doc.pop("seeded", False)):
+    officials_doc.pop("seeded", None)
     officials_doc["names"].update({"|".join(k): v for k, v in new_off.items()})
     officials_doc["updated"] = now.isoformat(timespec="seconds")
     cloud_store.put(OFF_KEY, json.dumps(officials_doc), E.log)
