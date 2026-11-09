@@ -1225,13 +1225,19 @@ async function extendedHours(env, when) {
   for (const o of ords.data || []) live[o.id] = o;
   let changed = false;
   const cancel = async id => {          // cancel and confirm; a replacement never goes in while the old order can still fill
+    // Nov 9: at 4:00 AM ET Alpaca accepted a cancel (HTTP 204) but still showed it pending after ~3 s of checks, so
+    // the swap stopped with a misleading "couldn't cancel (HTTP 204)" (the next pass finished it). Checks now go on
+    // for ~12 s, and an accepted-but-unconfirmed cancel says so; nothing new goes in until the cancel is confirmed.
     const r = await a.del(`/v2/orders/${id}`);
-    for (let k = 0; k < 4; k++) {
+    let last = "";
+    for (const wait of [700, 1000, 1500, 2000, 2000, 2500, 2500, 0]) {
       const o = (await a.get(`/v2/orders/${id}`)).data || {};
+      last = o.status || last;
       if (["canceled", "expired", "rejected", "replaced"].includes(o.status)) return true;
       if (o.status === "filled") return false;
-      await new Promise(res => setTimeout(res, 700));
+      if (wait) await new Promise(res => setTimeout(res, wait));
     }
+    if (r.ok) throw new Error(`order ${id}: Alpaca accepted the cancel but still showed it ${last || "open"} after 12 s; nothing new was placed (the next pass finishes the swap)`);
     throw new Error(`couldn't cancel order ${id} (HTTP ${r.status}: ${String(r.data && r.data.message || "").slice(0, 80)}); nothing new was placed`);
   };
   // safety net: a waiting market order of ours whose extended-hours replacement already exists is a duplicate
