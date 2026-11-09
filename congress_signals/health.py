@@ -324,7 +324,11 @@ def senate_watch(log=None):
         now = _now().isoformat(timespec="seconds")
         back = []
         for g, r in runs.items():
-            if r["refused"]:
+            # Nov 9: the senators' sites answered again (all 100 read, 28 new releases) but one of ~300 requests got
+            # a 403, which reset the count, so "working again" could never be sent while one site had a stray refusal.
+            # The firewall, when on, refuses everything; a run where at least 20 requests answered and refusals are
+            # under 5% of them counts as answering. A run with any more refusals than that still counts as blocked.
+            if r["refused"] and not (r["answered"] >= 20 and r["refused"] * 20 <= r["answered"]):
                 blocked.setdefault(g, now)
                 streak[g] = 0
             elif r["answered"] >= 2 and g in blocked:
