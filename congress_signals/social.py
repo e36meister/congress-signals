@@ -30,6 +30,8 @@ START_YEAR = 2013
 MONTHS_DAYS = set("jan january feb february mar march apr april may jun june jul july aug august sep sept september oct "
                   "october nov november dec december monday tuesday wednesday thursday friday saturday sunday".split())
 TAGGER_VERSION = 12       # 9: executives by last name or distinctive first name alone, scored; 12: every person matched is kept (Nov 4)
+# Nov 8 (officials, agency "lobbyists") changes tagging of new posts only: no version bump, so the stored history
+# (still being sorted) isn't re-tagged from scratch
 # How Bluesky posts are read (text, quotes, alt text, image text). Only a change here needs every account read again;
 # a new TAGGER_VERSION doesn't: build_index re-tags every stored post. (Oct 22: the re-read was tied to TAGGER_VERSION,
 # so after tagger 9 and 10 every run restarted a full re-read it never finished, and no new Bluesky posts were saved
@@ -280,6 +282,8 @@ class Tagger:
             for t, v in lob.items():
                 for r in v.get("rows", []):
                     for n in (r[4] if len(r) > 4 else []) or []:
+                        if _org_name(n):
+                            continue        # owner, Nov 8: "Justice Department" was a BCE "lobbyist" (16 posts)
                         people.setdefault(t, {}).setdefault(n, "lobbyist")
         except Exception:
             pass
@@ -323,6 +327,14 @@ class Tagger:
             self.people_rev = {k: (v or {}).get("verdict") for k, v in json.load(open(_dir(cfg, "people_reviews.json"))).items()}
         except Exception:
             self.people_rev = {}
+        # public officials (owner, Nov 8): names seen in posts with an official title right next to them ("White
+        # House Chief of Staff X", "Postmaster General X", "X, the attorney general"), learned as posts come in and
+        # kept in officials.json (synced with the app's storage by the hourly posts job)
+        try:
+            self.officials = {tuple(k.split("|")) for k in (json.load(open(_dir(cfg, "officials.json"))).get("names") or {})}
+        except Exception:
+            self.officials = set()
+        self.officials_new = {}
         self.sectors = {}
         for s, words in SECTOR_WORDS.items():
             for w in words.split():
@@ -346,6 +358,10 @@ class Tagger:
         tset = set(toks)
         cue_at = [i for i, w in enumerate(toks) if w in STRONG_CUES]
         tick, ppl = set(), []
+        for nm in official_names(raw):
+            if nm not in self.officials:
+                self.officials.add(nm)
+                self.officials_new[nm] = dt.date.today().isoformat()
         for m in re.finditer(r"\$([A-Z]{1,5})\b", raw):              # $XOM (capitals; "$s" isn't a ticker)
             if m.group(1).lower() in self.cash:
                 tick.add(self.cash[m.group(1).lower()])
@@ -385,6 +401,8 @@ class Tagger:
                     end = spans[i + n - 1][1] + len(spans[i + n - 1][0])
                     if _other_affiliation(raw, pos, end, self.names.get(t, ()), t):
                         continue                                # same name, but the post says they're with another group
+                    if tuple(ct) in self.officials and not _co_named(raw, self.names.get(t, ())):
+                        continue                                # a public official who shares a company person's name
                     ppl.append((" ".join(x.capitalize() for x in ct), t, kind[3:]))
                     tick.add(t)
         secs = sorted({s for w in tset for s in self.sectors.get(w, ())})
@@ -501,6 +519,67 @@ def _sig_of(text):
             _SIGS.clear()
         _SIGS[k] = text_sig(text)
     return _SIGS[k]
+
+
+# Owner, Nov 8 (post review): the new White House chief of staff shares a name with BTF's listed president, so 29
+# posts about him were tagged BTF and the crowd count reached 71. A name that appears in a post with an official title
+# right before it ("Chief of Staff X", "Attorney General X", "Postmaster General X") or right after it ("X, the White
+# House chief of staff", "X's appointment as chief of staff") is a public official; once seen, that name no longer
+# counts as a company person anywhere unless the company itself is named in the same post.
+_OFF_TITLE = (r"(?:white house |wh |deputy |acting |former |new |incoming |senior )*"
+              r"(?:chief of staff|press secretary|attorney general|solicitor general|surgeon general|postmaster general|"
+              r"secretary of [a-z]+(?: [a-z]+){0,2}|[a-z]+ secretary|national security advis[eo]r|homeland security advis[eo]r|"
+              r"(?:fbi|cia|ice|omb|nih|cdc|fda|epa|irs|fema|dni|nasa|atf|dea|ssa|cms) (?:director|administrator|commissioner|chief)|"
+              r"director of national intelligence|border czar|ambassador to [a-z]+(?: [a-z]+)?|un ambassador|"
+              r"administrator of the [a-z]+(?: [a-z]+){0,3}|white house (?:counsel|adviser|advisor|aide|official)|"
+              r"special envoy|deputy secretary|vice president|speaker of the house|senate majority leader|"
+              r"senate minority leader|house majority leader|house minority leader|governor|judge|justice)")
+_NAME = r"([A-Z][a-z]+)(?:\s+[A-Z]\.)?\s+((?:Mc|Mac|O')?[A-Z][a-z]+(?:-[A-Z][a-z]+)?)"
+_OFF_BEFORE = re.compile(r"\b" + _OFF_TITLE + r"\s+" + _NAME, re.I)
+_OFF_AFTER = re.compile(_NAME + r"(?:'s|’s)?\s*(?:,\s*(?:the\s+)?(?:president's\s+|trump's\s+|our\s+)?|\s+(?:as|to\s+be|to\s+serve\s+as)\s+(?:the\s+)?|"
+                        r"(?:'s|’s)?\s+(?:appointment|nomination|selection|promotion|elevation)\s+(?:to|as)\s+(?:the\s+)?(?:new\s+)?)" + _OFF_TITLE + r"\b", re.I)
+
+
+def official_names(raw):
+    """{(first, last)} lowercased: people the post gives an official government title (see _OFF_TITLE)."""
+    out = set()
+    for rx, flags in ((_OFF_BEFORE, 0), (_OFF_AFTER, 0)):
+        for m in rx.finditer(raw or ""):
+            f, l = m.group(1), m.group(2)
+            if not (f[:1].isupper() and l[:1].isupper()):
+                continue                 # the title words matched case-insensitively; the name itself must be capitalized
+            out.add((E_strip(f).lower(), E_strip(l).lower()))
+    return out
+
+
+def E_strip(x):
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", x) if not unicodedata.combining(c))
+
+
+def _co_named(raw, co_words):
+    """True when the company's own name words appear, capitalized, in the post."""
+    ws = [w for w in co_words or () if len(w) > 2]
+    if not ws:
+        return False
+    return bool(re.search(r"\b" + r"\W+".join(re.escape(w) for w in ws) + r"\b", raw or "", re.I)
+                and re.search(r"\b" + re.escape(ws[0]) + r"\b", re.sub(r"\b[a-z]\w*", " ", raw or ""), re.I))
+
+
+_ORG_WORDS = {"department", "dept", "agency", "administration", "office", "bureau", "commission", "committee", "service",
+              "services", "council", "board", "house", "senate", "congress", "government", "federal", "county", "city",
+              "university", "college", "institute", "association", "foundation", "coalition", "center", "centre",
+              "inc", "llc", "llp", "lp", "pllc", "group", "company", "corp", "corporation", "partners", "strategies",
+              "associates", "consulting", "consultants", "law", "firm", "pac", "fund", "trust", "authority",
+              "ministry", "embassy", "court", "advisors", "advisers", "affairs", "relations", "solutions", "global",
+              "international", "national", "american", "united", "states", "the", "of", "and"}
+
+
+def _org_name(n):
+    """True for a 'lobbyist' entry that is an organization or agency rather than a person ("Justice Department",
+    "Smith Strategies LLC")."""
+    toks = re.findall(r"[a-z]+", str(n or "").lower())
+    return not toks or any(t in _ORG_WORDS for t in toks)
 
 
 def _other_affiliation(raw, start, end, co_words, ticker):

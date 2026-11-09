@@ -54,6 +54,30 @@ try:      # the owner's verdicts on possible company people, saved by the app; t
         open(S._dir(cfg, "people_reviews.json"), "wb").write(rv if isinstance(rv, bytes) else rv.encode())
 except Exception as e:
     E.log(f"Live posts: people reviews not loaded ({type(e).__name__})")
+# public officials (owner, Nov 8): names seen with an official title ("Chief of Staff X") stop counting as company
+# people. The list lives in the app's storage so every hourly run keeps what earlier runs learned.
+OFF_KEY = "posts/officials.json"
+officials_doc = None
+try:
+    raw_o = cloud_store.get_strict(OFF_KEY)                  # None only when it doesn't exist yet
+    officials_doc = json.loads(raw_o) if raw_o else {"names": {}}
+except Exception as e:
+    E.log(f"Live posts: public officials list couldn't load ({type(e).__name__}); this run learns from its own posts "
+          f"only and doesn't save the list")
+if officials_doc is not None and not officials_doc.get("names"):
+    seed = {}                    # first run: learn from the posts already in the feed and the watch list
+    for k_ in ("posts/feed.json", "posts/watch.json"):
+        try:
+            js_ = json.loads(cloud_store.get(k_, E.log) or b"{}")
+        except Exception:
+            js_ = {}
+        for x in (js_.get("items") or []) + (js_.get("posts") or []):
+            for nm in S.official_names(x.get("text") or ""):
+                seed.setdefault("|".join(nm), str(x.get("d") or today)[:10])
+    officials_doc["names"] = seed
+    E.log(f"Live posts: public officials list started with {len(seed)} name(s) from stored posts")
+if officials_doc is not None:
+    json.dump(officials_doc, open(S._dir(cfg, "officials.json"), "w"))
 tg = S.Tagger(cfg)
 leg = S.legislators(cfg, st)
 acc = S.discover_accounts(cfg, leg, st, time.time() + 30)
@@ -130,8 +154,10 @@ except Exception as e:
 # several members naming the same company within 3 days
 crowd = {t: [x for x in v if x[0] >= recent_from] for t, v in (state.get("crowd") or {}).items()}
 for src, r in fresh:
+    dr = PS.direct_of(r[11] if len(r) > 11 and isinstance(r[11], dict) else {})
     for t in r[5] or []:
-        crowd.setdefault(t, []).append([str(r[0])[:10], r[1], PS.text_sig(r[3])])
+        if t in dr:      # Nov 8: lobbyist-name and look-alike matches don't add to "X members named Y"
+            crowd.setdefault(t, []).append([str(r[0])[:10], r[1], PS.text_sig(r[3])])
 crowd = {t: v for t, v in crowd.items() if v}
 crowd_n = {t: PS.crowd_count(v) for t, v in crowd.items()}       # copies of one release count once
 
@@ -370,6 +396,12 @@ runs = int(state.get("runs") or 0) + 1
 state = {"seen": {u: d for u, d in seen.items() if d >= (today - dt.timedelta(days=21)).isoformat()},
          "crowd": crowd, "last": now.isoformat(timespec="seconds"), "last_new": last_new, "runs": runs}
 cloud_store.put("posts/live_state.json", json.dumps(state), E.log)
+new_off = {**getattr(tg, "officials_new", {}), **getattr(tg_sites, "officials_new", {})}
+if officials_doc is not None and new_off:
+    officials_doc["names"].update({"|".join(k): v for k, v in new_off.items()})
+    officials_doc["updated"] = now.isoformat(timespec="seconds")
+    cloud_store.put(OFF_KEY, json.dumps(officials_doc), E.log)
+    E.log(f"Live posts: {len(new_off)} public official name(s) learned ({len(officials_doc['names'])} on file)")
 # collection check: a source is flagged only when it has brought nothing new for longer than it normally goes
 LIVE_MAX_DAYS = {"Members' own sites": 2, "Bluesky": 2, "Mastodon": 14, "Substack": 30, "YouTube": 7}
 problems = []

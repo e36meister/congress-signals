@@ -168,6 +168,33 @@ def _target_tone(text, words, fallback):
     return cue_tone(named, round(sum(v) / len(v), 2) if v else fallback)
 
 
+# Owner, Nov 8 (post review): a company counts as named "directly" when the post names the company itself (or its
+# ticker), or its CEO, founder or chair. Matches only through a lobbyist's name or another look-alike person (a
+# division head, a staffer or college president with the same name) stay in the feed as checks but don't make a
+# "met with" alert, don't add to "X members named Y" and don't anchor an insider-style hint.
+TOP_EXEC_RX = re.compile(r"\b(ceo|chief executive|founder|co-founder|chair(?:man|woman|person)?|cob)\b", re.I)
+
+
+def _co_in_text(t, text, names):
+    words = [w for w in ((names or {}).get(t) or []) if len(w) > 1]
+    low = " " + re.sub(r"[^a-z0-9]+", " ", (text or "").lower()) + " "
+    return bool(words) and (" " + " ".join(words) + " ") in low or bool(re.search(r"\$" + re.escape(t) + r"\b", text or ""))
+
+
+def direct_of(srt, tickers=None):
+    """Tickers a sorted post names directly (see TOP_EXEC_RX above). Uses the sort's own list when it has one."""
+    srt = srt or {}
+    if "direct" in srt:
+        return set(srt["direct"])
+    out = set()
+    for x in srt.get("tg") or []:
+        if x.get("k") == "co" and x.get("t"):
+            out.add(x["t"])
+        elif x.get("k") == "person" and x.get("t") and TOP_EXEC_RX.search(str(x.get("role") or "")):
+            out.add(x["t"])
+    return out
+
+
 def sort_record(r, names=None):
     """r: a stored post record [date, key, source, text, url, tickers, people, tone, sectors, repost, tagger].
     names: {ticker: company words} for finding the sentences that name a company."""
@@ -224,10 +251,15 @@ def sort_record(r, names=None):
             low = sent.lower()
             ws = words_of(x)
             return all(w.lower() in low for w in ws[:2]) if x["k"] == "co" and len(ws) > 1 else any(w.lower() in low for w in ws)
+        direct = {x["t"] for x in targets if x["k"] == "co"}
+        direct |= {x["t"] for x in targets if x["k"] == "person" and TOP_EXEC_RX.search(str(x.get("role") or ""))}
+        direct |= {t for t in tk if t in people_t and _co_in_text(t, text, names)}
         who = []
         for x in targets:
-            if x["k"] not in ("person", "lobbyist", "co"):
-                continue
+            if x["k"] not in ("person", "co"):
+                continue                 # Nov 8: a lobbyist's name alone is never a meeting
+            if x["k"] == "person" and x["t"] not in direct:
+                continue                 # a look-alike (same name as a company's division head, etc.)
             if any((MEET_RX.search(sn) or visit_rx.search(sn)) and named_in(sn, x) for sn in sents):
                 who.append(x["n"] if x["k"] != "co" else x["t"])
         meet = who[:4] or None
@@ -267,7 +299,7 @@ def sort_record(r, names=None):
                 insw = insw or m_.group(0)
         return {"v": SORT_VERSION, "ty": types[:5], "tg": targets[:12], "ins": ins.group(0) if ins else "",
                 **({"ins_on": ins_on} if ins_on else {}), **({"insw": insw} if insw and not ins else {}),
-                "meet": meet, "strong": bool(strong), "m": model_name()}
+                "meet": meet, "strong": bool(strong), "m": model_name(), "direct": sorted(direct)}
     except Exception:
         return {"v": SORT_VERSION, "ty": ["other"], "tg": [], "ins": "", "meet": None, "strong": False, "m": "error"}
 
@@ -331,13 +363,14 @@ def significance(r, srt, traded_by=None, crowd=None, member_sectors=None):
     side = {x["t"] for x in tg if x.get("side") and x.get("t")}
     cos = {x["t"] for x in tg if x.get("t") and x["k"] == "co"} | {x["t"] for x in tg if x.get("t") and x["k"] in ("person", "lobbyist")}
     main = cos - side
-    if srt.get("ins") and main:
-        why.append(f"hint of non-public information (\"{srt['ins']}\") naming {', '.join(sorted(main)[:3])}")
+    direct = direct_of(srt)
+    if srt.get("ins") and main & direct:
+        why.append(f"hint of non-public information (\"{srt['ins']}\") naming {', '.join(sorted(main & direct)[:3])}")
         lvl = max(lvl, 3)
     if srt.get("meet"):
         why.append(f"met with or visited {', '.join(srt['meet'][:3])}")
         lvl = max(lvl, 3)
-    for t in sorted(cos):
+    for t in sorted(cos & direct):      # Nov 8: only a company named itself, or its CEO/founder/chair
         n = (crowd or {}).get(t, 0)
         if n >= 3:
             why.append(f"{n} members named {t} in the last 3 days")

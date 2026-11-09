@@ -17,6 +17,12 @@ try:      # the owner's verdicts on possible company people (saved by the app); 
         open(S._dir(cfg, "people_reviews.json"), "wb").write(rv if isinstance(rv, bytes) else rv.encode())
 except Exception as e:
     print(f"People reviews not loaded ({type(e).__name__})")
+try:      # public officials learned by the hourly posts job (owner, Nov 8); the tagger skips them as company people
+    ro = cloud_store.get("posts/officials.json", print)
+    if ro:
+        open(S._dir(cfg, "officials.json"), "wb").write(ro if isinstance(ro, bytes) else ro.encode())
+except Exception as e:
+    print(f"Public officials list not loaded ({type(e).__name__})")
 mins = float(sys.argv[1]) if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else 10
 if "--daily" not in sys.argv:
     # Nov 4: written up front and removed only when the history is complete, so a run that is cut off (job time
