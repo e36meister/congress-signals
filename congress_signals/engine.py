@@ -4482,12 +4482,18 @@ def ticker_level(rows, score_col="score", short=False):
                                   rows["religion"] if "religion" in rows else [None] * len(rows),
                                   rows["bioguide"] if "bioguide" in rows else [None] * len(rows), trk, trn):
         lst = ppl.setdefault(t, [])
-        if all(p["n"] != m for p in lst):
-            e = {"n": str(m), "r": r if isinstance(r, str) and r else None,
-                 "b": b if isinstance(b, str) and b else None}
+        e = next((p for p in lst if p["n"] == str(m)), None)
+        if e is None:
+            e = {"n": str(m), "r": None, "b": None}
             if pd.notna(tn) and tn >= 3 and pd.notna(te):
                 e["tr"], e["tn"] = round(float(te) * 100, 1), int(tn)
             lst.append(e)
+        # (Nov 9: BHE, 2 buyers) a member's best-scoring row can lack the photo ID or faith label that another of
+        # their rows has; take them from any of the member's rows so the card never loses the photo or faith tag
+        if not e["r"] and isinstance(r, str) and r:
+            e["r"] = r
+        if not e["b"] and isinstance(b, str) and b:
+            e["b"] = b
     # each member's own reasons, from their best trade of the stock (owner, Oct 29: with 2+ members on a pick, the
     # app shows which reasons belong to which member, e.g. whose spouse works there and whose trade was large)
     whyf = _why_short if short else _why_buy

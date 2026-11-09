@@ -318,6 +318,8 @@ header.top .brand{padding-right:96px}
 .pick .who{font-size:13px;color:var(--ink2)}
 .ppl{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin-top:8px}
 .ppl .lbl{font-size:12px;color:var(--muted);letter-spacing:.3px}
+.ppl.multi{flex-direction:column;align-items:flex-start;gap:10px}
+.pblk{display:flex;flex-direction:column;gap:4px;min-width:0}.pblk .tags.pwhy{margin:0 0 0 44px}
 .person{display:inline-flex;align-items:center;gap:8px;min-width:0}
 .person .pn{display:block;font-size:13.5px;font-weight:500;color:var(--ink);line-height:1.25}
 .person .pr{display:block;font-size:11.5px;color:var(--muted);line-height:1.25}
@@ -600,7 +602,7 @@ nav.tabs button{overflow:hidden}
 
 <script>
 (() => {
-const APP_BUILD = '0.1.dev-5a881e0', APP_BUILT = '2026-11-05T21:23+00:00', APP_SHA = '5a881e0';
+const APP_BUILD = '0.1.dev-dd94fda', APP_BUILT = '2026-11-09T23:05+00:00', APP_SHA = 'dd94fda';
 // ---------- family accounts (owner, Nov 2 2026) ----------
 // A family account sees Today (Buy candidates only), Members, Alerts, its own Account and a short More menu (company
 // search, notifications, settings, questions, bug report). The server only answers those (cloud/accounts.js); this
@@ -2117,13 +2119,32 @@ function trackText(p, side) {
   if (p.tr == null) return "";
   return side === "sell" ? `Sales lag ${Number(p.tr).toFixed(1)}% (${p.tn})` : `Track ${p.tr > 0 ? "+" : ""}${Number(p.tr).toFixed(1)}% (${p.tn})`;
 }
-function peopleRow(r, side) {
-  const ps = peopleOf(r);
-  return `<div class="ppl"><span class="lbl">${side === "sell" ? "Sold by" : "Bought by"}</span>${ps.map(p => {
-    const sub = [p.r, ps.length > 1 ? trackText(p, side) : ""].filter(Boolean).join(" · ");
-    return `<span class="person">${avatar(p)}<span><span class="pn">${mlink(p.n, p.b)}${tagHtml(p)}</span>${sub ? `<span class="pr">${esc(sub)}</span>` : ""}</span></span>`;
+// (Nov 9: BHE, 2 buyers) a person missing the photo ID or faith label borrows it from the same member on any other card
+function fillPerson(p) {
+  if (p.b && p.r) return p;
+  const w = state.data?.watchlist || {};
+  for (const row of [...(w.buys || []), ...(w.sells || [])]) for (const q of (Array.isArray(row.ppl) ? row.ppl : [])) {
+    if (q.n !== p.n) continue;
+    if (!p.b && q.b) p = { ...p, b: q.b };
+    if (!p.r && q.r) p = { ...p, r: q.r };
+    if (p.b && p.r) return p;
+  }
+  return p;
+}
+// owner, Nov 9: with 2+ members each name is on its own line (photo, party tag, faith), with the labels that are only
+// theirs right under their name; labels every member shares stay once on the card
+function peopleRow(r, side, own) {
+  const ps = peopleOf(r).map(fillPerson);
+  const multi = ps.length > 1;
+  return `<div class="ppl${multi ? " multi" : ""}"><span class="lbl">${side === "sell" ? "Sold by" : "Bought by"}</span>${ps.map(p => {
+    const sub = [p.r, multi ? trackText(p, side) : ""].filter(Boolean).join(" · ");
+    const mine = multi && own ? own.get(p.n) : null;
+    return `<div class="pblk"><span class="person">${avatar(p)}<span><span class="pn">${mlink(p.n, p.b)}${tagHtml(p)}</span>${sub ? `<span class="pr">${esc(sub)}</span>` : ""}</span></span>${mine && mine.length ? tagsHtml(mine, 5, `${String(p.n).replace(/^(Hon\.?\s+)/i, "")}: why`).replace('<div class="tags">', '<div class="tags pwhy">') : ""}</div>`;
   }).join("")}</div>`;
 }
+// the "N bought / N sold within 30d" label isn't needed on a card that lists every buyer or seller (owner, Nov 9)
+const CROWD_RX = /\d+ members? (?:bought|sold) within 30d/i;
+const noCrowd = rs => (Array.isArray(rs) ? rs : String(rs || "").split(/;\s*/)).filter(x => !CROWD_RX.test(String(x)));
 // with 2+ members the track is shown under each name, so the card's single Track tag (the top member's) is dropped
 // with 2+ members on a pick: reasons every member shares stay on the card; the rest show under each member's name
 function splitWhy(r) {
@@ -2206,6 +2227,8 @@ const TAG_RULES = [
   [/defense awards rising \(\$([\d.,]+[MB]?)/i, m => `Defense $${m[1]}`, "Defense Department awards to the company are rising."],
   [/federal grants or loans/i, () => "Federal grants", "The company received federal grants or loans."],
   [/their campaign paid the company/i, () => "Campaign paid co.", "The member's campaign paid this company."],
+  [/frequent trading partner (.+?) also (bought|sold)/i, m => `FTP ${m[1].split(",")[0].trim().split(/\s+/).pop()} ${m[2]}`, "FTP = frequent trading partner: a member who often makes the same trades as this one made this trade too."],
+  [/a frequent trading partner made the same trade/i, () => "FTP same trade", "FTP = frequent trading partner: a member who often makes the same trades as this one made this trade too."],
   [/usually trades before their trading partners/i, () => "Trades first", "This member usually trades before the members they often trade alongside."],
   [/bill passed recently/i, () => "Bill passed", "A bill in this industry passed recently."],
   [/jumped on disclosure day/i, () => "Already jumped", "The stock already jumped on the day the trade was disclosed, so some of the move may be gone.", "neg"],
@@ -2314,10 +2337,10 @@ function pickRow(r, side) {
       <div class="co">${esc(r.co || r.t)}${r.sec ? ` <span class="who">· ${esc(r.sec)}</span>` : ""}</div>
       <div class="who">${tradeLine(r)}</div>
       ${moverChip(r.t)}
-      ${peopleRow(r, side)}
       ${(() => { const sp = splitWhy(r);
-        if (!sp) return tagsHtml(whyFor(r), 6, `Why ${r.t} is on the list`);
-        return tagsHtml(sp.shared, 6, `Why ${r.t} is on the list`) + sp.per.map(x => tagsHtml(x.own, 5, `${x.p.n}: why`).replace('<div class="tags">', `<div class="tags pwhy"><span class="lbl">${esc(String(x.p.n).replace(/^(Hon\.?\s+)/i, ""))}</span>`)).join(""); })()}
+        if (!sp) return peopleRow(r, side) + tagsHtml(noCrowd(whyFor(r)), 6, `Why ${r.t} is on the list`);
+        const own = new Map(sp.per.map(x => [x.p.n, noCrowd(x.own)]));
+        return peopleRow(r, side, own) + tagsHtml(noCrowd(sp.shared), 6, `Why ${r.t} is on the list`); })()}
       ${ctx.length ? `<div class="tags">${ctx.join("")}</div>` : ""}
     </div>
     <div class="side">
