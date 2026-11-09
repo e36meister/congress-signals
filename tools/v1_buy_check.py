@@ -65,3 +65,23 @@ for k in ("broker", "paper", "account"):
         for a in x["this_run"]:
             print(" ", json.dumps(a, default=str)[:300])
 print("  dashboard keys:", sorted(d)[:50])
+
+# BHE detail (Nov 9 follow-up): times and types only, no amounts
+print("\n== BHE ORDERS (times, types; no amounts)")
+for o in api.get("/v2/orders", status="all", limit=50, direction="asc", after=since, symbols="BHE"):
+    print(" ", o["side"], o.get("type"), "ext" if o.get("extended_hours") else "reg", "limit" if o.get("limit_price") else "",
+          o["status"], (o.get("client_order_id") or "")[:30], "| sub", (o.get("submitted_at") or "")[:19],
+          "| cancel", (o.get("canceled_at") or "")[:19], "| expire", (o.get("expired_at") or "")[:19],
+          "| replaced_by", bool(o.get("replaced_by")), "| fail", (o.get("failed_at") or "")[:19])
+for k in ("ext/intents.json", "health/app.json"):
+    raw = cloud_store.get(k, log=lambda m: None)
+    try:
+        j = json.loads(raw) if raw else None
+    except Exception:
+        j = None
+    if k == "health/app.json" and isinstance(j, dict):
+        j = {s: {f: v.get(f) for f in ("text", "open", "first", "last", "n", "fixed")} for s, v in j.items() if s in ("buy", "fills")}
+    if k == "ext/intents.json" and isinstance(j, dict):
+        j = {"updated": j.get("updated"), "intents": [{f: v.get(f) for f in ("cid", "sym", "side", "ext", "wait_open", "created", "at")}
+                                                       for v in (j.get("intents") or {}).values()]}
+    print(f"\n== {k}:", json.dumps(j, default=str)[:2500])
