@@ -1307,7 +1307,10 @@ async function extendedHours(env, when) {
       if (o && ["canceled", "rejected"].includes(o.status) && it.self_cancel !== o.id) { delete I[key]; changed = true; continue; }
       if (it.wait_open && session !== "open") continue;                // a market order waiting for the 9:30 open
       if (session === "open") {
-        if (isLive && it.ext) { if (await cancel(o.id)) await place(it, false); }
+        // Nov 9 fix: mark the extended-hours order as cancelled by us before cancelling it. On Nov 6 Alpaca took
+        // 40 s to confirm the 9:30 cancel of the BHE buy, the check timed out, and the next pass took the
+        // now-cancelled order for one you had cancelled and dropped the buy without placing the market order.
+        if (isLive && it.ext) { it.self_cancel = o.id; changed = true; if (await cancel(o.id)) await place(it, false); }
         else if (!isLive) await place(it, false);
         delete I[key]; changed = true; continue;                    // a market order now: the open takes it from here
       }
