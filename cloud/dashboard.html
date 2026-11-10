@@ -1465,7 +1465,7 @@ function simpleTable(rows, cols) {
 
 function renderSmall(d) {
   const x = d.small, w = d.watchlist;
-  let h = `<p class="note">Companies worth under $2 billion when the member bought. The idea: members may know more about smaller companies, and their prices have further to move. This portfolio buys every purchase of one that was disclosed on time, once per stock, and holds it ${x?.hold ?? 250} trading days (about ${Math.round((x?.hold ?? 250) / 21)} months). ${d.adaptive?.policy?.sleeve_coverage ? "It skips companies no Wall Street analyst covered at the time, because those did worse. " : ""}The weekly check can change the holding period${d.adaptive?.policy?.sleeve_coverage ? " and that rule" : " and whether to skip companies no analyst covers"}. Delisted small companies are the most likely to be missing prices, which can make results look better than they were.</p>`;
+  let h = "";
   const cov = !!d.adaptive?.policy?.sleeve_coverage;
   const cands = (w?.buys || []).filter(r => (r.sm ?? 0) >= 1 && (r.lag ?? 999) <= 45 && !(cov && r.nc));
   h += `<section class="panel"><div class="ph"><h2>Small-company candidates</h2><span class="sub">Disclosed in the last ${w?.lookback ?? 30} days</span></div>
