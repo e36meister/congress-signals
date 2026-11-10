@@ -182,25 +182,32 @@ def why_it_moved(force=(), dry=False):
 
 def main():
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
-    seen = set(json.load(open(STATE))) if os.path.exists(STATE) else None
+    # Nov 10: seen is {id: date first noted}. It used to keep only IDs in this run's list (seen & now), so each time the
+    # Senate list flipped between the site (S... IDs) and the FMP backup (F... IDs) the other set was dropped and came
+    # back as "new" next flip: the same 2 PTRs and 12 FMP trades started the full update ~14 times on Nov 10.
+    # Now IDs are kept by age (2x the lookback), whichever source answered this run.
+    raw = json.load(open(STATE)) if os.path.exists(STATE) else None
+    today = dt.date.today().isoformat()
+    seen = None if raw is None else (raw if isinstance(raw, dict) else {i: today for i in raw})
     now = house_ids() | senate_ids()
     if not now:
         E.log("Quick check: couldn't read either filing list; trying again next hour")
         return
     if seen is None:
         E.log(f"Quick check: first run, noted {len(now)} recent filings")
-        json.dump(sorted(now), open(STATE, "w"))
+        json.dump({i: today for i in sorted(now)}, open(STATE, "w"))
         return
-    new = now - seen
+    new = now - set(seen)
     if new:
         E.log(f"Quick check: {len(new)} new filing(s): {', '.join(sorted(new)[:10])}")
         if start_full_update():
-            seen |= new
+            seen.update({i: today for i in new})
     else:
         E.log("Quick check: nothing new")
-    # keep only IDs still inside the lookback window so the file stays small
-    # (a filing whose update couldn't be started stays unseen, so the next hour tries again)
-    json.dump(sorted(seen & now), open(STATE, "w"))
+    # drop IDs first noted more than 2x the lookback ago so the file stays small
+    # (a filing whose update couldn't be started stays unseen, so the next run tries again)
+    cut = (dt.date.today() - dt.timedelta(days=2 * LOOKBACK_DAYS)).isoformat()
+    json.dump({i: d for i, d in sorted(seen.items()) if d >= cut}, open(STATE, "w"))
 
 
 if __name__ == "__main__":
