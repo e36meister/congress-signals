@@ -298,6 +298,7 @@ SENATE_KEY = "health/senate_access.json"
 SENATE_GROUPS = (("efd", "the Senate trade filings site (efdsearch.senate.gov), so Senate trades and yearly reports read directly again"),
                  ("votes", "senate.gov, so Senate roll call votes read directly again"),
                  ("senators", "the senators' own websites, so their press releases read directly again"))
+SENATE_BLIP_H = 6         # after an area came back, a refusal that clears within this many hours sends no alert
 SENATE_BACK_RUNS = 3       # runs in a row with no refusal before saying it works (the block came and went on Oct 29-30)
 
 
@@ -321,6 +322,7 @@ def senate_watch(log=None):
             return
         st = _load(SENATE_KEY)
         blocked, streak = st.setdefault("blocked", {}), st.setdefault("streak", {})
+        backed = st.setdefault("back", {})        # when each area last came back
         now = _now().isoformat(timespec="seconds")
         back = []
         for g, r in runs.items():
@@ -334,8 +336,23 @@ def senate_watch(log=None):
             elif r["answered"] >= 2 and g in blocked:
                 streak[g] = streak.get(g, 0) + 1
                 if streak[g] >= SENATE_BACK_RUNS or r["answered"] >= 20:
-                    back.append((g, blocked.pop(g)))
+                    since = blocked.pop(g)
                     streak.pop(g, None)
+                    # Nov 10: eFD came back Nov 9, but the 5-minute filings check got a single stray 403 at
+                    # 23:26 and 12:26 UTC, which re-marked it blocked; the next run answered and the owner got
+                    # "working again" twice more for blocks of ten minutes. After an area has come back, a
+                    # refusal that clears within SENATE_BLIP_H hours is logged, not alerted. A real block
+                    # (hours or days, as Oct 23-Nov 9) still alerts when it ends.
+                    prev = backed.get(g)
+                    try:
+                        brief = bool(prev) and (_now() - dt.datetime.fromisoformat(since)).total_seconds() < SENATE_BLIP_H * 3600
+                    except Exception:
+                        brief = False
+                    backed[g] = now
+                    if brief:
+                        _log(f"Senate access: {g} refused briefly ({since} to {now}); answering again, no alert", log)
+                    else:
+                        back.append((g, since))
         _save(SENATE_KEY, st)
         if back:
             import cloud_store

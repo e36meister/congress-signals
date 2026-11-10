@@ -1,7 +1,7 @@
 """Hourly check for new House and Senate trade filings. Takes a minute or two.
 When it finds filings it hasn't seen before, it starts the full update (daily.yml) right away,
 which scores them, updates the dashboard and emails any new BUY or avoid signals."""
-import os, json, re, datetime as dt
+import os, json, re, time, datetime as dt
 import requests
 import congress_signals.engine as E
 
@@ -26,15 +26,22 @@ def house_ids():
 
 
 def senate_ids():
-    try:
-        s = E._senate_session()
-        start = (dt.date.today() - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%m/%d/%Y 00:00:00")
-        rows = E.senate_list(s, {"start": "0", "length": "100", "report_types": "[11]", "filer_types": "[]",
-                                 "submitted_start_date": start, "submitted_end_date": "", "candidate_state": "",
-                                 "senator_state": "", "office_id": "", "first_name": "", "last_name": ""})
-    except Exception as e:
-        E.log(f"Quick check: Senate listing failed ({e})")
-        return fmp_senate_ids()
+    start = (dt.date.today() - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%m/%d/%Y 00:00:00")
+    q = {"start": "0", "length": "100", "report_types": "[11]", "filer_types": "[]",
+         "submitted_start_date": start, "submitted_end_date": "", "candidate_state": "",
+         "senator_state": "", "office_id": "", "first_name": "", "last_name": ""}
+    # Nov 10: with the Senate site answering again (since Nov 9), about 1 run in 150 got a single stray 403 on the
+    # list and the next run 5 minutes later read fine. One fresh-session retry after 20 s before falling back to FMP.
+    for attempt in (1, 2):
+        try:
+            rows = E.senate_list(E._senate_session(), q)
+            break
+        except Exception as e:
+            if attempt == 1:
+                time.sleep(20)
+                continue
+            E.log(f"Quick check: Senate listing failed ({e})")
+            return fmp_senate_ids()
     out = set()
     for row in rows:
         m = re.search(r'href="([^"]+)"', row[3])

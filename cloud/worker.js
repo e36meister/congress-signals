@@ -1472,6 +1472,11 @@ async function senateImport(req, env) {
 async function senateReminder(env, when) {
   const et = new Date(when.toLocaleString("en-US", { timeZone: "America/New_York" }));
   if (![8, 13, 17].includes(et.getHours()) || et.getMinutes() !== 0) return;
+  // Nov 10: the reminders were the workaround for the Senate firewall (Oct 23-Nov 9). While the jobs read
+  // efdsearch.senate.gov directly (health/senate_access.json has no "efd" block) they'd be noise, so they pause;
+  // they start again on their own the moment the jobs see the site refusing. Unreadable state -> still remind.
+  const acc = await r2json(env, "health/senate_access.json", null).catch(() => null);
+  if (acc && acc.blocked && !acc.blocked.efd) return;
   const log = await importLog(env);
   const last = log.find(h => h.filed);
   await deliver(env, { title: "Check for new Senate filings",
