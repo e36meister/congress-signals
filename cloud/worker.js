@@ -49,6 +49,8 @@ export default {
     if (min % 3 === 0) await step("buy", "Managing pre-market and after-hours orders", () => extendedHours(env, new Date(ev.scheduledTime)));
     await step("quick", "Starting the filings check", () => startQuickCheck(env, min));
     await step("daily", "Starting the daily update", () => startDailyOnTime(env, new Date(ev.scheduledTime)));
+    { const et = ET(), hm = et.getHours() * 60 + et.getMinutes();     // only at 4:12 and 6:30 PM, so a 6:30 problem isn't cleared a minute later
+      if (hm === 16 * 60 + 12 || hm === 18 * 60 + 30) await step("close", "Market-close report", () => startCloseOnTime(env, new Date(ev.scheduledTime))); }
     if (min === 5) await step("substack", "Reading members' Substack feeds", () => mirrorSubstack(env));
     await step("senate-reminder", "Sending the Senate filings reminder", () => senateReminder(env, new Date(ev.scheduledTime)));
     await step("digest", "Sending the data-health summary", () => sendDigest(env, new Date(ev.scheduledTime)));
@@ -1378,6 +1380,30 @@ async function startDailyOnTime(env, now) {
       body: JSON.stringify({ ref: "main", inputs: { chain: "0", why: "scheduled" } }),
     });
     if (!r.ok) throw new Error(`GitHub refused to start the job (HTTP ${r.status}): ${(await r.text()).slice(0, 120)}`);
+  }
+}
+
+// Nov 9: GitHub's own timer skipped the Monday close report entirely (and has run it up to 4 hours late), so the
+// worker starts it at 4:12 PM New York time on weekdays. The GitHub timer stays as a backup; the report skips itself
+// when today's is already done. At 6:30 PM a missing report goes to Data health, so it's never silently skipped.
+async function startCloseOnTime(env, now) {
+  const et = ET(), wd = et.getDay(), h = et.getHours(), m = et.getMinutes();
+  if (wd < 1 || wd > 5) return;
+  if (h === 16 && m === 12) {
+    if (!env.GH_DISPATCH_TOKEN) throw new Error("the GitHub start key (GH_DISPATCH_TOKEN) isn't set");
+    const r = await fetch(`https://api.github.com/repos/${env.GH_REPO || "e36meister/congress-signals"}/actions/workflows/close.yml/dispatches`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`, Accept: "application/vnd.github+json",
+                 "User-Agent": "capitol-capital-worker", "Content-Type": "application/json" },
+      body: JSON.stringify({ ref: "main", inputs: { email_only: false } }),
+    });
+    if (!r.ok) throw new Error(`GitHub refused to start the close report (HTTP ${r.status}): ${(await r.text()).slice(0, 120)}`);
+  }
+  if (h === 18 && m === 30) {
+    const o = await env.DATA.get("dashboard_data.json");
+    const d = o ? await o.json() : {};
+    const today = `${et.getFullYear()}-${String(et.getMonth() + 1).padStart(2, "0")}-${String(et.getDate()).padStart(2, "0")}`;
+    if ((d.close_report || {}).date !== today) throw new Error(`today's market-close report (and its email) hasn't come in by 6:30 PM; check the Market-close report run on GitHub`);
   }
 }
 
