@@ -32,7 +32,8 @@ for v in cr.get("versions") or []:
     if isinstance(v, dict):
         print("version", {k: v.get(k) for k in v if k not in ("put_in", "value", "cost", "dollars", "trades")})
 for s in cr.get("sleeves") or []:
-    print("sleeve", s.get("name"), s.get("positions"), "pos | ret", pct(s.get("ret")), "| S&P", pct(s.get("spy")),
+    f = lambda x: None if x is None else x * 100          # sleeves are saved as fractions
+    print("sleeve", s.get("name"), s.get("positions"), "pos | ret", pct(f(s.get("ret"))), "| S&P", pct(f(s.get("spy"))),
           "| avg days", s.get("avg_days"))
 
 api = broker.Alpaca(broker.settings(60))

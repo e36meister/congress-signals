@@ -3469,6 +3469,10 @@ POLICY_SECTORS = {
 }
 
 
+BILLS_OVERLAP_D = 60     # re-read this many days before the last fetch on a weekly refresh
+BILLS_FULL_D = 90        # full re-read of a member's lists this often
+
+
 def collect_bills(cfg, bioguides):
     key = cfg.get("CONGRESS_API_KEY")
     cache, path = _cache_json(cfg, "bills.json", {})
@@ -3482,6 +3486,16 @@ def collect_bills(cfg, bioguides):
         for i, b in enumerate(todo, 1):
             if out_of_time(cfg):
                 break
+            # Nov 10: a weekly refresh re-downloaded each member's whole list back to the cutoff (cosponsor lists run to
+            # thousands), ~2 min a member: 48 members took ~100 min of the Nov 10 update. Now a refresh pages only back
+            # to BILLS_OVERLAP_D before the last fetch (policy areas get filled in after a bill is introduced) and keeps
+            # the older rows; a full re-read every BILLS_FULL_D days per member.
+            old = cache.get(b) or {}
+            full_at = old.get("full") or ("" if "rows" not in old else old.get("fetched", ""))
+            incr = bool(old.get("rows") is not None and _fresh(full_at, BILLS_FULL_D))
+            stop = ((pd.Timestamp(old["fetched"][:10]) - pd.Timedelta(days=BILLS_OVERLAP_D)).strftime("%Y-%m-%d")
+                    if incr else cutoff)
+            stop = max(stop, cutoff)
             rows, ok = [], True
             for kind, fld in (("sponsored-legislation", "sponsoredLegislation"),
                               ("cosponsored-legislation", "cosponsoredLegislation")):
@@ -3500,12 +3514,15 @@ def collect_bills(cfg, bioguides):
                         if d and pa and d >= cutoff:
                             rows.append([d, pa, "sponsor" if kind.startswith("sp") else "cosponsor",
                                          (it.get("title") or "")[:140]])
-                    if len(items) < 250 or (items and (items[-1].get("introducedDate") or "9") < cutoff):
+                    if len(items) < 250 or (items and (items[-1].get("introducedDate") or "9") < stop):
                         break
                     off += 250
                     time.sleep(0.4)
             if ok:
-                cache[b] = {"fetched": dt.datetime.now().isoformat(), "rows": rows}
+                now_iso = dt.datetime.now().isoformat()
+                if incr:                                        # keep older rows, take the re-read window fresh
+                    rows = [r for r in old["rows"] if r[0] < stop] + [r for r in rows if r[0] >= stop]
+                cache[b] = {"fetched": now_iso, "full": full_at if incr else now_iso, "rows": rows}
             if i % 25 == 0:
                 json.dump(cache, open(path, "w"))
                 log(f"Bills: {i}/{len(todo)} members")
