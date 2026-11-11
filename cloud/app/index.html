@@ -5,7 +5,7 @@ html.viewer [data-buy],html.viewer .sellbtn,html.viewer .keepbtn,html.viewer [da
 html.viewer #today-avoid,html.viewer #today-also,html.viewer #today-unusual,html.viewer #today-worth,html.viewer #posts,
 html.viewer [data-jump="today-avoid"],html.viewer [data-jump="today-also"],html.viewer [data-jump="posts"],
 html.viewer [data-jump="today-worth"],html.viewer [data-jump="today-unusual"],html.viewer .owner-only{display:none!important}
-.vtip{display:none}html.tips .vtip{display:block;background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:12px}
+.xtip{display:none}html.tips .xtip{display:block}.vtip{display:none}html.tips .vtip{display:block;background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:12px}
 .vbtns{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
 .meini{display:grid;place-items:center;width:100%;height:100%;font:600 15px var(--body);color:var(--accent);background:var(--accent-soft)}
 .btn.ghost.bwarn{color:#9A5B00;border-color:#E9C27A}.btn.ghost.bdanger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
@@ -2290,7 +2290,7 @@ function tagsHtml(reasons, max = 6, title = "Why it's flagged") {
   const tags = rs.map(reasonTag);
   const seen = new Set(), uniq = tags.filter(g => !seen.has(g.label) && seen.add(g.label));
   const all = `<ul class="tipl">${rs.map(x => `<li>${esc(x)}</li>`).join("")}</ul>`;
-  const shown = uniq.slice(0, max).map(g => g.plain ? `<span class="tag plain">${esc(g.label)}</span>` : tipBtn(g.label, g.label, `<p>${esc(g.full)}</p>${g.about ? `<p class="foot">${esc(g.about)}</p>` : ""}`, g.tone));
+  const shown = uniq.slice(0, max).map(g => g.plain ? `<span class="tag plain">${esc(g.label)}</span>` : tipBtn(g.label, g.label, `<p>${esc(g.full)}</p>${g.about ? `<p class="foot xtip">${esc(g.about)}</p>` : ""}`, g.tone));
   if (uniq.length > max) shown.push(tipBtn(`+${uniq.length - max} more`, title, all, "more"));
   else if (rs.length > 1) shown.push(tipBtn("All", title, all, "more"));
   return `<div class="tags">${shown.join("")}</div>`;
