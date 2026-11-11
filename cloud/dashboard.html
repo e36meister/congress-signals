@@ -2294,11 +2294,14 @@ function shares(tr) {
 }
 function priceText(tr) {
   if (tr.npx) return `${money2(tr.npx)} a share (from the filing)`;
+  // one price all day (thin stocks): say it once, not "between $X and $X"
+  if (tr.dl && tr.dh && money2(tr.dl) === money2(tr.dh)) return `${money2(tr.dh)} a share that day (it only traded at that price)`;
   if (tr.dl && tr.dh) return `between ${money2(tr.dl)} and ${money2(tr.dh)} a share that day (close ${money2(tr.p)})`;
   return tr.p ? `${money2(tr.p)} a share (that day's close)` : "No price that day";
 }
 function priceCell(tr) {
   if (tr.npx) return `${money2(tr.npx)}<div class="foot">from the filing</div>`;
+  if (tr.dl && tr.dh && money2(tr.dl) === money2(tr.dh)) return `${money2(tr.dh)}<div class="foot">only price that day</div>`;
   if (tr.dl && tr.dh) return `${money2(tr.dl)}–${money2(tr.dh)}<div class="foot">close ${money2(tr.p)}</div>`;
   return money2(tr.p);
 }
