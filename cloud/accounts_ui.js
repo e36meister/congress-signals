@@ -5,18 +5,19 @@
 // The owner gets the Accounts page (under More) to add people and see each portfolio.
 let ROLE = "owner", SESSION_ME = null;
 const isViewer = () => ROLE === "viewer";
-const VIEWER_TABS = new Set(["today", "members", "port", "alerts", "more", "search", "vnotif", "vset", "faq", "bug", "terms", "privacy", "tax"]);
+const VIEWER_TABS = new Set(["today", "members", "port", "alerts", "more", "search", "vnotif", "vset", "faq", "blog", "bug", "terms", "privacy", "tax"]);
 const VIEWER_MORE = [
   { k: "search", l: "Company search", d: "Any ticker or company: its chart, what's going on, and every member's trades" },
   { k: "vnotif", l: "Notifications", d: "Push and email: trades, the daily close, big moves, your own account alerts" },
   { k: "tax", l: "Taxes", d: "Every sale's gain or loss, your Form 8949 statement and what to file" },
   { k: "vset", l: "Settings", d: "Profile picture, extra explanations, home-screen widget, sign out" },
   { k: "faq", l: "Questions and answers", d: "How the tool picks, buys, sells and sizes, and what you can do" },
+  { k: "blog", l: "Blog", d: "How things work: the Buy and Sell buttons, suggested sizing" },
   { k: "bug", l: "Report a bug or suggest a feature", d: "Something broken, or an idea for the app? It goes straight to the Operator" },
 ];
 // Today sections a family account sees; the jump bar shows once there are two or more (owner, Nov 3 2026)
 const VIEWER_SECTIONS = new Set(["today-buy"]);
-const VIEWER_SUB = new Set(["search", "vnotif", "vset", "faq", "bug", "terms", "privacy", "tax"]);
+const VIEWER_SUB = new Set(["search", "vnotif", "vset", "faq", "blog", "bug", "terms", "privacy", "tax"]);
 function applyRole(s) {
   ROLE = s && s.role === "viewer" ? "viewer" : "owner";
   SESSION_ME = s || null;
@@ -138,8 +139,13 @@ document.addEventListener("click", async ev => {
 
 // ---------- Today: a Buy button on each Buy candidate ----------
 function vBuyArea(r) {
-  if (!state.data?.viewer?.connected || state.data.viewer.paused || state.data.viewer.hold || !state.data.viewer.terms) return "";
+  const V0 = state.data?.viewer || {};
+  if (!V0.connected || !V0.terms) return "";
   const held = (state.data?.portfolio?.positions || []).some(x => x.t === r.t);
+  // trading off (owner, Nov 11 2026): the button stays, greyed out, with the info button. Their own pause also gets a
+  // "Trading paused" link above it to the Pause switch; the family hold (trading not started) gets no label
+  if (V0.hold || V0.paused) return `<div class="vlock">${!V0.hold ? `<button type="button" class="link vpausedl" data-vgopause="1">Trading paused</button>` : ""}
+    <div class="vbtns"><button type="button" class="buybtn vb" disabled aria-disabled="true">${held ? "Buy more" : "Buy"}</button>${infoBtn()}</div></div>`;
   return `<button type="button" class="buybtn vb" data-vbuy="${esc(r.t)}">${VA.open === r.t ? "Close" : held ? "Buy more" : "Buy"}</button>`;
 }
 function vBuyBox(t, inTable) {
@@ -211,7 +217,14 @@ function renderViewerAccount(d, opts = {}) {
     const held = x.sleeve === "park" ? `Cash waiting for picks<div class="foot">${V.park === "cash" ? "Being moved back to cash" : "In SGOV until the tool needs it"}</div>`
       : x.bot ? `${x.sleeve === "small" ? "Small-company pick · " : ""}${x.held ?? 0} of ${x.hold ?? L.hold_days ?? 60} days${x.bought ? `<div class="foot">Tool sells ~${esc(fmtDate(addTradingDays(x.bought, x.hold ?? L.hold_days ?? 60)))}; a winner may be kept longer</div>` : ""}`
       : `Yours<div class="foot">You bought this yourself; the tool leaves it alone</div>`;
-    const btns = ro || V.hold || x.sleeve === "park" ? "" : `<div class="vbtns">${buyListHas(x.t) && !V.paused ? `<button type="button" class="buybtn vb" data-vbuy="${esc(x.t)}">${VA.open === x.t ? "Close" : "Buy more"}</button>` : ""}<button type="button" class="vsell" data-vsell="${esc(x.t)}">${VA.sellOpen === x.t ? "Close" : "Sell"}</button></div>`;
+    // trading off (owner, Nov 11 2026): greyed out instead of hidden, with the info button. While their own pause is
+    // on only Buy greys out: selling stays open (the Terms promise they can sell any time)
+    const off = !!(V.hold || V.paused);
+    const bBtn = !buyListHas(x.t) ? "" : off ? `<button type="button" class="buybtn vb" disabled aria-disabled="true">Buy more</button>`
+      : `<button type="button" class="buybtn vb" data-vbuy="${esc(x.t)}">${VA.open === x.t ? "Close" : "Buy more"}</button>`;
+    const sBtn = V.hold ? `<button type="button" class="vsell" disabled aria-disabled="true">Sell</button>`
+      : `<button type="button" class="vsell" data-vsell="${esc(x.t)}">${VA.sellOpen === x.t ? "Close" : "Sell"}</button>`;
+    const btns = ro || x.sleeve === "park" ? "" : `<div class="vbtns">${bBtn}${sBtn}${off ? infoBtn() : ""}</div>`;
     const m = VA.msg[x.t];
     return `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${m && VA.open !== x.t && VA.sellOpen !== x.t ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</td><td class="n">${Number(x.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
       <td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${held}${btns}</td></tr>${ro ? "" : vBuyBox(x.t, true) + vSellRow(x)}`;
@@ -367,6 +380,7 @@ function renderViewerPage() {
   if (state.tab === "vnotif") return vBack() + renderVNotif();
   if (state.tab === "vset") return vBack() + renderVSettings() + signInPanel();
   if (state.tab === "faq") return vBack() + renderFaq();
+  if (state.tab === "blog") return renderBlog();
   if (state.tab === "bug") return vBack() + renderBug();
   if (state.tab === "terms") return vBack() + renderTermsPage();
   if (state.tab === "privacy") return vBack() + renderPrivacy();
@@ -764,7 +778,7 @@ function renderPrivacy() {
 // ---------- Pause trading (bottom of their Account page) and the banner on every page ----------
 function pausePanel(V) {
   const on = !!V.paused;
-  return `<section class="panel"><div class="ph"><h2>Pause trading</h2></div>
+  return `<section class="panel" data-hl="vpause" id="vpause"><div class="ph"><h2>Pause trading</h2></div>
     <label class="vswitch"><input type="checkbox" data-vpause="1"${on ? " checked" : ""}${VA.pauseBusy ? " disabled" : ""}> <span>${on ? "Trading is paused" : "Pause all trading in my account"}</span></label>
     <p class="foot" style="margin-top:6px">While paused, the tool doesn't buy or sell anything in your account, no matter what, and anything it had waiting to fill is cancelled. Everything you hold stays as it is until you turn this off or sell it yourself. Sell still works; Buy more is off.</p>
     ${VA.pauseMsg ? `<div class="tapmsg ${VA.pauseMsg.ok ? "pos" : "neg"}">${esc(VA.pauseMsg.text)}</div>` : ""}</section>`;
@@ -984,3 +998,77 @@ document.addEventListener("visibilitychange", () => document.visibilityState ===
 document.addEventListener("pointerdown", coverOff, true);
 document.addEventListener("keydown", coverOff, true);
 document.addEventListener("copy", ev => { if (isViewer() && !(ev.target.closest && ev.target.closest("input,textarea"))) ev.preventDefault(); });
+
+// ---------- Blog (owner, Nov 11 2026): short how-it-works posts, in More for everyone; the info buttons next to
+// greyed-out Buy/Sell open "How the Buy and Sell buttons work". Back returns to where the info button was tapped ----------
+const BLOG = { k: null, from: null, fromPost: false };
+function infoBtn() {
+  return `<button type="button" class="infobtn" data-blog="buttons" aria-label="How the Buy and Sell buttons work" title="How the Buy and Sell buttons work"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="6.2" r="1.15" fill="currentColor"/><path d="M10 9v5.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>`;
+}
+const BLOG_POSTS = [
+  { k: "buttons", t: "How the Buy and Sell buttons work", d: "What they do, and why they're sometimes greyed out", body: blogButtons },
+  { k: "sizing", t: "Suggested sizing", d: "How much each pick gets, and the test behind it", body: blogSizing },
+];
+function blogButtons() {
+  const V = (isViewer() && state.data && state.data.viewer) || {};
+  // the status line follows the account: trading not started (the family hold), their own pause, or normal
+  const status = V.hold ? `<p><b>Greyed out?</b> Trading hasn't started yet, so Buy and Sell are off. They turn on when it starts.</p>`
+    : V.paused ? `<p><b>Greyed out?</b> You paused trading, so Buy is off. Sell still works. <button type="button" class="link" data-vgopause="1">Resume in Account</button></p>`
+    : `<p><b>Greyed out?</b> Buy and Sell grey out while trading is paused.</p>`;
+  return `${status}
+    <p><b>Automatic:</b> picks are bought and sold for you automatically, at a pre-set size. <button type="button" class="link" data-blog="sizing">Suggested sizing</button></p>
+    <h3 class="subh">Buy</h3><ul class="blist">
+      <li>Only for stocks on today's Buy list.</li>
+      <li>Enter a dollar amount. Fills now, or at the next open if the market's closed.</li>
+      <li>Treated like the tool's own buy: same hold time and sell rules.</li></ul>
+    <h3 class="subh">Sell</h3><ul class="blist">
+      <li>Any stock you hold, any time: all, a number of shares, or a dollar amount.</li>
+      <li>Selling a tool pick early: it won't rebuy that stock for that pick for 45 days.</li>
+      <li>Held under a year = short-term gain or loss for taxes.</li></ul>
+    <p><b>Want it to stop?</b> ${isViewer() ? `<button type="button" class="link" data-vgopause="1">Pause trading</button> at the bottom of Account.` : "Pause trading at the bottom of Account."}</p>`;
+}
+function blogSizing() {
+  const d = state.data || {}, L = (d.portfolio || {}).limits || {}, a = d.adaptive || {};
+  const rows = (a.evaluation || []).filter(r => r.Setting === "Position size by confidence");
+  const cur = (a.policy || {}).sizing || "equal";
+  const name = { equal: "the same amount for every pick", moderate: "0.75×–1.25× by score", strong: "0.5×–1.5× by score" }[cur] || cur;
+  const per = L.per_pick != null ? ` (about ${money(L.per_pick)} a pick right now)` : "";
+  return `<ul class="blist">
+      <li><b>Now:</b> ${esc(name)}${per}.</li>
+      <li><b>Amount:</b> your account split evenly across the picks one holding period needs.</li>
+      <li><b>Buy size</b> on Account scales it: Low ½×, Standard 1×, High 1.5×.</li>
+      <li><b>Cap:</b> never more than ${Math.round(L.max_invested_pct || 90)}% invested. The rest sits in a Treasury-bill fund.</li>
+      <li><b>Buying extra</b> by hand puts more on one stock. That wasn't part of the test below.</li></ul>
+    <h3 class="subh">The test behind it</h3>
+    <p class="foot">Every week the tool re-runs the full trade history with each way of sizing. It switches only if another way wins on the earlier years and the last 3 years too.${a.evaluated_at ? ` Last check ${esc(fmtET(a.evaluated_at))}.` : ""}</p>
+    ${rows.length ? adjTable(rows) : `<div class="empty">This week's results aren't in yet.</div>`}`;
+}
+function renderBlog() {
+  const p = BLOG_POSTS.find(x => x.k === BLOG.k);
+  const back = BLOG.from && (BLOG.from.tab !== "blog" || BLOG.fromPost) ? "‹ Back" : p ? "‹ Blog" : "‹ More";
+  const head = `<button type="button" class="moreback" data-blogback="1">${back}</button>`;
+  if (p) return `${head}<section class="panel blogpost"><div class="ph"><h2>${esc(p.t)}</h2></div>${p.body()}</section>`;
+  return `${head}<section class="panel"><div class="ph"><h2>Blog</h2></div><div class="morelist">${BLOG_POSTS.map(x =>
+    `<button type="button" class="moreitem" data-blog="${x.k}"><span class="ml">${esc(x.t)}</span><span class="md">${esc(x.d)}</span><span class="mc" aria-hidden="true">›</span></button>`).join("")}</div></section>`;
+}
+document.addEventListener("click", ev => {
+  const b = ev.target.closest("[data-blog]");
+  if (b) {
+    ev.preventDefault(); ev.stopPropagation();
+    BLOG.fromPost = state.tab === "blog" && !!BLOG.k;      // a link inside a post: Back returns to that post
+    go("#blog/" + b.dataset.blog); scrollTo(0, 0); return;
+  }
+  const bk = ev.target.closest("[data-blogback]");
+  if (bk) {
+    ev.preventDefault();
+    const f = BLOG.from;
+    if (f && f.pushed && history.length > 1) { history.back(); return; }   // back to where it was opened from, same scroll
+    if (BLOG.k) { BLOG.k = null; BLOG.from = null; try { history.replaceState({}, "", "#blog"); } catch (e) {} render(); scrollTo(0, 0); return; }
+    goTab("more"); return;
+  }
+  const gp = ev.target.closest("[data-vgopause]");
+  if (gp && isViewer()) {
+    ev.preventDefault();
+    go("#port"); TARGET = { sel: '[data-hl="vpause"]', until: Date.now() + 20000 };
+  }
+});

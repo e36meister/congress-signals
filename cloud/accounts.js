@@ -258,7 +258,10 @@ async function viewerData(env, a) {
   const w = d.watchlist || {};
   out.watchlist = { lookback: w.lookback, updated: w.updated, buys, sells: [], new: (w.new || []).filter(n => n.action === "BUY") };
   const pol = (d.adaptive && d.adaptive.policy) || {};
-  out.adaptive = { policy: { hold_other: pol.hold_other, hold_small: pol.hold_small, sizing: pol.sizing } };
+  // only the weekly check's sizing rows (owner, Nov 11 2026: the Blog's Suggested sizing post shows them as the backing)
+  const sizing = ((d.adaptive && d.adaptive.evaluation) || []).filter(r => r.Setting === "Position size by confidence")
+    .map(r => ({ Setting: r.Setting, Option: r.Option, "Per year vs S&P": r["Per year vs S&P"], "Gain vs current": r["Gain vs current"], Verdict: r.Verdict }));
+  out.adaptive = { policy: { hold_other: pol.hold_other, hold_small: pol.hold_small, sizing: pol.sizing }, evaluation: sizing, evaluated_at: (d.adaptive || {}).evaluated_at };
   out.viewer = { hold: await familyHold(env), connected: !!a.keys_set_at, auto: a.auto !== false, size: sizeOf(a), terms: termsOk(a), paused: !!a.paused, park: parkOf(a) };
   if (port) {
     out.portfolio = port.portfolio || null;

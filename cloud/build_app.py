@@ -205,9 +205,9 @@ src = sub("function render() {\n  setHeaderHeight();", "function render() {\n  g
 src = sub('  if (state.tab === "port") html += renderPortfolio(d);',
           '  if (state.tab === "port") html += isViewer() ? renderViewerAccount(d) : renderPortfolio(d);\n'
           '  if (state.tab === "accounts") html += renderAccounts();', src)
-src = sub('  { k: "record", l: "Track record", d: "How past picks did against the S&P 500" },\n];',
+src = sub('  { k: "record", l: "Track record", d: "How past picks did against the S&P 500" },\n',
           '  { k: "record", l: "Track record", d: "How past picks did against the S&P 500" },\n'
-          '  { k: "accounts", l: "Accounts", d: "Family accounts: add people and see each one\'s portfolio" },\n];', src)
+          '  { k: "accounts", l: "Accounts", d: "Family accounts: add people and see each one\'s portfolio" },\n', src)
 # the posts list's "Needs review" (people review) is the owner's job
 src = sub('["all", "All new"], ["review", `Needs review${reviewCount() ? " " + reviewCount() : ""}`]]',
           '["all", "All new"], ...(isViewer() ? [] : [["review", `Needs review${reviewCount() ? " " + reviewCount() : ""}`]])]', src)
@@ -269,7 +269,14 @@ html.viewer [data-jump="today-avoid"],html.viewer [data-jump="today-also"],html.
 html.viewer [data-jump="today-worth"],html.viewer [data-jump="today-unusual"]{display:none!important}
 .xtip{display:none}html.tips .xtip{display:block}
 .vtip{display:none}html.tips .vtip{display:block;background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:12px}
-.vbtns{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
+.vbtns{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;align-items:center}
+.buybtn:disabled,.vsell:disabled{opacity:.45;cursor:not-allowed;filter:grayscale(1)}
+.infobtn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;border-radius:50%;border:1px solid var(--rule);background:var(--surface);color:var(--accent);cursor:pointer;flex:none;transition:background .15s,border-color .15s}
+.infobtn:hover,.infobtn:focus-visible{background:var(--accent-soft);border-color:var(--accent)}
+.infobtn svg{width:16px;height:16px;display:block}
+.vlock{display:flex;flex-direction:column;align-items:flex-start;gap:2px}
+.vpausedl{font-size:12px;font-weight:600;color:var(--muted)}
+.blogpost p{margin:0 0 10px}.blist{margin:4px 0 12px;padding-left:20px}.blist li{margin:3px 0}
 .meini{display:grid;place-items:center;width:100%;height:100%;font:600 15px var(--body);color:var(--accent);background:var(--accent-soft)}
 .btn.ghost.bwarn{color:#9A5B00;border-color:#E9C27A}.btn.ghost.bdanger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
 /* Members: the time-window bar sits right under the top bar, whatever its height */
