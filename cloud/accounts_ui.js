@@ -150,7 +150,7 @@ function vBuyArea(r) {
 }
 function vBuyBox(t, inTable) {
   const m = VA.msg[t];
-  if (VA.open !== t) return m && !inTable ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : "";
+  if (VA.open !== t || (VA.openIn === "port") !== (state.tab === "port")) return m && !inTable ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : "";
   const L = state.data?.portfolio?.limits || {}, v = VA.amt[t] ?? (L.per_pick ? Math.round(L.per_pick * 0.25) : "");
   const held = (state.data?.portfolio?.positions || []).some(x => x.t === t);
   const box = `<div class="sellbox">
@@ -227,7 +227,7 @@ function renderViewerAccount(d, opts = {}) {
     const btns = ro || x.sleeve === "park" ? "" : `<div class="vbtns">${bBtn}${sBtn}${off ? infoBtn() : ""}</div>`;
     const m = VA.msg[x.t];
     return `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${m && VA.open !== x.t && VA.sellOpen !== x.t ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</td><td class="n">${Number(x.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
-      <td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${held}${btns}</td></tr>${ro ? "" : vBuyBox(x.t, true) + vSellRow(x)}`;
+      <td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${held}${btns}</td></tr>`;
   };
   // Nov 4: the first family account was connected with nothing in it, and its page just said "Nothing bought yet"
   const empty = !first && !(p.equity >= 1) && !pos.length;
@@ -271,22 +271,34 @@ function renderViewerAccount(d, opts = {}) {
   ${ro || V.hold ? "" : pausePanel(V)}`;
 }
 
-// Sell: any position but the parked fund, whenever they want, with a note on what selling early means
-function vSellRow(x) {
-  if (VA.sellOpen !== x.t) return "";
+// Sell and Buy more on Account (owner, Nov 11 2026): a popup over the page (the positions table is wider than a
+// phone), short and direct, with a confirm step before a sell goes out
+function vPopHtml() {
+  const pos = (state.data?.portfolio?.positions || []);
+  const x = VA.sellOpen && pos.find(p => p.t === VA.sellOpen);
+  if (x) return vSellPop(x);
+  if (VA.open && VA.openIn === "port") return popShell(`Buy more ${VA.open}`, vBuyBox(VA.open, false));   // a Buy box opened on Today stays on Today
+  return "";
+}
+function vSellPop(x) {
   const t = x.t, mode = VA.sellMode[t] || "all", m = VA.msg[t], sh = Number(x.qty).toLocaleString(undefined, { maximumFractionDigits: 4 });
   const opt = (k, l) => `<button type="button" class="seg1" data-vsellmode="${esc(t)}|${k}" aria-pressed="${mode === k}">${l}</button>`;
-  const cost = x.avg != null && x.qty ? +x.avg * +x.qty : null, up = cost != null && (+x.mv || 0) > cost * 1.01;
-  return `<tr class="sellrow"><td colspan="6"><div class="sellbox">
-    <div class="note warn" style="margin:0 0 10px"><b>Before you sell:</b> <button type="button" class="link" data-blog="buttons/sell-yourself">see the disclaimer on making your own sales</button></div>
+  const cost = x.avg != null && x.qty ? +x.avg * +x.qty : null, up = cost != null && (+x.mv || 0) > cost * 1.01, gain = cost != null ? (+x.mv || 0) - cost : null;
+  const msg = m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : "";
+  if (VA.confirm === t) return popShell(`Sell ${t}?`, `<div class="sellbox">
+    <p class="sellq">${esc(sellPlanText(x, VA.confirmMode, VA.amt["s" + t]))}?</p>
+    <div class="foot">Real money · ${state.data?.portfolio?.market_open ? "fills now" : "fills at the next open"}.</div>
+    <div class="sellacts"><button type="button" class="vsell go" data-vsellgo="${esc(t)}"${VA.busy ? " disabled" : ""}>${VA.busy ? "Sending…" : "Confirm sell"}</button>
+      <button type="button" class="link" data-vsellback="1">Back</button></div>${msg}</div>`);
+  return popShell(`Sell ${t}`, `<div class="sellbox">
+    <div class="sellfacts"><span>You hold <b>${sh} sh</b> · ~${money(x.mv, 2)}</span>${cost != null ? `<span>Paid ${money(cost, 2)} · <span class="${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain, 2)} (${pct(cost ? gain / cost : 0)})</span></span>` : ""}</div>
     <div class="seg" role="group" aria-label="How much">${opt("all", "All")}${opt("shares", "Shares")}${opt("dollars", "$ amount")}${cost != null ? opt("initial", "Initial investment") : ""}</div>
-    ${mode === "all" ? `<p style="margin:8px 0">Sell all ${sh} shares of ${esc(t)} (~${money(x.mv)}).</p>`
-      : mode === "initial" ? `<p style="margin:8px 0">${up ? `Sells ~<b>${money(cost, 2)}</b> (what you paid) and keeps ~<b class="pos">${money((+x.mv || 0) - cost, 2)}</b> in ${esc(t)}.` : `It isn't worth more than you paid, so this would sell all of it. Use All instead.`} <button type="button" class="link" data-blog="buttons/initial">How it works</button></p>`
-      : `<div style="margin-top:8px"><input id="vsell-${esc(t)}" class="amt" type="number" inputmode="decimal" min="0" step="any" value="${esc(VA.amt["s" + t] ?? "")}" placeholder="${mode === "shares" ? "Shares" : "Dollars"}" style="max-width:140px"></div>`}
-    <div style="display:flex;gap:10px;align-items:center;margin-top:8px"><button type="button" class="vsell go" data-vsellsend="${esc(t)}"${VA.busy || (mode === "initial" && !up) ? " disabled" : ""}>${VA.busy ? "Sending…" : "Send sell order"}</button>
-      <button type="button" class="link" data-vsell="${esc(t)}">Cancel</button></div>
-    <div class="foot">Real money. Fills now if the market is open, otherwise at the next open.</div>
-    ${m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</div></td></tr>`;
+    ${mode === "all" ? `<div>Sells all ${sh} sh (~${money(x.mv)}).</div>`
+      : mode === "initial" ? `<div>${up ? `Sells ~<b>${money(cost, 2)}</b> (what you paid), keeps ~<b class="pos">${money(gain, 2)}</b>.` : `Not worth more than you paid, so this would sell all of it. Use All.`} <button type="button" class="link" data-blog="buttons/initial">How it works</button></div>`
+      : `<div><input id="vsell-${esc(t)}" class="amt" type="number" inputmode="decimal" min="0" step="any" value="${esc(VA.amt["s" + t] ?? "")}" placeholder="${mode === "shares" ? "Shares" : "Dollars"}" style="max-width:160px"></div>`}
+    <div class="foot">Selling yourself? <button type="button" class="link" data-blog="buttons/sell-yourself">Read the disclaimer</button></div>
+    <div class="sellacts"><button type="button" class="vsell go" data-vsellsend="${esc(t)}"${VA.busy || (mode === "initial" && !up) ? " disabled" : ""}>Sell</button>
+      <button type="button" class="link" data-popclose="1">Cancel</button></div>${msg}</div>`);
 }
 
 function renderConnect() {
@@ -333,11 +345,11 @@ const errText = e => e && e.message && !/^error \d+$/.test(e.message) ? e.messag
 document.addEventListener("click", async ev => {
   if (!isViewer()) return;
   const o = ev.target.closest("[data-vbuy]");
-  if (o) { const t = o.dataset.vbuy; VA.open = VA.open === t ? null : t; VA.sellOpen = null; delete VA.msg[t]; render(); return; }
+  if (o) { const t = o.dataset.vbuy; VA.open = VA.open === t ? null : t; VA.openIn = state.tab; VA.sellOpen = null; delete VA.msg[t]; render(); return; }
   const so = ev.target.closest("[data-vsell]");
-  if (so) { const t = so.dataset.vsell; VA.sellOpen = VA.sellOpen === t ? null : t; VA.open = null; delete VA.msg[t]; render(); return; }
+  if (so) { const t = so.dataset.vsell; VA.sellOpen = VA.sellOpen === t ? null : t; VA.open = null; VA.confirm = null; delete VA.msg[t]; render(); return; }
   const sm = ev.target.closest("[data-vsellmode]");
-  if (sm) { const [t, k] = sm.dataset.vsellmode.split("|"); VA.sellMode[t] = k; render(); return; }
+  if (sm) { const [t, k] = sm.dataset.vsellmode.split("|"), el = document.getElementById("vsell-" + t); if (el) VA.amt["s" + t] = el.value; VA.sellMode[t] = k; render(); return; }
   const s = ev.target.closest("[data-vbuysend]");
   if (s && !VA.busy) {
     const t = s.dataset.vbuysend, el = document.getElementById("vbuy-" + t), dollars = parseFloat(el && el.value);
@@ -352,18 +364,29 @@ document.addEventListener("click", async ev => {
     } catch (e) { VA.msg[t] = { ok: false, text: "Not sent: " + errText(e) + "." }; }
     VA.busy = false; render(); return;
   }
-  const ss = ev.target.closest("[data-vsellsend]");
-  if (ss && !VA.busy) {
-    const t = ss.dataset.vsellsend, mode = VA.sellMode[t] || "all", el = document.getElementById("vsell-" + t), amount = el ? parseFloat(el.value) : null;
+  // the popup: tap outside or × / Cancel closes it; Sell asks to confirm; Back returns to the amounts
+  if (isViewer() && ((ev.target.classList && ev.target.classList.contains("sellbg")) || ev.target.closest("[data-popclose]"))) {
+    VA.sellOpen = null; VA.open = null; VA.confirm = null; render(); return;
+  }
+  if (ev.target.closest("[data-vsellback]")) { VA.confirm = null; render(); return; }
+  const ask = ev.target.closest("[data-vsellsend]");
+  if (ask && !VA.busy) {
+    const t = ask.dataset.vsellsend, el = document.getElementById("vsell-" + t), amount = el ? parseFloat(el.value) : null;
+    let mode = VA.sellMode[t] || "all";
     if (el) VA.amt["s" + t] = el.value;
     if (mode !== "all" && mode !== "initial" && !(amount > 0)) { VA.msg[t] = { ok: false, text: mode === "shares" ? "Enter how many shares." : "Enter a dollar amount." }; render(); return; }
+    delete VA.msg[t]; VA.confirm = t; VA.confirmMode = mode; render(); return;
+  }
+  const ss = ev.target.closest("[data-vsellgo]");
+  if (ss && !VA.busy) {
+    const t = ss.dataset.vsellgo, mode = VA.confirmMode || "all", amount = parseFloat(VA.amt["s" + t]);
     VA.busy = true; render();
     try {
       const { js } = await api("/api/sell", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t, mode, amount }) });
       VA.msg[t] = { ok: true, text: `Sell order sent${js.all ? ` for all of ${t}` : ` for ${js.qty ? js.qty + " shares" : money(js.notional)} of ${t}`}` + (js.market_open ? "." : ". It fills at the next market open.") };
-      VA.sellOpen = null; delete VA.amt["s" + t];
+      VA.sellOpen = null; VA.confirm = null; delete VA.amt["s" + t];
       setTimeout(loadLive, 4000);
-    } catch (e) { VA.msg[t] = { ok: false, text: "Not sent: " + errText(e) + "." }; }
+    } catch (e) { VA.confirm = null; VA.msg[t] = { ok: false, text: "Not sent: " + errText(e) + "." }; }
     VA.busy = false; render();
   }
 });
@@ -1126,4 +1149,10 @@ document.addEventListener("click", ev => {
     ev.preventDefault();
     go("#port"); TARGET = { sel: '[data-hl="vpause"]', until: Date.now() + 20000 };
   }
+});
+
+addEventListener("keydown", ev => {      // Escape closes the Sell / Buy more popup
+  if (ev.key !== "Escape" || !document.querySelector(".sellbg")) return;
+  if (isViewer()) { VA.sellOpen = null; VA.open = null; VA.confirm = null; } else { state.sellOpen = null; state.sellConfirm = null; }
+  render();
 });

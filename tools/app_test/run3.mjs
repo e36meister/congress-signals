@@ -56,16 +56,19 @@ note("server: buy TSLA (not on the list): " + JSON.stringify(r));
 note("orders now: " + JSON.stringify(await orders()));
 
 step("family: Sell");
+await p.keyboard.press("Escape"); await settle(p, 200);      // Nov 11: Buy more / Sell are popups now
 await p.click("#tab-port"); await settle(p, 800);
 note("Sell buttons: " + JSON.stringify(await p.$$eval("[data-vsell]", b => b.map(x => x.dataset.vsell))));
-await p.click('[data-vsell="PLUG"]'); await settle(p, 300); await shot(p, "sell-open");
-note("sell box: " + (await txt(".sellbox")).slice(0, 400));
+const tap = async sel => { await p.$eval(sel, e => e.scrollIntoView({ block: "center" })); await p.click(sel); };   // keeps the row clear of the bottom tab bar
+await tap('[data-vsell="PLUG"]'); await settle(p, 300); await shot(p, "sell-open");
+note("sell box: " + (await txt(".sellmodal")).slice(0, 400));
 for (const [mode, amt] of [["shares", ""], ["shares", "10"], ["dollars", "100"], ["dollars", "100000"], ["all", null]]) {
   await ctl("/outbound?clear=1");
-  if (!(await vis('[data-vsellsend="PLUG"]'))) { await p.click('[data-vsell="PLUG"]'); await settle(p, 300); }
+  if (!(await vis('[data-vsellsend="PLUG"]'))) { await tap('[data-vsell="PLUG"]'); await settle(p, 300); }
   await p.click(`[data-vsellmode="PLUG|${mode}"]`); await settle(p, 200);
   if (amt !== null) await p.fill("#vsell-PLUG", amt);
-  await p.click('[data-vsellsend="PLUG"]'); await settle(p, 900);
+  await p.click('[data-vsellsend="PLUG"]'); await settle(p, 500);
+  if (await vis('[data-vsellgo="PLUG"]')) { note("confirm: " + (await txt(".sellq"))); await p.click('[data-vsellgo="PLUG"]'); await settle(p, 900); }
   note(`Sell PLUG ${mode} ${amt ?? ""}: "${await msgs()}" · calls ${JSON.stringify(await newOut())}`);
 }
 r = await p.evaluate(async () => { const x = await fetch("/api/sell", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t: "SGOV", mode: "all" }) }); return [x.status, await x.text()]; });

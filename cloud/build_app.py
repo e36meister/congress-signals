@@ -326,6 +326,14 @@ html.viewer input,html.viewer textarea{-webkit-user-select:text;user-select:text
 .pick>.sellbox{grid-column:1/-1;margin-top:6px}.sellbox .note{max-width:760px}
 .vsell{font:600 13px var(--body);padding:6px 12px;border-radius:8px;border:1px solid var(--bad);background:none;color:var(--bad);cursor:pointer}
 .vsell.go{background:var(--bad);color:#fff}.vsell:disabled{opacity:.6}
+/* Sell / Buy more popup (owner, Nov 11 2026) */
+.sellbg{grid-template-columns:minmax(0,460px);align-items:center}
+.sellmodal{padding:14px 16px 16px}.sellmodal .sellbox{border:0;padding:0;background:none}
+.sellph{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 10px;font-size:17px}
+.sellph .mx{font-size:22px;line-height:1;background:none;border:0;color:var(--muted);cursor:pointer;padding:2px 6px}
+.sellfacts{display:flex;flex-direction:column;gap:2px;font-size:14px;color:var(--ink2)}
+.sellq{font-size:16px;font-weight:600;margin:4px 0}
+.sellacts{display:flex;gap:12px;align-items:center;margin-top:4px}
 /* sell box options: never break a word; wrap to a second row on narrow phones instead */
 .sellbox .seg{display:flex;flex-wrap:wrap}.sellbox .seg .seg1{white-space:nowrap;flex:1 1 auto}
 .note .link{text-align:left}

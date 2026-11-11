@@ -917,6 +917,7 @@ function render() {
   if (state.tab === "search") html += renderSearch();
   if (state.tab === "tax") html += renderTax();
   if (state.tab === "blog" && typeof renderBlog === "function" && !(typeof isViewer === "function" && isViewer())) html += renderBlog();
+  html += sellPopHtml();
   main.innerHTML = html;
   bind();
   setTimeout(focusTarget, 0);
@@ -1731,34 +1732,59 @@ function sellBtn(x) {
 }
 function sellConv(x, mode, v) {
   const n = parseFloat(v), px = +x.px || (x.qty ? x.mv / x.qty : 0);
-  if (!(n > 0) || !px) return `At about ${money(px, 2)} a share`;
+  if (!(n > 0) || !px) return `~${money(px, 2)} a share`;
   if (mode === "dollars") {
     const sh = Math.min(n / px, +x.qty);
-    return `≈ ${sh.toLocaleString(undefined, { maximumFractionDigits: 4 })} shares at ${money(px, 2)}${n / px > +x.qty ? " (that's all you hold)" : ""}`;
+    return `~${sh.toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at ${money(px, 2)}${n / px > +x.qty ? " (that's all you hold)" : ""}`;
   }
   const sh = Math.min(n, +x.qty);
-  return `≈ ${money(sh * px, 2)} at ${money(px, 2)} a share${n > +x.qty ? " (that's all you hold)" : ""}`;
+  return `~${money(sh * px, 2)} at ${money(px, 2)} a share${n > +x.qty ? " (that's all you hold)" : ""}`;
 }
-function sellRow(x) {
-  if (state.sellOpen !== x.t) return "";
+// Sell (owner, Nov 11 2026): a popup over the page instead of a row inside the wide positions table, short and
+// direct, and a confirm step before the order goes out
+function sellRow(x) { return ""; }
+function popShell(title, body) {
+  return `<div class="mbg sellbg"><div class="modal sellmodal" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+    <div class="sellph"><b>${esc(title)}</b><button type="button" class="mx" data-popclose="1" aria-label="Close">×</button></div>${body}</div></div>`;
+}
+// what the order will do, in one line (also the confirm question)
+function sellPlanText(x, mode, v) {
+  const t = x.t, px = +x.px || (x.qty ? x.mv / x.qty : 0), q = +x.qty, n = parseFloat(v), cost = x.avg != null && q ? +x.avg * q : null;
+  const sh = k => Number(k).toLocaleString(undefined, { maximumFractionDigits: 4 });
+  if (mode === "initial") return `Sell ~${money(cost, 2)} of ${t} (what you paid) and keep ~${money((+x.mv || 0) - cost, 2)}`;
+  if (mode === "all" || (mode === "shares" && n >= q) || (mode === "dollars" && px && n >= q * px * 0.995)) return `Sell all ${sh(q)} sh of ${t} (~${money(x.mv, 2)})`;
+  if (mode === "dollars") return `Sell ~${money(n, 2)} of ${t}${px ? ` (~${sh(n / px)} sh)` : ""}`;
+  return `Sell ${sh(n)} sh of ${t}${px ? ` (~${money(n * px, 2)})` : ""}`;
+}
+function sellBox(x) {
   const t = x.t, mode = ["dollars", "initial"].includes(state.sellMode[t]) ? state.sellMode[t] : "shares", real = state.data?.portfolio?.mode === "live";
   const cost0 = x.avg != null && x.qty ? +x.avg * +x.qty : null, up = cost0 != null && (+x.mv || 0) > cost0 * 1.01;
   const sh = Number(x.qty).toLocaleString(undefined, { maximumFractionDigits: 4 });
   const opt = (k, l) => `<button type="button" class="seg1" data-sellmode="${esc(t)}|${k}" aria-pressed="${mode === k}">${l}</button>`;
-  const m = state.sellMsg[t], v = state.sellAmt[t] ?? "";
-  return `<tr class="sellrow"><td colspan="7" class="full" data-l=""><div class="sellbox">
-    <div><b>Sell ${esc(t)}</b> · you hold ${sh} sh (${money(x.mv)})${x.avg != null && x.qty ? (() => { const cost = +x.avg * +x.qty, gain = (+x.mv || 0) - cost;
-      return `<div class="sellcost">Initial investment <b>${money(cost, 2)}</b> <span class="foot">(${sh} sh at ${money(+x.avg, 2)} avg)</span> · now ${money(x.mv, 2)} · <span class="${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain, 2)} (${pct(cost ? gain / cost : 0)})</span></div>`; })() : ""}${x.bot && !x.manual ? `<div class="foot">It won't be bought back for the same pick.</div>` : ""}</div>
-    ${mode === "initial" ? `<div>${up ? `Sells ~<b>${money(cost0, 2)}</b> (what you paid) and keeps ~<b class="pos">${money((+x.mv || 0) - cost0, 2)}</b> in ${esc(t)}.` : `It isn't worth more than you paid, so this would sell all of it.`} <button type="button" class="link" data-blog="buttons/initial">How it works</button></div>
-    <div><span class="segs">${opt("shares", "Shares")}${opt("dollars", "$")}${opt("initial", "Initial investment")}</span></div>` : `<div class="sellin"><span class="u">${mode === "dollars" ? "$" : ""}</span><input type="number" inputmode="decimal" min="0" step="any" id="samt-${esc(t)}" value="${esc(v)}"
-      placeholder="${mode === "dollars" ? "Dollar amount" : "Shares"}" aria-label="${mode === "dollars" ? "Dollars to sell" : "Shares to sell"}"><span class="u">${mode === "dollars" ? "" : "sh"}</span>
-      <span class="segs">${opt("shares", "Shares")}${opt("dollars", "$")}${cost0 != null ? opt("initial", "Initial investment") : ""}</span></div>
-    <div class="foot" id="sconv-${esc(t)}">${esc(sellConv(x, mode, v))}</div>`}
-    <div><button type="button" class="link" data-sellall="${esc(t)}">Sell all ${sh} shares</button></div>
-    <div class="foot">${real ? "Real money account" : "Paper account (fake money)"} · fills now if the market is open; otherwise tries after-hours and pre-market within 0.5% of the last price, then the open.</div>
-    <div style="display:flex;gap:10px;align-items:center"><button type="button" class="sellbtn go" data-sellsend="${esc(t)}"${state.selling || (mode === "initial" && !up) ? " disabled" : ""}>${state.selling ? "Sending…" : "Send sell order"}</button>
-      <button type="button" class="link" data-sellcancel="1">Cancel</button></div>
-    ${m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</div></td></tr>`;
+  const m = state.sellMsg[t], v = state.sellAmt[t] ?? "", gain = cost0 != null ? (+x.mv || 0) - cost0 : null;
+  const msg = m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : "";
+  if (state.sellConfirm === t) return popShell(`Sell ${t}?`, `<div class="sellbox">
+    <p class="sellq">${esc(sellPlanText(x, state.sellConfirm2 || mode, v))}?</p>
+    <div class="foot">${real ? "Real money" : "Paper account (fake money)"} · ${state.data?.portfolio?.market_open ? "fills now" : "fills after hours within 0.5% of the last price, or at the open"}.</div>
+    <div class="sellacts"><button type="button" class="sellbtn go" data-sellgo="${esc(t)}"${state.selling ? " disabled" : ""}>${state.selling ? "Sending…" : "Confirm sell"}</button>
+      <button type="button" class="link" data-sellback="1">Back</button></div>${msg}</div>`);
+  return popShell(`Sell ${t}`, `<div class="sellbox">
+    <div class="sellfacts"><span>You hold <b>${sh} sh</b> · ~${money(x.mv, 2)}</span>${cost0 != null ? `<span>Paid ${money(cost0, 2)} · <span class="${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain, 2)} (${pct(cost0 ? gain / cost0 : 0)})</span></span>` : ""}</div>
+    <div class="seg" role="group" aria-label="How much">${opt("shares", "Shares")}${opt("dollars", "$ amount")}${cost0 != null ? opt("initial", "Initial investment") : ""}</div>
+    ${mode === "initial" ? `<div>${up ? `Sells ~<b>${money(cost0, 2)}</b> (what you paid), keeps ~<b class="pos">${money(gain, 2)}</b>.` : `Not worth more than you paid, so this would sell all of it.`} <button type="button" class="link" data-blog="buttons/initial">How it works</button></div>`
+      : `<div class="sellin"><span class="u">${mode === "dollars" ? "$" : ""}</span><input type="number" inputmode="decimal" min="0" step="any" id="samt-${esc(t)}" value="${esc(v)}"
+      placeholder="${mode === "dollars" ? "Dollar amount" : "Shares"}" aria-label="${mode === "dollars" ? "Dollars to sell" : "Shares to sell"}"><span class="u">${mode === "dollars" ? "" : "sh"}</span></div>
+    <div class="foot"><span id="sconv-${esc(t)}">${esc(sellConv(x, mode, v))}</span> · <button type="button" class="link" data-sellall="${esc(t)}">all ${sh} sh</button></div>`}
+    ${x.bot && !x.manual ? `<div class="foot">Won't be bought back for this pick.</div>` : ""}
+    <div class="sellacts"><button type="button" class="sellbtn go" data-sellsend="${esc(t)}"${state.selling || (mode === "initial" && !up) ? " disabled" : ""}>Sell</button>
+      <button type="button" class="link" data-sellcancel="1">Cancel</button></div>${msg}</div>`);
+}
+// the open Sell popup (or a family account's Buy more / Sell popup), drawn over the Account page
+function sellPopHtml() {
+  if (state.tab !== "port") return "";
+  if (typeof isViewer === "function" && isViewer()) return typeof vPopHtml === "function" ? vPopHtml() : "";
+  const x = state.sellOpen && sellPos(state.sellOpen);
+  return x ? sellBox(x) : "";
 }
 function renderPortfolio(d) {
   const p = d.portfolio;

@@ -64,6 +64,14 @@ html.viewer input,html.viewer textarea{-webkit-user-select:text;user-select:text
 .pick>.sellbox{grid-column:1/-1;margin-top:6px}.sellbox .note{max-width:760px}
 .vsell{font:600 13px var(--body);padding:6px 12px;border-radius:8px;border:1px solid var(--bad);background:none;color:var(--bad);cursor:pointer}
 .vsell.go{background:var(--bad);color:#fff}.vsell:disabled{opacity:.6}
+/* Sell / Buy more popup (owner, Nov 11 2026) */
+.sellbg{grid-template-columns:minmax(0,460px);align-items:center}
+.sellmodal{padding:14px 16px 16px}.sellmodal .sellbox{border:0;padding:0;background:none}
+.sellph{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 10px;font-size:17px}
+.sellph .mx{font-size:22px;line-height:1;background:none;border:0;color:var(--muted);cursor:pointer;padding:2px 6px}
+.sellfacts{display:flex;flex-direction:column;gap:2px;font-size:14px;color:var(--ink2)}
+.sellq{font-size:16px;font-weight:600;margin:4px 0}
+.sellacts{display:flex;gap:12px;align-items:center;margin-top:4px}
 /* sell box options: never break a word; wrap to a second row on narrow phones instead */
 .sellbox .seg{display:flex;flex-wrap:wrap}.sellbox .seg .seg1{white-space:nowrap;flex:1 1 auto}
 .note .link{text-align:left}
@@ -615,7 +623,7 @@ nav.tabs button{overflow:hidden}
 
 <script>
 (() => {
-const APP_BUILD = '0.1.dev-27f681d', APP_BUILT = '2026-11-11T09:44+00:00', APP_SHA = '27f681d';
+const APP_BUILD = '0.1.dev-5b5115f', APP_BUILT = '2026-11-11T11:22+00:00', APP_SHA = '5b5115f';
 // ---------- family accounts (owner, Nov 2 2026) ----------
 // A family account sees Today (Buy candidates only), Members, Alerts, its own Account and a short More menu (company
 // search, notifications, settings, questions, bug report). The server only answers those (cloud/accounts.js); this
@@ -768,7 +776,7 @@ function vBuyArea(r) {
 }
 function vBuyBox(t, inTable) {
   const m = VA.msg[t];
-  if (VA.open !== t) return m && !inTable ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : "";
+  if (VA.open !== t || (VA.openIn === "port") !== (state.tab === "port")) return m && !inTable ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : "";
   const L = state.data?.portfolio?.limits || {}, v = VA.amt[t] ?? (L.per_pick ? Math.round(L.per_pick * 0.25) : "");
   const held = (state.data?.portfolio?.positions || []).some(x => x.t === t);
   const box = `<div class="sellbox">
@@ -845,7 +853,7 @@ function renderViewerAccount(d, opts = {}) {
     const btns = ro || x.sleeve === "park" ? "" : `<div class="vbtns">${bBtn}${sBtn}${off ? infoBtn() : ""}</div>`;
     const m = VA.msg[x.t];
     return `<tr data-hl="pos:${esc(x.t)}"><td class="mono">${tkBtn(x.t)}${m && VA.open !== x.t && VA.sellOpen !== x.t ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</td><td class="n">${Number(x.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
-      <td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${held}${btns}</td></tr>${ro ? "" : vBuyBox(x.t, true) + vSellRow(x)}`;
+      <td class="n">${money(x.avg, 2)}</td><td class="n">${money(x.mv)}</td><td class="n ${cls(x.pl)}">${pct(x.plpc)} · ${(x.pl > 0 ? "+" : "") + money(x.pl)}</td><td class="nw">${held}${btns}</td></tr>`;
   };
   // Nov 4: the first family account was connected with nothing in it, and its page just said "Nothing bought yet"
   const empty = !first && !(p.equity >= 1) && !pos.length;
@@ -889,22 +897,34 @@ function renderViewerAccount(d, opts = {}) {
   ${ro || V.hold ? "" : pausePanel(V)}`;
 }
 
-// Sell: any position but the parked fund, whenever they want, with a note on what selling early means
-function vSellRow(x) {
-  if (VA.sellOpen !== x.t) return "";
+// Sell and Buy more on Account (owner, Nov 11 2026): a popup over the page (the positions table is wider than a
+// phone), short and direct, with a confirm step before a sell goes out
+function vPopHtml() {
+  const pos = (state.data?.portfolio?.positions || []);
+  const x = VA.sellOpen && pos.find(p => p.t === VA.sellOpen);
+  if (x) return vSellPop(x);
+  if (VA.open && VA.openIn === "port") return popShell(`Buy more ${VA.open}`, vBuyBox(VA.open, false));   // a Buy box opened on Today stays on Today
+  return "";
+}
+function vSellPop(x) {
   const t = x.t, mode = VA.sellMode[t] || "all", m = VA.msg[t], sh = Number(x.qty).toLocaleString(undefined, { maximumFractionDigits: 4 });
   const opt = (k, l) => `<button type="button" class="seg1" data-vsellmode="${esc(t)}|${k}" aria-pressed="${mode === k}">${l}</button>`;
-  const cost = x.avg != null && x.qty ? +x.avg * +x.qty : null, up = cost != null && (+x.mv || 0) > cost * 1.01;
-  return `<tr class="sellrow"><td colspan="6"><div class="sellbox">
-    <div class="note warn" style="margin:0 0 10px"><b>Before you sell:</b> <button type="button" class="link" data-blog="buttons/sell-yourself">see the disclaimer on making your own sales</button></div>
+  const cost = x.avg != null && x.qty ? +x.avg * +x.qty : null, up = cost != null && (+x.mv || 0) > cost * 1.01, gain = cost != null ? (+x.mv || 0) - cost : null;
+  const msg = m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : "";
+  if (VA.confirm === t) return popShell(`Sell ${t}?`, `<div class="sellbox">
+    <p class="sellq">${esc(sellPlanText(x, VA.confirmMode, VA.amt["s" + t]))}?</p>
+    <div class="foot">Real money · ${state.data?.portfolio?.market_open ? "fills now" : "fills at the next open"}.</div>
+    <div class="sellacts"><button type="button" class="vsell go" data-vsellgo="${esc(t)}"${VA.busy ? " disabled" : ""}>${VA.busy ? "Sending…" : "Confirm sell"}</button>
+      <button type="button" class="link" data-vsellback="1">Back</button></div>${msg}</div>`);
+  return popShell(`Sell ${t}`, `<div class="sellbox">
+    <div class="sellfacts"><span>You hold <b>${sh} sh</b> · ~${money(x.mv, 2)}</span>${cost != null ? `<span>Paid ${money(cost, 2)} · <span class="${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain, 2)} (${pct(cost ? gain / cost : 0)})</span></span>` : ""}</div>
     <div class="seg" role="group" aria-label="How much">${opt("all", "All")}${opt("shares", "Shares")}${opt("dollars", "$ amount")}${cost != null ? opt("initial", "Initial investment") : ""}</div>
-    ${mode === "all" ? `<p style="margin:8px 0">Sell all ${sh} shares of ${esc(t)} (~${money(x.mv)}).</p>`
-      : mode === "initial" ? `<p style="margin:8px 0">${up ? `Sells ~<b>${money(cost, 2)}</b> (what you paid) and keeps ~<b class="pos">${money((+x.mv || 0) - cost, 2)}</b> in ${esc(t)}.` : `It isn't worth more than you paid, so this would sell all of it. Use All instead.`} <button type="button" class="link" data-blog="buttons/initial">How it works</button></p>`
-      : `<div style="margin-top:8px"><input id="vsell-${esc(t)}" class="amt" type="number" inputmode="decimal" min="0" step="any" value="${esc(VA.amt["s" + t] ?? "")}" placeholder="${mode === "shares" ? "Shares" : "Dollars"}" style="max-width:140px"></div>`}
-    <div style="display:flex;gap:10px;align-items:center;margin-top:8px"><button type="button" class="vsell go" data-vsellsend="${esc(t)}"${VA.busy || (mode === "initial" && !up) ? " disabled" : ""}>${VA.busy ? "Sending…" : "Send sell order"}</button>
-      <button type="button" class="link" data-vsell="${esc(t)}">Cancel</button></div>
-    <div class="foot">Real money. Fills now if the market is open, otherwise at the next open.</div>
-    ${m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</div></td></tr>`;
+    ${mode === "all" ? `<div>Sells all ${sh} sh (~${money(x.mv)}).</div>`
+      : mode === "initial" ? `<div>${up ? `Sells ~<b>${money(cost, 2)}</b> (what you paid), keeps ~<b class="pos">${money(gain, 2)}</b>.` : `Not worth more than you paid, so this would sell all of it. Use All.`} <button type="button" class="link" data-blog="buttons/initial">How it works</button></div>`
+      : `<div><input id="vsell-${esc(t)}" class="amt" type="number" inputmode="decimal" min="0" step="any" value="${esc(VA.amt["s" + t] ?? "")}" placeholder="${mode === "shares" ? "Shares" : "Dollars"}" style="max-width:160px"></div>`}
+    <div class="foot">Selling yourself? <button type="button" class="link" data-blog="buttons/sell-yourself">Read the disclaimer</button></div>
+    <div class="sellacts"><button type="button" class="vsell go" data-vsellsend="${esc(t)}"${VA.busy || (mode === "initial" && !up) ? " disabled" : ""}>Sell</button>
+      <button type="button" class="link" data-popclose="1">Cancel</button></div>${msg}</div>`);
 }
 
 function renderConnect() {
@@ -951,11 +971,11 @@ const errText = e => e && e.message && !/^error \d+$/.test(e.message) ? e.messag
 document.addEventListener("click", async ev => {
   if (!isViewer()) return;
   const o = ev.target.closest("[data-vbuy]");
-  if (o) { const t = o.dataset.vbuy; VA.open = VA.open === t ? null : t; VA.sellOpen = null; delete VA.msg[t]; render(); return; }
+  if (o) { const t = o.dataset.vbuy; VA.open = VA.open === t ? null : t; VA.openIn = state.tab; VA.sellOpen = null; delete VA.msg[t]; render(); return; }
   const so = ev.target.closest("[data-vsell]");
-  if (so) { const t = so.dataset.vsell; VA.sellOpen = VA.sellOpen === t ? null : t; VA.open = null; delete VA.msg[t]; render(); return; }
+  if (so) { const t = so.dataset.vsell; VA.sellOpen = VA.sellOpen === t ? null : t; VA.open = null; VA.confirm = null; delete VA.msg[t]; render(); return; }
   const sm = ev.target.closest("[data-vsellmode]");
-  if (sm) { const [t, k] = sm.dataset.vsellmode.split("|"); VA.sellMode[t] = k; render(); return; }
+  if (sm) { const [t, k] = sm.dataset.vsellmode.split("|"), el = document.getElementById("vsell-" + t); if (el) VA.amt["s" + t] = el.value; VA.sellMode[t] = k; render(); return; }
   const s = ev.target.closest("[data-vbuysend]");
   if (s && !VA.busy) {
     const t = s.dataset.vbuysend, el = document.getElementById("vbuy-" + t), dollars = parseFloat(el && el.value);
@@ -970,18 +990,29 @@ document.addEventListener("click", async ev => {
     } catch (e) { VA.msg[t] = { ok: false, text: "Not sent: " + errText(e) + "." }; }
     VA.busy = false; render(); return;
   }
-  const ss = ev.target.closest("[data-vsellsend]");
-  if (ss && !VA.busy) {
-    const t = ss.dataset.vsellsend, mode = VA.sellMode[t] || "all", el = document.getElementById("vsell-" + t), amount = el ? parseFloat(el.value) : null;
+  // the popup: tap outside or × / Cancel closes it; Sell asks to confirm; Back returns to the amounts
+  if (isViewer() && ((ev.target.classList && ev.target.classList.contains("sellbg")) || ev.target.closest("[data-popclose]"))) {
+    VA.sellOpen = null; VA.open = null; VA.confirm = null; render(); return;
+  }
+  if (ev.target.closest("[data-vsellback]")) { VA.confirm = null; render(); return; }
+  const ask = ev.target.closest("[data-vsellsend]");
+  if (ask && !VA.busy) {
+    const t = ask.dataset.vsellsend, el = document.getElementById("vsell-" + t), amount = el ? parseFloat(el.value) : null;
+    let mode = VA.sellMode[t] || "all";
     if (el) VA.amt["s" + t] = el.value;
     if (mode !== "all" && mode !== "initial" && !(amount > 0)) { VA.msg[t] = { ok: false, text: mode === "shares" ? "Enter how many shares." : "Enter a dollar amount." }; render(); return; }
+    delete VA.msg[t]; VA.confirm = t; VA.confirmMode = mode; render(); return;
+  }
+  const ss = ev.target.closest("[data-vsellgo]");
+  if (ss && !VA.busy) {
+    const t = ss.dataset.vsellgo, mode = VA.confirmMode || "all", amount = parseFloat(VA.amt["s" + t]);
     VA.busy = true; render();
     try {
       const { js } = await api("/api/sell", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t, mode, amount }) });
       VA.msg[t] = { ok: true, text: `Sell order sent${js.all ? ` for all of ${t}` : ` for ${js.qty ? js.qty + " shares" : money(js.notional)} of ${t}`}` + (js.market_open ? "." : ". It fills at the next market open.") };
-      VA.sellOpen = null; delete VA.amt["s" + t];
+      VA.sellOpen = null; VA.confirm = null; delete VA.amt["s" + t];
       setTimeout(loadLive, 4000);
-    } catch (e) { VA.msg[t] = { ok: false, text: "Not sent: " + errText(e) + "." }; }
+    } catch (e) { VA.confirm = null; VA.msg[t] = { ok: false, text: "Not sent: " + errText(e) + "." }; }
     VA.busy = false; render();
   }
 });
@@ -1746,6 +1777,12 @@ document.addEventListener("click", ev => {
   }
 });
 
+addEventListener("keydown", ev => {      // Escape closes the Sell / Buy more popup
+  if (ev.key !== "Escape" || !document.querySelector(".sellbg")) return;
+  if (isViewer()) { VA.sellOpen = null; VA.open = null; VA.confirm = null; } else { state.sellOpen = null; state.sellConfirm = null; }
+  render();
+});
+
 "use strict";
 const SERVER = "Google Drive";
 const FILE_TITLE = "dashboard_data.json";
@@ -2247,6 +2284,7 @@ function render() {
   if (state.tab === "search") html += renderSearch();
   if (state.tab === "tax" && !isViewer()) html += renderTax();
   if (state.tab === "blog" && typeof renderBlog === "function" && !(typeof isViewer === "function" && isViewer())) html += renderBlog();
+  html += sellPopHtml();
   main.innerHTML = html;
   bind();
   setTimeout(focusTarget, 0);
@@ -3072,34 +3110,59 @@ function sellBtn(x) {
 }
 function sellConv(x, mode, v) {
   const n = parseFloat(v), px = +x.px || (x.qty ? x.mv / x.qty : 0);
-  if (!(n > 0) || !px) return `At about ${money(px, 2)} a share`;
+  if (!(n > 0) || !px) return `~${money(px, 2)} a share`;
   if (mode === "dollars") {
     const sh = Math.min(n / px, +x.qty);
-    return `≈ ${sh.toLocaleString(undefined, { maximumFractionDigits: 4 })} shares at ${money(px, 2)}${n / px > +x.qty ? " (that's all you hold)" : ""}`;
+    return `~${sh.toLocaleString(undefined, { maximumFractionDigits: 4 })} sh at ${money(px, 2)}${n / px > +x.qty ? " (that's all you hold)" : ""}`;
   }
   const sh = Math.min(n, +x.qty);
-  return `≈ ${money(sh * px, 2)} at ${money(px, 2)} a share${n > +x.qty ? " (that's all you hold)" : ""}`;
+  return `~${money(sh * px, 2)} at ${money(px, 2)} a share${n > +x.qty ? " (that's all you hold)" : ""}`;
 }
-function sellRow(x) {
-  if (state.sellOpen !== x.t) return "";
+// Sell (owner, Nov 11 2026): a popup over the page instead of a row inside the wide positions table, short and
+// direct, and a confirm step before the order goes out
+function sellRow(x) { return ""; }
+function popShell(title, body) {
+  return `<div class="mbg sellbg"><div class="modal sellmodal" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+    <div class="sellph"><b>${esc(title)}</b><button type="button" class="mx" data-popclose="1" aria-label="Close">×</button></div>${body}</div></div>`;
+}
+// what the order will do, in one line (also the confirm question)
+function sellPlanText(x, mode, v) {
+  const t = x.t, px = +x.px || (x.qty ? x.mv / x.qty : 0), q = +x.qty, n = parseFloat(v), cost = x.avg != null && q ? +x.avg * q : null;
+  const sh = k => Number(k).toLocaleString(undefined, { maximumFractionDigits: 4 });
+  if (mode === "initial") return `Sell ~${money(cost, 2)} of ${t} (what you paid) and keep ~${money((+x.mv || 0) - cost, 2)}`;
+  if (mode === "all" || (mode === "shares" && n >= q) || (mode === "dollars" && px && n >= q * px * 0.995)) return `Sell all ${sh(q)} sh of ${t} (~${money(x.mv, 2)})`;
+  if (mode === "dollars") return `Sell ~${money(n, 2)} of ${t}${px ? ` (~${sh(n / px)} sh)` : ""}`;
+  return `Sell ${sh(n)} sh of ${t}${px ? ` (~${money(n * px, 2)})` : ""}`;
+}
+function sellBox(x) {
   const t = x.t, mode = ["dollars", "initial"].includes(state.sellMode[t]) ? state.sellMode[t] : "shares", real = state.data?.portfolio?.mode === "live";
   const cost0 = x.avg != null && x.qty ? +x.avg * +x.qty : null, up = cost0 != null && (+x.mv || 0) > cost0 * 1.01;
   const sh = Number(x.qty).toLocaleString(undefined, { maximumFractionDigits: 4 });
   const opt = (k, l) => `<button type="button" class="seg1" data-sellmode="${esc(t)}|${k}" aria-pressed="${mode === k}">${l}</button>`;
-  const m = state.sellMsg[t], v = state.sellAmt[t] ?? "";
-  return `<tr class="sellrow"><td colspan="7" class="full" data-l=""><div class="sellbox">
-    <div><b>Sell ${esc(t)}</b> · you hold ${sh} sh (${money(x.mv)})${x.avg != null && x.qty ? (() => { const cost = +x.avg * +x.qty, gain = (+x.mv || 0) - cost;
-      return `<div class="sellcost">Initial investment <b>${money(cost, 2)}</b> <span class="foot">(${sh} sh at ${money(+x.avg, 2)} avg)</span> · now ${money(x.mv, 2)} · <span class="${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain, 2)} (${pct(cost ? gain / cost : 0)})</span></div>`; })() : ""}${x.bot && !x.manual ? `<div class="foot">It won't be bought back for the same pick.</div>` : ""}</div>
-    ${mode === "initial" ? `<div>${up ? `Sells ~<b>${money(cost0, 2)}</b> (what you paid) and keeps ~<b class="pos">${money((+x.mv || 0) - cost0, 2)}</b> in ${esc(t)}.` : `It isn't worth more than you paid, so this would sell all of it.`} <button type="button" class="link" data-blog="buttons/initial">How it works</button></div>
-    <div><span class="segs">${opt("shares", "Shares")}${opt("dollars", "$")}${opt("initial", "Initial investment")}</span></div>` : `<div class="sellin"><span class="u">${mode === "dollars" ? "$" : ""}</span><input type="number" inputmode="decimal" min="0" step="any" id="samt-${esc(t)}" value="${esc(v)}"
-      placeholder="${mode === "dollars" ? "Dollar amount" : "Shares"}" aria-label="${mode === "dollars" ? "Dollars to sell" : "Shares to sell"}"><span class="u">${mode === "dollars" ? "" : "sh"}</span>
-      <span class="segs">${opt("shares", "Shares")}${opt("dollars", "$")}${cost0 != null ? opt("initial", "Initial investment") : ""}</span></div>
-    <div class="foot" id="sconv-${esc(t)}">${esc(sellConv(x, mode, v))}</div>`}
-    <div><button type="button" class="link" data-sellall="${esc(t)}">Sell all ${sh} shares</button></div>
-    <div class="foot">${real ? "Real money account" : "Paper account (fake money)"} · fills now if the market is open; otherwise tries after-hours and pre-market within 0.5% of the last price, then the open.</div>
-    <div style="display:flex;gap:10px;align-items:center"><button type="button" class="sellbtn go" data-sellsend="${esc(t)}"${state.selling || (mode === "initial" && !up) ? " disabled" : ""}>${state.selling ? "Sending…" : "Send sell order"}</button>
-      <button type="button" class="link" data-sellcancel="1">Cancel</button></div>
-    ${m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</div></td></tr>`;
+  const m = state.sellMsg[t], v = state.sellAmt[t] ?? "", gain = cost0 != null ? (+x.mv || 0) - cost0 : null;
+  const msg = m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : "";
+  if (state.sellConfirm === t) return popShell(`Sell ${t}?`, `<div class="sellbox">
+    <p class="sellq">${esc(sellPlanText(x, state.sellConfirm2 || mode, v))}?</p>
+    <div class="foot">${real ? "Real money" : "Paper account (fake money)"} · ${state.data?.portfolio?.market_open ? "fills now" : "fills after hours within 0.5% of the last price, or at the open"}.</div>
+    <div class="sellacts"><button type="button" class="sellbtn go" data-sellgo="${esc(t)}"${state.selling ? " disabled" : ""}>${state.selling ? "Sending…" : "Confirm sell"}</button>
+      <button type="button" class="link" data-sellback="1">Back</button></div>${msg}</div>`);
+  return popShell(`Sell ${t}`, `<div class="sellbox">
+    <div class="sellfacts"><span>You hold <b>${sh} sh</b> · ~${money(x.mv, 2)}</span>${cost0 != null ? `<span>Paid ${money(cost0, 2)} · <span class="${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain, 2)} (${pct(cost0 ? gain / cost0 : 0)})</span></span>` : ""}</div>
+    <div class="seg" role="group" aria-label="How much">${opt("shares", "Shares")}${opt("dollars", "$ amount")}${cost0 != null ? opt("initial", "Initial investment") : ""}</div>
+    ${mode === "initial" ? `<div>${up ? `Sells ~<b>${money(cost0, 2)}</b> (what you paid), keeps ~<b class="pos">${money(gain, 2)}</b>.` : `Not worth more than you paid, so this would sell all of it.`} <button type="button" class="link" data-blog="buttons/initial">How it works</button></div>`
+      : `<div class="sellin"><span class="u">${mode === "dollars" ? "$" : ""}</span><input type="number" inputmode="decimal" min="0" step="any" id="samt-${esc(t)}" value="${esc(v)}"
+      placeholder="${mode === "dollars" ? "Dollar amount" : "Shares"}" aria-label="${mode === "dollars" ? "Dollars to sell" : "Shares to sell"}"><span class="u">${mode === "dollars" ? "" : "sh"}</span></div>
+    <div class="foot"><span id="sconv-${esc(t)}">${esc(sellConv(x, mode, v))}</span> · <button type="button" class="link" data-sellall="${esc(t)}">all ${sh} sh</button></div>`}
+    ${x.bot && !x.manual ? `<div class="foot">Won't be bought back for this pick.</div>` : ""}
+    <div class="sellacts"><button type="button" class="sellbtn go" data-sellsend="${esc(t)}"${state.selling || (mode === "initial" && !up) ? " disabled" : ""}>Sell</button>
+      <button type="button" class="link" data-sellcancel="1">Cancel</button></div>${msg}</div>`);
+}
+// the open Sell popup (or a family account's Buy more / Sell popup), drawn over the Account page
+function sellPopHtml() {
+  if (state.tab !== "port") return "";
+  if (typeof isViewer === "function" && isViewer()) return typeof vPopHtml === "function" ? vPopHtml() : "";
+  const x = state.sellOpen && sellPos(state.sellOpen);
+  return x ? sellBox(x) : "";
 }
 function renderPortfolio(d) {
   const p = d.portfolio;
@@ -4576,20 +4639,27 @@ async function sendOrder(t) {
   } finally { state.sending = false; render(); }
 }
 function sellPos(t) { return (state.data?.portfolio?.positions || []).find(x => x.t === t); }
-async function sendSell(t) {
+// first tap on Sell: check the amount and show the confirm step; Confirm sell sends it
+function askSell(t) {
   let mode = ["dollars", "initial"].includes(state.sellMode[t]) ? state.sellMode[t] : "shares", amount = parseFloat(state.sellAmt[t]);
-  const pos = (state.data?.portfolio?.positions || []).find(x => x.t === t);
+  const pos = sellPos(t);
   if (mode === "shares" && pos && amount >= +pos.qty) mode = "all";      // the whole position: sell it all
   if (mode !== "all" && mode !== "initial" && !(amount > 0)) { state.sellMsg[t] = { ok: false, text: mode === "shares" ? "Enter how many shares." : "Enter a dollar amount." }; render(); return; }
+  delete state.sellMsg[t]; state.sellConfirm = t; state.sellConfirm2 = mode; render();
+}
+const isViewerSafe = () => typeof isViewer === "function" && isViewer();
+async function sendSell(t) {
+  const mode = state.sellConfirm2 || "shares", amount = parseFloat(state.sellAmt[t]);
   state.selling = true; render();
   try {
     const { js } = await api("/api/sell", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t, mode, amount }) });
     const what = js.all ? `all of ${t}` : js.qty ? `${Number(js.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} sh of ${t}` : `${money(js.notional)} of ${t}`;
-    state.sellMsg[t] = { ok: true, text: `Sell order placed: ${what}${js.value ? ` (about ${money(js.value)})` : ""}` +
+    state.sellMsg[t] = { ok: true, text: `Sell order placed: ${what}${js.value ? ` (~${money(js.value)})` : ""}` +
       (js.market_open ? "." : ". Until the open it tries after-hours (to 8 PM) and pre-market (from 4 AM) within 0.5% of the last price; if it hasn't filled by 9:30, it fills at the open.") };
-    state.sellOpen = null;
+    state.sellOpen = null; state.sellConfirm = null;
     loadLive();
   } catch (e) {
+    state.sellConfirm = null;
     state.sellMsg[t] = { ok: false, text: e.code === "offline" ? "You're offline; the order wasn't sent." : e.code === "login" ? "Log in again, then tap Sell." :
       "Not placed: " + ({ "not-held": "you don't hold it any more", "already-selling": "a sell order for it is already waiting",
         "amount-too-small": "the amount is less than one share", "bad-amount": "the amount couldn't be read",
@@ -4610,9 +4680,14 @@ async function sendKeep(t) {
 document.getElementById("main").addEventListener("click", ev => {
   const k = ev.target.closest("[data-keep]");
   if (k) { if (!state.keeping) sendKeep(k.dataset.keep); return; }
-  const s = ev.target.closest("[data-sell],[data-sellsend],[data-sellcancel],[data-sellmode],[data-sellall]");
+  if (ev.target.classList && ev.target.classList.contains("sellbg") && !isViewerSafe()) { state.sellOpen = null; state.sellConfirm = null; render(); return; }   // tap outside the popup
+  const s = ev.target.closest("[data-sell],[data-sellsend],[data-sellcancel],[data-sellmode],[data-sellall],[data-sellgo],[data-sellback],[data-popclose]");
   if (!s) return;
-  if (s.dataset.sell) { state.sellOpen = s.dataset.sell; delete state.sellMsg[s.dataset.sell]; render(); }
+  if (s.dataset.popclose && isViewerSafe()) return;
+  if (s.dataset.sell) { state.sellOpen = s.dataset.sell; state.sellConfirm = null; delete state.sellMsg[s.dataset.sell]; render(); }
+  else if (s.dataset.sellgo) { if (!state.selling) sendSell(s.dataset.sellgo); }
+  else if (s.dataset.sellback) { state.sellConfirm = null; render(); }
+  else if (s.dataset.popclose) { state.sellOpen = null; state.sellConfirm = null; render(); }
   else if (s.dataset.sellmode) {          // switch $ <-> shares, keeping the same amount (converted)
     const [t, m] = s.dataset.sellmode.split("|"), was = state.sellMode[t] === "dollars" ? "dollars" : "shares";
     const x = sellPos(t), n = parseFloat(state.sellAmt[t]), px = x ? (+x.px || (x.qty ? x.mv / x.qty : 0)) : 0;
@@ -4620,8 +4695,8 @@ document.getElementById("main").addEventListener("click", ev => {
     state.sellMode[t] = m; render(); document.getElementById("samt-" + t)?.focus();
   }
   else if (s.dataset.sellall) { const t = s.dataset.sellall, x = sellPos(t); state.sellMode[t] = "shares"; state.sellAmt[t] = x ? String(x.qty) : ""; render(); }
-  else if (s.dataset.sellsend) { if (!state.selling) sendSell(s.dataset.sellsend); }
-  else if (s.dataset.sellcancel) { state.sellOpen = null; render(); }
+  else if (s.dataset.sellsend) { if (!state.selling) askSell(s.dataset.sellsend); }
+  else if (s.dataset.sellcancel) { state.sellOpen = null; state.sellConfirm = null; render(); }
 });
 document.getElementById("main").addEventListener("input", ev => {
   if (!(ev.target.id && ev.target.id.startsWith("samt-"))) return;
