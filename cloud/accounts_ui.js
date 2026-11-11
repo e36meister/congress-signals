@@ -280,8 +280,8 @@ function vSellRow(x) {
   return `<tr class="sellrow"><td colspan="6"><div class="sellbox">
     <div class="note warn" style="margin:0 0 10px"><b>Before you sell:</b> <button type="button" class="link" data-blog="buttons/sell-yourself">see the disclaimer on making your own sales</button></div>
     <div class="seg" role="group" aria-label="How much">${opt("all", "All")}${opt("shares", "Shares")}${opt("dollars", "$ amount")}${cost != null ? opt("initial", "Initial investment") : ""}</div>
-    ${mode === "all" ? `<p style="margin:8px 0">Sell all ${sh} shares of ${esc(t)} (about ${money(x.mv)}).</p>`
-      : mode === "initial" ? `<p style="margin:8px 0">${up ? `Sells about <b>${money(cost, 2)}</b> (what you paid) and keeps about <b class="pos">${money((+x.mv || 0) - cost, 2)}</b> in ${esc(t)}.` : `It isn't worth more than you paid, so this would sell all of it. Use All instead.`}</p>`
+    ${mode === "all" ? `<p style="margin:8px 0">Sell all ${sh} shares of ${esc(t)} (~${money(x.mv)}).</p>`
+      : mode === "initial" ? `<p style="margin:8px 0">${up ? `Sells ~<b>${money(cost, 2)}</b> (what you paid) and keeps ~<b class="pos">${money((+x.mv || 0) - cost, 2)}</b> in ${esc(t)}.` : `It isn't worth more than you paid, so this would sell all of it. Use All instead.`} <button type="button" class="link" data-blog="buttons/initial">How it works</button></p>`
       : `<div style="margin-top:8px"><input id="vsell-${esc(t)}" class="amt" type="number" inputmode="decimal" min="0" step="any" value="${esc(VA.amt["s" + t] ?? "")}" placeholder="${mode === "shares" ? "Shares" : "Dollars"}" style="max-width:140px"></div>`}
     <div style="display:flex;gap:10px;align-items:center;margin-top:8px"><button type="button" class="vsell go" data-vsellsend="${esc(t)}"${VA.busy || (mode === "initial" && !up) ? " disabled" : ""}>${VA.busy ? "Sending…" : "Send sell order"}</button>
       <button type="button" class="link" data-vsell="${esc(t)}">Cancel</button></div>
@@ -1049,7 +1049,7 @@ function blogButtons() {
   const status = V.hold ? `Trading hasn't started yet, so Buy and Sell are off. They turn on when it starts.`
     : V.paused ? `You paused trading, so Buy is off. Sell still works. <button type="button" class="link" data-vgopause="1">Resume in Account</button>`
     : `Buy and Sell grey out while trading is paused.`;
-  return `<nav class="bjump">${[["greyed", "Greyed out"], ["buy", "Buy"], ["buy-yourself", "Buying yourself"], ["sell", "Sell"], ["sell-yourself", "Selling yourself"], ["stop", "Stopping it"]]
+  return `<nav class="bjump">${[["greyed", "Greyed out"], ["buy", "Buy"], ["buy-yourself", "Buying yourself"], ["sell", "Sell"], ["initial", "Initial investment"], ["sell-yourself", "Selling yourself"], ["stop", "Stopping it"]]
       .map(([id, l]) => bl("buttons/" + id, l)).join("")}</nav>
     ${bsec("greyed", "Greyed out?", `<p>${status}</p>`)}
     <p><b>Automatic:</b> ${bl("how/picks", "picks")} are bought and ${bl("how/sells", "sold")} for you automatically, at a ${bl("sizing", "pre-set size")}.</p>
@@ -1064,8 +1064,16 @@ function blogButtons() {
       <li>What you buy is treated like the tool's own buy: same ${bl("how/sells", "hold time and sell rules")}, sold with the rest.</li></ul>`)}
     ${bsec("sell", "Sell", `<ul class="blist">
       <li>Any stock you hold, any time.</li>
-      <li><b>All</b>, a number of <b>Shares</b>, a <b>$ amount</b>, or <b>Initial investment</b>: sells what you paid and keeps the gain invested. It only works when the stock is worth more than you paid; otherwise it would sell everything, so use All.</li>
+      <li><b>All</b>, a number of <b>Shares</b>, a <b>$ amount</b>, or ${bl("buttons/initial", "<b>Initial investment</b>")}.</li>
       <li>Fills now, or at the next open if the market's closed.</li></ul>`)}
+    ${bsec("initial", "Initial investment", `<ul class="blist">
+      <li>Sells what you paid for the shares you hold and keeps the gain in the stock. Example: bought $1,000, now worth $1,300 → sells ~$1,000, keeps ~$300.</li>
+      <li>"What you paid" is Alpaca's cost for the shares you still hold (after any earlier partial sales).</li>
+      <li>The box shows the ~amounts before you send. It's ~ because the price can move before it fills.</li>
+      <li>Stocks that only trade in whole shares: rounded up to whole shares, so it can sell slightly more than you paid.</li>
+      <li>Greyed out when the stock isn't worth more than you paid, since it would sell everything. Use All instead.</li>
+      <li>What's kept stays under the tool's ${bl("how/sells", "sell rules")}.</li>
+      <li>Taxes: part of what you sell is gain, so it's a taxable sale. ${bl("how/taxes", "Taxes")}</li></ul>`)}
     ${bsec("sell-yourself", "Disclaimer: selling yourself", `<ul class="blist">
       <li>The tool holds each pick for a set time because that tested best, and sells it itself when the time comes. It keeps a winner longer while it's ahead of the S&amp;P 500. ${bl("how/sells", "When it sells")}</li>
       <li>Selling early means that pick won't get the result the strategy measured.</li>

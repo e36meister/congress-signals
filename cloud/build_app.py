@@ -326,6 +326,11 @@ html.viewer input,html.viewer textarea{-webkit-user-select:text;user-select:text
 .pick>.sellbox{grid-column:1/-1;margin-top:6px}.sellbox .note{max-width:760px}
 .vsell{font:600 13px var(--body);padding:6px 12px;border-radius:8px;border:1px solid var(--bad);background:none;color:var(--bad);cursor:pointer}
 .vsell.go{background:var(--bad);color:#fff}.vsell:disabled{opacity:.6}
+/* sell box options: never break a word; wrap to a second row on narrow phones instead */
+.sellbox .seg{display:flex;flex-wrap:wrap}.sellbox .seg .seg1{white-space:nowrap;flex:1 1 auto}
+.note .link{text-align:left}
+/* any disabled Buy/Sell/Send button: plainly greyed out (owner, Nov 11 2026) */
+.buybtn:disabled,.buybtn.go:disabled,.vsell:disabled,.vsell.go:disabled,.sellbtn:disabled,.sellbtn.go:disabled{background:var(--sunken);color:var(--muted);border-color:var(--rule);opacity:1;filter:none;cursor:not-allowed}
 .vme{width:64px;height:64px;border-radius:50%;object-fit:cover;border:1px solid var(--rule)}.vme.none{display:inline-block;background:var(--rule)}
 .vrules{list-style:none;margin:0 0 10px;padding:0;display:grid;gap:6px}.vrules li{display:flex;justify-content:space-between;gap:10px;align-items:center}
 .keysform select{min-width:0;width:100%;font:15px var(--body);padding:10px;border:1px solid var(--rule);border-radius:10px;background:var(--surface);color:var(--ink)}
