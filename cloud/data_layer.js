@@ -153,10 +153,10 @@ async function sendOrder(t) {
 }
 function sellPos(t) { return (state.data?.portfolio?.positions || []).find(x => x.t === t); }
 async function sendSell(t) {
-  let mode = state.sellMode[t] === "dollars" ? "dollars" : "shares", amount = parseFloat(state.sellAmt[t]);
+  let mode = ["dollars", "initial"].includes(state.sellMode[t]) ? state.sellMode[t] : "shares", amount = parseFloat(state.sellAmt[t]);
   const pos = (state.data?.portfolio?.positions || []).find(x => x.t === t);
   if (mode === "shares" && pos && amount >= +pos.qty) mode = "all";      // the whole position: sell it all
-  if (mode !== "all" && !(amount > 0)) { state.sellMsg[t] = { ok: false, text: mode === "shares" ? "Enter how many shares." : "Enter a dollar amount." }; render(); return; }
+  if (mode !== "all" && mode !== "initial" && !(amount > 0)) { state.sellMsg[t] = { ok: false, text: mode === "shares" ? "Enter how many shares." : "Enter a dollar amount." }; render(); return; }
   state.selling = true; render();
   try {
     const { js } = await api("/api/sell", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t, mode, amount }) });
@@ -168,7 +168,8 @@ async function sendSell(t) {
   } catch (e) {
     state.sellMsg[t] = { ok: false, text: e.code === "offline" ? "You're offline; the order wasn't sent." : e.code === "login" ? "Log in again, then tap Sell." :
       "Not placed: " + ({ "not-held": "you don't hold it any more", "already-selling": "a sell order for it is already waiting",
-        "amount-too-small": "the amount is less than one share", "bad-amount": "the amount couldn't be read" }[e.why] || (e.why || "").replace(/-/g, " ") || e.message || "unknown reason") + "." };
+        "amount-too-small": "the amount is less than one share", "bad-amount": "the amount couldn't be read",
+        "not-up": "it isn't worth more than you paid, so that would sell all of it", "no-cost": "Alpaca didn't give what you paid for it" }[e.why] || (e.why || "").replace(/-/g, " ") || e.message || "unknown reason") + "." };
   } finally { state.selling = false; render(); }
 }
 // owner, Oct 30: Keep a position of yours the tool flagged to sell at the next open

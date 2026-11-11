@@ -14,7 +14,7 @@ html.viewer [data-jump="today-worth"],html.viewer [data-jump="today-unusual"],ht
 .infobtn svg{width:16px;height:16px;display:block}
 .vlock{display:flex;flex-direction:column;align-items:flex-start;gap:2px}
 .vpausedl{font-size:12px;font-weight:600;color:var(--muted)}
-.blogpost p{margin:0 0 10px}.blist{margin:4px 0 12px;padding-left:20px}.blist li{margin:3px 0}
+.blogpost p{margin:0 0 10px}.bjump{display:flex;flex-wrap:wrap;gap:6px 14px;margin:0 0 12px;font-size:13px}.bsec{scroll-margin-top:calc(var(--hdr,64px) + 12px)}.blist{margin:4px 0 12px;padding-left:20px}.blist li{margin:3px 0}
 .meini{display:grid;place-items:center;width:100%;height:100%;font:600 15px var(--body);color:var(--accent);background:var(--accent-soft)}
 .btn.ghost.bwarn{color:#9A5B00;border-color:#E9C27A}.btn.ghost.bdanger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
 /* Members: the time-window bar sits right under the top bar, whatever its height */
@@ -610,7 +610,7 @@ nav.tabs button{overflow:hidden}
 
 <script>
 (() => {
-const APP_BUILD = '0.1.dev-2618647', APP_BUILT = '2026-11-11T08:03+00:00', APP_SHA = '2618647';
+const APP_BUILD = '0.1.dev-69d7b9d', APP_BUILT = '2026-11-11T09:04+00:00', APP_SHA = '69d7b9d';
 // ---------- family accounts (owner, Nov 2 2026) ----------
 // A family account sees Today (Buy candidates only), Members, Alerts, its own Account and a short More menu (company
 // search, notifications, settings, questions, bug report). The server only answers those (cloud/accounts.js); this
@@ -767,7 +767,7 @@ function vBuyBox(t, inTable) {
   const L = state.data?.portfolio?.limits || {}, v = VA.amt[t] ?? (L.per_pick ? Math.round(L.per_pick * 0.25) : "");
   const held = (state.data?.portfolio?.positions || []).some(x => x.t === t);
   const box = `<div class="sellbox">
-    <div class="note warn" style="margin:0 0 10px"><b>Before you ${held ? "add more" : "buy"}:</b> the tool already buys every pick for you, each with the same amount, on purpose. Its weekly check keeps testing same-size picks against putting more into the stronger ones, and same-size has stayed ahead. Extra buys by hand were never part of that test, and putting more into one stock makes your account ride more on it. What you buy here is handled like the tool's own buy of ${esc(t)}: the same hold and sell rules, sold with the rest.</div>
+    <div class="note warn" style="margin:0 0 10px"><b>Before you ${held ? "add more" : "buy"}:</b> <button type="button" class="link" data-blog="buttons/buy-yourself">see the disclaimer on making your own buys</button></div>
     <label class="foot" for="vbuy-${esc(t)}">Amount in dollars</label>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:4px">
       <input id="vbuy-${esc(t)}" class="amt" type="number" inputmode="decimal" min="1" step="1" value="${esc(v)}" style="max-width:140px">
@@ -889,15 +889,14 @@ function vSellRow(x) {
   if (VA.sellOpen !== x.t) return "";
   const t = x.t, mode = VA.sellMode[t] || "all", m = VA.msg[t], sh = Number(x.qty).toLocaleString(undefined, { maximumFractionDigits: 4 });
   const opt = (k, l) => `<button type="button" class="seg1" data-vsellmode="${esc(t)}|${k}" aria-pressed="${mode === k}">${l}</button>`;
-  const note = x.bot
-    ? `<b>Before you sell:</b> the tool holds each pick for a set time because that's what tested best, and it sells ${esc(t)} itself when the time comes (or keeps it longer while it's beating the S&amp;P 500). Selling early means this pick won't get the result the strategy measured, and the tool won't buy ${esc(t)} back for this pick for 45 days. Selling part leaves the rest under the tool's rules.`
-    : `<b>Before you sell:</b> this is a stock you bought yourself; the tool doesn't manage it.`;
+  const cost = x.avg != null && x.qty ? +x.avg * +x.qty : null, up = cost != null && (+x.mv || 0) > cost * 1.01;
   return `<tr class="sellrow"><td colspan="6"><div class="sellbox">
-    <div class="note warn" style="margin:0 0 10px">${note} A stock held under a year counts as a short-term gain or loss for taxes.</div>
-    <div class="seg" role="group" aria-label="How much">${opt("all", "All")}${opt("shares", "Shares")}${opt("dollars", "$ amount")}</div>
+    <div class="note warn" style="margin:0 0 10px"><b>Before you sell:</b> <button type="button" class="link" data-blog="buttons/sell-yourself">see the disclaimer on making your own sales</button></div>
+    <div class="seg" role="group" aria-label="How much">${opt("all", "All")}${opt("shares", "Shares")}${opt("dollars", "$ amount")}${cost != null ? opt("initial", "Initial investment") : ""}</div>
     ${mode === "all" ? `<p style="margin:8px 0">Sell all ${sh} shares of ${esc(t)} (about ${money(x.mv)}).</p>`
+      : mode === "initial" ? `<p style="margin:8px 0">${up ? `Sells about <b>${money(cost, 2)}</b> (what you paid) and keeps about <b class="pos">${money((+x.mv || 0) - cost, 2)}</b> in ${esc(t)}.` : `It isn't worth more than you paid, so this would sell all of it. Use All instead.`}</p>`
       : `<div style="margin-top:8px"><input id="vsell-${esc(t)}" class="amt" type="number" inputmode="decimal" min="0" step="any" value="${esc(VA.amt["s" + t] ?? "")}" placeholder="${mode === "shares" ? "Shares" : "Dollars"}" style="max-width:140px"></div>`}
-    <div style="display:flex;gap:10px;align-items:center;margin-top:8px"><button type="button" class="vsell go" data-vsellsend="${esc(t)}"${VA.busy ? " disabled" : ""}>${VA.busy ? "Sending…" : "Send sell order"}</button>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:8px"><button type="button" class="vsell go" data-vsellsend="${esc(t)}"${VA.busy || (mode === "initial" && !up) ? " disabled" : ""}>${VA.busy ? "Sending…" : "Send sell order"}</button>
       <button type="button" class="link" data-vsell="${esc(t)}">Cancel</button></div>
     <div class="foot">Real money. Fills now if the market is open, otherwise at the next open.</div>
     ${m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</div></td></tr>`;
@@ -970,7 +969,7 @@ document.addEventListener("click", async ev => {
   if (ss && !VA.busy) {
     const t = ss.dataset.vsellsend, mode = VA.sellMode[t] || "all", el = document.getElementById("vsell-" + t), amount = el ? parseFloat(el.value) : null;
     if (el) VA.amt["s" + t] = el.value;
-    if (mode !== "all" && !(amount > 0)) { VA.msg[t] = { ok: false, text: mode === "shares" ? "Enter how many shares." : "Enter a dollar amount." }; render(); return; }
+    if (mode !== "all" && mode !== "initial" && !(amount > 0)) { VA.msg[t] = { ok: false, text: mode === "shares" ? "Enter how many shares." : "Enter a dollar amount." }; render(); return; }
     VA.busy = true; render();
     try {
       const { js } = await api("/api/sell", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t, mode, amount }) });
@@ -1619,26 +1618,75 @@ function infoBtn() {
   return `<button type="button" class="infobtn" data-blog="buttons" aria-label="How the Buy and Sell buttons work" title="How the Buy and Sell buttons work"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="6.2" r="1.15" fill="currentColor"/><path d="M10 9v5.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>`;
 }
 const BLOG_POSTS = [
-  { k: "buttons", t: "How the Buy and Sell buttons work", d: "What they do, and why they're sometimes greyed out", body: blogButtons },
+  { k: "how", t: "How the tool works", d: "Picks, how long it holds them, when it sells, spare cash, the weekly check", body: blogHow },
+  { k: "buttons", t: "How the Buy and Sell buttons work", d: "What they do, the disclaimers, and why they're sometimes greyed out", body: blogButtons },
   { k: "sizing", t: "Suggested sizing", d: "How much each pick gets, and the test behind it", body: blogSizing },
 ];
+// a link to a post or to one section of it ("how/sells"): opens the post scrolled to that section
+const bl = (to, label) => `<button type="button" class="link" data-blog="${to}">${label}</button>`;
+const bsec = (id, title, html) => `<div class="bsec" data-hl="blog-${id}" id="blog-${id}"><h3 class="subh">${title}</h3>${html}</div>`;
+function blogHow() {
+  const P = (state.data?.adaptive?.policy) || {}, hold = P.hold_other ?? 60, small = P.hold_small;
+  return `<nav class="bjump">${[["picks", "Picks"], ["size", "Size"], ["sells", "Selling"], ["small", "Small companies"], ["cash", "Spare cash"], ["weekly", "Weekly check"], ["pause", "Stopping it"], ["taxes", "Taxes"], ["risk", "Risk"]]
+      .map(([id, l]) => bl("how/" + id, l)).join("")}</nav>
+    ${bsec("picks", "Picks: the Buy list", `<ul class="blist">
+      <li>Members of Congress must report their stock trades. The tool reads every report.</li>
+      <li>Each purchase is scored on dozens of signals: the member's track record, their committees, the trade's size and timing, and more.</li>
+      <li>Purchases that score near the top of all past ones go on the Buy list. The tool buys those for you.</li>
+      <li>A stock you like isn't on it? A member hasn't bought it recently with a top score. Company search still shows any stock.</li></ul>`)}
+    ${bsec("size", "Size", `<ul class="blist"><li>Every pick gets the same share of your account. ${bl("sizing", "Suggested sizing")}</li></ul>`)}
+    ${bsec("sells", "When it sells", `<ul class="blist">
+      <li>Most picks are held about <b>${hold} trading days</b> (roughly ${Math.round(hold / 21)} months).</li>
+      <li>At the end, a pick that's ahead of the S&amp;P 500 is kept and checked every day, then sold once it falls behind.</li>
+      <li>The rules change only when the ${bl("how/weekly", "weekly check")} finds something clearly better.</li></ul>`)}
+    ${bsec("small", "Small companies", `<ul class="blist"><li>About 30% of the money goes to a separate group of small-company picks${small ? `, held about ${small} trading days` : " held longer"}.</li></ul>`)}
+    ${bsec("cash", "Spare cash", `<ul class="blist">
+      <li>Money not in a pick waits in <b>SGOV</b>, a fund of short-term U.S. Treasury bills, or as cash. You choose under Spare cash on Account.</li>
+      <li>SGOV earns about what Treasury bills pay and barely moves in price. The tool sells some when a new pick needs the money.</li></ul>`)}
+    ${bsec("weekly", "The weekly check", `<ul class="blist">
+      <li>Every week the tool re-tests its settings (hold time, sizing and more) on the full trade history.</li>
+      <li>It changes a setting only if another one wins on the earlier years and the last 3 years too.</li>
+      <li>Example: ${bl("sizing/test", "the sizing test")}.</li></ul>`)}
+    ${bsec("pause", "Stopping it", `<ul class="blist">
+      <li>${isViewer() ? `<button type="button" class="link" data-vgopause="1">Pause trading</button>` : "Pause trading"} at the bottom of Account: no buying or selling until you resume. What you hold stays put.</li>
+      <li>Deleting the key in your Alpaca account stops it for good. Everything stays yours either way.</li></ul>`)}
+    ${bsec("taxes", "Taxes", `<ul class="blist">
+      <li>Alpaca sends a 1099 each year listing every sale.</li>
+      <li>A stock held under a year = short-term gain or loss, taxed like regular income.</li>${isViewer() ? `<li>Every sale and your Form 8949 statement are under More → Taxes.</li>` : ""}</ul>`)}
+    ${bsec("risk", "Risk", `<ul class="blist"><li>Not guaranteed. It's tested on past years, and past results don't promise future ones.</li>
+      <li>It can lose money, sometimes for a long stretch. Only put in money you're comfortable leaving for a while.</li></ul>`)}`;
+}
 function blogButtons() {
   const V = (isViewer() && state.data && state.data.viewer) || {};
   // the status line follows the account: trading not started (the family hold), their own pause, or normal
-  const status = V.hold ? `<p><b>Greyed out?</b> Trading hasn't started yet, so Buy and Sell are off. They turn on when it starts.</p>`
-    : V.paused ? `<p><b>Greyed out?</b> You paused trading, so Buy is off. Sell still works. <button type="button" class="link" data-vgopause="1">Resume in Account</button></p>`
-    : `<p><b>Greyed out?</b> Buy and Sell grey out while trading is paused.</p>`;
-  return `${status}
-    <p><b>Automatic:</b> picks are bought and sold for you automatically, at a pre-set size. <button type="button" class="link" data-blog="sizing">Suggested sizing</button></p>
-    <h3 class="subh">Buy</h3><ul class="blist">
-      <li>Only for stocks on today's Buy list.</li>
+  const status = V.hold ? `Trading hasn't started yet, so Buy and Sell are off. They turn on when it starts.`
+    : V.paused ? `You paused trading, so Buy is off. Sell still works. <button type="button" class="link" data-vgopause="1">Resume in Account</button>`
+    : `Buy and Sell grey out while trading is paused.`;
+  return `<nav class="bjump">${[["greyed", "Greyed out"], ["buy", "Buy"], ["buy-yourself", "Buying yourself"], ["sell", "Sell"], ["sell-yourself", "Selling yourself"], ["stop", "Stopping it"]]
+      .map(([id, l]) => bl("buttons/" + id, l)).join("")}</nav>
+    ${bsec("greyed", "Greyed out?", `<p>${status}</p>`)}
+    <p><b>Automatic:</b> ${bl("how/picks", "picks")} are bought and ${bl("how/sells", "sold")} for you automatically, at a ${bl("sizing", "pre-set size")}.</p>
+    ${bsec("buy", "Buy", `<ul class="blist">
+      <li>Only for stocks on today's ${bl("how/picks", "Buy list")}.</li>
       <li>Enter a dollar amount. Fills now, or at the next open if the market's closed.</li>
-      <li>Treated like the tool's own buy: same hold time and sell rules.</li></ul>
-    <h3 class="subh">Sell</h3><ul class="blist">
-      <li>Any stock you hold, any time: all, a number of shares, or a dollar amount.</li>
-      <li>Selling a tool pick early: it won't rebuy that stock for that pick for 45 days.</li>
-      <li>Held under a year = short-term gain or loss for taxes.</li></ul>
-    <p><b>Want it to stop?</b> ${isViewer() ? `<button type="button" class="link" data-vgopause="1">Pause trading</button> at the bottom of Account.` : "Pause trading at the bottom of Account."}</p>`;
+      <li>Cash short? Some of your ${bl("how/cash", "spare cash fund")} is sold first.</li></ul>`)}
+    ${bsec("buy-yourself", "Disclaimer: buying yourself", `<ul class="blist">
+      <li>The tool already buys every pick, each with the ${bl("sizing", "same amount")}, on purpose.</li>
+      <li>The ${bl("sizing/test", "weekly sizing test")} keeps finding same-size beats putting more into stronger picks. Extra buys by hand were never part of that test.</li>
+      <li>Putting more into one stock makes your account ride more on it.</li>
+      <li>What you buy is treated like the tool's own buy: same ${bl("how/sells", "hold time and sell rules")}, sold with the rest.</li></ul>`)}
+    ${bsec("sell", "Sell", `<ul class="blist">
+      <li>Any stock you hold, any time.</li>
+      <li><b>All</b>, a number of <b>Shares</b>, a <b>$ amount</b>, or <b>Initial investment</b>: sells what you paid and keeps the gain invested. It only works when the stock is worth more than you paid; otherwise it would sell everything, so use All.</li>
+      <li>Fills now, or at the next open if the market's closed.</li></ul>`)}
+    ${bsec("sell-yourself", "Disclaimer: selling yourself", `<ul class="blist">
+      <li>The tool holds each pick for a set time because that tested best, and sells it itself when the time comes. It keeps a winner longer while it's ahead of the S&amp;P 500. ${bl("how/sells", "When it sells")}</li>
+      <li>Selling early means that pick won't get the result the strategy measured.</li>
+      <li>The tool won't buy that stock back for that pick for 45 days.</li>
+      <li>Selling part (including Initial investment) leaves the rest under the tool's rules.</li>
+      <li>A stock you bought yourself outside the Buy list isn't managed by the tool.</li>
+      <li>Held under a year = short-term gain or loss. ${bl("how/taxes", "Taxes")}</li></ul>`)}
+    ${bsec("stop", "Want it to stop?", `<p>${isViewer() ? `<button type="button" class="link" data-vgopause="1">Pause trading</button>` : "Pause trading"} at the bottom of Account. ${bl("how/pause", "More on stopping")}</p>`)}`;
 }
 function blogSizing() {
   const d = state.data || {}, L = (d.portfolio || {}).limits || {}, a = d.adaptive || {};
@@ -1648,13 +1696,12 @@ function blogSizing() {
   const per = L.per_pick != null ? ` (about ${money(L.per_pick)} a pick right now)` : "";
   return `<ul class="blist">
       <li><b>Now:</b> ${esc(name)}${per}.</li>
-      <li><b>Amount:</b> your account split evenly across the picks one holding period needs.</li>
+      <li><b>Amount:</b> your account split evenly across the picks one ${bl("how/sells", "holding period")} needs.</li>
       <li><b>Buy size</b> on Account scales it: Low ½×, Standard 1×, High 1.5×.</li>
-      <li><b>Cap:</b> never more than ${Math.round(L.max_invested_pct || 90)}% invested. The rest sits in a Treasury-bill fund.</li>
-      <li><b>Buying extra</b> by hand puts more on one stock. That wasn't part of the test below.</li></ul>
-    <h3 class="subh">The test behind it</h3>
-    <p class="foot">Every week the tool re-runs the full trade history with each way of sizing. It switches only if another way wins on the earlier years and the last 3 years too.${a.evaluated_at ? ` Last check ${esc(fmtET(a.evaluated_at))}.` : ""}</p>
-    ${rows.length ? adjTable(rows) : `<div class="empty">This week's results aren't in yet.</div>`}`;
+      <li><b>Cap:</b> never more than ${Math.round(L.max_invested_pct || 90)}% invested. The rest is ${bl("how/cash", "spare cash")}.</li>
+      <li><b>Buying extra</b> by hand puts more on one stock. That wasn't part of the test below. ${bl("buttons/buy-yourself", "Disclaimer")}</li></ul>
+    ${bsec("test", "The test behind it", `<p class="foot">Every week the tool re-runs the full trade history with each way of sizing. It switches only if another way wins on the earlier years and the last 3 years too. ${bl("how/weekly", "The weekly check")}${a.evaluated_at ? ` · last check ${esc(fmtET(a.evaluated_at))}` : ""}</p>
+    ${rows.length ? adjTable(rows) : `<div class="empty">This week's results aren't in yet.</div>`}`)}`;
 }
 function renderBlog() {
   const p = BLOG_POSTS.find(x => x.k === BLOG.k);
@@ -3022,20 +3069,22 @@ function sellConv(x, mode, v) {
 }
 function sellRow(x) {
   if (state.sellOpen !== x.t) return "";
-  const t = x.t, mode = state.sellMode[t] === "dollars" ? "dollars" : "shares", real = state.data?.portfolio?.mode === "live";
+  const t = x.t, mode = ["dollars", "initial"].includes(state.sellMode[t]) ? state.sellMode[t] : "shares", real = state.data?.portfolio?.mode === "live";
+  const cost0 = x.avg != null && x.qty ? +x.avg * +x.qty : null, up = cost0 != null && (+x.mv || 0) > cost0 * 1.01;
   const sh = Number(x.qty).toLocaleString(undefined, { maximumFractionDigits: 4 });
   const opt = (k, l) => `<button type="button" class="seg1" data-sellmode="${esc(t)}|${k}" aria-pressed="${mode === k}">${l}</button>`;
   const m = state.sellMsg[t], v = state.sellAmt[t] ?? "";
   return `<tr class="sellrow"><td colspan="7" class="full" data-l=""><div class="sellbox">
     <div><b>Sell ${esc(t)}</b> · you hold ${sh} sh (${money(x.mv)})${x.avg != null && x.qty ? (() => { const cost = +x.avg * +x.qty, gain = (+x.mv || 0) - cost;
       return `<div class="sellcost">Initial investment <b>${money(cost, 2)}</b> <span class="foot">(${sh} sh at ${money(+x.avg, 2)} avg)</span> · now ${money(x.mv, 2)} · <span class="${cls(gain)}">${(gain > 0 ? "+" : "") + money(gain, 2)} (${pct(cost ? gain / cost : 0)})</span></div>`; })() : ""}${x.bot && !x.manual ? `<div class="foot">It won't be bought back for the same pick.</div>` : ""}</div>
-    <div class="sellin"><span class="u">${mode === "dollars" ? "$" : ""}</span><input type="number" inputmode="decimal" min="0" step="any" id="samt-${esc(t)}" value="${esc(v)}"
+    ${mode === "initial" ? `<div>${up ? `Sells about <b>${money(cost0, 2)}</b> (what you paid) and keeps about <b class="pos">${money((+x.mv || 0) - cost0, 2)}</b> in ${esc(t)}.` : `It isn't worth more than you paid, so this would sell all of it.`}</div>
+    <div><span class="segs">${opt("shares", "Shares")}${opt("dollars", "$")}${opt("initial", "Initial investment")}</span></div>` : `<div class="sellin"><span class="u">${mode === "dollars" ? "$" : ""}</span><input type="number" inputmode="decimal" min="0" step="any" id="samt-${esc(t)}" value="${esc(v)}"
       placeholder="${mode === "dollars" ? "Dollar amount" : "Shares"}" aria-label="${mode === "dollars" ? "Dollars to sell" : "Shares to sell"}"><span class="u">${mode === "dollars" ? "" : "sh"}</span>
-      <span class="segs">${opt("shares", "Shares")}${opt("dollars", "$")}</span></div>
-    <div class="foot" id="sconv-${esc(t)}">${esc(sellConv(x, mode, v))}</div>
+      <span class="segs">${opt("shares", "Shares")}${opt("dollars", "$")}${cost0 != null ? opt("initial", "Initial investment") : ""}</span></div>
+    <div class="foot" id="sconv-${esc(t)}">${esc(sellConv(x, mode, v))}</div>`}
     <div><button type="button" class="link" data-sellall="${esc(t)}">Sell all ${sh} shares</button></div>
     <div class="foot">${real ? "Real money account" : "Paper account (fake money)"} · fills now if the market is open; otherwise tries after-hours and pre-market within 0.5% of the last price, then the open.</div>
-    <div style="display:flex;gap:10px;align-items:center"><button type="button" class="sellbtn go" data-sellsend="${esc(t)}"${state.selling ? " disabled" : ""}>${state.selling ? "Sending…" : "Send sell order"}</button>
+    <div style="display:flex;gap:10px;align-items:center"><button type="button" class="sellbtn go" data-sellsend="${esc(t)}"${state.selling || (mode === "initial" && !up) ? " disabled" : ""}>${state.selling ? "Sending…" : "Send sell order"}</button>
       <button type="button" class="link" data-sellcancel="1">Cancel</button></div>
     ${m ? `<div class="tapmsg ${m.ok ? "pos" : "neg"}">${esc(m.text)}</div>` : ""}</div></td></tr>`;
 }
@@ -4317,7 +4366,10 @@ function route(hash) {
   else if (/^today-/.test(a)) { tab("today"); aim("#" + a); }
   else if (a === "members") { tab("members"); MEM.key = b || null; MEM.open = null; MEM.tq = ""; MEM.tshow = 40; }
   else if (a === "health") { tab("health"); HEALTH.js = null; }
-  else if (a === "blog") { tab("blog"); if (typeof BLOG !== "undefined") { BLOG.k = b || null; BLOG.from = NAV_FROM; } }
+  else if (a === "blog") {      // #blog, #blog/<post>, #blog/<post>/<section> (opens the post scrolled to that section)
+    tab("blog");
+    if (typeof BLOG !== "undefined") { const [k, sec] = b.split("/"); BLOG.k = k || null; BLOG.from = NAV_FROM; if (sec) TARGET = { sel: `[data-hl="blog-${CSS.escape(sec)}"]`, until: Date.now() + 20000, block: "start" }; }
+  }
   else if (a === "me") { tab("me"); }
   else if (a === "movers") { tab("movers"); MOVERS.focus = b || null; MOVERS.from = b ? (NAV_FROM || { tab: "movers", y: 0 }) : null; MOVERS.at = 0; }
   else if (["today", "record", "defense", "small", "works", "real", "port", "alerts"].includes(a)) tab(a);
@@ -4333,8 +4385,9 @@ function focusTarget() {
   if (Date.now() > TARGET.until) { TARGET = null; return; }
   const el = document.querySelector(TARGET.sel);
   if (!el) return;                       // not on the page yet (posts still loading): try again on the next render
+  const block = TARGET.block || "center";      // Blog sections open at their heading (they can be taller than the screen)
   TARGET = null;
-  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.scrollIntoView({ behavior: "smooth", block });
   el.classList.remove("hl"); void el.offsetWidth; el.classList.add("hl");
 }
 addEventListener("hashchange", () => route(location.hash));
@@ -4511,10 +4564,10 @@ async function sendOrder(t) {
 }
 function sellPos(t) { return (state.data?.portfolio?.positions || []).find(x => x.t === t); }
 async function sendSell(t) {
-  let mode = state.sellMode[t] === "dollars" ? "dollars" : "shares", amount = parseFloat(state.sellAmt[t]);
+  let mode = ["dollars", "initial"].includes(state.sellMode[t]) ? state.sellMode[t] : "shares", amount = parseFloat(state.sellAmt[t]);
   const pos = (state.data?.portfolio?.positions || []).find(x => x.t === t);
   if (mode === "shares" && pos && amount >= +pos.qty) mode = "all";      // the whole position: sell it all
-  if (mode !== "all" && !(amount > 0)) { state.sellMsg[t] = { ok: false, text: mode === "shares" ? "Enter how many shares." : "Enter a dollar amount." }; render(); return; }
+  if (mode !== "all" && mode !== "initial" && !(amount > 0)) { state.sellMsg[t] = { ok: false, text: mode === "shares" ? "Enter how many shares." : "Enter a dollar amount." }; render(); return; }
   state.selling = true; render();
   try {
     const { js } = await api("/api/sell", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t, mode, amount }) });
@@ -4526,7 +4579,8 @@ async function sendSell(t) {
   } catch (e) {
     state.sellMsg[t] = { ok: false, text: e.code === "offline" ? "You're offline; the order wasn't sent." : e.code === "login" ? "Log in again, then tap Sell." :
       "Not placed: " + ({ "not-held": "you don't hold it any more", "already-selling": "a sell order for it is already waiting",
-        "amount-too-small": "the amount is less than one share", "bad-amount": "the amount couldn't be read" }[e.why] || (e.why || "").replace(/-/g, " ") || e.message || "unknown reason") + "." };
+        "amount-too-small": "the amount is less than one share", "bad-amount": "the amount couldn't be read",
+        "not-up": "it isn't worth more than you paid, so that would sell all of it", "no-cost": "Alpaca didn't give what you paid for it" }[e.why] || (e.why || "").replace(/-/g, " ") || e.message || "unknown reason") + "." };
   } finally { state.selling = false; render(); }
 }
 // owner, Oct 30: Keep a position of yours the tool flagged to sell at the next open

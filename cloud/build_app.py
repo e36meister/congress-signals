@@ -276,7 +276,7 @@ html.viewer [data-jump="today-worth"],html.viewer [data-jump="today-unusual"]{di
 .infobtn svg{width:16px;height:16px;display:block}
 .vlock{display:flex;flex-direction:column;align-items:flex-start;gap:2px}
 .vpausedl{font-size:12px;font-weight:600;color:var(--muted)}
-.blogpost p{margin:0 0 10px}.blist{margin:4px 0 12px;padding-left:20px}.blist li{margin:3px 0}
+.blogpost p{margin:0 0 10px}.bjump{display:flex;flex-wrap:wrap;gap:6px 14px;margin:0 0 12px;font-size:13px}.bsec{scroll-margin-top:calc(var(--hdr,64px) + 12px)}.blist{margin:4px 0 12px;padding-left:20px}.blist li{margin:3px 0}
 .meini{display:grid;place-items:center;width:100%;height:100%;font:600 15px var(--body);color:var(--accent);background:var(--accent-soft)}
 .btn.ghost.bwarn{color:#9A5B00;border-color:#E9C27A}.btn.ghost.bdanger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
 /* Members: the time-window bar sits right under the top bar, whatever its height */

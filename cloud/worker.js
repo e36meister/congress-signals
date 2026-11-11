@@ -556,7 +556,7 @@ async function sell(req, env, a = alpaca(env)) {
   let body = {};
   try { body = await req.json(); } catch (e) {}
   const t = String(body.t || "").toUpperCase(), mode = String(body.mode || "all"), amount = +body.amount;
-  if (!/^[A-Z][A-Z0-9-]{0,6}$/.test(t) || !["all", "shares", "dollars"].includes(mode)) return json({ ok: false, why: "bad-request" }, 400);
+  if (!/^[A-Z][A-Z0-9-]{0,6}$/.test(t) || !["all", "shares", "dollars", "initial"].includes(mode)) return json({ ok: false, why: "bad-request" }, 400);
   const sym = t.replace(/-/g, ".");
   const [pos, asset, clock] = await Promise.all([a.get(`/v2/positions/${encodeURIComponent(sym)}`), a.get(`/v2/assets/${encodeURIComponent(sym)}`), a.get("/v2/clock")]);
   if (pos.status === 404) return json({ ok: false, why: "not-held" }, 400);
@@ -566,7 +566,14 @@ async function sell(req, env, a = alpaca(env)) {
   if (!(held > 0)) return json({ ok: false, why: "already-selling" }, 400);
   let qty = null, notional = null;
   if (mode === "all") qty = held;
-  else if (mode === "shares") {
+  else if (mode === "initial") {
+    // owner, Nov 11 2026: sell what was paid for the shares held (Alpaca's cost basis) and keep the gain invested
+    const cost = +pos.data.cost_basis || 0;
+    if (!(cost > 0) || !px) return json({ ok: false, why: "no-cost", message: "Alpaca didn't give what was paid for it, so the initial investment couldn't be worked out" }, 400);
+    if (held * px <= cost * 1.01) return json({ ok: false, why: "not-up", message: "it isn't worth more than you paid, so this would sell all of it. Use All instead" }, 400);
+    if (frac) notional = Math.round(cost * 100) / 100;
+    else qty = Math.min(held, Math.ceil(cost / px));
+  } else if (mode === "shares") {
     if (!(amount > 0)) return json({ ok: false, why: "bad-amount" }, 400);
     qty = Math.min(amount, held);
     if (!frac) qty = Math.floor(qty);

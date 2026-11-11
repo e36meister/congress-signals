@@ -20,10 +20,10 @@ const A = {
   account: { status: "ACTIVE", equity: "25000", last_equity: "24800", cash: "1200", buying_power: "1200", currency: "USD" },
   clock: { is_open: false, next_open: iso(Date.now() + 15 * 3600e3), next_close: iso(Date.now() + 22 * 3600e3) },
   positions: [
-    { symbol: "GS", qty: "2", qty_available: "2", avg_entry_price: "780", current_price: "805", market_value: "1610", unrealized_pl: "50", unrealized_plpc: "0.032", change_today: "0.004" },
-    { symbol: "PLUG", qty: "300", qty_available: "300", avg_entry_price: "2.1", current_price: "2.0", market_value: "600", unrealized_pl: "-30", unrealized_plpc: "-0.047", change_today: "-0.01" },
-    { symbol: "SGOV", qty: "200", qty_available: "200", avg_entry_price: "100.4", current_price: "100.5", market_value: "20100", unrealized_pl: "20", unrealized_plpc: "0.001", change_today: "0" },
-    { symbol: "AAPL", qty: "5", qty_available: "5", avg_entry_price: "210", current_price: "230", market_value: "1150", unrealized_pl: "100", unrealized_plpc: "0.095", change_today: "0.002" },
+    { symbol: "GS", cost_basis: "1560", qty: "2", qty_available: "2", avg_entry_price: "780", current_price: "805", market_value: "1610", unrealized_pl: "50", unrealized_plpc: "0.032", change_today: "0.004" },
+    { symbol: "PLUG", cost_basis: "630", qty: "300", qty_available: "300", avg_entry_price: "2.1", current_price: "2.0", market_value: "600", unrealized_pl: "-30", unrealized_plpc: "-0.047", change_today: "-0.01" },
+    { symbol: "SGOV", cost_basis: "20080", qty: "200", qty_available: "200", avg_entry_price: "100.4", current_price: "100.5", market_value: "20100", unrealized_pl: "20", unrealized_plpc: "0.001", change_today: "0" },
+    { symbol: "AAPL", cost_basis: "1050", qty: "5", qty_available: "5", avg_entry_price: "210", current_price: "230", market_value: "1150", unrealized_pl: "100", unrealized_plpc: "0.095", change_today: "0.002" },
   ],
   orders: [
     { id: "o1", client_order_id: "cs-GS-20261101-h60", symbol: "GS", side: "buy", status: "filled", qty: "2", filled_qty: "2", filled_avg_price: "780", filled_at: daysAgo(3), submitted_at: daysAgo(3) },
