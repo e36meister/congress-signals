@@ -354,13 +354,12 @@ def senate_watch(log=None):
                     else:
                         back.append((g, since))
         _save(SENATE_KEY, st)
+        # Nov 11 (owner): no phone alert when an area works again. A handful of senators' press sites refuse on and
+        # off, so that area kept flipping and re-sending "working again" past the 6-hour rule. Recoveries are logged
+        # and the Data health page clears on its own; alerts when something breaks are unchanged.
         if back:
-            import cloud_store
-            what = dict(SENATE_GROUPS)
-            body = "\n".join(f"• {what[g]} (blocked since {since[:10]})" for g, since in back)
-            cloud_store.notify("The Senate website is working again", body, tag="senate-back", url="/#health",
-                               items=[{"l": what[g], "u": "/#health"} for g, _ in back], log=lambda m: None)
-            _log("Senate access: working again for " + ", ".join(g for g, _ in back), log)
+            _log("Senate access: working again for " + ", ".join(f"{g} (blocked since {since[:10]})" for g, since in back)
+                 + "; no phone alert", log)
     except Exception as e:
         _log(f"Senate access check failed ({type(e).__name__})", log)
 
