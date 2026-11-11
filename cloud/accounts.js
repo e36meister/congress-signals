@@ -199,6 +199,7 @@ export async function viewerApi(req, env, url, a, h) {
   if (p === "/api/tax") { const idx = await r2json(env, `accounts/${a.id}/tax/index.json`, null); return idx ? json(idx) : json({ error: "no-file" }, 404); }
   if (p === "/api/tax/file") return viewerTaxFile(env, a, url);
   if (p === "/api/movers") return viewerMovers(env, a);
+  if (p === "/api/charts") return viewerCharts(env, a);
   if (p === "/api/me/photo" && req.method === "GET") return getPhoto(env, a);
   if (p === "/api/me/photo") return setPhoto(req, env, a);
   if (p === "/api/bug") return bugReport(req, env, a, h.dispatch);
@@ -279,6 +280,19 @@ async function viewerMovers(env, a) {
   // "held" in the owner's file means the owner holds it: replaced with theirs
   for (const [t, v] of Object.entries(m.items || {})) if (keep.has(t)) items[t] = { ...v, held: mine.has(t), cand: cand.has(t) };
   return json({ at: m.at, updated: m.updated, items }, 200, { "Cache-Control": "private, no-cache" });
+}
+// Charts (owner, Nov 11 2026): the shared chart file also has a chart for every stock the owner holds and for the
+// owner's sell and Defense lists, so a family account gets only its Buy list and its own positions from it (any
+// other stock still loads one at a time through Company search)
+async function viewerCharts(env, a) {
+  const [tc, { buys }, port] = await Promise.all([r2json(env, "ticker_charts.json", null), buyList(env), r2json(env, `accounts/${a.id}/portfolio.json`, null)]);
+  if (!tc) return json({ error: "no-file", message: "Not built yet" }, 404);
+  const keep = new Set([...buys.map(r => r.t), ...(((port || {}).portfolio || {}).positions || []).map(x => x.t), "SPY"]);
+  const px = {}, trades = {}, bios = new Set();
+  for (const t of Object.keys(tc.px || {})) if (keep.has(t)) { px[t] = tc.px[t]; if ((tc.trades || {})[t]) { trades[t] = tc.trades[t]; for (const r of trades[t]) if (r.b) bios.add(r.b); } }
+  const photos = {};
+  for (const [b, v] of Object.entries(tc.photos || {})) if (bios.has(b)) photos[b] = v;
+  return json({ updated: tc.updated, dates: tc.dates, px, trades, photos }, 200, { "Cache-Control": "private, no-cache" });
 }
 async function viewerLive(env, a, live) {
   const c = await alpacaFor(env, a);

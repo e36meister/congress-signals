@@ -33,11 +33,11 @@ export const member1 = { k: "P000197", b: "P000197", n: "Nancy Pelosi", tag: "D-
 const dates = []; for (let i = 300; i >= 0; i--) { const d = new Date(Date.now() - i * 864e5); if (d.getUTCDay() % 6) dates.push(d.toISOString().slice(0, 10)); }
 const series = b => dates.map((_, i) => +(b * (1 + Math.sin(i / 20) * 0.05 + i * 0.0004)).toFixed(2));
 const ctr = t => [{ n: "Nancy Pelosi", b: "P000197", ty: "buy", td: day(20), d: day(2), p: 100, lo: 1001, hi: 15000, own: "SP", dl: 1001, dh: 15000 }];
-export const charts = { updated: now, dates, px: { GS: series(780), NVDA: series(120), PLUG: series(2), "BRK-B": series(450), AAPL: series(220) },
-  trades: { GS: ctr("GS"), NVDA: ctr("NVDA"), PLUG: ctr("PLUG"), AAPL: ctr("AAPL") }, photos: {} };
+export const charts = { updated: now, dates, px: { GS: series(780), NVDA: series(120), PLUG: series(2), "BRK-B": series(450), AAPL: series(220), OWNERHELD: series(50) },
+  trades: { GS: ctr("GS"), NVDA: ctr("NVDA"), PLUG: ctr("PLUG"), AAPL: ctr("AAPL"), OWNERHELD: ctr("OWNERHELD") }, photos: {} };
 const mv = (t, co, held, cand) => ({ t, co, date: day(0), kind: "day", move: 4.2, spy: 0.3, rel: 3.9, held, cand,
   lines: [`${t} rose 4.2% today`, "Why: a fake headline", "Context line"], news: [{ h: "Fake headline", src: "Reuters", u: "https://example.com/x", at: now }],
-  analysts: [], filings: [], earnings: null, peers: [[1.2, "MS"]], etf: [[0.5, "XLF"]], industry: "Banks", members: [], first: day(0), at: now });
+  analysts: [], filings: [], earnings: null, peers: [["MS", 1.2]], etf: ["XLF", 0.5], industry: "Banks", members: [], first: day(0), at: now });
 export const movers = { updated: now, items: { GS: mv("GS", "Goldman Sachs", true, true), OWNERHELD: mv("OWNERHELD", "Owner Holding Co", true, false), TSLA: mv("TSLA", "Tesla", false, false) } };
 export const searchIndex = { updated: now, list: [["GS", "Goldman Sachs Group", 40], ["NVDA", "NVIDIA Corp", 30], ["AAPL", "Apple Inc", 5]] };
 export const tradesByTicker = { updated: now, cols: ["d", "td", "n", "b", "ty", "lo", "hi", "own"], trades: { AAPL: [[day(5), day(30), "Nancy Pelosi", "P000197", "buy", 1001, 15000, "SP"]] } };
@@ -67,6 +67,8 @@ export const viewerAlerts = [
 export async function seed(bucket) {
   const put = (k, v) => bucket.put(k, JSON.stringify(v), { httpMetadata: { contentType: "application/json" } });
   await put("dashboard_data.json", dashboard);
+  // maintenance counts as ON when the file is missing (Nov 5), so the test turns it off to reach the app
+  await put("accounts/maintenance.json", { on: false });
   await put("members/index.json", members);
   await put("members/P000197.json", member1);
   await put("ticker_charts.json", charts);
