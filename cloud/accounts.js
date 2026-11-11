@@ -131,7 +131,7 @@ function pub(a) {
   return { id: a.id, label: a.label, email: a.email, status: a.status, auto: a.auto !== false, created: a.created,
            last_login: a.last_login || null, keys: !!a.keys_set_at, keys_set_at: a.keys_set_at || null, key_hint: a.key_hint || null,
            link_sent: a.link_sent || null, size: sizeOf(a), started_at: a.started_at || null,
-           build: a.build || null, terms_at: termsOk(a) ? a.terms_at : null, paused: !!a.paused, paused_at: a.paused_at || null, park: parkOf(a) };
+           build: a.build || null, terms_at: termsOk(a) ? a.terms_at : null, paused: !!a.paused, paused_at: a.paused_at || null, park: parkOf(a), tips: !!a.tips };
 }
 
 // ---------- email ----------
@@ -165,7 +165,7 @@ const VIEWER_GET = new Set(["/api/session", "/api/data", "/api/members", "/api/m
   "/api/movers", "/api/news", "/api/about", "/api/context", "/api/notifications", "/api/live", "/api/push/key", "/api/me/photo",
   "/api/me/prefs", "/api/me/widget", "/api/me/terms", "/api/tax", "/api/tax/file", "/api/me/passkey/options", "/api/me/passkeys"]);
 const VIEWER_POST = new Set(["/api/logout", "/api/notifications/clear", "/api/push/subscribe", "/api/buy-more", "/api/sell",
-  "/api/me/keys", "/api/me/photo", "/api/bug", "/api/me/prefs", "/api/me/widget", "/api/me/email-ask", "/api/me/size", "/api/me/terms", "/api/me/pause", "/api/me/park", "/api/me/passkey", "/api/me/passkey/remove"]);
+  "/api/me/keys", "/api/me/photo", "/api/bug", "/api/me/prefs", "/api/me/widget", "/api/me/email-ask", "/api/me/size", "/api/me/terms", "/api/me/pause", "/api/me/tips", "/api/me/park", "/api/me/passkey", "/api/me/passkey/remove"]);
 export function viewerAllowed(method, path) {
   return method === "GET" ? VIEWER_GET.has(path) : method === "POST" ? VIEWER_POST.has(path) : false;
 }
@@ -184,6 +184,7 @@ export async function viewerApi(req, env, url, a, h) {
       terms: termsOk(a), paused: !!a.paused, hold: await familyHold(env), build: env.APP_BUILD || null,
       initials: nameInitials(a.name || a.label),
       mark: `${a.name || a.label} · ${a.email}`,      // the faint watermark on their screens
+      tips: !!a.tips,
       photo: a.photo_at || null, photo_prompted: !!(a.photo_at || a.photo_skipped),
       ask_email: !a.email_asked && Date.now() - Date.parse(a.first_seen) >= EMAIL_ASK_DAYS * 864e5 });
   }
@@ -222,6 +223,7 @@ export async function viewerApi(req, env, url, a, h) {
   if (p === "/api/me/terms" && req.method === "GET") return json({ terms: TERMS, signed: await r2json(env, `accounts/${a.id}/terms.json`, null) });
   if (p === "/api/me/terms") return signTerms(req, env, a, h.dispatch);
   if (p === "/api/me/pause") return setPause(req, env, a);
+  if (p === "/api/me/tips" && req.method === "POST") { const b = await body(req); await patchAccount(env, a.id, x => { x.tips = b.on === true; }); return json({ ok: true, tips: b.on === true }); }
   if (p === "/api/me/park") return setPark(req, env, a);
   if (p === "/api/me/passkey/options") return passkeyRegOptions(env, url, a.id, a.email, a.name || a.label);
   if (p === "/api/me/passkey") return passkeyRegister(req, env, url, a.id);
@@ -507,6 +509,11 @@ export async function ownerAccountsPost(req, env, url, dispatch, sendAll) {
     if (a.status === "disabled") return json({ ok: false, message: "Turn the account back on first." }, 400);
     try { await sendInvite(env, a, url.origin, dispatch); } catch (e) { return json({ ok: false, message: "Couldn't send the email: " + String(e.message || e).slice(0, 120) }, 502); }
     return json({ ok: true, message: `Invite sent to ${a.email}: how to add the app and set up a password.` });
+  }
+  if (act === "tips") {
+    const on = b.on === true;
+    await patchAccount(env, a.id, x => { x.tips = on; });
+    return json({ ok: true, message: on ? `Extra explanations are on for ${a.label}. They see them next time the app opens; they can turn them off in Settings.` : `Extra explanations are off for ${a.label}. They can turn them back on in Settings.` });
   }
   if (act === "auto") {
     const on = b.on === true;

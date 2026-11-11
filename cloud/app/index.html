@@ -5,7 +5,8 @@ html.viewer [data-buy],html.viewer .sellbtn,html.viewer .keepbtn,html.viewer [da
 html.viewer #today-avoid,html.viewer #today-also,html.viewer #today-unusual,html.viewer #today-worth,html.viewer #posts,
 html.viewer [data-jump="today-avoid"],html.viewer [data-jump="today-also"],html.viewer [data-jump="posts"],
 html.viewer [data-jump="today-worth"],html.viewer [data-jump="today-unusual"],html.viewer .owner-only{display:none!important}
-.xtip{display:none}html.tips .xtip{display:block}.vtip{display:none}html.tips .vtip{display:block;background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:12px}
+.xtip{display:none}html.tips .xtip{display:block}
+.vtip{display:none}html.tips .vtip{display:block;background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:10px;padding:10px 12px;font-size:14px;margin-bottom:12px}
 .vbtns{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
 .meini{display:grid;place-items:center;width:100%;height:100%;font:600 15px var(--body);color:var(--accent);background:var(--accent-soft)}
 .btn.ghost.bwarn{color:#9A5B00;border-color:#E9C27A}.btn.ghost.bdanger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
@@ -602,7 +603,7 @@ nav.tabs button{overflow:hidden}
 
 <script>
 (() => {
-const APP_BUILD = '0.1.dev-4002320', APP_BUILT = '2026-11-10T02:12+00:00', APP_SHA = '4002320';
+const APP_BUILD = '0.1.dev-e7823f4', APP_BUILT = '2026-11-11T04:46+00:00', APP_SHA = 'e7823f4';
 // ---------- family accounts (owner, Nov 2 2026) ----------
 // A family account sees Today (Buy candidates only), Members, Alerts, its own Account and a short More menu (company
 // search, notifications, settings, questions, bug report). The server only answers those (cloud/accounts.js); this
@@ -627,9 +628,9 @@ function applyRole(s) {
   SESSION_ME = s || null;
   setTimeout(applyLeakGuards, 0);
   document.documentElement.classList.toggle("viewer", isViewer());
-  let tips = false;
-  try { tips = localStorage.getItem("cc-tips") === "1"; } catch (e) {}
-  document.documentElement.classList.toggle("tips", isViewer() && tips);
+  // Extra explanations (owner, Nov 10 2026): saved on their account, so the owner can turn it on or off for them
+  // from Accounts and they can still change it in Settings
+  document.documentElement.classList.toggle("tips", isViewer() && !!(s && s.tips));
   if (isViewer() && !VIEWER_TABS.has(state.tab)) state.tab = "today";
 }
 function guardTab() { if (isViewer() && !VIEWER_TABS.has(state.tab)) state.tab = "today"; }
@@ -1035,8 +1036,7 @@ document.addEventListener("click", ev => {
 });
 
 function renderVSettings() {
-  let tips = false;
-  try { tips = localStorage.getItem("cc-tips") === "1"; } catch (e) {}
+  const tips = !!(SESSION_ME && SESSION_ME.tips);
   const m = VA.photoMsg, ph = SESSION_ME && SESSION_ME.photo;
   return `<section class="panel"><div class="ph"><h2>Profile picture</h2></div>
     <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
@@ -1057,8 +1057,13 @@ function renderVSettings() {
 }
 document.addEventListener("change", ev => {
   if (ev.target.id !== "vtips") return;
-  try { localStorage.setItem("cc-tips", ev.target.checked ? "1" : "0"); } catch (e) {}
-  document.documentElement.classList.toggle("tips", ev.target.checked);
+  const box = ev.target, on = box.checked;
+  document.documentElement.classList.toggle("tips", on);
+  box.disabled = true;
+  api("/api/me/tips", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on }) })
+    .then(() => { if (SESSION_ME) SESSION_ME.tips = on; })
+    .catch(() => { box.checked = !on; document.documentElement.classList.toggle("tips", !on); alert("Couldn't save that. Try again."); })
+    .finally(() => { box.disabled = false; });
 });
 document.addEventListener("click", async ev => {
   if (!isViewer()) return;
@@ -1182,6 +1187,7 @@ function renderAccounts() {
       <div class="acct-b">${a.keys ? `<button type="button" class="btn sm" data-accview="${esc(a.id)}">View portfolio</button>` : ""}
         ${a.terms_at ? `<button type="button" class="btn ghost sm" data-accterms="${esc(a.id)}">Signed terms</button>` : ""}
         ${a.keys ? btn("auto", a.auto ? (ACC.hold ? "Keep paused at launch" : "Pause auto-buying") : (ACC.hold ? "Start with everyone at launch" : "Turn auto-buying on"), ` data-on="${a.auto ? "0" : "1"}"`, a.auto ? "warn" : "go") : ""}
+        ${btn("tips", a.tips ? "Extra explanations: on" : "Extra explanations: off", ` data-on="${a.tips ? "0" : "1"}"`)}
         ${a.status !== "disabled" ? btn("link", "Send invite") : ""}
         ${a.status !== "disabled" ? btn("signout", "Sign out everywhere", "", "warn") : ""}
         ${a.keys ? btn("reset-keys", "Reset keys", "", "warn") : ""}

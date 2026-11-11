@@ -22,9 +22,9 @@ function applyRole(s) {
   SESSION_ME = s || null;
   setTimeout(applyLeakGuards, 0);
   document.documentElement.classList.toggle("viewer", isViewer());
-  let tips = false;
-  try { tips = localStorage.getItem("cc-tips") === "1"; } catch (e) {}
-  document.documentElement.classList.toggle("tips", isViewer() && tips);
+  // Extra explanations (owner, Nov 10 2026): saved on their account, so the owner can turn it on or off for them
+  // from Accounts and they can still change it in Settings
+  document.documentElement.classList.toggle("tips", isViewer() && !!(s && s.tips));
   if (isViewer() && !VIEWER_TABS.has(state.tab)) state.tab = "today";
 }
 function guardTab() { if (isViewer() && !VIEWER_TABS.has(state.tab)) state.tab = "today"; }
@@ -430,8 +430,7 @@ document.addEventListener("click", ev => {
 });
 
 function renderVSettings() {
-  let tips = false;
-  try { tips = localStorage.getItem("cc-tips") === "1"; } catch (e) {}
+  const tips = !!(SESSION_ME && SESSION_ME.tips);
   const m = VA.photoMsg, ph = SESSION_ME && SESSION_ME.photo;
   return `<section class="panel"><div class="ph"><h2>Profile picture</h2></div>
     <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
@@ -452,8 +451,13 @@ function renderVSettings() {
 }
 document.addEventListener("change", ev => {
   if (ev.target.id !== "vtips") return;
-  try { localStorage.setItem("cc-tips", ev.target.checked ? "1" : "0"); } catch (e) {}
-  document.documentElement.classList.toggle("tips", ev.target.checked);
+  const box = ev.target, on = box.checked;
+  document.documentElement.classList.toggle("tips", on);
+  box.disabled = true;
+  api("/api/me/tips", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on }) })
+    .then(() => { if (SESSION_ME) SESSION_ME.tips = on; })
+    .catch(() => { box.checked = !on; document.documentElement.classList.toggle("tips", !on); alert("Couldn't save that. Try again."); })
+    .finally(() => { box.disabled = false; });
 });
 document.addEventListener("click", async ev => {
   if (!isViewer()) return;
@@ -577,6 +581,7 @@ function renderAccounts() {
       <div class="acct-b">${a.keys ? `<button type="button" class="btn sm" data-accview="${esc(a.id)}">View portfolio</button>` : ""}
         ${a.terms_at ? `<button type="button" class="btn ghost sm" data-accterms="${esc(a.id)}">Signed terms</button>` : ""}
         ${a.keys ? btn("auto", a.auto ? (ACC.hold ? "Keep paused at launch" : "Pause auto-buying") : (ACC.hold ? "Start with everyone at launch" : "Turn auto-buying on"), ` data-on="${a.auto ? "0" : "1"}"`, a.auto ? "warn" : "go") : ""}
+        ${btn("tips", a.tips ? "Extra explanations: on" : "Extra explanations: off", ` data-on="${a.tips ? "0" : "1"}"`)}
         ${a.status !== "disabled" ? btn("link", "Send invite") : ""}
         ${a.status !== "disabled" ? btn("signout", "Sign out everywhere", "", "warn") : ""}
         ${a.keys ? btn("reset-keys", "Reset keys", "", "warn") : ""}
