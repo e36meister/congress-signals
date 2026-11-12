@@ -77,7 +77,8 @@ const PUBLIC_FILES = new Set(["/manifest.webmanifest", "/icon-180.png", "/icon-1
 // a family account gets the app page and its icons only (never the owner's photo or anything added later)
 const VIEWER_FILES = new Set(["/", "/index.html", ...PUBLIC_FILES]);
 async function page(req, env, url) {
-  if (PUBLIC_FILES.has(url.pathname)) return env.ASSETS.fetch(req);
+  // newsletter images (owner, Nov 12 2026): mail apps load them without signing in; only these image files
+  if (PUBLIC_FILES.has(url.pathname) || /^\/mail\/[a-z0-9-]+\/[a-z0-9-]+\.(png|jpg)$/.test(url.pathname)) return env.ASSETS.fetch(req);
   // Nov 4: emailed sign-in links are gone (email + password + code now); an old link just opens the sign-in screen
   if (url.pathname === "/signin") return Response.redirect(url.origin + "/", 302);
   const who = await whoIs(req, env);
