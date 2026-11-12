@@ -422,10 +422,14 @@ class Tagger:
                     # Musk dropped by the list rule (the owner's rule: a company's CEO named directly counts). So an
                     # executive is set aside only on strong evidence (a government title, "X of <town>", part of a
                     # place/event name), and any match stays when the company itself is named anywhere in the post.
-                    is_exec = kind[3:].lower() != "lobbyist"
-                    weak_ev = who == "other" and wkind in ("rel", "list")
-                    if is_exec and weak_ev:
-                        who = "unknown"
+                    role_ = kind[3:].lower()
+                    is_exec = role_ != "lobbyist"
+                    top_exec = is_exec and bool(re.search(r"\b(ceo|chief executive|founder|chair|cob)\b", role_))
+                    friend_only = wkind == "rel" and bool(re.search(r"\b(friends?|colleagues?)\b", why or "")) and not \
+                        re.search(r"\b(pastor|resident|dr|reverend|student|teacher|coach|nurse|doctor|neighbor)\b",
+                                  why or "", re.I)
+                    if who == "other" and is_exec and (friend_only or (wkind == "list" and top_exec)):
+                        who = "unknown"                 # "my friends Toby Rice", a CEO in a list of names
                     if who in ("other", "not_person") and not _co_mentioned(raw, self.names.get(t, ()), ct):
                         self.name_drops.append((" ".join(x.capitalize() for x in ct), t, why))
                         from congress_signals.name_context import STATUS as _NCS
