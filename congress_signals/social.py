@@ -649,6 +649,9 @@ def rec(date, key, src, text, url, tg, rp="", full=None):
     cand = [c for c in getattr(tg, "last_cands", []) if 0.45 <= c["c"] < 0.75]
     if cand:
         srt["cand"] = cand[:4]
+    drops = getattr(tg, "name_drops", None)
+    if drops:                                   # owner, Nov 12: names the spaCy check set aside, kept for review
+        srt["drops"] = [[n, t, w] for n, t, w in drops[:8]]
     r.append(srt)
     return r
 

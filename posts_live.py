@@ -406,8 +406,13 @@ if officials_doc is not None and (new_off or officials_doc.pop("seeded", False))
     E.log(f"Live posts: {len(new_off)} public official name(s) learned ({len(officials_doc['names'])} on file)")
 from congress_signals import name_context as NC          # owner, Nov 11: spaCy name check
 if NC.STATUS["loaded"]:
-    E.log(f"Live posts: name check (spaCy) read {NC.STATUS['calls']} matched name(s); set aside "
-          f"{NC.STATUS['dropped']} the posts gave a non-company role")
+    # Nov 12: counted on this hour's new posts only. Each source re-reads its recent posts every hour, so the
+    # run-wide counts (45 read / 44 set aside two hours running) were mostly the same posts again.
+    dr = [(r[4], d) for _, r in fresh if len(r) > 11 and isinstance(r[11], dict) for d in r[11].get("drops") or []]
+    E.log(f"Live posts: name check (spaCy) set aside {len(dr)} name(s) in {len({u for u, _ in dr})} new post(s) "
+          f"(names the posts gave a non-company role)")
+    for u, (n, t, w) in dr[:20]:
+        E.log(f"Live posts:   set aside {n} ({t}): {w} | {u}")
 # collection check: a source is flagged only when it has brought nothing new for longer than it normally goes
 LIVE_MAX_DAYS = {"Members' own sites": 2, "Bluesky": 2, "Mastodon": 14, "Substack": 30, "YouTube": 7}
 problems = []
