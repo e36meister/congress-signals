@@ -36,8 +36,36 @@ def _log(*a):
         pass
 
 
+# a section or archive page, not a single release ("/news/", "/press-releases", "/media/press-releases?page=2")
+LIST_PAGE = re.compile(r"^https?://[^/]+/(?:[\w-]+/)?(?:news|press|media|newsroom|press-releases?|news-releases?|"
+                       r"releases|statements|news-archive|archive|posts|blog|updates|latest-news|in-the-news)/?"
+                       r"(?:\?.*|#.*)?$", re.I)
+STATS = {"list_pages": 0, "nav_pages": 0}
+NOT_RELEASE = (None, None, "")        # a section/archive or menu-like page: dropped by callers (not a title-only row)
+
+
+def is_list_page(url):
+    return bool(LIST_PAGE.match((url or "").strip()))
+
+
+def _navlike(text):
+    """True when the text reads like a menu or a list of links (many very short lines), not an article."""
+    lines = [x.strip() for x in (text or "").splitlines() if x.strip()]
+    if len(lines) < 15:
+        return False
+    short = sum(1 for x in lines if len(x.split()) <= 4)
+    return short / len(lines) > 0.6
+
+
 def _text(url, html=None, timeout=40):
-    """(date, title, text) of one release page via trafilatura; Nones when unreadable."""
+    """(date, title, text) of one release page via trafilatura; Nones when unreadable.
+    Owner, Nov 11: only the release itself. Trafilatura runs in precision mode (no comments, tables, menus or
+    "related posts"); a section/archive page or a page that still reads like a menu is not a release and is
+    skipped (counted in STATS, reported once per run by the caller). Cornyn's "/news/" archive page had been
+    saved as a post: its menu and headline list matched company names."""
+    if is_list_page(url):
+        STATS["list_pages"] += 1
+        return NOT_RELEASE
     try:
         import trafilatura
         if html is None:
@@ -45,11 +73,16 @@ def _text(url, html=None, timeout=40):
             if r.status_code != 200:
                 return None, None, None
             html = r.text
-        d = trafilatura.bare_extraction(html, url=url, with_metadata=True)
+        d = trafilatura.bare_extraction(html, url=url, with_metadata=True, favor_precision=True,
+                                        include_comments=False, include_tables=False)
         if d is None:
             return None, None, None
         d = d if isinstance(d, dict) else d.as_dict()
-        return d.get("date"), d.get("title"), _clean(d.get("text"))
+        text = _clean(d.get("text"))
+        if _navlike(text):
+            STATS["nav_pages"] += 1
+            return NOT_RELEASE
+        return d.get("date"), d.get("title"), text
     except Exception:
         return None, None, None
 
@@ -144,6 +177,8 @@ def backfill_current(cfg, st, tg, leg, deadline, workers=8, max_pages=400):
             if time.time() > deadline:
                 return name, b, False, int(p.get("page", 0)), []     # redo this site next run
             d2, t2, text = _text(u)
+            if text == "":
+                continue                            # not a release page (see _text)
             d = d or (d2 or "")[:10]
             if not d or d < BACKFILL_FROM or not b:
                 continue
@@ -258,7 +293,7 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
         b, out = None, []
         for r in res:
             u = r.get("url")
-            if not u:
+            if not u or is_list_page(u):               # owner, Nov 11: a section page isn't a release
                 continue
             b = b or bydom.get(re.sub(r"^https?://(www\.)?", "", u.lower()).split("/")[0])
             d = str(r.get("date") or "")[:10]
@@ -268,6 +303,8 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
                 out.append((d, u, r.get("title") or "", r["text"]))
                 continue
             d2, t2, text = _text(u)
+            if text == "":
+                continue                            # not a release page (see _text)
             d = d or (d2 or "")[:10]
             if d and d >= since:
                 out.append((d, u, r.get("title") or t2 or "", text))
@@ -352,6 +389,10 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
         for r in rows:
             seen.add(norm_url(r[4]))
     _log(f"Latest press releases: {len(names) - len(unchecked)} of {len(names) + len(fw_blocked)} member sites checked, +{added} new")
+    if STATS["list_pages"] or STATS["nav_pages"]:
+        _log(f"Latest press releases: set aside {STATS['list_pages']} section/archive page(s) and "
+             f"{STATS['nav_pages']} menu-like page(s); they aren't releases")
+        STATS.update(list_pages=0, nav_pages=0)
     if unchecked:
         _log(f"Latest press releases: {len(unchecked)} member site(s) skipped: the time limit ran out before them")
     if fails:

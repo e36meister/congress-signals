@@ -12,6 +12,9 @@ opencv-python-headless
 pytesseract
 wordfreq
 trafilatura
+# owner, Nov 11: spaCy reads who a name in a post is (posts tagger); its small English model, pinned to match
+spacy>=3.8,<3.9
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 python-statement @ git+https://github.com/dwillis/python-statement.git
 vaderSentiment
 fpdf2

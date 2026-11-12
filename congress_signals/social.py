@@ -29,7 +29,8 @@ TWEETS_FIRST, TWEETS_LAST = dt.date(2017, 6, 21), dt.date(2023, 7, 15)
 START_YEAR = 2013
 MONTHS_DAYS = set("jan january feb february mar march apr april may jun june jul july aug august sep sept september oct "
                   "october nov november dec december monday tuesday wednesday thursday friday saturday sunday".split())
-TAGGER_VERSION = 12       # 9: executives by last name or distinctive first name alone, scored; 12: every person matched is kept (Nov 4)
+TAGGER_VERSION = 12       # (not bumped for the Nov 11 spaCy name check: stored posts are re-tagged only on the owner's say)
+# 9: executives by last name or distinctive first name alone, scored; 12: every person matched is kept (Nov 4)
 # Nov 8 (officials, agency "lobbyists") changes tagging of new posts only: no version bump, so the stored history
 # (still being sorted) isn't re-tagged from scratch
 # How Bluesky posts are read (text, quotes, alt text, image text). Only a change here needs every account read again;
@@ -335,6 +336,9 @@ class Tagger:
         except Exception:
             self.officials = set()
         self.officials_new = {}
+        from congress_signals.name_context import Checker
+        self.names_check = Checker()         # spaCy: what role the post gives a matched name (owner, Nov 11)
+        self.name_drops = []
         self.sectors = {}
         for s, words in SECTOR_WORDS.items():
             for w in words.split():
@@ -358,6 +362,7 @@ class Tagger:
         tset = set(toks)
         cue_at = [i for i, w in enumerate(toks) if w in STRONG_CUES]
         tick, ppl = set(), []
+        self.name_drops = []                 # names the spaCy check set aside in this post: (name, ticker, why)
         for nm in official_names(raw):
             if nm not in self.officials:
                 self.officials.add(nm)
@@ -407,6 +412,21 @@ class Tagger:
                         continue                                # same name, but the post says they're with another group
                     if tuple(ct) in self.officials and not _co_named(raw, self.names.get(t, ())):
                         continue                                # a public official who shares a company person's name
+                    # owner, Nov 11: spaCy reads the sentence the name is in. A name the post gives a non-company
+                    # role (Mayor, Police Captain, "his brother", "Tom Gallagher of Mahwah", a list of local
+                    # officials, "Bob Brooks, a longtime union leader") or that is part of a place or event name
+                    # ("Gallagher Park") isn't this company's person, unless the post names the company itself.
+                    who, wkind, why = self.names_check.check(raw, pos, end, self.names.get(t, ()))
+                    if who in ("other", "not_person") and not _co_named(raw, self.names.get(t, ())):
+                        self.name_drops.append((" ".join(x.capitalize() for x in ct), t, why))
+                        from congress_signals.name_context import STATUS as _NCS
+                        _NCS["dropped"] += 1
+                        if wkind == "gov":
+                            nm = tuple(ct)
+                            if nm not in self.officials:          # learned as a public official, like official_names
+                                self.officials.add(nm)
+                                self.officials_new[nm] = dt.date.today().isoformat()
+                        continue
                     ppl.append((" ".join(x.capitalize() for x in ct), t, kind[3:]))
                     tick.add(t)
         secs = sorted({s for w in tset for s in self.sectors.get(w, ())})

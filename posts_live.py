@@ -404,6 +404,10 @@ if officials_doc is not None and (new_off or officials_doc.pop("seeded", False))
     officials_doc["updated"] = now.isoformat(timespec="seconds")
     cloud_store.put(OFF_KEY, json.dumps(officials_doc), E.log)
     E.log(f"Live posts: {len(new_off)} public official name(s) learned ({len(officials_doc['names'])} on file)")
+from congress_signals import name_context as NC          # owner, Nov 11: spaCy name check
+if NC.STATUS["loaded"]:
+    E.log(f"Live posts: name check (spaCy) read {NC.STATUS['calls']} matched name(s); set aside "
+          f"{NC.STATUS['dropped']} the posts gave a non-company role")
 # collection check: a source is flagged only when it has brought nothing new for longer than it normally goes
 LIVE_MAX_DAYS = {"Members' own sites": 2, "Bluesky": 2, "Mastodon": 14, "Substack": 30, "YouTube": 7}
 problems = []
