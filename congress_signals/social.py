@@ -417,7 +417,16 @@ class Tagger:
                     # officials, "Bob Brooks, a longtime union leader") or that is part of a place or event name
                     # ("Gallagher Park") isn't this company's person, unless the post names the company itself.
                     who, wkind, why = self.names_check.check(raw, pos, end, self.names.get(t, ()))
-                    if who in ("other", "not_person") and not _co_named(raw, self.names.get(t, ())):
+                    # Nov 12 review of 30 days of set-asides: two lost real intel. Toby Rice, EQT's CEO, in a post on
+                    # the EQT-Range merger ("congratulating his friends Toby Rice, EQT's President and CEO") and Elon
+                    # Musk dropped by the list rule (the owner's rule: a company's CEO named directly counts). So an
+                    # executive is set aside only on strong evidence (a government title, "X of <town>", part of a
+                    # place/event name), and any match stays when the company itself is named anywhere in the post.
+                    is_exec = kind[3:].lower() != "lobbyist"
+                    weak_ev = who == "other" and wkind in ("rel", "list")
+                    if is_exec and weak_ev:
+                        who = "unknown"
+                    if who in ("other", "not_person") and not _co_mentioned(raw, self.names.get(t, ()), ct):
                         self.name_drops.append((" ".join(x.capitalize() for x in ct), t, why))
                         from congress_signals.name_context import STATUS as _NCS
                         _NCS["dropped"] += 1
@@ -583,6 +592,23 @@ def official_names(raw):
 def E_strip(x):
     import unicodedata
     return "".join(c for c in unicodedata.normalize("NFKD", x) if not unicodedata.combining(c))
+
+
+def _co_mentioned(raw, co_words, person=()):
+    """Looser than _co_named (Nov 12): any distinctive word of the company's name, capitalized, anywhere in the post
+    ("EQT Corporation" / "EQT's" for EQT's listed name "EQT Corp"). Words of the person's own name don't count
+    ("Gallagher" the man isn't Arthur J. Gallagher), nor everyday words ("general", "american")."""
+    if _co_named(raw, co_words):
+        return True
+    own = {w.lower() for w in person or ()}
+    for w in co_words or ():
+        if len(w) <= 2 or w in own or w in _ORG_WORDS or _zipf(w) >= 4.0:
+            continue
+        if re.search(r"(?<![\w@#])" + re.escape(w) + r"(?:['’]s)?\b", raw or "", re.I):
+            m = re.search(r"(?<![\w@#])(" + re.escape(w) + r")", raw or "", re.I)
+            if m and (m.group(1)[:1].isupper() or m.group(1).isupper()):
+                return True
+    return False
 
 
 def _co_named(raw, co_words):

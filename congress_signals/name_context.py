@@ -15,6 +15,10 @@ is talking about:
   "not_person"  the words are part of a place, organization, law or event name ("Gallagher Park"), not a person.
   "unknown"     nothing either way; the tagger keeps its own rules for these.
 
+The second value says which rule fired: "gov" (a government title), "place" ("X of <town>"), "rel" (a relation or
+non-company role: friend, pastor, resident), "list" (a list of titled people) or "" (not_person / company / unknown).
+The tagger treats executives more carefully than lobbyists (Nov 12): see social.Tagger.tag.
+
 It only runs on posts where a company person's name matched, so most posts never touch it. If spaCy or its model
 can't load, every answer is "unknown" (the tagger works as before) and the problem is logged as a failure line, so
 Data health shows it (the app's rule: nothing breaks silently).
@@ -160,7 +164,7 @@ def classify(text, start, end, co_words=(), doc=None):
     if pre_set & (GOV_ROLE - AMBIGUOUS):
         return "other", "gov", f"\"{title}\" before the name"
     if pre_set & (OTHER_ROLE - AMBIGUOUS):
-        return "other", "", f"\"{title}\" before the name"
+        return "other", "rel", f"\"{title}\" before the name"
     if pre_set & AMBIGUOUS and co_in_sent:
         return "company", "", f"\"{title}\" before the name, company named"
     # 2) "X of <place>" / "X from <place>" right after the name ("Tom Gallagher of Mahwah")
@@ -169,11 +173,11 @@ def classify(text, start, end, co_words=(), doc=None):
         nxt = doc[k + 1]
         nxt_ent = next((e for e in sent.ents if e.start == k + 1), None)
         if nxt_ent is not None and nxt_ent.label_ in ("GPE", "LOC", "FAC"):
-            return "other", "", f"\"{person.text} {doc[k].text} {nxt_ent.text}\" (a person from a place)"
+            return "other", "place", f"\"{person.text} {doc[k].text} {nxt_ent.text}\" (a person from a place)"
         if nxt_ent is not None and nxt_ent.label_ == "ORG" and co and set(_words(nxt_ent)) & co:
             return "company", "", f"\"of {nxt_ent.text}\""
         if nxt.text[:1].isupper() and not co_in_sent and (nxt_ent is None or nxt_ent.label_ not in ("ORG",)):
-            return "other", "", f"\"{person.text} {doc[k].text} {nxt.text}\" (a person from a place)"
+            return "other", "place", f"\"{person.text} {doc[k].text} {nxt.text}\" (a person from a place)"
     # 3) the company itself in the same sentence, as an organization the reader found
     for e in sent.ents:
         if e.label_ == "ORG" and co and set(_words(e)) & co:
@@ -186,14 +190,14 @@ def classify(text, start, end, co_words=(), doc=None):
             if ch.dep_ == "prep" and ch.text.lower() in ("of", "from"):
                 place = [e for e in sent.ents if e.label_ in ("GPE", "LOC", "FAC") and e.start >= ch.i]
                 if place and place[0].start <= ch.i + 3:
-                    return "other", "", f"\"{person.text} {ch.text} {place[0].text}\" (a person from a place)"
+                    return "other", "place", f"\"{person.text} {ch.text} {place[0].text}\" (a person from a place)"
                 orgs = [e for e in sent.ents if e.label_ == "ORG" and e.start >= ch.i and e.start <= ch.i + 3]
                 if orgs and co and set(_words(orgs[0])) & co:
                     return "company", "", f"\"of {orgs[0].text}\""
             if ws & GOV_ROLE and not (ws & co):
                 return "other", "gov", f"described as \"{' '.join(t.text for t in ch.subtree)[:60]}\""
             if ws & OTHER_ROLE and not (ws & co):
-                return "other", "", f"described as \"{' '.join(t.text for t in ch.subtree)[:60]}\""
+                return "other", "rel", f"described as \"{' '.join(t.text for t in ch.subtree)[:60]}\""
             if ws & COMPANY_ROLE and ws & co:
                 return "company", "", f"described as \"{' '.join(t.text for t in ch.subtree)[:60]}\""
     # 5) a list of local officials or attendees ("Joined by Mayor A, Police Chief B, Councilwoman C, ...")
@@ -201,7 +205,7 @@ def classify(text, start, end, co_words=(), doc=None):
     if len(persons_in_sent) >= 3:
         titled = sum(1 for e in persons_in_sent if set(_before(doc, e.start)) & (GOV_ROLE | OTHER_ROLE))
         if titled >= 2 and not (sent_words & co):
-            return "other", "", f"in a list of {len(persons_in_sent)} people, {titled} with local or public titles"
+            return "other", "list", f"in a list of {len(persons_in_sent)} people, {titled} with local or public titles"
     return "unknown", "", ""
 
 
