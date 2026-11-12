@@ -424,7 +424,7 @@ class Tagger:
                     # place/event name), and any match stays when the company itself is named anywhere in the post.
                     role_ = kind[3:].lower()
                     is_exec = role_ != "lobbyist"
-                    top_exec = is_exec and bool(re.search(r"\b(ceo|chief executive|founder|chair|cob)\b", role_))
+                    top_exec = is_exec and bool(re.search(r"\b(ceo|chief executive|(co-?)?founder|chair(man|woman|person)?|cob)\b", role_))
                     friend_only = wkind == "rel" and bool(re.search(r"\b(friends?|colleagues?)\b", why or "")) and not \
                         re.search(r"\b(pastor|resident|dr|reverend|student|teacher|coach|nurse|doctor|neighbor)\b",
                                   why or "", re.I)
