@@ -10,7 +10,7 @@ are missing).
 Saved as social/posts/press_bf/<bioguide>.jsonl.gz and social/posts/press_wb/<bioguide>.jsonl.gz (same record
 format as the other posts); build_index skips any URL already in Congress Press. Resumable; runs in social.yml."""
 import threading
-import os, re, json, time, gzip, datetime as dt
+import os, re, json, glob, time, gzip, datetime as dt
 from concurrent.futures import ThreadPoolExecutor
 import requests
 
@@ -82,13 +82,178 @@ def _text(url, html=None, timeout=40):
         if _navlike(text):
             STATS["nav_pages"] += 1
             return NOT_RELEASE
-        return d.get("date"), d.get("title"), text
+        return _published(html) or d.get("date"), d.get("title"), text
     except Exception:
         return None, None, None
 
 
+_PUB = re.compile(r'"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})|'
+                  r'<meta[^>]+property=["\']article:published_time["\'][^>]+content=["\'](\d{4}-\d{2}-\d{2})|'
+                  r'<meta[^>]+content=["\'](\d{4}-\d{2}-\d{2})[^>]+property=["\']article:published_time', re.I)
+
+
+def _published(html):
+    """The page's own publication date (JSON-LD datePublished or article:published_time), or None.
+    Nov 12: trafilatura took Thune's "dateModified" (his site was rebuilt May-June 2026), so a 2017 release read
+    as 2026-06-01. The published date is what the release's date is."""
+    m = _PUB.search(html or "")
+    return next((g for g in m.groups() if g), None) if m else None
+
+
 BOILER = re.compile(r"Pursuant to Senate Policy.*?(?:unsubscribe may do so here\.?|$)|"
                     r"(?:Share|Print|Email|Tweet|Facebook|Twitter)\s*(?:\||\n)|Skip to (?:main )?content", re.I | re.S)
+
+
+def _year_less(name):
+    """True when a site reader's date formats carry no year (e.g. Thune's "%b %d"): the year it returns is a guess."""
+    try:
+        from python_statement.config import SCRAPER_CONFIG
+        f = (SCRAPER_CONFIG.get(name) or {}).get("date_fmt")
+    except Exception:
+        return False
+    f = [f] if isinstance(f, str) else list(f or [])
+    return bool(f) and not any(("%Y" in x or "%y" in x) for x in f)
+
+
+def _sane(d):
+    """A YYYY-MM-DD date that isn't in the future (one day's slack for time zones), else ""."""
+    d = str(d or "")[:10]
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
+        return ""
+    return d if d <= (dt.date.today() + dt.timedelta(days=1)).isoformat() else ""
+
+
+def _pick_date(name, d, page_date):
+    """The date to store for a release. Nov 12: 419 of Thune's backfilled releases (2014-2025) were stored dated
+    Nov 14 - Dec 2026: his list shows "Nov 14" with no year and the reader filled in the current year. Once that
+    date arrived they would have counted as his newest posts. The list's date is used only when it has a real year
+    and isn't in the future; otherwise the release page's own published date (see _published)."""
+    d, p = _sane(d), _sane(page_date)
+    if _year_less(name):
+        # no page date: the list's guessed year is kept only for a release from the last 45 days (the newest page
+        # of the list, where the current year is right); older ones aren't stored rather than stored misdated
+        return p or (d if d >= (dt.date.today() - dt.timedelta(days=45)).isoformat() else "")
+    return d or p
+
+
+def _wp_dates(host, deadline):
+    """{release address: published date} from a WordPress site's data feed (all its press releases), or {}."""
+    from congress_signals import press_sites as PS
+    root = "https://" + host
+    try:
+        r = requests.get(root + "/wp-json/", headers=UA, timeout=30)
+        routes = r.json().get("routes", {}) if r.status_code == 200 else {}
+    except Exception:
+        return {}
+    out = {}
+    for t in [t for t in PS.WP_TYPES if f"/wp/v2/{t}" in routes]:
+        page = 1
+        while page <= 200 and time.time() < deadline:
+            js = None
+            for k in range(3):
+                try:
+                    r = requests.get(f"{root}/wp-json/wp/v2/{t}", headers=UA, timeout=40,
+                                     params={"per_page": 100, "page": page, "_fields": "date,link"})
+                    if r.status_code == 400:          # past the last page
+                        js = []
+                        break
+                    if r.status_code == 200:
+                        js = r.json()
+                        break
+                except Exception:
+                    pass
+                time.sleep(5 * (k + 1))
+            if not isinstance(js, list) or not js:
+                break
+            for x in js:
+                if x.get("link") and x.get("date"):
+                    out[norm_url(x["link"])] = str(x["date"])[:10]
+            page += 1
+            time.sleep(1)
+    return out
+
+
+def redate_misdated(cfg, st, deadline):
+    """Nov 12: stored members'-site releases with a guessed year get their real date. Sites whose list shows no year
+    (Thune, Rick Scott: "%b %d") had every backfilled release stored with the current year (2014-2025 releases
+    dated 2026, 419 of them in Nov-Dec 2026), and any other row dated in the future is misread too. The date comes
+    from the site's WordPress data feed, else the release page's own published date. Rows not settled yet are
+    reported and tried again next run; a site is marked done once every row of it is settled."""
+    from congress_signals.social import read_jsonl, write_jsonl
+    try:
+        from python_statement.config import SCRAPER_CONFIG
+    except Exception:
+        SCRAPER_CONFIG = {}
+    host = lambda u: re.sub(r"^https?://(www\.)?", "", str(u or "").lower()).split("/")[0]
+    guessed = set()
+    for n, c in SCRAPER_CONFIG.items():
+        if _year_less(n):
+            u = c.get("url_base") or c.get("url") or ""
+            guessed.add(host(u[0] if isinstance(u, (list, tuple)) and u else u))
+    prog = st.setdefault("press_redate", {})        # host -> {"done": bool, "tries": {url: n}}
+    root = os.path.join(cfg.get("SOCIAL_DIR") or "social", "posts", "press_bf")
+    lim = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+    fixed = same = left = given_up = 0
+    wp, open_by, seen_h, refused = {}, {}, set(), {}
+    for path in sorted(glob.glob(os.path.join(root, "*.jsonl.gz"))):
+        rows = read_jsonl(path)
+        todo = [r for r in rows if str(r[0])[:10] > lim or
+                (host(r[4]) in guessed and not (prog.get(host(r[4])) or {}).get("done"))]
+        if not todo:
+            continue
+        changed = False
+        for r in todo:
+            h = host(r[4])
+            p = prog.setdefault(h, {"done": False, "tries": {}})
+            if h not in wp and time.time() < deadline:
+                wp[h] = _wp_dates(re.sub(r"^https?://", "", r[4]).split("/")[0], deadline)
+                _log(f"Press backfill: {h} data feed gave {len(wp[h]):,} release date(s)")
+            d2 = _sane((wp.get(h) or {}).get(norm_url(r[4])))
+            if not d2 and time.time() < deadline and p["tries"].get(r[4], 0) < 3 and refused.get(h, 0) < 5:
+                loaded, d2 = _published_of(r[4])
+                d2 = _sane(d2)
+                if loaded and not d2:           # the page read but shows no date (a refused read doesn't count)
+                    p["tries"][r[4]] = p["tries"].get(r[4], 0) + 1
+                refused[h] = 0 if loaded else refused.get(h, 0) + 1     # 5 refusals in a row: leave the site be
+                time.sleep(1)
+            if d2:
+                p["tries"].pop(r[4], None)
+                if d2 != str(r[0])[:10]:
+                    r[0], changed, fixed = d2, True, fixed + 1
+                else:
+                    same += 1
+            elif p["tries"].get(r[4], 0) >= 3:
+                given_up += 1
+            else:
+                left += 1
+                open_by[h] = open_by.get(h, 0) + 1
+            seen_h.add(h)
+        if changed:
+            write_jsonl(path, sorted(rows, key=lambda r: r[0]))
+    for h in seen_h:
+        if h in guessed and not open_by.get(h):
+            prog[h]["done"] = True             # every row of it settled (re-dated, confirmed, or no date to find)
+    if fixed or same or left or given_up:
+        _log(f"Press backfill: release dates checked: {fixed} re-dated (the year had been guessed or the date was in "
+             f"the future), {same} already right")
+    if left:
+        _log(f"Press backfill: couldn't check the date of {left} stored release(s) yet (site or page not readable, or "
+             f"out of time); next run tries again")
+    if given_up:
+        _log(f"Press backfill: {given_up} stored release(s) have no readable date after 3 tries; they keep their "
+             f"guessed date")
+    return left == 0
+
+
+def _published_of(url):
+    """(page read?, its own published date or None)."""
+    try:
+        r = requests.get(url, headers=UA, timeout=20)
+        if r.status_code != 200:
+            return False, None
+        return True, _published(r.text)
+    except Exception:
+        return False, None
 
 
 def _clean(t):
@@ -179,7 +344,7 @@ def backfill_current(cfg, st, tg, leg, deadline, workers=8, max_pages=400):
             d2, t2, text = _text(u)
             if text == "":
                 continue                            # not a release page (see _text)
-            d = d or (d2 or "")[:10]
+            d = _pick_date(name, d, d2)
             if not d or d < BACKFILL_FROM or not b:
                 continue
             full = (t2 or title or "") + "\n" + (text or "")
@@ -299,13 +464,13 @@ def latest_current(cfg, tg, leg, deadline, since=None, workers=12, only=None):
             d = str(r.get("date") or "")[:10]
             if norm_url(u) in seen or (d and d < since):
                 continue
-            if r.get("text"):                       # backup reader's WordPress feed already has the text
+            if r.get("text") and _sane(d):          # backup reader's WordPress feed already has the text
                 out.append((d, u, r.get("title") or "", r["text"]))
                 continue
             d2, t2, text = _text(u)
             if text == "":
                 continue                            # not a release page (see _text)
-            d = d or (d2 or "")[:10]
+            d = _pick_date(name, d, d2) if (d or d2) else ""
             if d and d >= since:
                 out.append((d, u, r.get("title") or t2 or "", text))
         return name, b, out

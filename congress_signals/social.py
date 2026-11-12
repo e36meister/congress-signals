@@ -2380,6 +2380,7 @@ def update_all(cfg, minutes, history=True):
         ok &= collect_tweets(cfg, st, tg, deadline - 300)
         try:        # press releases missing from Congress Press since 2021 (members' sites, then the Internet Archive)
             import congress_signals.press_backfill as PB
+            PB.redate_misdated(cfg, st, time.time() + 600)       # Nov 12: guessed-year / future dates (see there)
             left = deadline - time.time() - 600
             if left > 300:
                 ok &= PB.backfill_current(cfg, st, tg, leg, time.time() + left * 0.55)
@@ -2391,6 +2392,10 @@ def update_all(cfg, minutes, history=True):
         collect_people(cfg, st, max(deadline, time.time() + 120), per_run=1)
         try:        # every current member's newest press releases, from their own sites
             import congress_signals.press_backfill as PB
+            try:
+                PB.redate_misdated(cfg, st, time.time() + 300)   # Nov 12: guessed-year / future dates (see there)
+            except Exception as e:
+                _log(f"Press backfill: checking release dates failed ({type(e).__name__}: {e})")
             # its own 5 minutes (it used to be capped by the sources' deadline, so it checked nothing once they used it)
             PB.latest_current(cfg, tg, leg, time.time() + 300)
         except Exception as e:
