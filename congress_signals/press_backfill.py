@@ -173,6 +173,9 @@ def _wp_dates(host, deadline):
     return out
 
 
+URL_YM = re.compile(r"/(20\d\d)/(1[0-2]|0?[1-9])/")
+
+
 def redate_misdated(cfg, st, deadline):
     """Nov 12: stored members'-site releases with a guessed year get their real date. Sites whose list shows no year
     (Thune, Rick Scott: "%b %d") had every backfilled release stored with the current year (2014-2025 releases
@@ -205,6 +208,11 @@ def redate_misdated(cfg, st, deadline):
         for r in todo:
             h = host(r[4])
             p = prog.setdefault(h, {"done": False, "tries": {}})
+            m = URL_YM.search(r[4])
+            if m and str(r[0])[:7] == f"{m.group(1)}-{int(m.group(2)):02d}" and str(r[0])[:10] <= lim:
+                same += 1                       # the address itself carries the year and month (Rick Scott's)
+                seen_h.add(h)
+                continue
             if h not in wp and time.time() < deadline:
                 wp[h] = _wp_dates(re.sub(r"^https?://", "", r[4]).split("/")[0], deadline)
                 _log(f"Press backfill: {h} data feed gave {len(wp[h]):,} release date(s)")
@@ -215,7 +223,7 @@ def redate_misdated(cfg, st, deadline):
                 if loaded and not d2:           # the page read but shows no date (a refused read doesn't count)
                     p["tries"][r[4]] = p["tries"].get(r[4], 0) + 1
                 refused[h] = 0 if loaded else refused.get(h, 0) + 1     # 5 refusals in a row: leave the site be
-                time.sleep(1)
+                time.sleep(0.5)
             if d2:
                 p["tries"].pop(r[4], None)
                 if d2 != str(r[0])[:10]:
